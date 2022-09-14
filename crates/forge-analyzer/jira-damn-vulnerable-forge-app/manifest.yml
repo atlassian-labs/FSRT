@@ -1,0 +1,73 @@
+modules:
+  jira:adminPage:
+    - key: damn-vulnerable-jira-forge-app-hello-world-admin-page
+      function: main
+      title: damn-vulnerable-jira-forge-app
+  jira:issueGlance:
+    - key: damn-vulnerable-jira-forge-app-issue-glance
+      function: glance
+      title: damn-vulnerable-jira-forge-app-glance
+      label: damn-vulnerable-jira-forge-app-glance-summary
+  jira:globalPage:
+    - key: damn-vulnerable-jira-forge-app-global-page
+      function: global-page
+      title: damn-vulnerable-jira-forge-app-global-page
+      displayConditions:
+        isAdmin: true
+  jira:issuePanel:
+    - key: damn-vulnerable-jira-forge-app-issue-panel
+      function: global-page
+      title: damn-vulnerable-jira-forge-app-issue-panel
+      displayConditions:
+        isAdmin: true
+
+  jira:projectPage:
+    - key: damn-vulnerable-jira-forge-app-issue-project
+      function: global-page
+      title: damn-vulnerable-jira-forge-app-issue-project
+      displayConditions:
+        isAdmin: true
+  jira:projectSettingsPage:
+    - key: damn-vulnerable-jira-forge-app-issue-settings
+      function: global-page
+      title: damn-vulnerable-jira-forge-app-issue-settings
+      displayConditions:
+        isAdmin: true
+  jira:dashboardGadget:
+    - key: damn-vulnerable-jira-forge-app-gadget
+      function: global-page
+      title: damn-vulnerable-jira-forge-app-gadget
+      displayConditions:
+        isAdmin: true
+  webtrigger:
+    - key: authenticated-webtrigger
+      function: webtrigger-function
+  function:
+    - key: main
+      handler: index.run
+    - key: glance
+      handler: index.glance
+    - key: webtrigger-function
+      handler: index.runWebTrigger
+    - key: global-page
+      handler: auth.globalPage
+    - key: issue-panel
+      handler: auth.issuePanel
+app:
+  id: ari:cloud:ecosystem::app/22948e9c-8414-4d24-bd45-f0dc7428608f
+permissions:
+  scopes:
+    - 'storage:app'
+    - 'read:jira-user'
+    - 'read:jira-work'
+    - 'write:jira-work'
+    - 'manage:jira-project'
+    - 'manage:jira-configuration'
+    - 'manage:jira-webhook'
+  external:
+    fetch:
+      client:
+        - '*'
+  content:
+    styles:
+      - 'unsafe-inline'
