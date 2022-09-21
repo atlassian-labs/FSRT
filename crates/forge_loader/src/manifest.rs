@@ -1,20 +1,22 @@
-#![allow(dead_code, unused_mut, unused_variables)]
-
 use std::{
+    borrow::Borrow,
     collections::HashSet,
+    hash::Hash,
     path::{Path, PathBuf},
 };
 
+use crate::Error;
 use itertools::Itertools;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use tracing::trace;
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct AuthProviders<'a> {
     #[serde(borrow)]
     auth: Vec<&'a str>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FunctionMod<'a> {
     #[serde(flatten, borrow)]
     info: ModInfo<'a>,
@@ -22,23 +24,26 @@ pub struct FunctionMod<'a> {
     providers: Option<AuthProviders<'a>>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ModInfo<'a> {
     key: &'a str,
     handler: &'a str,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct MacroMod<'a> {
     #[serde(flatten, borrow)]
     info: ModInfo<'a>,
     title: &'a str,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Webtrigger<'a>(#[serde(borrow)] ModInfo<'a>);
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct Webtrigger<'a> {
+    key: &'a str,
+    function: &'a str,
+}
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ForgeModules<'a> {
     #[serde(rename = "macro", default, borrow)]
     macros: Vec<MacroMod<'a>>,
@@ -48,7 +53,7 @@ pub struct ForgeModules<'a> {
     webtriggers: Vec<Webtrigger<'a>>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct Content<'a> {
     #[serde(default, borrow)]
     scripts: Vec<&'a str>,
@@ -56,7 +61,7 @@ struct Content<'a> {
     styles: Vec<&'a str>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct Perms<'a> {
     #[serde(default, borrow)]
     scopes: Vec<&'a str>,
@@ -64,18 +69,18 @@ struct Perms<'a> {
     content: Content<'a>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct AppInfo<'a> {
     name: Option<&'a str>,
     id: &'a str,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ForgeManifest<'a> {
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ForgeManifest<'a> {
     #[serde(borrow)]
     app: AppInfo<'a>,
     #[serde(borrow)]
-    pub(crate) modules: ForgeModules<'a>,
+    pub modules: ForgeModules<'a>,
     #[serde(borrow)]
     permissions: Perms<'a>,
 }
@@ -94,48 +99,46 @@ pub struct FunctionRef<'a, S = Unresolved> {
 }
 
 impl<S> FunctionRef<'_, S> {
-    const VALID_EXTS: [&str; 4] = [".js", ".jsx", ".ts", ".tsx"];
-
-    #[inline]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    #[inline]
-    pub fn func(&self) -> &str {
-        self.func
-    }
+    const VALID_EXTS: [&str; 4] = ["jsx", "tsx", "ts", "js"];
 }
 
 impl<'a> FunctionRef<'a> {
-    #[inline]
-    fn new(func: &'a str, key: &'a str, path: PathBuf) -> Self {
-        Self {
-            func,
-            key,
-            path,
-            status: Unresolved,
-        }
-    }
-
-    fn try_resolve(self, paths: HashSet<&Path>) -> Result<FunctionRef<'a, Resolved>, &'static str> {
+    pub fn try_resolve<P>(
+        self,
+        paths: &HashSet<P>,
+        working_dir: &P,
+    ) -> Result<FunctionRef<'a, Resolved>, Error>
+    where
+        P: Borrow<Path> + Eq + Hash,
+    {
         Self::VALID_EXTS
             .iter()
             .find_map(|&ext| {
-                let path = self.path.with_extension(ext);
-                paths.contains(&*path).then_some(FunctionRef {
+                let path = working_dir.borrow().join(self.path.with_extension(ext));
+                trace!(?path);
+                paths.contains(&path).then_some(FunctionRef {
                     func: self.func,
                     key: self.key,
                     path,
                     status: Resolved,
                 })
             })
-            .ok_or("No valid file found")
+            .ok_or_else(|| Error::FileNotFound {
+                function: self.func.to_owned(),
+                path: self.path.to_owned(),
+            })
+    }
+}
+
+impl<'a, Resolved> FunctionRef<'a, Resolved> {
+    #[inline]
+    pub fn into_func_path(self) -> (&'a str, PathBuf) {
+        (self.func, self.path)
     }
 }
 
 impl<'a> TryFrom<FunctionMod<'a>> for FunctionRef<'a> {
-    type Error = String;
+    type Error = Error;
 
     fn try_from(func_handler: FunctionMod<'a>) -> Result<Self, Self::Error> {
         let handler_info = func_handler.info;
@@ -143,7 +146,7 @@ impl<'a> TryFrom<FunctionMod<'a>> for FunctionRef<'a> {
             .handler
             .splitn(2, '.')
             .collect_tuple()
-            .ok_or_else(|| format!("handler {} does not contain a period", handler_info.key))?;
+            .ok_or_else(|| Error::InvalidFuncHandler(handler_info.key.to_owned()))?;
         let mut path = PathBuf::from("src");
         path.push(file);
         Ok(Self {

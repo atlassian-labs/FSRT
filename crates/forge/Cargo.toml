@@ -1,0 +1,22 @@
+[package]
+name = "forge"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap.workspace = true
+forge_loader.workspace = true
+forge_analyzer.workspace = true
+miette.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+swc_core.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-tree.workspace = true
+walkdir.workspace = true

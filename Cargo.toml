@@ -2,14 +2,17 @@
 members = ["crates/*"]
 
 [workspace.package]
-authors = ["Joshua Wong"]
 version = "0.1.0"
+authors = ["Joshua Wong"]
 edition = "2021"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 anyhow = "1.0.65"
 clap = { version = "3.2.21", features = ["derive", "wrap_help"] }
+fixedbitset = "0.4.2"
 itertools = "0.10.4"
+miette = { version = "5.3.0", features = ["fancy"] }
 serde = { version = "1.0.144", features = ["derive"] }
 serde_json = "1.0.85"
 serde_yaml = "0.9.11"
@@ -19,7 +22,14 @@ once_cell = "1.14.0"
 regex = "1.6.0"
 rustc-hash = "1.1.0"
 smallvec = { version = "1.9.0", features = ["union", "may_dangle"] }
-swc_core = { version = "0.23.20", features = ["common_perf", "common", "__ecma", "swc_atoms", "swc_ecma_ast", "swc_ecma_loader", "swc_ecma_visit", "swc_ecma_utils", "ecma_ast", "swc", "ecma_visit", "ecma_transforms", "ecma_transforms_module", "ecma_transforms_typescript"] }
-swc_ecma_parser = "0.119.9"
+swc_core = { version = "0.23.29", features = ["common_perf", "common", "common_sourcemap", "ecma_visit_path", "ecma_utils", "ecma_ast", "swc", "ecma_visit", "ecma_transforms", "ecma_transforms_module", "ecma_transforms_typescript", "ecma_parser_typescript"] }
+thiserror = "1.0.35"
 tracing = "0.1.36"
+tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
+tracing-tree = "0.2.1"
+typed-arena = "2.0.1"
+typed-index-collections = "3.1.0"
 walkdir = "2.3.2"
+forge_loader = { path = "crates/forge_loader"}
+forge_analyzer = { path = "crates/forge_analyzer"}
+forge_utils = { path = "crates/forge_utils" }

@@ -1,28 +1,23 @@
 // Copyright 2022 Joshua Wong.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-#![allow(unused_imports, unused_variables, dead_code)]
+#![allow(unused_variables, dead_code)]
 
-use std::io;
 use std::os::unix::prelude::OsStrExt;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use clap::Parser;
-use forge_analyzer::ImportCollector;
-use swc_core::common::Globals;
-use swc_core::common::Mark;
-use swc_core::common::SourceFile;
-use swc_core::common::SourceMap;
-use swc_core::common::GLOBALS;
-use swc_core::ecma::ast::{EsVersion, Module};
-use swc_core::ecma::atoms::{atom, JsWord};
-use swc_core::ecma::transforms::base::resolver;
-use swc_core::ecma::visit::{FoldWith, VisitWith};
-use swc_ecma_parser::parse_file_as_module;
-use swc_ecma_parser::EsConfig;
-use swc_ecma_parser::Syntax;
+use swc_core::{
+    common::{Globals, SourceFile, SourceMap, GLOBALS},
+    ecma::{
+        ast::EsVersion,
+        parser::{parse_file_as_module, EsConfig, Syntax},
+    },
+};
 use tracing::info;
 use walkdir::WalkDir;
 
@@ -39,34 +34,6 @@ fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
     )
 }
 
-fn analyze_module(module: Module) {
-    // TODO: make typescript configurable
-    let mut initial_resolver = resolver(Mark::new(), Mark::new(), true);
-    let module = module.fold_with(&mut initial_resolver);
-    let mut imports = ImportCollector::new();
-    module.visit_with(&mut imports);
-    println!("IMPORTS: ---------------------");
-    for (id, import) in imports.imports.iter() {
-        println!("import: {:?} -> {:?}", id, import);
-    }
-    println!("---------------------");
-    println!("\nPATHS: ---------------------");
-    for path in imports.paths.iter() {
-        println!("path: {:?}", path);
-    }
-    println!("---------------------\n");
-    let atom: JsWord = "@forge/api".into();
-    if let Some(idents) = imports.paths.get(&atom) {
-        println!("idents: {idents:?}");
-        for (ident, _) in idents
-            .into_iter()
-            .filter_map(|&idx| imports.imports.get_index(idx.try_into().unwrap()))
-        {
-            println!("{ident:?}");
-        }
-    }
-}
-
 fn collect_to_sourcemap<P: AsRef<Path>>(root: P, conf: EsConfig) -> Result<Arc<SourceMap>> {
     let root = root.as_ref();
     let sourcemap = Arc::<SourceMap>::default();
@@ -81,7 +48,7 @@ fn collect_to_sourcemap<P: AsRef<Path>>(root: P, conf: EsConfig) -> Result<Arc<S
             println!("in dir: {}", path.display());
             // collect_to_sourcemap(&root.join(path), conf)?;
         } else {
-            let sourcemap = sourcemap.clone();
+            let sourcemap = Arc::clone(&sourcemap);
             GLOBALS.set(&globs, || {
                 let src = sourcemap
                     .load_file(path)
@@ -95,7 +62,6 @@ fn collect_to_sourcemap<P: AsRef<Path>>(root: P, conf: EsConfig) -> Result<Arc<S
                     &mut recovered_errors,
                 )
                 .unwrap_or_else(|_| panic!("failed to parse file: {}", path.display()));
-                analyze_module(module);
             });
         }
     }
@@ -105,6 +71,10 @@ fn collect_to_sourcemap<P: AsRef<Path>>(root: P, conf: EsConfig) -> Result<Arc<S
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let entry = cli.root;
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_env("FORGE_LOG"))
+        .init();
     info!("parsing {entry:?}");
     let loader_config = EsConfig {
         jsx: true,

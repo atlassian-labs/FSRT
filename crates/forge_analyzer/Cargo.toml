@@ -1,8 +1,9 @@
 [package]
-name = "forge-analyzer"
-authors.workspace = true
+name = "forge_analyzer"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+license.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -10,6 +11,8 @@ edition.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 itertools.workspace = true
+fixedbitset.workspace = true
+forge_utils.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -19,8 +22,10 @@ regex.workspace = true
 rustc-hash.workspace = true
 smallvec.workspace = true
 swc_core.workspace = true
-swc_ecma_parser.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
+typed-arena.workspace = true
+typed-index-collections.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]

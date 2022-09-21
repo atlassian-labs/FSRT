@@ -1,7 +1,7 @@
-import { route } from '@forge/api';
+import api, { route } from '@forge/api';
 
 export async function fetchIssueSummary(issueIdOrKey) {
-  const api = await import('@forge/api');
+  /* const api = await import('@forge/api'); */
   const resp = await api
     .asApp()
     .requestJira(route`/rest/api/3/issue/${issueIdOrKey}?fields=summary`, {
@@ -15,7 +15,7 @@ export async function fetchIssueSummary(issueIdOrKey) {
 }
 
 export async function writeComment(issueIdOrKey, comment) {
-  const api = require('@forge/api');
+  /* const api = require('@forge/api'); */
   const resp = await api
     .asApp()
     .requestJira(route`/rest/api/3/issue/${issueIdOrKey}/comment`, {
