@@ -18,8 +18,8 @@ struct AuthProviders<'a> {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FunctionMod<'a> {
-    #[serde(flatten, borrow)]
-    info: ModInfo<'a>,
+    key: &'a str,
+    handler: &'a str,
     #[serde(borrow)]
     providers: Option<AuthProviders<'a>>,
 }
@@ -27,14 +27,13 @@ pub struct FunctionMod<'a> {
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ModInfo<'a> {
     key: &'a str,
-    handler: &'a str,
+    title: &'a str,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct MacroMod<'a> {
     #[serde(flatten, borrow)]
     info: ModInfo<'a>,
-    title: &'a str,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -141,17 +140,16 @@ impl<'a> TryFrom<FunctionMod<'a>> for FunctionRef<'a> {
     type Error = Error;
 
     fn try_from(func_handler: FunctionMod<'a>) -> Result<Self, Self::Error> {
-        let handler_info = func_handler.info;
-        let (file, func) = handler_info
+        let (file, func) = func_handler
             .handler
             .splitn(2, '.')
             .collect_tuple()
-            .ok_or_else(|| Error::InvalidFuncHandler(handler_info.key.to_owned()))?;
+            .ok_or_else(|| Error::InvalidFuncHandler(func_handler.key.to_owned()))?;
         let mut path = PathBuf::from("src");
         path.push(file);
         Ok(Self {
             func,
-            key: handler_info.key,
+            key: func_handler.key,
             path,
             status: Unresolved,
         })
@@ -174,7 +172,6 @@ mod tests {
                 "macro": [
                 {
                     "key": "my-macro",
-                    "handler": "my-macro-handler",
                     "title": "My Macro"
                 }
                 ],
@@ -212,17 +209,14 @@ mod tests {
         assert_eq!(manifest.app.name, Some("My App"));
         assert_eq!(manifest.app.id, "my-app");
         assert_eq!(manifest.modules.macros.len(), 1);
-        assert_eq!(manifest.modules.macros[0].title, "My Macro");
+        assert_eq!(manifest.modules.macros[0].info.title, "My Macro");
         assert_eq!(manifest.modules.macros[0].info.key, "my-macro");
-        assert_eq!(manifest.modules.macros[0].info.handler, "my-macro-handler");
         assert_eq!(manifest.modules.functions.len(), 1);
         assert_eq!(
             manifest.modules.functions[0],
             FunctionMod {
-                info: ModInfo {
-                    key: "my-function",
-                    handler: "my-function-handler",
-                },
+                key: "my-function",
+                handler: "my-function-handler",
                 providers: Some(AuthProviders {
                     auth: vec!["my-auth-provider"]
                 }),
@@ -233,10 +227,8 @@ mod tests {
     #[test]
     fn test_function_handler_parsing() {
         let func_handler = FunctionMod {
-            info: ModInfo {
-                key: "my-function",
-                handler: "my-function-handler",
-            },
+            key: "my-function",
+            handler: "my-function-handler",
             providers: Some(AuthProviders {
                 auth: vec!["my-auth-provider"],
             }),
