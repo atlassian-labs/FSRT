@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use rustc_hash::FxHashSet;
 use swc_core::ecma::ast::Id;
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
 
 use crate::{
     analyzer::AuthZVal,
@@ -12,6 +12,7 @@ use crate::{
 type Instruction = (BasicBlockId, StmtId);
 const PRELUDE: Instruction = (STARTING_BLOCK, ENTRY_STMT);
 
+#[derive(Debug)]
 enum Inst {
     Call {
         func: Id,
@@ -21,6 +22,7 @@ enum Inst {
     Step(BasicBlockId, StmtId),
 }
 
+#[derive(Debug)]
 struct Frame {
     ret: Instruction,
     calling_function: Id,
@@ -29,7 +31,7 @@ struct Frame {
 pub struct Machine<'ctx> {
     callstack: Vec<Frame>,
     curr_function: Id,
-    modid: ModId,
+    mod_id: ModId,
     eip: Instruction,
     app: &'ctx mut AppCtx,
     worklist: VecDeque<Inst>,
@@ -43,7 +45,7 @@ impl<'ctx> Machine<'ctx> {
         Self {
             callstack: vec![],
             curr_function: func,
-            modid,
+            mod_id: modid,
             eip: PRELUDE,
             app,
             worklist: VecDeque::new(),
@@ -67,7 +69,7 @@ impl<'ctx> Machine<'ctx> {
         let result = self.result.take();
         let (call, changed) = self
             .app
-            .meet(self.modid, &self.curr_function, self.eip.0, result);
+            .meet(self.mod_id, &self.curr_function, self.eip.0, result);
         debug!(?call, ?changed, "transfer function");
         if let Some((modid, func)) = call {
             if self.add_call(modid, func) {
@@ -75,12 +77,11 @@ impl<'ctx> Machine<'ctx> {
             }
         }
         if changed {
-            if let Some(succ) = self.app.succ(self.modid, &self.curr_function, self.eip.0) {
+            if let Some(succ) = self.app.succ(self.mod_id, &self.curr_function, self.eip.0) {
                 self.worklist
                     .extend(succ.map(|next_block| Inst::Step(next_block, ENTRY_STMT)));
-                return None;
             }
-            Some(self.app.func_res(self.modid, &self.curr_function))
+            Some(self.app.func_res(self.mod_id, &self.curr_function))
         } else {
             None
         }
@@ -88,18 +89,19 @@ impl<'ctx> Machine<'ctx> {
 
     fn invoke(&mut self, mod_id: ModId, calling_function: Id, ret: Instruction) {
         debug!(?mod_id, ?calling_function, "invoking");
-        self.curr_function = calling_function.clone();
         self.callstack.push(Frame {
             ret,
-            calling_function,
+            calling_function: self.curr_function.clone(),
         });
-        self.modid = mod_id;
+        self.curr_function = calling_function;
+        self.mod_id = mod_id;
         self.eip = PRELUDE;
         self.worklist.push_back(Inst::Step(PRELUDE.0, PRELUDE.1));
     }
 
-    #[instrument(level = "debug", skip(self), fields(module = ?self.modid, invoked = ?self.curr_function))]
+    #[instrument(level = "debug", skip(self), fields(module = ?self.mod_id, invoked = ?self.curr_function))]
     pub fn run(&mut self) -> AuthZVal {
+        let (orig_mod, orig_func) = (self.mod_id, self.curr_function.clone());
         self.worklist.push_back(Inst::Step(self.eip.0, self.eip.1));
         while let Some(inst) = self.worklist.pop_front() {
             match inst {
@@ -110,6 +112,7 @@ impl<'ctx> Machine<'ctx> {
                     // we need to return if possible
                     if let Some(val) = self.transfer() {
                         if let Some(ret) = self.callstack.pop() {
+                            debug!(?ret, "returning");
                             self.curr_function = ret.calling_function;
                             self.result = Some(val);
                             let (ret_block, ret_stmt) = ret.ret;
@@ -119,6 +122,8 @@ impl<'ctx> Machine<'ctx> {
                 }
             }
         }
-        self.result.unwrap_or(AuthZVal::Unknown)
+        let result = self.app.func_res(orig_mod, &orig_func);
+        info!(?result, "analysis complete");
+        result
     }
 }

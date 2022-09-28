@@ -16,24 +16,29 @@ use tracing::{debug, instrument};
 pub enum AuthZVal {
     Authorize, // BOT
     Unauthorized,
-    #[default]
     Noop,
+    #[default]
     Unknown, // TOP
 }
 
 impl MeetSemiLattice for AuthZVal {
     // true if we would change the other
+    // note: try to use exhaustive pattern matching on these functions
+    // even if [`matches!`] is terser, since we should be looking at this
+    // every time [`AuthZVal`] changes
     fn meet(&mut self, other: Self) -> bool {
         use AuthZVal::*;
+        if *self == Unauthorized || other == Unauthorized {
+            debug!(?self, ?other, "found unauthorized");
+        }
         match (*self, other) {
             (_, Authorize) => {
                 *self = Authorize;
                 false
             }
             (Authorize, _) => true,
-            (Unauthorized, Unauthorized) => false,
             (Unauthorized, Noop | Unknown) => true,
-            (Unknown | Noop, Unauthorized) => {
+            (Unauthorized | Unknown | Noop, Unauthorized) => {
                 *self = Unauthorized;
                 false
             }
@@ -41,8 +46,8 @@ impl MeetSemiLattice for AuthZVal {
                 *self = Noop;
                 false
             }
-            (Noop, Noop | Unknown) => true,
-            (Unknown, Unknown) => true,
+            (Noop, Unknown) => true,
+            (Noop, Noop) | (Unknown, Unknown) => false,
         }
     }
 }
@@ -142,25 +147,22 @@ impl<'a> FunctionAnalyzer<'a> {
     }
 
     fn is_as_app_access(&self, n: &Expr) -> bool {
-        as_callee(n).map_or(false, |n| {
-            debug!("potential callee");
-            match n {
-                Expr::Ident(ident) => self.forge_imports.is_as_app(&ident.to_id()),
-                Expr::Member(MemberExpr { obj, prop, .. }) => match prop {
-                    MemberProp::Ident(ident) => {
-                        let ident = ident.to_id();
-                        debug!(?obj, prop = ?&ident.0, "checking api import");
-                        obj.as_ident()
-                            .filter(|obj| self.forge_imports.is_api(&obj.to_id()))
-                            .is_some()
-                            && &ident.0 == "asApp"
-                    }
-                    MemberProp::PrivateName(_) => false,
-                    MemberProp::Computed(_) => false,
-                },
-                _ => false,
+        let callee = as_callee(n);
+        match callee {
+            Some(Expr::Ident(ident)) => self.forge_imports.is_as_app(&ident.to_id()),
+            Some(Expr::Member(MemberExpr {
+                obj,
+                prop: MemberProp::Ident(ident),
+                ..
+            })) if &ident.sym == "asApp" => {
+                let ident = ident.to_id();
+                debug!(?obj, prop = ?&ident.0, "checking api import");
+                obj.as_ident()
+                    .filter(|obj| self.forge_imports.is_api(&obj.to_id()))
+                    .is_some()
             }
-        })
+            _ => false,
+        }
     }
 }
 
@@ -194,6 +196,7 @@ impl Visit for FunctionAnalyzer<'_> {
 
     // FIXME: desugaring the jsx may make analysis simpler
     fn visit_jsx_opening_element(&mut self, n: &JSXOpeningElement) {
+        n.visit_children_with(self);
         match &n.name {
             JSXElementName::Ident(id) => self.add_ir_stmt(id.into()),
             // FIXME: add cases for these
@@ -259,37 +262,40 @@ impl Visit for FunctionCollector<'_> {
     }
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
-        if let Some(expr) = &n.init {
-            if let Pat::Ident(BindingIdent { id, .. }) = &n.name {
-                let id = id.to_id();
-                debug!(?id, "binding ident");
+        if let VarDeclarator {
+            name: Pat::Ident(BindingIdent { id, .. }),
+            init: Some(expr),
+            ..
+        } = n
+        {
+            let id = id.to_id();
+            debug!(?id, "binding ident");
 
-                match &**expr {
-                    Expr::Arrow(expr) => {
-                        self.add_func_meta(id, &expr.body);
-                        expr.visit_children_with(self);
-                    }
-                    Expr::Fn(expr) => {
-                        self.add_func_meta(id, &expr.function);
-                        expr.visit_children_with(self);
-                    }
-                    Expr::Call(CallExpr {
-                        callee: Callee::Expr(expr),
-                        args,
-                        ..
-                    }) => {
-                        // TODO: make this not ugly
-                        if let Expr::Ident(ident) = &**expr {
-                            let ident = ident.to_id();
-                            debug!(var = ?ident, "checking call to");
-                            if self.ctx.has_import(&ident, "@forge/ui", "render") {
-                                self.add_func_meta(id, args);
-                                expr.visit_children_with(self);
-                            }
+            match &**expr {
+                Expr::Arrow(expr) => {
+                    self.add_func_meta(id, &expr.body);
+                    expr.visit_children_with(self);
+                }
+                Expr::Fn(expr) => {
+                    self.add_func_meta(id, &expr.function);
+                    expr.visit_children_with(self);
+                }
+                Expr::Call(CallExpr {
+                    callee: Callee::Expr(expr),
+                    args,
+                    ..
+                }) => {
+                    // mfw no deref patterns
+                    if let Expr::Ident(ident) = &**expr {
+                        let ident = ident.to_id();
+                        debug!(var = ?ident, "checking call to");
+                        if self.ctx.has_import(&ident, "@forge/ui", "render") {
+                            self.add_func_meta(id, args);
+                            expr.visit_children_with(self);
                         }
                     }
-                    _ => {}
                 }
+                _ => {}
             }
         }
     }

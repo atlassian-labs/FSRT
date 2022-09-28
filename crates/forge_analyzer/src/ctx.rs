@@ -49,7 +49,7 @@ pub(crate) struct FunctionMeta {
     blocks: TiVec<BasicBlockId, BasicBlock>,
     succ: FxHashMap<BasicBlockId, SmallVec<[BasicBlockId; 2]>>,
     pred: FxHashMap<BasicBlockId, SmallVec<[BasicBlockId; 1]>>,
-    out: TiVec<BasicBlockId, OnceCell<AuthZVal>>,
+    out: TiVec<BasicBlockId, AuthZVal>,
     res: OnceCell<AuthZVal>,
 }
 
@@ -95,24 +95,17 @@ impl AppCtx {
 
     #[inline]
     pub fn block(&self, mod_id: ModId, func: &Id, block: BasicBlockId) -> Option<&BasicBlock> {
-        self.modctx.get(mod_id).and_then(|m| {
-            m.functions
-                .get(func)
-                .and_then(|func_meta| func_meta.blocks.get(block))
-        })
+        self.func(mod_id, func)?.blocks.get(block)
     }
 
+    #[inline]
     pub fn block_mut(
         &mut self,
         mod_id: ModId,
         func: &Id,
         block: BasicBlockId,
     ) -> Option<&mut BasicBlock> {
-        self.modctx.get_mut(mod_id).and_then(|m| {
-            m.functions
-                .get_mut(func)
-                .and_then(|func_meta| func_meta.blocks.get_mut(block))
-        })
+        self.func_mut(mod_id, func)?.blocks.get_mut(block)
     }
 
     #[inline]
@@ -124,6 +117,8 @@ impl AppCtx {
         self.path_ids.get(path).copied()
     }
 
+    // TODO: move this to the engine
+    #[instrument(level = "debug", skip(self), fields(function = ?func, ?block))]
     pub(crate) fn meet(
         &mut self,
         mod_id: ModId,
@@ -136,62 +131,59 @@ impl AppCtx {
             None => return (None, true),
         };
 
-        let start = start.unwrap_or(AuthZVal::Unknown);
+        let start = start.unwrap_or_default();
 
         // meet over pred blocks
         let mut input = funcs.pred.get(&block).map_or(start, |pred| {
-            pred.iter().fold(AuthZVal::Noop, |mut res, &id| {
-                res.meet(
-                    funcs
-                        .out
-                        .get(id)
-                        .and_then(OnceCell::get)
-                        .copied()
-                        .unwrap_or(AuthZVal::Noop),
-                );
+            pred.iter().fold(AuthZVal::Unknown, |mut res, &id| {
+                res.meet(funcs.out.get(id).copied().unwrap_or_default());
                 res
             })
         });
+        debug!(?input, "transfer in");
         let next = funcs.blocks[block].stmts.iter_enumerated().fold(
             (None, false),
             |(call, _), (stmt_id, val)| match val {
                 IrStmt::Call(ref id) => {
-                    debug!(statement = ?stmt_id, calling = ?id, "meet from call");
-                    match self.func(mod_id, id) {
-                        Some(meta) => {
-                            debug!(?id, "local function");
-                            let cached = meta.res.get().copied();
-                            let authz = cached.as_ref().copied().unwrap_or(AuthZVal::Unknown);
-                            let func = if cached.is_none() {
-                                Some((mod_id, id.clone()))
-                            } else {
-                                None
-                            };
-                            debug!(check = ?func, "trying to check");
-                            (call.or(func), input.meet(authz))
-                        }
-                        None => {
-                            debug!(?id, "foreign function");
-                            let export = match self.resolve_export(mod_id, func) {
-                                Some(x) => x,
-                                None => {
-                                    debug!(val = ?input, "unable to resolve function");
-                                    return (call, input.meet(AuthZVal::Unknown));
-                                }
-                            };
-                            debug!(?export, "resolving export");
-                            let res = self.func_res(export.0, &export.1);
-                            (call.or(Some(export)), input.meet(res))
-                        }
+                    debug!(val = ?input, statement = ?stmt_id, calling = ?id, "meet from call");
+                    if let Some(meta) = self.func(mod_id, id) {
+                        debug!(?id, "local function");
+                        let cached = meta.res.get().copied();
+                        let authz = cached.as_ref().copied().unwrap_or(AuthZVal::Unknown);
+                        let func = if cached.is_none() {
+                            Some((mod_id, id.clone()))
+                        } else {
+                            None
+                        };
+                        debug!(check = ?func, "trying to check");
+                        (call.or(func), input.meet(authz))
+                    } else {
+                        debug!(?id, "foreign function");
+                        let export = match self.resolve_export(mod_id, func) {
+                            Some(x) => x,
+                            None => {
+                                debug!(val = ?input, "unable to resolve function");
+                                return (call, input.meet(AuthZVal::Unknown));
+                            }
+                        };
+                        debug!(?export, "resolving export");
+                        let res = self.func_res(export.0, &export.1);
+                        (call.or(Some(export)), input.meet(res))
                     }
                 }
                 IrStmt::Resolved(val) => (call, input.meet(*val)),
             },
         );
+        let funcs = self.func_mut(mod_id, func).unwrap();
+        funcs.out[block].meet(input);
+        debug!(output = ?funcs.out[block], ?input, "result of transfer");
         if funcs.succ.get(&block).is_none() {
-            let res = &mut self.func_mut(mod_id, func).unwrap().res;
+            let res = &mut funcs.res;
             match res.get_mut() {
-                Some(val) => *val = input,
+                Some(val) => {
+                    debug!(previous = ?val, current = ?input, "setting output");
+                    val.meet(input);
+                }
                 None => {
                     let _ = res.set(input);
                 }
@@ -205,14 +197,11 @@ impl AppCtx {
 
     #[inline]
     pub(crate) fn func_mut(&mut self, mod_id: ModId, func: &Id) -> Option<&mut FunctionMeta> {
-        self.modctx
-            .get_mut(mod_id)
-            .and_then(|m| m.functions.get_mut(func))
+        self.modctx.get_mut(mod_id)?.functions.get_mut(func)
     }
-
     #[inline]
     pub(crate) fn func(&self, mod_id: ModId, func: &Id) -> Option<&FunctionMeta> {
-        self.modctx.get(mod_id).and_then(|m| m.functions.get(func))
+        self.modctx.get(mod_id)?.functions.get(func)
     }
 
     #[instrument(level = "debug", skip(self))]
@@ -245,15 +234,15 @@ impl AppCtx {
             .unwrap_or(AuthZVal::Unknown)
     }
 
+    #[inline]
     pub(crate) fn succ(
         &self,
         mod_id: ModId,
         func: &Id,
         block: BasicBlockId,
-    ) -> Option<impl Iterator<Item = BasicBlockId> + '_> {
+    ) -> Option<impl Iterator<Item = BasicBlockId> + DoubleEndedIterator + '_> {
         self.func(mod_id, func)
-            .and_then(|f| f.succ.get(&block))
-            .map(|s| s.iter().copied())
+            .and_then(|f| Some(f.succ.get(&block)?.into_iter().copied()))
     }
 
     #[inline]
@@ -267,10 +256,11 @@ impl AppCtx {
 impl FunctionMeta {
     #[inline]
     pub(crate) fn new() -> Self {
-        let mut blocks = TiVec::with_capacity(1);
-        blocks.push(BasicBlock::new());
+        let blocks = vec![BasicBlock::new()].into();
+        let out = vec![AuthZVal::Unknown].into();
         Self {
             blocks,
+            out,
             ..Default::default()
         }
     }
@@ -289,25 +279,25 @@ impl FunctionMeta {
     #[inline]
     pub(crate) fn create_block_from(&mut self, pred: BasicBlockId) -> BasicBlockId {
         let id = self.blocks.push_and_get_key(BasicBlock::default());
+        self.out.push(AuthZVal::Unknown);
         self.add_edge(pred, id);
         id
     }
-
-    fn resolve_module(&mut self, module: ModuleCtx) {}
 }
 
 impl ModuleCtx {
     pub(crate) fn has_import(&self, n: &Id, path: &str, funcname: &str) -> bool {
         let import = self.ident_to_import.get(n);
         debug!(module = ?import, id = ?n, "checking if import exists");
-        import.map_or(false, |modname| {
-            path == &modname.0
-                && self
-                    .imports
-                    .get(modname)
-                    .filter(|imports| imports.iter().any(|func| func.equal_funcname(funcname)))
-                    .is_some()
-        })
+        import
+            .filter(|modname| path == &modname.0)
+            .and_then(|modname| {
+                self.imports
+                    .get(modname)?
+                    .iter()
+                    .find(|func| func.equal_funcname(funcname))
+            })
+            .is_some()
     }
 }
 

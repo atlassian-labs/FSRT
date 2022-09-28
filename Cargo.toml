@@ -30,6 +30,6 @@ tracing-tree = "0.2.1"
 typed-arena = "2.0.1"
 typed-index-collections = "3.1.0"
 walkdir = "2.3.2"
-forge_loader = { path = "crates/forge_loader"}
-forge_analyzer = { path = "crates/forge_analyzer"}
+forge_loader = { path = "crates/forge_loader" }
+forge_analyzer = { path = "crates/forge_analyzer" }
 forge_utils = { path = "crates/forge_utils" }
