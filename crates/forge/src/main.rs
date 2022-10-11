@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_variables, clippy::type_complexity)]
+#![allow(clippy::type_complexity)]
 use std::{
     collections::HashSet,
     convert::TryFrom,
@@ -34,16 +34,18 @@ use forge_loader::manifest::{ForgeManifest, FunctionRef};
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None)]
 struct Args {
-    #[clap(short, long)]
+    #[arg(short, long)]
     debug: bool,
 
-    #[clap(name = "DIRS", parse(from_os_str), value_hint = ValueHint::DirPath)]
+    #[arg(name = "DIRS", value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
 }
 
+#[derive(Default)]
 struct ForgeProject {
+    #[allow(dead_code)]
     sm: Arc<SourceMap>,
     ctx: AppCtx,
     funcs: Vec<(ModId, Id)>,
@@ -62,6 +64,7 @@ impl ForgeProject {
     #[instrument(level = "debug", skip(self))]
     fn verify_funs(&mut self) -> impl Iterator<Item = (ModId, Id, AuthZVal)> + '_ {
         self.funcs.iter().cloned().map(|(modid, func)| {
+            // TODO(perf): reuse the same `Machine` between iterations
             let mut machine = Machine::new(modid, func.clone(), &mut self.ctx);
             (modid, func, machine.run())
         })
@@ -99,7 +102,7 @@ impl ForgeProject {
         Self {
             sm,
             ctx,
-            ..Default::default()
+            ..ForgeProject::new()
         }
     }
 
@@ -113,30 +116,12 @@ impl ForgeProject {
     }
 }
 
-impl Default for ForgeProject {
-    fn default() -> Self {
-        Self {
-            sm: Default::default(),
-            ctx: Default::default(),
-            funcs: vec![],
-        }
-    }
-}
-
 impl FromIterator<PathBuf> for ForgeProject {
     #[inline]
     fn from_iter<T: IntoIterator<Item = PathBuf>>(iter: T) -> Self {
         Self::with_files(iter)
     }
 }
-
-// fn collect_sourcefiles<P: AsRef<Path>>(
-//     root: P,
-//     globals: Globals,
-// ) -> Result<(Arc<SourceMap>, Vec<(PathBuf, Module)>)> {
-//     let root = root
-// }
-//
 
 fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
     matches!(

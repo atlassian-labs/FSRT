@@ -4,10 +4,9 @@
 use crate::ctx::{BasicBlockId, FunctionMeta, IrStmt, ModuleCtx, STARTING_BLOCK};
 use crate::lattice::MeetSemiLattice;
 use crate::utils::FxHashMap;
-use crate::ForgeImports;
 use swc_core::ecma::ast::{
-    ArrowExpr, BindingIdent, CallExpr, Callee, Expr, FnDecl, FnExpr, Id, IfStmt, JSXElementName,
-    JSXOpeningElement, MemberExpr, MemberProp, Pat, Str, TplElement, VarDeclarator,
+    ArrowExpr, BindingIdent, CallExpr, Callee, Expr, ExprOrSpread, FnDecl, FnExpr, Id, IfStmt,
+    JSXElementName, JSXOpeningElement, MemberExpr, MemberProp, Pat, Str, TplElement, VarDeclarator,
 };
 use swc_core::ecma::visit::{noop_visit_type, Visit, VisitWith};
 use tracing::{debug, instrument};
@@ -82,20 +81,20 @@ impl<'ctx> FunctionCollector<'ctx> {
     where
         for<'a> N: VisitWith<FunctionAnalyzer<'a>>,
     {
-        let meta = analyze_functions(body, &self.ctx.forge_imports);
+        let meta = analyze_functions(body, self.ctx);
         self.functions.insert(id, meta);
     }
 }
 
 struct FunctionAnalyzer<'a> {
-    forge_imports: &'a ForgeImports,
+    ctx: &'a ModuleCtx,
     meta: FunctionMeta,
     curr_block: BasicBlockId,
 }
 
 // technically the HRTB is unnecessary, since we only need the lifetime from `ForgeImports`,
 // however, I might add more lifetime params to [`FunctionAnalyzer`] in the future
-fn analyze_functions<N>(body: &N, forge_imports: &ForgeImports) -> FunctionMeta
+fn analyze_functions<N>(body: &N, forge_imports: &ModuleCtx) -> FunctionMeta
 where
     for<'a> N: VisitWith<FunctionAnalyzer<'a>>,
 {
@@ -132,9 +131,9 @@ fn contains_perms_check<N: VisitWith<CheckApiCalls>>(node: &N) -> bool {
 
 impl<'a> FunctionAnalyzer<'a> {
     #[inline]
-    fn new(forge_imports: &'a ForgeImports) -> Self {
+    fn new(ctx: &'a ModuleCtx) -> Self {
         Self {
-            forge_imports,
+            ctx,
             meta: FunctionMeta::new(),
             curr_block: STARTING_BLOCK,
         }
@@ -149,7 +148,7 @@ impl<'a> FunctionAnalyzer<'a> {
     fn is_as_app_access(&self, n: &Expr) -> bool {
         let callee = as_callee(n);
         match callee {
-            Some(Expr::Ident(ident)) => self.forge_imports.is_as_app(&ident.to_id()),
+            Some(Expr::Ident(ident)) => self.ctx.is_as_app(&ident.to_id()),
             Some(Expr::Member(MemberExpr {
                 obj,
                 prop: MemberProp::Ident(ident),
@@ -158,7 +157,7 @@ impl<'a> FunctionAnalyzer<'a> {
                 let ident = ident.to_id();
                 debug!(?obj, prop = ?&ident.0, "checking api import");
                 obj.as_ident()
-                    .filter(|obj| self.forge_imports.is_api(&obj.to_id()))
+                    .filter(|obj| self.ctx.is_api(&obj.to_id()))
                     .is_some()
             }
             _ => false,
@@ -180,6 +179,7 @@ fn as_callee(n: &Expr) -> Option<&Expr> {
 impl Visit for FunctionAnalyzer<'_> {
     noop_visit_type!();
 
+    /**
     fn visit_if_stmt(&mut self, n: &IfStmt) {
         n.test.visit_with(self);
         let pred = self.curr_block;
@@ -193,6 +193,7 @@ impl Visit for FunctionAnalyzer<'_> {
         }
         self.curr_block = next;
     }
+    */
 
     // FIXME: desugaring the jsx may make analysis simpler
     fn visit_jsx_opening_element(&mut self, n: &JSXOpeningElement) {
@@ -213,8 +214,23 @@ impl Visit for FunctionAnalyzer<'_> {
                 Expr::Ident(id) => {
                     let id = id.to_id();
                     debug!(?id, "analyzing function call");
-                    let irstmt = if self.forge_imports.is_authorize(&id) {
+                    let irstmt = if self.ctx.is_authorize(&id) {
                         IrStmt::Resolved(AuthZVal::Authorize)
+                    } else if self.ctx.has_import(&id, "@forge/ui", "useState") {
+                        // FIXME: recognize more cases of lazy initialization
+                        if let [ExprOrSpread { expr, .. }] = &**args {
+                            match &**expr {
+                                Expr::Arrow(ArrowExpr { body, .. }) => body.visit_with(self),
+                                Expr::Fn(FnExpr { ident: _, function }) => {
+                                    if let Some(body) = &function.body {
+                                        body.visit_with(self);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        // we don't need to add this to the IR, since we know it's useless
+                        return;
                     } else {
                         id.into()
                     };

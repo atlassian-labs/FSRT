@@ -131,6 +131,10 @@ impl AppCtx {
             None => return (None, true),
         };
 
+        if &*func.0 == "SecureGlance" {
+            dbg!(&funcs);
+        }
+
         let start = start.unwrap_or_default();
 
         // meet over pred blocks
@@ -150,16 +154,12 @@ impl AppCtx {
                         debug!(?id, "local function");
                         let cached = meta.res.get().copied();
                         let authz = cached.as_ref().copied().unwrap_or(AuthZVal::Unknown);
-                        let func = if cached.is_none() {
-                            Some((mod_id, id.clone()))
-                        } else {
-                            None
-                        };
+                        let func = cached.is_none().then(|| (mod_id, id.clone()));
                         debug!(check = ?func, "trying to check");
                         (call.or(func), input.meet(authz))
                     } else {
                         debug!(?id, "foreign function");
-                        let export = match self.resolve_export(mod_id, func) {
+                        let export = match self.resolve_export(mod_id, id) {
                             Some(x) => x,
                             None => {
                                 debug!(val = ?input, "unable to resolve function");
@@ -168,10 +168,14 @@ impl AppCtx {
                         };
                         debug!(?export, "resolving export");
                         let res = self.func_res(export.0, &export.1);
+                        #[allow(clippy::or_fun_call)]
                         (call.or(Some(export)), input.meet(res))
                     }
                 }
-                IrStmt::Resolved(val) => (call, input.meet(*val)),
+                IrStmt::Resolved(val) => {
+                    debug!(?val, "resolved IR statement");
+                    (call, input.meet(*val))
+                }
             },
         );
         let funcs = self.func_mut(mod_id, func).unwrap();
@@ -209,6 +213,7 @@ impl AppCtx {
         let import = self.modctx.get(mod_id)?.ident_to_import.get(func)?;
         let pat: &str = &import.0;
         debug!(import = pat, "found import");
+        let pat = pat.strip_prefix("./").unwrap_or(pat);
         let module = self
             .path_ids
             .iter()
@@ -286,9 +291,10 @@ impl FunctionMeta {
 }
 
 impl ModuleCtx {
-    pub(crate) fn has_import(&self, n: &Id, path: &str, funcname: &str) -> bool {
-        let import = self.ident_to_import.get(n);
-        debug!(module = ?import, id = ?n, "checking if import exists");
+    // check if the `ident` matches `funcname` imported` from `path`
+    pub(crate) fn has_import(&self, ident: &Id, path: &str, funcname: &str) -> bool {
+        let import = self.ident_to_import.get(ident);
+        debug!(module = ?import, id = ?ident, "checking if import exists");
         import
             .filter(|modname| path == &modname.0)
             .and_then(|modname| {
@@ -298,6 +304,21 @@ impl ModuleCtx {
                     .find(|func| func.equal_funcname(funcname))
             })
             .is_some()
+    }
+
+    #[inline]
+    pub(crate) fn is_api(&self, id: &Id) -> bool {
+        self.forge_imports.is_api(id)
+    }
+
+    #[inline]
+    pub(crate) fn is_authorize(&self, id: &Id) -> bool {
+        self.forge_imports.is_authorize(id)
+    }
+
+    #[inline]
+    pub(crate) fn is_as_app(&self, id: &Id) -> bool {
+        self.forge_imports.is_as_app(id)
     }
 }
 

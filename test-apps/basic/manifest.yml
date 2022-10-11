@@ -1,0 +1,14 @@
+modules:
+  macro:
+    - key: basic-hello-world
+      function: main
+      title: basic
+      handler: nothing
+      description: Inserts Hello world!
+  function:
+    - key: main
+      handler: index.run
+app:
+  id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+permissions:
+  scopes: []

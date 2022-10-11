@@ -138,10 +138,8 @@ impl Visit for ImportCollector {
 
     #[tracing::instrument(level = "debug", skip_all)]
     fn visit_import_decl(&mut self, n: &ImportDecl) {
-        let ImportDecl {
-            src: Str { value, span, .. },
-            ..
-        } = n;
+        let src = &*n.src;
+        let Str { span, value, .. } = src;
         if value == "@forge/api" {
             debug!("found @forge/api");
             self.in_forge_import = true;

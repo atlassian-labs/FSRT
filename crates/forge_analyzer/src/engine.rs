@@ -76,15 +76,14 @@ impl<'ctx> Machine<'ctx> {
                 return None;
             }
         }
-        if changed {
+
+        changed.then(|| {
             if let Some(succ) = self.app.succ(self.mod_id, &self.curr_function, self.eip.0) {
                 self.worklist
                     .extend(succ.map(|next_block| Inst::Step(next_block, ENTRY_STMT)));
             }
-            Some(self.app.func_res(self.mod_id, &self.curr_function))
-        } else {
-            None
-        }
+            self.app.func_res(self.mod_id, &self.curr_function)
+        })
     }
 
     fn invoke(&mut self, mod_id: ModId, calling_function: Id, ret: Instruction) {

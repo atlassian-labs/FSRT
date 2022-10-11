@@ -35,7 +35,8 @@ impl Visit for ExportCollector {
                 // TODO: redo export layout to avoid clones
                 export_ids.add_named(ident.clone(), ident);
             }
-            Decl::Var(VarDecl { decls, .. }) => {
+            Decl::Var(vardecls) => {
+                let VarDecl { decls, .. } = &**vardecls;
                 decls.iter().for_each(|var| self.visit_var_declarator(var));
             }
             Decl::TsInterface(_) => {}
