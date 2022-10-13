@@ -1,6 +1,8 @@
 // Copyright 2022 Joshua Wong.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::fmt;
+
 use crate::ctx::{BasicBlockId, FunctionMeta, IrStmt, ModuleCtx, STARTING_BLOCK};
 use crate::lattice::MeetSemiLattice;
 use crate::utils::FxHashMap;
@@ -10,51 +12,6 @@ use swc_core::ecma::ast::{
 };
 use swc_core::ecma::visit::{noop_visit_type, Visit, VisitWith};
 use tracing::{debug, instrument};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum AuthZVal {
-    Authorize, // BOT
-    Unauthorized,
-    Noop,
-    #[default]
-    Unknown, // TOP
-}
-
-impl MeetSemiLattice for AuthZVal {
-    // true if we would change the other
-    // note: try to use exhaustive pattern matching on these functions
-    // even if [`matches!`] is terser, since we should be looking at this
-    // every time [`AuthZVal`] changes
-    fn meet(&mut self, other: Self) -> bool {
-        use AuthZVal::*;
-        if *self == Unauthorized || other == Unauthorized {
-            debug!(?self, ?other, "found unauthorized");
-        }
-        match (*self, other) {
-            (_, Authorize) => {
-                *self = Authorize;
-                false
-            }
-            (Authorize, _) => true,
-            (Unauthorized, Noop | Unknown) => true,
-            (Unauthorized | Unknown | Noop, Unauthorized) => {
-                *self = Unauthorized;
-                false
-            }
-            (Unknown, Noop) => {
-                *self = Noop;
-                false
-            }
-            (Noop, Unknown) => true,
-            (Noop, Noop) | (Unknown, Unknown) => false,
-        }
-    }
-}
-
-pub(crate) struct FunctionCollector<'ctx> {
-    functions: FxHashMap<Id, FunctionMeta>,
-    ctx: &'ctx ModuleCtx,
-}
 
 #[instrument(level = "debug", skip_all)]
 pub(crate) fn collect_functions<N>(node: &N, ctx: &ModuleCtx) -> FxHashMap<Id, FunctionMeta>
@@ -66,24 +23,18 @@ where
     collector.functions
 }
 
-impl<'ctx> FunctionCollector<'ctx> {
-    #[inline]
-    fn new(ctx: &'ctx ModuleCtx) -> Self {
-        Self {
-            ctx,
-            functions: FxHashMap::default(),
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum AuthZVal {
+    Authorize, // BOT
+    Unauthorized,
+    Noop,
+    #[default]
+    Unknown, // TOP
+}
 
-    #[inline]
-    #[instrument(level = "debug", skip(self, body))]
-    fn add_func_meta<N>(&mut self, id: Id, body: &N)
-    where
-        for<'a> N: VisitWith<FunctionAnalyzer<'a>>,
-    {
-        let meta = analyze_functions(body, self.ctx);
-        self.functions.insert(id, meta);
-    }
+pub(crate) struct FunctionCollector<'ctx> {
+    functions: FxHashMap<Id, FunctionMeta>,
+    ctx: &'ctx ModuleCtx,
 }
 
 struct FunctionAnalyzer<'a> {
@@ -114,18 +65,41 @@ fn contains_perms_check<N: VisitWith<CheckApiCalls>>(node: &N) -> bool {
     node.visit_with(&mut perms_checker);
     return perms_checker.perms_related;
 
+    //TODO: these substrings seems to cover all the permissions related APIs, however, we might
+    // want to make it more granular in the future.
+    // could also use regex, but this isn't hot enough to matter
     impl Visit for CheckApiCalls {
         fn visit_str(&mut self, n: &Str) {
-            if n.value.contains("perm") {
+            if n.value.contains("perm") || n.value.contains("user") {
                 self.perms_related = true;
             }
         }
 
         fn visit_tpl_element(&mut self, n: &TplElement) {
-            if n.raw.contains("perm") {
+            if n.raw.contains("perm") || n.raw.contains("user") {
                 self.perms_related = true;
             }
         }
+    }
+}
+
+impl<'ctx> FunctionCollector<'ctx> {
+    #[inline]
+    fn new(ctx: &'ctx ModuleCtx) -> Self {
+        Self {
+            ctx,
+            functions: FxHashMap::default(),
+        }
+    }
+
+    #[inline]
+    #[instrument(level = "debug", skip(self, body))]
+    fn add_func_meta<N>(&mut self, id: Id, body: &N)
+    where
+        for<'a> N: VisitWith<FunctionAnalyzer<'a>>,
+    {
+        let meta = analyze_functions(body, self.ctx);
+        self.functions.insert(id, meta);
     }
 }
 
@@ -162,17 +136,6 @@ impl<'a> FunctionAnalyzer<'a> {
             }
             _ => false,
         }
-    }
-}
-
-#[inline]
-fn as_callee(n: &Expr) -> Option<&Expr> {
-    match n {
-        Expr::Call(CallExpr {
-            callee: Callee::Expr(callee),
-            ..
-        }) => Some(callee),
-        _ => None,
     }
 }
 
@@ -313,6 +276,59 @@ impl Visit for FunctionCollector<'_> {
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+#[inline]
+fn as_callee(n: &Expr) -> Option<&Expr> {
+    match n {
+        Expr::Call(CallExpr {
+            callee: Callee::Expr(callee),
+            ..
+        }) => Some(callee),
+        _ => None,
+    }
+}
+
+impl fmt::Display for AuthZVal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            AuthZVal::Authorize => write!(f, "Authorize"),
+            AuthZVal::Unauthorized => write!(f, "Unauthorized"),
+            AuthZVal::Noop => write!(f, "No-Op"),
+            AuthZVal::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
+impl MeetSemiLattice for AuthZVal {
+    // true if we would change the other
+    // note: try to use exhaustive pattern matching on these functions
+    // even if [`matches!`] is terser, since we should be looking at this
+    // every time [`AuthZVal`] changes
+    fn meet(&mut self, other: Self) -> bool {
+        use AuthZVal::*;
+        if *self == Unauthorized || other == Unauthorized {
+            debug!(?self, ?other, "found unauthorized");
+        }
+        match (*self, other) {
+            (_, Authorize) => {
+                *self = Authorize;
+                false
+            }
+            (Authorize, _) => true,
+            (Unauthorized, Noop | Unknown) => true,
+            (Unauthorized | Unknown | Noop, Unauthorized) => {
+                *self = Unauthorized;
+                false
+            }
+            (Unknown, Noop) => {
+                *self = Noop;
+                false
+            }
+            (Noop, Unknown) => true,
+            (Noop, Noop) | (Unknown, Unknown) => false,
         }
     }
 }

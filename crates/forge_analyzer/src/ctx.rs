@@ -131,9 +131,9 @@ impl AppCtx {
             None => return (None, true),
         };
 
-        if &*func.0 == "SecureGlance" {
-            dbg!(&funcs);
-        }
+        // if &*func.0 == "SecureGlance" {
+        //     dbg!(&funcs);
+        // }
 
         let start = start.unwrap_or_default();
 

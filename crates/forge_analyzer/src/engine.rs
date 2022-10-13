@@ -123,6 +123,7 @@ impl<'ctx> Machine<'ctx> {
         }
         let result = self.app.func_res(orig_mod, &orig_func);
         info!(?result, "analysis complete");
+        println!("Result: {result}");
         result
     }
 }
