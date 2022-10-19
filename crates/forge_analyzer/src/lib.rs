@@ -2,6 +2,7 @@ pub mod analyzer;
 pub mod ctx;
 pub mod engine;
 pub mod exports;
+pub mod ir;
 pub mod lattice;
 pub mod utils;
 
