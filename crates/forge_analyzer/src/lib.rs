@@ -4,6 +4,7 @@ pub mod engine;
 pub mod exports;
 pub mod ir;
 pub mod lattice;
+pub mod resolver;
 pub mod utils;
 
 use ctx::ModuleCtx;

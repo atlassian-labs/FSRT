@@ -6,46 +6,44 @@ use tracing::{debug, info, instrument};
 
 use crate::{
     analyzer::AuthZVal,
-    ctx::{AppCtx, BasicBlockId, ModId, StmtId, ENTRY_STMT, STARTING_BLOCK},
+    ctx::{AppCtx, BasicBlockId, ModId, ModItem, StmtId, ENTRY_STMT, STARTING_BLOCK},
 };
 
 type Instruction = (BasicBlockId, StmtId);
 const PRELUDE: Instruction = (STARTING_BLOCK, ENTRY_STMT);
+type FuncId = ModItem;
 
 #[derive(Debug)]
 enum Inst {
-    Call {
-        func: Id,
-        module: ModId,
-        ret: Instruction,
-    },
+    Call { func: FuncId, ret: Instruction },
     Step(BasicBlockId, StmtId),
 }
 
 #[derive(Debug)]
 struct Frame {
     ret: Instruction,
-    calling_function: Id,
+    calling_function: FuncId,
 }
 
 pub struct Machine<'ctx> {
     callstack: Vec<Frame>,
-    curr_function: Id,
-    mod_id: ModId,
+    curr_function: FuncId,
     eip: Instruction,
     app: &'ctx mut AppCtx,
     worklist: VecDeque<Inst>,
-    visited: FxHashSet<(ModId, Id)>,
+    visited: FxHashSet<FuncId>,
     result: Option<AuthZVal>,
 }
 
 impl<'ctx> Machine<'ctx> {
     #[inline]
-    pub fn new(modid: ModId, func: Id, app: &'ctx mut AppCtx) -> Self {
+    pub fn new(mod_id: ModId, func: Id, app: &'ctx mut AppCtx) -> Self {
         Self {
             callstack: vec![],
-            curr_function: func,
-            mod_id: modid,
+            curr_function: ModItem {
+                mod_id,
+                ident: func,
+            },
             eip: PRELUDE,
             app,
             worklist: VecDeque::new(),
@@ -54,12 +52,10 @@ impl<'ctx> Machine<'ctx> {
         }
     }
 
-    fn add_call(&mut self, module: ModId, func: Id) -> bool {
-        debug!(?module, ?func, "checking call");
+    fn add_call(&mut self, func: FuncId) -> bool {
         let ret = self.eip;
-        if self.visited.insert((module, func.clone())) {
-            debug!(?module, ?func, "adding call to worklist");
-            self.worklist.push_back(Inst::Call { func, module, ret });
+        if self.visited.insert(func.clone()) {
+            self.worklist.push_back(Inst::Call { func, ret });
             return true;
         }
         false
@@ -67,44 +63,48 @@ impl<'ctx> Machine<'ctx> {
 
     fn transfer(&mut self) -> Option<AuthZVal> {
         let result = self.result.take();
-        let (call, changed) = self
-            .app
-            .meet(self.mod_id, &self.curr_function, self.eip.0, result);
+        let (call, changed) = self.app.meet(&self.curr_function, self.eip.0, result);
         debug!(?call, ?changed, "transfer function");
-        if let Some((modid, func)) = call {
-            if self.add_call(modid, func) {
+        if let Some(func) = call {
+            if self.add_call(func) {
                 return None;
             }
         }
 
         changed.then(|| {
-            if let Some(succ) = self.app.succ(self.mod_id, &self.curr_function, self.eip.0) {
+            if let Some(succ) = self.app.succ(&self.curr_function, self.eip.0) {
                 self.worklist
                     .extend(succ.map(|next_block| Inst::Step(next_block, ENTRY_STMT)));
             }
-            self.app.func_res(self.mod_id, &self.curr_function)
+            self.app.func_res(&self.curr_function)
         })
     }
 
-    fn invoke(&mut self, mod_id: ModId, calling_function: Id, ret: Instruction) {
-        debug!(?mod_id, ?calling_function, "invoking");
+    fn invoke(&mut self, calling_function: FuncId, ret: Instruction) {
         self.callstack.push(Frame {
             ret,
             calling_function: self.curr_function.clone(),
         });
         self.curr_function = calling_function;
-        self.mod_id = mod_id;
         self.eip = PRELUDE;
         self.worklist.push_back(Inst::Step(PRELUDE.0, PRELUDE.1));
     }
 
-    #[instrument(level = "debug", skip(self), fields(module = ?self.mod_id, invoked = ?self.curr_function))]
+    #[instrument(level = "debug", skip(self), fields(invoked = ?self.curr_function))]
     pub fn run(&mut self) -> AuthZVal {
-        let (orig_mod, orig_func) = (self.mod_id, self.curr_function.clone());
-        self.worklist.push_back(Inst::Step(self.eip.0, self.eip.1));
+        let orig_func = self.curr_function.clone();
+        let fst = self.eip.1;
+        self.worklist.extend(
+            self.app
+                .func(&orig_func)
+                .unwrap()
+                .blocks
+                .iter_enumerated()
+                .map(|(bb_id, _)| Inst::Step(bb_id, fst)),
+        );
         while let Some(inst) = self.worklist.pop_front() {
             match inst {
-                Inst::Call { func, module, ret } => self.invoke(module, func, ret),
+                Inst::Call { func, ret } => self.invoke(func, ret),
                 Inst::Step(next_block, next_stmt) => {
                     debug!(?next_block, ?next_stmt, "stepping into");
                     self.eip = (next_block, next_stmt);
@@ -121,7 +121,7 @@ impl<'ctx> Machine<'ctx> {
                 }
             }
         }
-        let result = self.app.func_res(orig_mod, &orig_func);
+        let result = self.app.func_res(&orig_func);
         info!(?result, "analysis complete");
         println!("Result: {result}");
         result

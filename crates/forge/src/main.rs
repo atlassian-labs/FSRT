@@ -29,6 +29,7 @@ use forge_analyzer::{
     analyzer::AuthZVal,
     ctx::{AppCtx, ModId},
     engine::Machine,
+    resolver::resolve_calls,
 };
 use forge_loader::manifest::{ForgeManifest, FunctionRef};
 use walkdir::WalkDir;
@@ -167,6 +168,7 @@ fn scan_directory(dir: PathBuf) -> Result<ForgeProject> {
         .flatten();
     let mut proj = ForgeProject::with_files(paths.clone());
     proj.add_funcs(funcrefs);
+    resolve_calls(&mut proj.ctx);
     for (modid, fun, res) in proj.verify_funs() {
         debug!(module = ?modid, function = ?fun.0, result = ?res, "analysis of");
     }

@@ -1,14 +1,15 @@
 // Copyright 2022 Joshua Wong.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fmt;
+use std::{fmt, mem};
 
-use crate::ctx::{BasicBlockId, FunctionMeta, IrStmt, ModuleCtx, STARTING_BLOCK};
+use crate::ctx::{BasicBlockId, FunctionMeta, IrStmt, ModuleCtx, TerminatorKind, STARTING_BLOCK};
 use crate::lattice::MeetSemiLattice;
 use crate::utils::FxHashMap;
 use swc_core::ecma::ast::{
     ArrowExpr, BindingIdent, CallExpr, Callee, Expr, ExprOrSpread, FnDecl, FnExpr, Id, IfStmt,
-    JSXElementName, JSXOpeningElement, MemberExpr, MemberProp, Pat, Str, TplElement, VarDeclarator,
+    JSXElementName, JSXOpeningElement, MemberExpr, MemberProp, Pat, Stmt, Str, ThrowStmt,
+    TplElement, VarDeclarator,
 };
 use swc_core::ecma::visit::{noop_visit_type, Visit, VisitWith};
 use tracing::{debug, instrument};
@@ -41,6 +42,7 @@ struct FunctionAnalyzer<'a> {
     ctx: &'a ModuleCtx,
     meta: FunctionMeta,
     curr_block: BasicBlockId,
+    prev: Vec<BasicBlockId>,
 }
 
 // technically the HRTB is unnecessary, since we only need the lifetime from `ForgeImports`,
@@ -110,6 +112,7 @@ impl<'a> FunctionAnalyzer<'a> {
             ctx,
             meta: FunctionMeta::new(),
             curr_block: STARTING_BLOCK,
+            prev: Vec::new(),
         }
     }
 
@@ -117,6 +120,17 @@ impl<'a> FunctionAnalyzer<'a> {
     fn add_ir_stmt(&mut self, stmt: IrStmt) {
         debug!(?stmt, "adding new ir stmt");
         self.meta.add_stmt(self.curr_block, stmt);
+    }
+
+    #[inline]
+    fn add_throw_stmt(&mut self) {
+        self.meta
+            .add_terminator(self.curr_block, TerminatorKind::Throw);
+    }
+
+    #[inline]
+    fn create_block_succ(&mut self) -> BasicBlockId {
+        self.meta.create_block_from(self.curr_block)
     }
 
     fn is_as_app_access(&self, n: &Expr) -> bool {
@@ -162,11 +176,43 @@ impl Visit for FunctionAnalyzer<'_> {
     fn visit_jsx_opening_element(&mut self, n: &JSXOpeningElement) {
         n.visit_children_with(self);
         match &n.name {
-            JSXElementName::Ident(id) => self.add_ir_stmt(id.into()),
+            JSXElementName::Ident(id) => self.add_ir_stmt(IrStmt::Call(id.into())),
             // FIXME: add cases for these
             JSXElementName::JSXMemberExpr(_) => {}
             JSXElementName::JSXNamespacedName(_) => {}
         }
+    }
+
+    fn visit_stmt(&mut self, n: &Stmt) {
+        match n {
+            Stmt::Throw(t) => {
+                self.visit_throw_stmt(t);
+                self.curr_block = self.meta.push_block();
+            }
+            Stmt::If(IfStmt {
+                test, cons, alt, ..
+            }) => {
+                test.visit_children_with(self);
+                let mut cons_id = self.create_block_succ();
+                let mut alt_id = self.create_block_succ();
+                let _save = mem::replace(&mut self.curr_block, cons_id);
+                cons.visit_with(self);
+                cons_id = mem::replace(&mut self.curr_block, alt_id);
+                alt.visit_with(self);
+                alt_id = self.curr_block;
+                let new_block = self.meta.push_block();
+                self.meta.add_edge(cons_id, new_block);
+                self.meta.add_edge(alt_id, new_block);
+                self.curr_block = new_block;
+            }
+            n => n.visit_children_with(self),
+        }
+    }
+
+    fn visit_throw_stmt(&mut self, n: &ThrowStmt) {
+        let expr = &*n.arg;
+        expr.visit_with(self);
+        self.add_throw_stmt();
     }
 
     fn visit_call_expr(&mut self, n: &CallExpr) {
@@ -195,7 +241,7 @@ impl Visit for FunctionAnalyzer<'_> {
                         // we don't need to add this to the IR, since we know it's useless
                         return;
                     } else {
-                        id.into()
+                        IrStmt::Call(id.into())
                     };
                     self.add_ir_stmt(irstmt);
                 }

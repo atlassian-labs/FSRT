@@ -1,8 +1,10 @@
+use std::iter::repeat;
 use std::{borrow::Borrow, hash::Hash, path::PathBuf};
 
 use forge_utils::create_newtype;
 use once_cell::unsync::OnceCell;
 use rustc_hash::FxHashMap;
+use smallvec::smallvec;
 use smallvec::SmallVec;
 use swc_core::ecma::ast::{Id, Ident, Module};
 use tracing::{debug, instrument};
@@ -24,21 +26,51 @@ create_newtype! {
     pub struct BasicBlockId(u32);
 }
 
-#[derive(Debug, Clone)]
+pub const UNKNOWN_MODULE: ModId = ModId(u32::MAX);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModItem {
     pub mod_id: ModId,
     pub ident: Id,
 }
 
-#[derive(Debug, Clone)]
+impl ModItem {
+    pub fn with_unknown_ident(ident: Id) -> Self {
+        Self {
+            mod_id: UNKNOWN_MODULE,
+            ident,
+        }
+    }
+
+    pub fn as_unknown_ident(&self) -> Option<&Id> {
+        match *self {
+            ModItem {
+                mod_id: UNKNOWN_MODULE,
+                ref ident,
+            } => Some(ident),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IrStmt {
-    Call(Id),
+    Call(ModItem),
     Resolved(AuthZVal),
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum TerminatorKind {
+    #[default]
+    Ret,
+    Throw,
+    Branch(SmallVec<[BasicBlockId; 2]>),
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct BasicBlock {
-    stmts: TiVec<StmtId, IrStmt>,
+    pub(crate) stmts: TiVec<StmtId, IrStmt>,
+    pub(crate) terminator: TerminatorKind,
 }
 
 pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
@@ -46,7 +78,7 @@ pub const ENTRY_STMT: StmtId = StmtId(0);
 
 #[derive(Default, Debug, Clone)]
 pub(crate) struct FunctionMeta {
-    blocks: TiVec<BasicBlockId, BasicBlock>,
+    pub(crate) blocks: TiVec<BasicBlockId, BasicBlock>,
     succ: FxHashMap<BasicBlockId, SmallVec<[BasicBlockId; 2]>>,
     pred: FxHashMap<BasicBlockId, SmallVec<[BasicBlockId; 1]>>,
     out: TiVec<BasicBlockId, AuthZVal>,
@@ -63,14 +95,14 @@ pub struct ModuleCtx {
     pub(crate) functions: FxHashMap<Id, FunctionMeta>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Clone, Debug)]
 pub struct AppCtx {
     // Map from import Id -> module name
-    import_ids: FxHashMap<Id, Id>,
+    pub(crate) import_ids: FxHashMap<Id, Id>,
 
-    path_ids: FxHashMap<PathBuf, ModId>,
-    modules: TiVec<ModId, Module>,
-    modctx: TiVec<ModId, ModuleCtx>,
+    pub(crate) path_ids: FxHashMap<PathBuf, ModId>,
+    pub(crate) modules: TiVec<ModId, Module>,
+    pub(crate) modctx: TiVec<ModId, ModuleCtx>,
 }
 
 impl AppCtx {
@@ -94,18 +126,13 @@ impl AppCtx {
     }
 
     #[inline]
-    pub fn block(&self, mod_id: ModId, func: &Id, block: BasicBlockId) -> Option<&BasicBlock> {
-        self.func(mod_id, func)?.blocks.get(block)
+    pub fn block(&self, func: &ModItem, block: BasicBlockId) -> Option<&BasicBlock> {
+        self.func(func)?.blocks.get(block)
     }
 
     #[inline]
-    pub fn block_mut(
-        &mut self,
-        mod_id: ModId,
-        func: &Id,
-        block: BasicBlockId,
-    ) -> Option<&mut BasicBlock> {
-        self.func_mut(mod_id, func)?.blocks.get_mut(block)
+    pub fn block_mut(&mut self, func: &ModItem, block: BasicBlockId) -> Option<&mut BasicBlock> {
+        self.func_mut(func)?.blocks.get_mut(block)
     }
 
     #[inline]
@@ -118,15 +145,13 @@ impl AppCtx {
     }
 
     // TODO: move this to the engine
-    #[instrument(level = "debug", skip(self), fields(function = ?func, ?block))]
     pub(crate) fn meet(
         &mut self,
-        mod_id: ModId,
-        func: &Id,
+        func: &ModItem,
         block: BasicBlockId,
         start: Option<AuthZVal>,
-    ) -> (Option<(ModId, Id)>, bool) {
-        let funcs = match self.func(mod_id, func) {
+    ) -> (Option<ModItem>, bool) {
+        let funcs = match self.func(func) {
             Some(f) => f,
             None => return (None, true),
         };
@@ -147,29 +172,16 @@ impl AppCtx {
         debug!(?input, "transfer in");
         let next = funcs.blocks[block].stmts.iter_enumerated().fold(
             (None, false),
-            |(call, _), (stmt_id, val)| match val {
-                IrStmt::Call(ref id) => {
-                    debug!(val = ?input, statement = ?stmt_id, calling = ?id, "meet from call");
-                    if let Some(meta) = self.func(mod_id, id) {
-                        debug!(?id, "local function");
+            |(call, curr), (_stmt_id, val)| match val {
+                IrStmt::Call(ref call_id) => {
+                    if let Some(meta) = self.func(call_id) {
+                        debug!("calling: {meta:#?}");
                         let cached = meta.res.get().copied();
                         let authz = cached.as_ref().copied().unwrap_or(AuthZVal::Unknown);
-                        let func = cached.is_none().then(|| (mod_id, id.clone()));
-                        debug!(check = ?func, "trying to check");
+                        let func = cached.is_none().then(|| call_id.clone());
                         (call.or(func), input.meet(authz))
                     } else {
-                        debug!(?id, "foreign function");
-                        let export = match self.resolve_export(mod_id, id) {
-                            Some(x) => x,
-                            None => {
-                                debug!(val = ?input, "unable to resolve function");
-                                return (call, input.meet(AuthZVal::Unknown));
-                            }
-                        };
-                        debug!(?export, "resolving export");
-                        let res = self.func_res(export.0, &export.1);
-                        #[allow(clippy::or_fun_call)]
-                        (call.or(Some(export)), input.meet(res))
+                        (call, curr)
                     }
                 }
                 IrStmt::Resolved(val) => {
@@ -178,7 +190,8 @@ impl AppCtx {
                 }
             },
         );
-        let funcs = self.func_mut(mod_id, func).unwrap();
+        debug!(?next, "transfer out");
+        let funcs = self.func_mut(func).unwrap();
         funcs.out[block].meet(input);
         debug!(output = ?funcs.out[block], ?input, "result of transfer");
         if funcs.succ.get(&block).is_none() {
@@ -200,12 +213,15 @@ impl AppCtx {
     }
 
     #[inline]
-    pub(crate) fn func_mut(&mut self, mod_id: ModId, func: &Id) -> Option<&mut FunctionMeta> {
-        self.modctx.get_mut(mod_id)?.functions.get_mut(func)
+    pub(crate) fn func_mut(&mut self, func: &ModItem) -> Option<&mut FunctionMeta> {
+        self.modctx
+            .get_mut(func.mod_id)?
+            .functions
+            .get_mut(&func.ident)
     }
     #[inline]
-    pub(crate) fn func(&self, mod_id: ModId, func: &Id) -> Option<&FunctionMeta> {
-        self.modctx.get(mod_id)?.functions.get(func)
+    pub(crate) fn func(&self, func: &ModItem) -> Option<&FunctionMeta> {
+        self.modctx.get(func.mod_id)?.functions.get(&func.ident)
     }
 
     #[instrument(level = "debug", skip(self))]
@@ -233,8 +249,8 @@ impl AppCtx {
             .orig_from_str(func)
     }
 
-    pub(crate) fn func_res(&self, mod_id: ModId, func: &Id) -> AuthZVal {
-        self.func(mod_id, func)
+    pub(crate) fn func_res(&self, func: &ModItem) -> AuthZVal {
+        self.func(func)
             .and_then(|f| f.res.get().copied())
             .unwrap_or(AuthZVal::Unknown)
     }
@@ -242,11 +258,10 @@ impl AppCtx {
     #[inline]
     pub(crate) fn succ(
         &self,
-        mod_id: ModId,
-        func: &Id,
+        func: &ModItem,
         block: BasicBlockId,
     ) -> Option<impl Iterator<Item = BasicBlockId> + DoubleEndedIterator + '_> {
-        self.func(mod_id, func)
+        self.func(func)
             .and_then(|f| Some(f.succ.get(&block)?.into_iter().copied()))
     }
 
@@ -276,6 +291,22 @@ impl FunctionMeta {
     }
 
     #[inline]
+    pub(crate) fn add_terminator(&mut self, id: BasicBlockId, term: TerminatorKind) {
+        self.blocks[id].terminator = term
+    }
+
+    #[inline]
+    pub(crate) fn push_block(&mut self) -> BasicBlockId {
+        self.out.push(AuthZVal::Unknown);
+        self.blocks.push_and_get_key(BasicBlock::default())
+    }
+
+    #[inline]
+    pub(crate) fn add_terminator_to_last(&mut self, term: TerminatorKind) {
+        self.blocks.last_mut().unwrap().terminator = term;
+    }
+
+    #[inline]
     pub(crate) fn add_edge(&mut self, from: BasicBlockId, to: BasicBlockId) {
         self.succ.entry(from).or_default().push(to);
         self.pred.entry(to).or_default().push(from);
@@ -285,8 +316,28 @@ impl FunctionMeta {
     pub(crate) fn create_block_from(&mut self, pred: BasicBlockId) -> BasicBlockId {
         let id = self.blocks.push_and_get_key(BasicBlock::default());
         self.out.push(AuthZVal::Unknown);
+        match &mut self.blocks[pred].terminator {
+            TerminatorKind::Branch(branches) => branches.push(id),
+            term => *term = TerminatorKind::Branch(smallvec![id]),
+        }
         self.add_edge(pred, id);
         id
+    }
+
+    #[inline]
+    pub(crate) fn iter_stmts_mut(&mut self) -> impl Iterator<Item = &mut IrStmt> + '_ {
+        self.blocks.iter_mut().flat_map(|bb| &mut bb.stmts)
+    }
+
+    #[inline]
+    pub(crate) fn iter_stmts_enumerated_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (BasicBlockId, StmtId, &mut IrStmt)> + '_ {
+        self.blocks.iter_mut_enumerated().flat_map(|(id, bb)| {
+            repeat(id)
+                .zip(bb.stmts.iter_mut_enumerated())
+                .map(|(id, (idx, stmt))| (id, idx, stmt))
+        })
     }
 }
 
@@ -327,6 +378,7 @@ impl BasicBlock {
     pub(crate) fn new() -> Self {
         Self {
             stmts: TiVec::new(),
+            terminator: Default::default(),
         }
     }
 
@@ -336,31 +388,38 @@ impl BasicBlock {
     }
 }
 
-impl From<Id> for IrStmt {
-    #[inline]
-    fn from(id: Id) -> Self {
-        IrStmt::Call(id)
-    }
-}
-
-impl From<Ident> for IrStmt {
-    #[inline]
-    fn from(ident: Ident) -> Self {
-        IrStmt::Call(ident.to_id())
-    }
-}
-
-impl From<&Ident> for IrStmt {
-    #[inline]
-    fn from(ident: &Ident) -> Self {
-        IrStmt::Call(ident.to_id())
-    }
-}
-
 impl From<AuthZVal> for IrStmt {
     #[inline]
     fn from(val: AuthZVal) -> Self {
         IrStmt::Resolved(val)
+    }
+}
+
+impl From<Id> for ModItem {
+    #[inline]
+    fn from(ident: Id) -> Self {
+        ModItem::with_unknown_ident(ident)
+    }
+}
+
+impl From<Ident> for ModItem {
+    #[inline]
+    fn from(ident: Ident) -> Self {
+        ModItem::with_unknown_ident(ident.to_id())
+    }
+}
+
+impl From<&Ident> for ModItem {
+    #[inline]
+    fn from(ident: &Ident) -> Self {
+        ModItem::with_unknown_ident(ident.to_id())
+    }
+}
+
+impl From<ModItem> for IrStmt {
+    #[inline]
+    fn from(value: ModItem) -> Self {
+        IrStmt::Call(value)
     }
 }
 
