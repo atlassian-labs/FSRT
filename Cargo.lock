@@ -514,6 +514,7 @@ dependencies = [
  "indexmap",
  "itertools",
  "once_cell",
+ "petgraph",
  "pretty_assertions",
  "regex",
  "rustc-hash",

@@ -3,6 +3,7 @@ use std::{
     collections::HashSet,
     convert::TryFrom,
     fs,
+    io::stdout,
     iter::FromIterator,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
@@ -27,9 +28,9 @@ use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
     analyzer::AuthZVal,
-    ctx::{AppCtx, ModId},
+    ctx::{AppCtx, ModId, ModItem},
     engine::Machine,
-    resolver::resolve_calls,
+    resolver::{dump_callgraph_dot, dump_cfg_dot, resolve_calls},
 };
 use forge_loader::manifest::{ForgeManifest, FunctionRef};
 use walkdir::WalkDir;
@@ -39,6 +40,9 @@ use walkdir::WalkDir;
 struct Args {
     #[arg(short, long)]
     debug: bool,
+
+    #[arg(short, long)]
+    function: Option<String>,
 
     #[arg(name = "DIRS", value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
@@ -66,9 +70,26 @@ impl ForgeProject {
     fn verify_funs(&mut self) -> impl Iterator<Item = (ModId, Id, AuthZVal)> + '_ {
         self.funcs.iter().cloned().map(|(modid, func)| {
             // TODO(perf): reuse the same `Machine` between iterations
+            let func_item = ModItem::new(modid, func.clone());
             let mut machine = Machine::new(modid, func.clone(), &mut self.ctx);
-            (modid, func, machine.run())
+            let res = (modid, func, machine.run());
+            let _ = dump_cfg_dot(&self.ctx, &func_item, stdout());
+            res
         })
+    }
+
+    fn verify_fun(&mut self, func: &str) -> (ModItem, AuthZVal) {
+        let &(modid, ref ident) = self
+            .funcs
+            .iter()
+            .find(|(_, ident)| *ident.0 == *func)
+            .unwrap();
+        let funcitem = ModItem::new(modid, ident.clone());
+        let mut machine = Machine::new(modid, ident.clone(), &mut self.ctx);
+        let res = machine.run();
+        let _ = dump_cfg_dot(&self.ctx, &funcitem, stdout());
+        let _ = dump_callgraph_dot(&self.ctx, &funcitem, stdout());
+        (funcitem, res)
     }
 
     fn with_files<I: IntoIterator<Item = PathBuf>>(iter: I) -> Self {
@@ -143,7 +164,7 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 }
 
 #[tracing::instrument(level = "debug")]
-fn scan_directory(dir: PathBuf) -> Result<ForgeProject> {
+fn scan_directory(dir: PathBuf, function: Option<&str>) -> Result<ForgeProject> {
     let mut manifest_file = dir.clone();
     manifest_file.push("manifest.yaml");
     if !manifest_file.exists() {
@@ -169,8 +190,12 @@ fn scan_directory(dir: PathBuf) -> Result<ForgeProject> {
     let mut proj = ForgeProject::with_files(paths.clone());
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
-    for (modid, fun, res) in proj.verify_funs() {
-        debug!(module = ?modid, function = ?fun.0, result = ?res, "analysis of");
+    if let Some(func) = function {
+        proj.verify_fun(func);
+    } else {
+        for (modid, fun, res) in proj.verify_funs() {
+            debug!(module = ?modid, function = ?fun.0, result = ?res, "analysis of");
+        }
     }
     Ok(proj)
 }
@@ -181,9 +206,10 @@ fn main() -> Result<()> {
         .with(HierarchicalLayer::new(2))
         .with(EnvFilter::from_env("FORGE_LOG"))
         .init();
+    let function = args.function.as_deref();
     for dir in args.dirs {
         debug!(?dir);
-        scan_directory(dir)?;
+        scan_directory(dir, function)?;
     }
     Ok(())
 }

@@ -55,6 +55,7 @@ impl<'ctx> Machine<'ctx> {
     fn add_call(&mut self, func: FuncId) -> bool {
         let ret = self.eip;
         if self.visited.insert(func.clone()) {
+            debug!("adding {func:?} to worklist");
             self.worklist.push_back(Inst::Call { func, ret });
             return true;
         }
@@ -87,7 +88,15 @@ impl<'ctx> Machine<'ctx> {
         });
         self.curr_function = calling_function;
         self.eip = PRELUDE;
-        self.worklist.push_back(Inst::Step(PRELUDE.0, PRELUDE.1));
+        // self.worklist.push_back(Inst::Step(PRELUDE.0, PRELUDE.1));
+        self.worklist.extend(
+            self.app
+                .func(&self.curr_function)
+                .unwrap()
+                .blocks
+                .iter_enumerated()
+                .map(|(bbid, _)| Inst::Step(bbid, PRELUDE.1)),
+        );
     }
 
     #[instrument(level = "debug", skip(self), fields(invoked = ?self.curr_function))]

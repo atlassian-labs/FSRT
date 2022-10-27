@@ -3,6 +3,8 @@ use std::{borrow::Borrow, hash::Hash, path::PathBuf};
 
 use forge_utils::create_newtype;
 use once_cell::unsync::OnceCell;
+use petgraph::prelude::NodeIndex;
+use petgraph::stable_graph::DefaultIx;
 use rustc_hash::FxHashMap;
 use smallvec::smallvec;
 use smallvec::SmallVec;
@@ -24,6 +26,19 @@ create_newtype! {
 
 create_newtype! {
     pub struct BasicBlockId(u32);
+}
+
+impl BasicBlockId {
+    #[inline]
+    pub(crate) fn to_bits(self) -> u32 {
+        self.0
+    }
+}
+
+impl From<BasicBlockId> for NodeIndex<DefaultIx> {
+    fn from(value: BasicBlockId) -> Self {
+        Self::new(value.to_bits() as usize)
+    }
 }
 
 pub const UNKNOWN_MODULE: ModId = ModId(u32::MAX);
@@ -79,8 +94,8 @@ pub const ENTRY_STMT: StmtId = StmtId(0);
 #[derive(Default, Debug, Clone)]
 pub(crate) struct FunctionMeta {
     pub(crate) blocks: TiVec<BasicBlockId, BasicBlock>,
-    succ: FxHashMap<BasicBlockId, SmallVec<[BasicBlockId; 2]>>,
-    pred: FxHashMap<BasicBlockId, SmallVec<[BasicBlockId; 1]>>,
+    pub(crate) succ: FxHashMap<BasicBlockId, SmallVec<[BasicBlockId; 2]>>,
+    pub(crate) pred: FxHashMap<BasicBlockId, SmallVec<[BasicBlockId; 1]>>,
     out: TiVec<BasicBlockId, AuthZVal>,
     res: OnceCell<AuthZVal>,
 }
@@ -151,10 +166,12 @@ impl AppCtx {
         block: BasicBlockId,
         start: Option<AuthZVal>,
     ) -> (Option<ModItem>, bool) {
+        debug!("meet from {func:?}");
         let funcs = match self.func(func) {
             Some(f) => f,
             None => return (None, true),
         };
+        debug!("starting transfer function");
 
         // if &*func.0 == "SecureGlance" {
         //     dbg!(&funcs);
@@ -322,6 +339,11 @@ impl FunctionMeta {
         }
         self.add_edge(pred, id);
         id
+    }
+
+    #[inline]
+    pub(crate) fn iter_stmts(&self) -> impl Iterator<Item = &IrStmt> {
+        self.blocks.iter().flat_map(|bb| &bb.stmts)
     }
 
     #[inline]

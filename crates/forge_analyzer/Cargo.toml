@@ -13,6 +13,7 @@ clap.workspace = true
 itertools.workspace = true
 fixedbitset.workspace = true
 forge_utils.workspace = true
+petgraph.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
