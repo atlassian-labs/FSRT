@@ -1,0 +1,21 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Linux Tester
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt clippy rust-src
+      - run: cargo test
+      - run: cargo check
+      - run: cargo fmt --all --check
