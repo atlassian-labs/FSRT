@@ -321,7 +321,7 @@ mod tests {
     fn test_function_handler_parsing() {
         let func_handler = FunctionMod {
             key: "my-function",
-            handler: "my-function-handler",
+            handler: "my-function-handler.app",
             providers: Some(AuthProviders {
                 auth: vec!["my-auth-provider"],
             }),
