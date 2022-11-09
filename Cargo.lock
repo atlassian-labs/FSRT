@@ -486,24 +486,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
-name = "forge"
-version = "0.1.0"
-dependencies = [
- "clap",
- "forge_analyzer",
- "forge_loader",
- "miette 5.3.0",
- "rustc-hash",
- "serde",
- "serde_yaml",
- "swc_core",
- "tracing",
- "tracing-subscriber",
- "tracing-tree",
- "walkdir",
-]
-
-[[package]]
 name = "forge_analyzer"
 version = "0.1.0"
 dependencies = [
@@ -568,6 +550,24 @@ dependencies = [
  "proc-macro2",
  "swc_macros_common",
  "syn",
+]
+
+[[package]]
+name = "fsrt"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "forge_analyzer",
+ "forge_loader",
+ "miette 5.3.0",
+ "rustc-hash",
+ "serde",
+ "serde_yaml",
+ "swc_core",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-tree",
+ "walkdir",
 ]
 
 [[package]]
