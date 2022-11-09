@@ -1,6 +1,6 @@
 use std::{
     borrow::Borrow,
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     hash::Hash,
     path::{Path, PathBuf},
 };
@@ -37,9 +37,32 @@ struct MacroMod<'a> {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct Webtrigger<'a> {
+struct RawTrigger<'a> {
     key: &'a str,
     function: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct EventTrigger<'a> {
+    #[serde(flatten, borrow)]
+    raw: RawTrigger<'a>,
+    #[serde(borrow)]
+    events: Vec<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Interval {
+    Hour,
+    Day,
+    Week,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ScheduledTrigger<'a> {
+    #[serde(flatten, borrow)]
+    raw: RawTrigger<'a>,
+    interval: Interval,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -49,7 +72,27 @@ pub struct ForgeModules<'a> {
     #[serde(rename = "function", default, borrow)]
     pub functions: Vec<FunctionMod<'a>>,
     #[serde(rename = "webtrigger", default, borrow)]
-    webtriggers: Vec<Webtrigger<'a>>,
+    webtriggers: Vec<RawTrigger<'a>>,
+    #[serde(rename = "trigger", default, borrow)]
+    event_triggers: Vec<EventTrigger<'a>>,
+    #[serde(rename = "scheduledTrigger", default, borrow)]
+    scheduled_triggers: Vec<ScheduledTrigger<'a>>,
+    #[serde(rename = "consumer", default, borrow)]
+    consumers: Vec<Consumer<'a>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct Consumer<'a> {
+    key: &'a str,
+    queue: &'a str,
+    #[serde(borrow)]
+    resolver: Resolver<'a>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct Resolver<'a> {
+    function: &'a str,
+    method: &'a str,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -74,6 +117,11 @@ struct AppInfo<'a> {
     id: &'a str,
 }
 
+/// The representation of a Forge app's `manifest.yml`
+///
+/// Contains the [properties] that are needed to find function entrypoints
+///
+/// [properties]: https://developer.atlassian.com/platform/forge/manifest-reference/
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ForgeManifest<'a> {
     #[serde(borrow)]
@@ -95,6 +143,51 @@ pub struct FunctionRef<'a, S = Unresolved> {
     key: &'a str,
     path: PathBuf,
     status: S,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FunctionTy<T> {
+    Invokable(T),
+    WebTrigger(T),
+}
+
+impl<'a> ForgeModules<'a> {
+    pub fn into_analyzable_functions(
+        mut self,
+    ) -> impl Iterator<Item = FunctionTy<FunctionMod<'a>>> {
+        // number of webtriggers are usually low, so it's better to just sort them and reuse
+        // the vec's storage instead of using a HashSet
+        self.webtriggers
+            .sort_unstable_by_key(|trigger| trigger.function);
+
+        // same rational for using a BTreeSet
+        let ignored_functions: BTreeSet<_> = self
+            .scheduled_triggers
+            .into_iter()
+            .map(|trigger| trigger.raw.function)
+            .chain(
+                self.event_triggers
+                    .into_iter()
+                    .map(|trigger| trigger.raw.function),
+            )
+            .collect();
+        self.functions.into_iter().filter_map(move |func| {
+            if ignored_functions.contains(&func.key) {
+                return None;
+            }
+            Some(
+                if self
+                    .webtriggers
+                    .binary_search_by_key(&func.key, |trigger| trigger.function)
+                    .is_ok()
+                {
+                    FunctionTy::WebTrigger(func)
+                } else {
+                    FunctionTy::Invokable(func)
+                },
+            )
+        })
+    }
 }
 
 impl<S> FunctionRef<'_, S> {
@@ -187,7 +280,7 @@ mod tests {
                 "webtrigger": [
                 {
                     "key": "my-webtrigger",
-                    "handler": "my-webtrigger-handler"
+                    "function": "my-webtrigger-handler"
                 }
                 ]
             },
