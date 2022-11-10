@@ -5,7 +5,6 @@ use std::{fmt, mem};
 
 use crate::ctx::{BasicBlockId, FunctionMeta, IrStmt, ModuleCtx, TerminatorKind, STARTING_BLOCK};
 use crate::lattice::MeetSemiLattice;
-use crate::utils::FxHashMap;
 use swc_core::ecma::ast::{
     ArrowExpr, BindingIdent, CallExpr, Callee, Expr, ExprOrSpread, FnDecl, FnExpr, Id, IfStmt,
     JSXElementName, JSXOpeningElement, MemberExpr, MemberProp, Pat, Stmt, Str, ThrowStmt,
@@ -13,6 +12,8 @@ use swc_core::ecma::ast::{
 };
 use swc_core::ecma::visit::{noop_visit_type, Visit, VisitWith};
 use tracing::{debug, instrument};
+
+use forge_utils::FxHashMap;
 
 #[instrument(level = "debug", skip_all)]
 pub(crate) fn collect_functions<N>(node: &N, ctx: &ModuleCtx) -> FxHashMap<Id, FunctionMeta>

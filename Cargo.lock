@@ -484,13 +484,11 @@ dependencies = [
  "clap",
  "fixedbitset",
  "forge_utils",
- "indexmap",
  "itertools",
  "once_cell",
  "petgraph",
  "pretty_assertions",
  "regex",
- "rustc-hash",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -521,6 +519,10 @@ dependencies = [
 [[package]]
 name = "forge_utils"
 version = "0.1.0"
+dependencies = [
+ "indexmap",
+ "rustc-hash",
+]
 
 [[package]]
 name = "form_urlencoded"

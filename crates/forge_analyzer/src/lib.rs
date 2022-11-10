@@ -5,7 +5,6 @@ pub mod exports;
 pub mod ir;
 pub mod lattice;
 pub mod resolver;
-pub mod utils;
 
 use ctx::ModuleCtx;
 use exports::ExportCollector;
@@ -16,7 +15,8 @@ use swc_core::ecma::ast::{
 };
 use swc_core::ecma::visit::{noop_visit_type, Visit, VisitWith};
 use tracing::debug;
-use utils::FxHashMap;
+
+use forge_utils::FxHashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub(crate) enum ImportKind {
