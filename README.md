@@ -41,7 +41,7 @@ There are also two sample vulnerable Forge apps for testing. In the future these
 until then you can test `fsrt` by manually invoking:
 
 ```sh
-fsrt ./jira-damn-vulnerable-forge-app
+fsrt ./test-apps/jira-damn-vulnerable-forge-app
 ```
 
 ## Contributions
@@ -51,6 +51,7 @@ Contributions to FSRT are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md)
 ## License
 
 Copyright (c) 2022  Atlassian and others.
+
 FSRT is dual licensed under the MIT and Apache 2.0 licenses.
 
 See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT) for details.
