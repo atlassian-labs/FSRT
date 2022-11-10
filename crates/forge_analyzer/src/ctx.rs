@@ -288,6 +288,10 @@ impl AppCtx {
     ) -> impl Iterator<Item = ModId> + DoubleEndedIterator + ExactSizeIterator + '_ {
         self.modules.keys()
     }
+
+    pub fn import_ids(&self) -> &FxHashMap<Id, Id> {
+        &self.import_ids
+    }
 }
 
 impl FunctionMeta {

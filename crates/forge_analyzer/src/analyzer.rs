@@ -43,7 +43,6 @@ struct FunctionAnalyzer<'a> {
     ctx: &'a ModuleCtx,
     meta: FunctionMeta,
     curr_block: BasicBlockId,
-    prev: Vec<BasicBlockId>,
 }
 
 // technically the HRTB is unnecessary, since we only need the lifetime from `ForgeImports`,
@@ -113,7 +112,6 @@ impl<'a> FunctionAnalyzer<'a> {
             ctx,
             meta: FunctionMeta::new(),
             curr_block: STARTING_BLOCK,
-            prev: Vec::new(),
         }
     }
 
