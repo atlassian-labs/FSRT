@@ -2,10 +2,10 @@ use std::iter::repeat;
 use std::{borrow::Borrow, hash::Hash, path::PathBuf};
 
 use forge_utils::create_newtype;
+use forge_utils::FxHashMap;
 use once_cell::unsync::OnceCell;
 use petgraph::prelude::NodeIndex;
 use petgraph::stable_graph::DefaultIx;
-use rustc_hash::FxHashMap;
 use smallvec::smallvec;
 use smallvec::SmallVec;
 use swc_core::ecma::ast::{Id, Ident, Module};

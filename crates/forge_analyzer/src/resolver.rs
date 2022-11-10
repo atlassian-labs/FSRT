@@ -3,8 +3,8 @@ use std::{
     io::{self, Write},
 };
 
+use forge_utils::{FxHashMap, FxHashSet};
 use petgraph::{dot::Dot, prelude::DiGraph};
-use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::debug;
 
 use crate::ctx::{AppCtx, BasicBlock, IrStmt, ModItem, UNKNOWN_MODULE};

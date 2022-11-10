@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 
 use forge_utils::create_newtype;
-use rustc_hash::FxHashMap;
+use forge_utils::FxHashMap;
 use smallvec::SmallVec;
 use swc_core::ecma::{ast::Id, atoms::Atom};
 use typed_index_collections::TiVec;

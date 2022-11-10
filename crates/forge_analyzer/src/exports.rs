@@ -1,5 +1,5 @@
 use crate::Exports;
-use rustc_hash::FxHashMap;
+use forge_utils::FxHashMap;
 use swc_core::ecma::{
     ast::{
         BindingIdent, Decl, ExportAll, ExportDecl, ExportDefaultDecl, ExportDefaultExpr, FnDecl,
