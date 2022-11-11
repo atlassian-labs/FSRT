@@ -132,7 +132,8 @@ impl<'ctx> Machine<'ctx> {
         }
         let result = self.app.func_res(&orig_func);
         info!(?result, "analysis complete");
-        println!("Result: {result}");
+        let fname: &str = &orig_func.ident.0;
+        println!("Result of analyzing {fname}: {result}");
         result
     }
 }
