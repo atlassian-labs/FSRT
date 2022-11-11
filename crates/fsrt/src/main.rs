@@ -41,11 +41,28 @@ struct Args {
     #[arg(short, long)]
     debug: bool,
 
+    /// Dump a graphviz formatted callgraph
+    #[arg(long)]
+    callgraph: bool,
+
+    /// Dump a graphviz formatted control flow graph of the function specified in `--function`
+    #[arg(long)]
+    cfg: bool,
+
+    /// A specific function to scan. Must be an entrypoint specified in `manifest.yml`
     #[arg(short, long)]
     function: Option<String>,
 
+    /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
+    /// directory, and that the source code is located in `src/`
     #[arg(name = "DIRS", value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Opts {
+    dump_cfg: bool,
+    dump_callgraph: bool,
 }
 
 #[derive(Default)]
@@ -54,6 +71,7 @@ struct ForgeProject {
     sm: Arc<SourceMap>,
     ctx: AppCtx,
     funcs: Vec<(ModId, Id)>,
+    opts: Opts,
 }
 
 impl ForgeProject {
@@ -63,6 +81,7 @@ impl ForgeProject {
             sm: Default::default(),
             ctx: Default::default(),
             funcs: vec![],
+            opts: Default::default(),
         }
     }
 
@@ -73,7 +92,9 @@ impl ForgeProject {
             let func_item = ModItem::new(modid, func.clone());
             let mut machine = Machine::new(modid, func.clone(), &mut self.ctx);
             let res = (modid, func, machine.run());
-            let _ = dump_cfg_dot(&self.ctx, &func_item, stdout());
+            if self.opts.dump_callgraph {
+                let _ = dump_cfg_dot(&self.ctx, &func_item, stdout());
+            }
             res
         })
     }
@@ -87,8 +108,12 @@ impl ForgeProject {
         let funcitem = ModItem::new(modid, ident.clone());
         let mut machine = Machine::new(modid, ident.clone(), &mut self.ctx);
         let res = machine.run();
-        let _ = dump_cfg_dot(&self.ctx, &funcitem, stdout());
-        let _ = dump_callgraph_dot(&self.ctx, &funcitem, stdout());
+        if self.opts.dump_cfg {
+            let _ = dump_cfg_dot(&self.ctx, &funcitem, stdout());
+        }
+        if self.opts.dump_callgraph {
+            let _ = dump_callgraph_dot(&self.ctx, &funcitem, stdout());
+        }
         (funcitem, res)
     }
 
@@ -164,7 +189,7 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 }
 
 #[tracing::instrument(level = "debug")]
-fn scan_directory(dir: PathBuf, function: Option<&str>) -> Result<ForgeProject> {
+fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<ForgeProject> {
     let mut manifest_file = dir.clone();
     manifest_file.push("manifest.yaml");
     if !manifest_file.exists() {
@@ -188,6 +213,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>) -> Result<ForgeProject> 
         })
         .flatten();
     let mut proj = ForgeProject::with_files(paths.clone());
+    proj.opts = opts;
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
     if let Some(func) = function {
@@ -207,9 +233,13 @@ fn main() -> Result<()> {
         .with(EnvFilter::from_env("FORGE_LOG"))
         .init();
     let function = args.function.as_deref();
+    let opts = Opts {
+        dump_callgraph: args.callgraph,
+        dump_cfg: args.cfg,
+    };
     for dir in args.dirs {
         debug!(?dir);
-        scan_directory(dir, function)?;
+        scan_directory(dir, function, opts)?;
     }
     Ok(())
 }
