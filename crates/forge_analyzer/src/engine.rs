@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use rustc_hash::FxHashSet;
+use forge_utils::FxHashSet;
 use swc_core::ecma::ast::Id;
 use tracing::{debug, info, instrument};
 
