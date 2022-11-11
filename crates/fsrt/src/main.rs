@@ -32,7 +32,7 @@ use forge_analyzer::{
     engine::Machine,
     resolver::{dump_callgraph_dot, dump_cfg_dot, resolve_calls},
 };
-use forge_loader::manifest::{ForgeManifest, FunctionRef};
+use forge_loader::manifest::{ForgeManifest, FunctionRef, FunctionTy};
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
@@ -70,7 +70,7 @@ struct ForgeProject {
     #[allow(dead_code)]
     sm: Arc<SourceMap>,
     ctx: AppCtx,
-    funcs: Vec<(ModId, Id)>,
+    funcs: Vec<FunctionTy<(ModId, Id)>>,
     opts: Opts,
 }
 
@@ -87,7 +87,8 @@ impl ForgeProject {
 
     #[instrument(level = "debug", skip(self))]
     fn verify_funs(&mut self) -> impl Iterator<Item = (ModId, Id, AuthZVal)> + '_ {
-        self.funcs.iter().cloned().map(|(modid, func)| {
+        self.funcs.iter().cloned().map(|fty| {
+            let (modid, func) = fty.into_inner();
             // TODO(perf): reuse the same `Machine` between iterations
             let func_item = ModItem::new(modid, func.clone());
             let mut machine = Machine::new(modid, func.clone(), &mut self.ctx);
@@ -100,11 +101,15 @@ impl ForgeProject {
     }
 
     fn verify_fun(&mut self, func: &str) -> (ModItem, AuthZVal) {
-        let &(modid, ref ident) = self
+        let (modid, ref ident) = *self
             .funcs
             .iter()
-            .find(|(_, ident)| *ident.0 == *func)
-            .unwrap();
+            .find(|&ty| {
+                let (_, ref ident) = *ty.as_ref();
+                *ident.0 == *func
+            })
+            .unwrap()
+            .as_ref();
         let funcitem = ModItem::new(modid, ident.clone());
         let mut machine = Machine::new(modid, ident.clone(), &mut self.ctx);
         let res = machine.run();
@@ -153,13 +158,14 @@ impl ForgeProject {
         }
     }
 
-    fn add_funcs<'a, I: IntoIterator<Item = (&'a str, PathBuf)>>(&mut self, iter: I) {
-        self.funcs
-            .extend(iter.into_iter().filter_map(|(func, path)| {
+    fn add_funcs<'a, I: IntoIterator<Item = FunctionTy<(&'a str, PathBuf)>>>(&mut self, iter: I) {
+        self.funcs.extend(iter.into_iter().flat_map(|ftype| {
+            ftype.sequence(|(func, path)| {
                 let modid = self.ctx.modid_from_path(&path)?;
                 let func = self.ctx.export(modid, func)?;
                 Some((modid, func))
-            }))
+            })
+        }));
     }
 }
 
@@ -199,19 +205,12 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     let manifest = fs::read_to_string(&manifest_file).into_diagnostic()?;
     let manifest: ForgeManifest = serde_yaml::from_str(&manifest).into_diagnostic()?;
     let paths = collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>();
-    let funcrefs = manifest
-        .modules
-        .functions
-        .into_iter()
-        .map(|f| {
-            let resolved_func = FunctionRef::try_from(f)?.try_resolve(&paths, &dir)?;
-            Ok(resolved_func.into_func_path())
+    let funcrefs = manifest.modules.into_analyzable_functions().flat_map(|f| {
+        f.sequence(|fmod| {
+            let resolved_func = FunctionRef::try_from(fmod)?.try_resolve(&paths, &dir)?;
+            Ok::<_, forge_loader::Error>(resolved_func.into_func_path())
         })
-        .inspect(|res: &Result<_, forge_loader::Error>| match res {
-            Ok((func, path)) => debug!(?func, ?path),
-            Err(err) => warn!(?err),
-        })
-        .flatten();
+    });
     let mut proj = ForgeProject::with_files(paths.clone());
     proj.opts = opts;
     proj.add_funcs(funcrefs);
