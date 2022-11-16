@@ -133,7 +133,13 @@ impl<'ctx> Machine<'ctx> {
         let result = self.app.func_res(&orig_func);
         info!(?result, "analysis complete");
         let fname: &str = &orig_func.ident.0;
-        println!("Result of analyzing {fname}: {result}");
+        println!("Result of analyzing {fname}:");
+        match result {
+            AuthZVal::Unauthorized => {
+                println!("FAIL: Unauthorized call detected from handler: {fname}")
+            }
+            _ => println!("PASS"),
+        }
         result
     }
 }
