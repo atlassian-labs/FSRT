@@ -93,7 +93,7 @@ impl ForgeResolver {
         let path = normalize_path(path);
         self.no_ext.push(path.with_extension(""));
         self.modules.push(path);
-        self.modules.len()
+        self.modules.len() - 1
     }
 
     fn search_normalized(&self, path: &Path) -> Option<usize> {
