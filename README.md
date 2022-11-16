@@ -25,10 +25,28 @@ Arguments:
 
 ## Installation
 
+You will need to install [Rust] to compile `FSRT`. You can install `Rust` through [Rustup] or through your distro's package manager. You will also
+need [Cargo], which comes by default with most `Rust toolchains`.[^1]
+latest stable release, and adding the toolchain
+
+[^1]: Cargo is technically not required if you want to download every dependency, invoke `rustc`, and link everything manually. However, I wouldn't recommend doing this unless you're extremely bored.
+
+[Rust]: <https://www.rust-lang.org/>
+[Rustup]: <https://github.com/rust-lang/rustup> "Rustup"
+[Cargo]: <https://github.com/rust-lang/cargo>
+
 Installing from source:
 
 ```sh
+git clone https://github.com/atlassian-labs/FSRT.git
+cd FSRT
 cargo install --path crates/fsrt
+```
+
+or alternatively:
+
+```text
+cargo install --git https://github.com/atlassian-labs/FSRT
 ```
 
 ## Tests
