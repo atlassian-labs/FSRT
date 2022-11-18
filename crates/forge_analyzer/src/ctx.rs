@@ -289,8 +289,14 @@ impl AppCtx {
         self.modules.keys()
     }
 
+    #[inline]
     pub fn import_ids(&self) -> &FxHashMap<Id, Id> {
         &self.import_ids
+    }
+
+    #[inline]
+    pub fn path_ids(&self) -> &FxHashMap<PathBuf, ModId> {
+        &self.path_ids
     }
 }
 

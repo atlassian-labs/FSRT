@@ -3,7 +3,11 @@
 // TODO: Use [`SSA`] instead
 // [`SSA`]: https://pfalcon.github.io/ssabook/latest/book-full.pdf
 
+use core::fmt;
 use std::collections::BTreeSet;
+use std::hash;
+use std::hash::Hash;
+use std::mem;
 
 use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
@@ -65,10 +69,10 @@ struct Location {
 }
 
 #[derive(Clone, Default, Debug)]
-struct Function {
+pub(crate) struct Body {
     blocks: TiVec<BasicBlockId, BasicBlock>,
-    vars: TiVec<VarId, Id>,
-    id_to_var: FxHashMap<Id, VarId>,
+    local_vars: TiVec<VarId, Id>,
+    id_to_local: FxHashMap<Id, VarId>,
     predecessors: BTreeSet<(BasicBlockId, BasicBlockId)>,
     successors: BTreeSet<(BasicBlockId, BasicBlockId)>,
 }
@@ -87,14 +91,15 @@ enum Stmt {
     Assign(Variable, Rvalue),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default)]
 enum Literal {
     Str(Id),
     Bool(bool),
     Null,
+    #[default]
     Undef, // what a bunk language
     Number(f64),
-    BigInt,
+    BigInt(num_bigint::BigInt),
     // regexp, flags
     RegExp(Atom, Atom),
 }
@@ -136,7 +141,7 @@ enum UnOp {
     Delete,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Operand {
     Var(Variable),
     Lit(Literal),
@@ -151,20 +156,84 @@ create_newtype! {
     pub struct VarId(u32);
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Variable {
     var: VarId,
     projections: SmallVec<[Projection; 1]>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Projection {
     Lit(Literal),
     Var(VarId),
 }
 
-impl Function {
+impl fmt::Display for VarId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "%{}", self.0)
+    }
+}
+
+impl fmt::Display for Variable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.var)?;
+        for proj in &self.projections {
+            match proj {
+                Projection::Lit(Literal::Str((s, _))) => write!(f, ".{s}")?,
+                Projection::Lit(lit) => write!(f, "[{lit}]")?,
+                Projection::Var(id) => write!(f, "[{id}]")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Body {
     fn new() -> Self {
-        Function::default()
+        Body::default()
+    }
+}
+
+impl PartialEq for Literal {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Str(l0), Self::Str(r0)) => l0 == r0,
+            (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
+            (Self::Number(l0), Self::Number(r0)) => l0 == r0,
+            (Self::RegExp(l0, l1), Self::RegExp(r0, r1)) => l0 == r0 && l1 == r1,
+            (Self::BigInt(l0), Self::BigInt(r0)) => l0 == r0,
+            (l0, r0) => mem::discriminant(l0) == mem::discriminant(r0),
+        }
+    }
+}
+
+// I don't like it either, but in JS NaNs are compared bitwise
+impl Eq for Literal {}
+
+impl Hash for Literal {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        mem::discriminant(self).hash(state);
+        match self {
+            Literal::Str(s) => s.hash(state),
+            Literal::Bool(b) => b.hash(state),
+            Literal::Null | Literal::Undef => {}
+            Literal::Number(n) => n.to_bits().hash(state),
+            Literal::BigInt(bn) => bn.hash(state),
+            Literal::RegExp(s, t) => (s, t).hash(state),
+        }
+    }
+}
+
+impl fmt::Display for Literal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Literal::Str((ref s, _)) => write!(f, "\"{s}\""),
+            Literal::Bool(b) => write!(f, "{b}"),
+            Literal::Null => write!(f, "[null]"),
+            Literal::Undef => write!(f, "[undefined]"),
+            Literal::Number(n) => write!(f, "{n}"),
+            Literal::BigInt(ref n) => write!(f, "{n}"),
+            Literal::RegExp(ref regex, ref flags) => write!(f, "/{regex}/{flags}"),
+        }
     }
 }
