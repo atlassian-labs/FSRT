@@ -1,5 +1,6 @@
 pub mod analyzer;
 pub mod ctx;
+pub mod definitions;
 pub mod engine;
 pub mod exports;
 pub mod ir;

@@ -32,6 +32,7 @@ use forge_analyzer::{
     engine::Machine,
     resolver::{dump_callgraph_dot, dump_cfg_dot, resolve_calls},
 };
+use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_loader::manifest::{ForgeManifest, FunctionRef, FunctionTy};
 use walkdir::WalkDir;
 
@@ -215,6 +216,19 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     proj.opts = opts;
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
+    for path in proj.ctx.path_ids().keys() {
+        let path = path.strip_prefix(&dir).unwrap();
+        let path = path
+            .parent()
+            .unwrap()
+            .join("../src/auth.jsx")
+            .canonicalize()
+            .unwrap();
+        println!("stripped path: {path:?}");
+        let path = path.to_string_lossy();
+        let (base, src) = path.split_once("src/").unwrap();
+        println!("resolved path = {base} {src}");
+    }
     if let Some(func) = function {
         proj.verify_fun(func);
     } else {

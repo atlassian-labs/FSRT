@@ -9,14 +9,15 @@ license.workspace = true
 
 [dependencies]
 clap.workspace = true
-forge_loader.workspace = true
 forge_analyzer.workspace = true
+forge_file_resolver.workspace = true
+forge_loader.workspace = true
 miette.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
 swc_core.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-tree.workspace = true
+tracing.workspace = true
 walkdir.workspace = true
