@@ -3801,6 +3801,39 @@ impl fmt::Display for ForeignItem {
     }
 }
 
+impl fmt::Display for DefKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DefKind::Class(_) => write!(f, "class"),
+            DefKind::Resolver(_) => write!(f, "resolver"),
+            DefKind::ObjLit(_) => write!(f, "object literal"),
+            DefKind::Function(_) => write!(f, "function"),
+            DefKind::Global(_) => write!(f, "global"),
+            DefKind::ExportAlias(_) => write!(f, "export alias"),
+            DefKind::ResolverHandler(_) => write!(f, "resolver handler"),
+            DefKind::ModuleNs(_) => write!(f, "module namespace"),
+            DefKind::Foreign(_) => write!(f, "foreign"),
+            DefKind::Undefined => write!(f, "undefined"),
+        }
+    }
+}
+
+impl fmt::Display for ImportKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ImportKind::Star => write!(f, "*"),
+            ImportKind::Default => write!(f, "default"),
+            ImportKind::Named(sym) => write!(f, "{}", &**sym),
+        }
+    }
+}
+
+impl fmt::Display for ForeignItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "import {} from {}", self.kind, &*self.module_name)
+    }
+}
+
 impl From<ObjKind> for DefKey {
     #[inline]
     fn from(value: ObjKind) -> Self {
