@@ -1,6 +1,8 @@
 use std::iter::repeat;
+use std::path::Path;
 use std::{borrow::Borrow, hash::Hash, path::PathBuf};
 
+use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
 use once_cell::unsync::OnceCell;
@@ -110,10 +112,11 @@ pub struct ModuleCtx {
     pub(crate) functions: FxHashMap<Id, FunctionMeta>,
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct AppCtx {
     // Map from import Id -> module name
     pub(crate) import_ids: FxHashMap<Id, Id>,
+    pub(crate) file_resolver: ForgeResolver,
 
     pub(crate) path_ids: FxHashMap<PathBuf, ModId>,
     pub(crate) modules: TiVec<ModId, Module>,
@@ -122,9 +125,10 @@ pub struct AppCtx {
 
 impl AppCtx {
     #[inline]
-    pub fn new() -> Self {
+    pub fn new<P: AsRef<Path>>(src_root: P) -> Self {
         Self {
             import_ids: FxHashMap::default(),
+            file_resolver: ForgeResolver::with_sourceroot(src_root),
             path_ids: FxHashMap::default(),
             modules: TiVec::default(),
             modctx: TiVec::default(),
@@ -135,6 +139,7 @@ impl AppCtx {
     pub fn load_module(&mut self, path: PathBuf, module: Module) -> ModId {
         let modctx = lower_module(&module);
         let mod_id = self.modules.push_and_get_key(module);
+        self.file_resolver.add_module(path.clone());
         self.modctx.insert(mod_id, modctx);
         self.path_ids.insert(path, mod_id);
         mod_id
@@ -297,6 +302,16 @@ impl AppCtx {
     #[inline]
     pub fn path_ids(&self) -> &FxHashMap<PathBuf, ModId> {
         &self.path_ids
+    }
+
+    #[inline]
+    pub fn file_resolver(&self) -> &ForgeResolver {
+        &self.file_resolver
+    }
+
+    #[inline]
+    pub fn modules(&self) -> &TiVec<ModId, Module> {
+        &self.modules
     }
 }
 

@@ -53,7 +53,7 @@ trait DefinitionDb {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum DefKind {
+pub enum DefKind {
     Function(FuncId),
     Global(GlobalId),
     Class(ObjId),
@@ -182,6 +182,20 @@ struct Class {
     def: DefId,
     pub_members: Vec<(JsWord, DefId)>,
     constructor: Option<DefId>,
+}
+
+enum ObjTy {
+    Class { constructor: DefId },
+    Lit,
+    LitProp { parent: DefId },
+    ResolverProp { parent: DefId },
+    Resolver,
+}
+
+struct Object {
+    def: DefId,
+    pub_members: Vec<(JsWord, DefId)>,
+    ty: ObjTy,
 }
 
 impl Class {
@@ -690,6 +704,7 @@ impl ExportCollector<'_> {
             Some(id) => self.res_table.add_sym(def, id, self.curr_mod),
             None => {
                 self.res_table.names.push("default".into());
+                self.res_table.owning_module.push(self.curr_mod);
                 self.res_table.defs.push_and_get_key(def)
             }
         };
@@ -897,16 +912,27 @@ impl<'cx> Visit for ExportCollector<'cx> {
 
 impl Resolver {
     fn new() -> Self {
-        Self {
-            exports: Default::default(),
-            default_exports: Default::default(),
-            res_table: Default::default(),
-        }
+        Self::default()
     }
 
     #[inline]
-    fn default_export(&self, module: ModId) -> Option<DefId> {
+    pub fn default_export(&self, module: ModId) -> Option<DefId> {
         self.default_exports.get(&module).copied()
+    }
+
+    #[inline]
+    pub fn def_name(&self, def: DefId) -> &str {
+        &self.res_table.names[def]
+    }
+
+    #[inline]
+    pub fn module_exports(&self, module: ModId) -> impl Iterator<Item = (&str, DefId)> + '_ {
+        self.exports[module].iter().map(|(k, v)| (&**k, *v))
+    }
+
+    #[inline]
+    pub fn def_kind(&self, def: DefId) -> DefKind {
+        self.res_table.defs[def]
     }
 
     fn resolve_local_export(&self, module: ModId, name: &JsWord) -> Option<DefId> {
@@ -965,6 +991,39 @@ impl DefKind {
             | DefKind::Foreign(_)
             | DefKind::Undefined => None,
         }
+    }
+}
+
+impl fmt::Display for DefKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DefKind::Class(_) => write!(f, "class"),
+            DefKind::Resolver(_) => write!(f, "resolver"),
+            DefKind::ObjLit(_) => write!(f, "object literal"),
+            DefKind::Function(_) => write!(f, "function"),
+            DefKind::Global(_) => write!(f, "global"),
+            DefKind::ExportAlias(_) => write!(f, "export alias"),
+            DefKind::ResolverHandler(_) => write!(f, "resolver handler"),
+            DefKind::ModuleNs(_) => write!(f, "module namespace"),
+            DefKind::Foreign(_) => write!(f, "foreign"),
+            DefKind::Undefined => write!(f, "undefined"),
+        }
+    }
+}
+
+impl fmt::Display for ImportKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ImportKind::Star => write!(f, "*"),
+            ImportKind::Default => write!(f, "default"),
+            ImportKind::Named(sym) => write!(f, "{}", &**sym),
+        }
+    }
+}
+
+impl fmt::Display for ForeignItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "import {} from {}", self.kind, &*self.module_name)
     }
 }
 

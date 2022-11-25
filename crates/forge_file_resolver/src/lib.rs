@@ -11,6 +11,8 @@ pub trait FileResolver: Sized {
 
     fn with_sourceroot<P: AsRef<Path>>(src: P) -> Self;
 
+    fn get_module_path(&self, id: Self::Id) -> Result<&Path, Self::Error>;
+
     fn add_module<P: AsRef<Path>>(&mut self, path: P) -> Self::Id;
 
     fn resolve_import<P: AsRef<Path>>(
@@ -30,6 +32,7 @@ pub enum Error {
     },
 }
 
+#[derive(Debug, Clone)]
 pub struct ForgeResolver {
     modules: Vec<PathBuf>,
     no_ext: Vec<PathBuf>,
@@ -48,6 +51,13 @@ impl FileResolver for ForgeResolver {
             no_ext: Default::default(),
             modules: Default::default(),
         }
+    }
+
+    fn get_module_path(&self, id: Self::Id) -> Result<&Path, Self::Error> {
+        self.modules
+            .get(id)
+            .map(PathBuf::as_path)
+            .ok_or(Error::InvalidId(id))
     }
 
     #[inline]

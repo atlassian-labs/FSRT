@@ -4,7 +4,6 @@ use std::{
     convert::TryFrom,
     fs,
     io::stdout,
-    iter::FromIterator,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -29,10 +28,11 @@ use tracing_tree::HierarchicalLayer;
 use forge_analyzer::{
     analyzer::AuthZVal,
     ctx::{AppCtx, ModId, ModItem},
+    definitions::run_resolver,
     engine::Machine,
     resolver::{dump_callgraph_dot, dump_cfg_dot, resolve_calls},
 };
-use forge_file_resolver::{FileResolver, ForgeResolver};
+use forge_file_resolver::FileResolver;
 use forge_loader::manifest::{ForgeManifest, FunctionRef, FunctionTy};
 use walkdir::WalkDir;
 
@@ -66,7 +66,6 @@ struct Opts {
     dump_callgraph: bool,
 }
 
-#[derive(Default)]
 struct ForgeProject {
     #[allow(dead_code)]
     sm: Arc<SourceMap>,
@@ -76,16 +75,6 @@ struct ForgeProject {
 }
 
 impl ForgeProject {
-    #[inline]
-    fn new() -> Self {
-        Self {
-            sm: Default::default(),
-            ctx: Default::default(),
-            funcs: vec![],
-            opts: Default::default(),
-        }
-    }
-
     #[instrument(level = "debug", skip(self))]
     fn verify_funs(&mut self) -> impl Iterator<Item = (ModId, Id, AuthZVal)> + '_ {
         self.funcs.iter().cloned().map(|fty| {
@@ -123,11 +112,14 @@ impl ForgeProject {
         (funcitem, res)
     }
 
-    fn with_files<I: IntoIterator<Item = PathBuf>>(iter: I) -> Self {
+    fn with_files_and_sourceroot<P: AsRef<Path>, I: IntoIterator<Item = PathBuf>>(
+        src: P,
+        iter: I,
+    ) -> Self {
         let sm = Arc::<SourceMap>::default();
         let target = EsVersion::latest();
         let globals = Globals::new();
-        let ctx = AppCtx::new();
+        let ctx = AppCtx::new(src);
         let ctx = iter.into_iter().fold(ctx, |mut ctx, p| {
             let sourcemap = Arc::clone(&sm);
             GLOBALS.set(&globals, || {
@@ -155,7 +147,8 @@ impl ForgeProject {
         Self {
             sm,
             ctx,
-            ..ForgeProject::new()
+            funcs: vec![],
+            opts: Opts::default(),
         }
     }
 
@@ -167,13 +160,6 @@ impl ForgeProject {
                 Some((modid, func))
             })
         }));
-    }
-}
-
-impl FromIterator<PathBuf> for ForgeProject {
-    #[inline]
-    fn from_iter<T: IntoIterator<Item = PathBuf>>(iter: T) -> Self {
-        Self::with_files(iter)
     }
 }
 
@@ -212,23 +198,47 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
             Ok::<_, forge_loader::Error>(resolved_func.into_func_path())
         })
     });
-    let mut proj = ForgeProject::with_files(paths.clone());
+    let src_root = dir.join("src");
+    let mut proj = ForgeProject::with_files_and_sourceroot(src_root, paths.clone());
     proj.opts = opts;
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
-    for path in proj.ctx.path_ids().keys() {
-        let path = path.strip_prefix(&dir).unwrap();
-        let path = path
-            .parent()
-            .unwrap()
-            .join("../src/auth.jsx")
-            .canonicalize()
-            .unwrap();
-        println!("stripped path: {path:?}");
-        let path = path.to_string_lossy();
-        let (base, src) = path.split_once("src/").unwrap();
-        println!("resolved path = {base} {src}");
+    let (res, foreign) = run_resolver(proj.ctx.modules(), proj.ctx.file_resolver());
+    proj.ctx
+        .modules()
+        .iter_enumerated()
+        .map(|(id, _)| id)
+        .for_each(|id| {
+            println!(
+                "path: {:?}",
+                proj.ctx.file_resolver().get_module_path(id.into()).unwrap()
+            );
+            for (sym, def) in res.module_exports(id) {
+                let kind = res.def_kind(def);
+                println!("{sym}: {def:?} kind: {kind}");
+            }
+            if let Some(def) = res.default_export(id) {
+                let kind = res.def_kind(def);
+                println!("default: {def:?} defkind: {kind}");
+            }
+        });
+    for item in &foreign {
+        println!("foreign: {item}");
     }
+
+    // for path in proj.ctx.path_ids().keys() {
+    //     let path = path.strip_prefix(&dir).unwrap();
+    //     let path = path
+    //         .parent()
+    //         .unwrap()
+    //         .join("../src/auth.jsx")
+    //         .canonicalize()
+    //         .unwrap();
+    //     println!("stripped path: {path:?}");
+    //     let path = path.to_string_lossy();
+    //     let (base, src) = path.split_once("src/").unwrap();
+    //     println!("resolved path = {base} {src}");
+    // }
     if let Some(func) = function {
         proj.verify_fun(func);
     } else {
