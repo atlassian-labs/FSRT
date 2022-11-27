@@ -806,6 +806,107 @@ struct FunctionCollector<'cx> {
 }
 
 struct FunctionAnalyzer<'cx> {
+    res: &'cx mut Resolver,
+    defs: &'cx mut Definitions,
+    module: ModId,
+    current_def: DefId,
+    body: Body,
+    block: BasicBlockId,
+}
+
+impl<'cx> FunctionAnalyzer<'cx> {
+    #[inline]
+    fn set_curr_terminator(&mut self, term: Terminator) {
+        self.body.set_terminator(self.block, term);
+    }
+
+    #[inline]
+    fn push_curr_inst(&mut self, inst: Inst) {
+        self.body.push_inst(self.block, inst);
+    }
+}
+
+impl Visit for FunctionAnalyzer<'_> {
+    fn visit_member_expr(&mut self, n: &MemberExpr) {}
+
+    fn visit_expr(&mut self, n: &Expr) {
+        match n {
+            Expr::This(_) => todo!(),
+            Expr::Array(_) => todo!(),
+            Expr::Object(_) => todo!(),
+            Expr::Fn(_) => todo!(),
+            Expr::Unary(_) => todo!(),
+            Expr::Update(_) => todo!(),
+            Expr::Bin(_) => todo!(),
+            Expr::Assign(_) => todo!(),
+            Expr::Member(_) => todo!(),
+            Expr::SuperProp(_) => todo!(),
+            Expr::Cond(_) => todo!(),
+            Expr::Call(_) => todo!(),
+            Expr::New(_) => todo!(),
+            Expr::Seq(_) => todo!(),
+            Expr::Ident(_) => todo!(),
+            Expr::Lit(_) => todo!(),
+            Expr::Tpl(_) => todo!(),
+            Expr::TaggedTpl(_) => todo!(),
+            Expr::Arrow(_) => todo!(),
+            Expr::Class(_) => todo!(),
+            Expr::Yield(_) => todo!(),
+            Expr::MetaProp(_) => todo!(),
+            Expr::Await(_) => todo!(),
+            Expr::Paren(_) => todo!(),
+            Expr::JSXMember(_) => todo!(),
+            Expr::JSXNamespacedName(_) => todo!(),
+            Expr::JSXEmpty(_) => todo!(),
+            Expr::JSXElement(_) => todo!(),
+            Expr::JSXFragment(_) => todo!(),
+            Expr::TsTypeAssertion(_) => todo!(),
+            Expr::TsConstAssertion(_) => todo!(),
+            Expr::TsNonNull(_) => todo!(),
+            Expr::TsAs(_) => todo!(),
+            Expr::TsInstantiation(_) => todo!(),
+            Expr::TsSatisfies(_) => todo!(),
+            Expr::PrivateName(_) => todo!(),
+            Expr::OptChain(_) => todo!(),
+            Expr::Invalid(_) => todo!(),
+        }
+    }
+    fn visit_stmt(&mut self, n: &Stmt) {
+        match n {
+            Stmt::Block(_) => todo!(),
+            Stmt::Empty(_) => todo!(),
+            Stmt::Debugger(_) => todo!(),
+            Stmt::With(_) => todo!(),
+            Stmt::Return(_) => todo!(),
+            Stmt::Labeled(_) => todo!(),
+            Stmt::Break(_) => todo!(),
+            Stmt::Continue(_) => todo!(),
+            Stmt::If(_) => todo!(),
+            Stmt::Switch(_) => todo!(),
+            Stmt::Throw(_) => todo!(),
+            Stmt::Try(_) => todo!(),
+            Stmt::While(_) => todo!(),
+            Stmt::DoWhile(_) => todo!(),
+            Stmt::For(_) => todo!(),
+            Stmt::ForIn(_) => todo!(),
+            Stmt::ForOf(_) => todo!(),
+            Stmt::Decl(_) => todo!(),
+            Stmt::Expr(_) => todo!(),
+        }
+    }
+}
+
+impl Visit for FunctionCollector<'_> {
+    fn visit_fn_decl(&mut self, n: &FnDecl) {
+        let id = n.ident.to_id();
+        let def = self.res.get_or_insert_sym(id, self.module);
+        self.parent = Some(def);
+        n.function.visit_children_with(self);
+        self.parent = None;
+    }
+}
+
+struct FunctionAnalyzer<'cx> {
     pub res: &'cx mut Environment,
     module: ModId,
     current_def: DefId,
@@ -3808,7 +3909,6 @@ impl fmt::Display for DefKind {
             DefKind::Resolver(_) => write!(f, "resolver"),
             DefKind::ObjLit(_) => write!(f, "object literal"),
             DefKind::Function(_) => write!(f, "function"),
-            DefKind::Global(_) => write!(f, "global"),
             DefKind::ExportAlias(_) => write!(f, "export alias"),
             DefKind::ResolverHandler(_) => write!(f, "resolver handler"),
             DefKind::ModuleNs(_) => write!(f, "module namespace"),

@@ -911,6 +911,29 @@ impl Default for Body {
     fn default() -> Self {
         Self::new()
     }
+
+    #[inline]
+    pub(crate) fn new_block(&mut self) -> BasicBlockId {
+        self.blocks.push_and_get_key(BasicBlock::default())
+    }
+
+    #[inline]
+    pub(crate) fn new_block_with_terminator(&mut self, term: Terminator) -> BasicBlockId {
+        self.blocks.push_and_get_key(BasicBlock {
+            term,
+            ..Default::default()
+        })
+    }
+
+    #[inline]
+    pub(crate) fn set_terminator(&mut self, bb: BasicBlockId, term: Terminator) -> Terminator {
+        mem::replace(&mut self.blocks[bb].term, term)
+    }
+
+    #[inline]
+    pub(crate) fn push_inst(&mut self, bb: BasicBlockId, inst: Inst) {
+        self.blocks[bb].insts.push(inst);
+    }
 }
 
 impl PartialEq for Literal {
