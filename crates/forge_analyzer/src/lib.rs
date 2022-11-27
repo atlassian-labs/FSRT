@@ -43,7 +43,6 @@ pub(crate) struct ForgeImports {
 
 #[derive(Debug, Clone)]
 enum Exports {
-    Default(Id),
     Named(FxHashMap<Id, Id>),
 }
 
@@ -125,14 +124,6 @@ impl ForgeImports {
     pub(crate) fn is_as_app(&self, id: &Id) -> bool {
         debug!(import = ?self.as_app, ?id, "checking if asApp import");
         Some(id) == self.as_app.as_ref()
-    }
-
-    pub(crate) fn contains_forge_imports(&self) -> bool {
-        self.api
-            .as_ref()
-            .or(self.as_app.as_ref())
-            .or(self.authorize.as_ref())
-            .is_some()
     }
 }
 
@@ -239,13 +230,11 @@ impl Exports {
     fn add_named(&mut self, orig: Id, exported: Id) {
         match self {
             Exports::Named(map) => map.insert(orig, exported),
-            Exports::Default(_) => panic!("expected named exports"),
         };
     }
 
     pub(crate) fn orig_from_str(&self, lookup: &str) -> Option<Id> {
         match self {
-            Exports::Default(_) => None,
             Exports::Named(exports) => exports
                 .iter()
                 .find_map(|(orig, exported)| (&exported.0 == lookup).then(|| orig.clone())),
@@ -254,7 +243,6 @@ impl Exports {
 
     pub(crate) fn find_orig(&self, lookup: &Id) -> Option<Id> {
         match self {
-            Exports::Default(_) => None,
             Exports::Named(exports) => exports
                 .iter()
                 .find_map(|(orig, exported)| (exported.0 == lookup.0).then(|| orig.clone())),
