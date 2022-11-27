@@ -215,11 +215,11 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
             );
             for (sym, def) in res.module_exports(id) {
                 let kind = res.def_kind(def);
-                println!("{sym}: {def:?} kind: {kind}");
+                println!("export: {sym}: {def:?} kind: {kind}");
             }
             if let Some(def) = res.default_export(id) {
                 let kind = res.def_kind(def);
-                println!("default: {def:?} defkind: {kind}");
+                println!("default export: {def:?} defkind: {kind}");
             }
         });
     for item in &foreign {
