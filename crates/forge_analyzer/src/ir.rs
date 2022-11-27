@@ -22,13 +22,14 @@ create_newtype! {
 }
 
 #[derive(Clone, Debug)]
-struct BranchTargets {
+pub(crate) struct BranchTargets {
     compare: SmallVec<[Operand; 1]>,
     branch: SmallVec<[BasicBlockId; 2]>,
 }
 
-#[derive(Clone, Debug)]
-enum Terminator {
+#[derive(Clone, Debug, Default)]
+pub(crate) enum Terminator {
+    #[default]
     Ret,
     Goto(BasicBlockId),
     Throw,
@@ -44,7 +45,7 @@ enum Terminator {
 }
 
 #[derive(Clone, Debug)]
-enum Rvalue {
+pub(crate) enum Rvalue {
     Unary(UnOp, Operand),
     Bin(BinOp, Operand, Operand),
     Read(Variable),
@@ -56,9 +57,9 @@ enum Rvalue {
     },
 }
 
-#[derive(Clone, Debug)]
-struct BasicBlock {
-    stmts: Vec<Stmt>,
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BasicBlock {
+    insts: Vec<Inst>,
     term: Terminator,
 }
 
@@ -85,14 +86,14 @@ enum ApiCall {
 }
 
 #[derive(Clone, Debug)]
-enum Stmt {
+pub(crate) enum Inst {
     // maybe just use assign with a dummy VARIABLE for these?
     Expr(Rvalue),
     Assign(Variable, Rvalue),
 }
 
 #[derive(Clone, Debug, Default)]
-enum Literal {
+pub(crate) enum Literal {
     Str(Id),
     Bool(bool),
     Null,
@@ -105,7 +106,7 @@ enum Literal {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BinOp {
+pub(crate) enum BinOp {
     Lt,
     Gt,
     EqEq,
@@ -132,7 +133,7 @@ enum BinOp {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum UnOp {
+pub(crate) enum UnOp {
     Neg,
     Not,
     BitNot,
@@ -142,7 +143,7 @@ enum UnOp {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Operand {
+pub(crate) enum Operand {
     Var(Variable),
     Lit(Literal),
     Global(ModId, Id),
@@ -157,13 +158,13 @@ create_newtype! {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct Variable {
+pub(crate) struct Variable {
     var: VarId,
     projections: SmallVec<[Projection; 1]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Projection {
+pub(crate) enum Projection {
     Lit(Literal),
     Var(VarId),
 }
@@ -189,8 +190,32 @@ impl fmt::Display for Variable {
 }
 
 impl Body {
+    #[inline]
     fn new() -> Self {
         Body::default()
+    }
+
+    #[inline]
+    pub(crate) fn new_block(&mut self) -> BasicBlockId {
+        self.blocks.push_and_get_key(BasicBlock::default())
+    }
+
+    #[inline]
+    pub(crate) fn new_block_with_terminator(&mut self, term: Terminator) -> BasicBlockId {
+        self.blocks.push_and_get_key(BasicBlock {
+            term,
+            ..Default::default()
+        })
+    }
+
+    #[inline]
+    pub(crate) fn set_terminator(&mut self, bb: BasicBlockId, term: Terminator) -> Terminator {
+        mem::replace(&mut self.blocks[bb].term, term)
+    }
+
+    #[inline]
+    pub(crate) fn push_inst(&mut self, bb: BasicBlockId, inst: Inst) {
+        self.blocks[bb].insts.push(inst);
     }
 }
 
