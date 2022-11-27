@@ -1,4 +1,3 @@
-use std::iter::repeat;
 use std::path::Path;
 use std::{borrow::Borrow, hash::Hash, path::PathBuf};
 
@@ -344,11 +343,6 @@ impl FunctionMeta {
     }
 
     #[inline]
-    pub(crate) fn add_terminator_to_last(&mut self, term: TerminatorKind) {
-        self.blocks.last_mut().unwrap().terminator = term;
-    }
-
-    #[inline]
     pub(crate) fn add_edge(&mut self, from: BasicBlockId, to: BasicBlockId) {
         self.succ.entry(from).or_default().push(to);
         self.pred.entry(to).or_default().push(from);
@@ -374,17 +368,6 @@ impl FunctionMeta {
     #[inline]
     pub(crate) fn iter_stmts_mut(&mut self) -> impl Iterator<Item = &mut IrStmt> + '_ {
         self.blocks.iter_mut().flat_map(|bb| &mut bb.stmts)
-    }
-
-    #[inline]
-    pub(crate) fn iter_stmts_enumerated_mut(
-        &mut self,
-    ) -> impl Iterator<Item = (BasicBlockId, StmtId, &mut IrStmt)> + '_ {
-        self.blocks.iter_mut_enumerated().flat_map(|(id, bb)| {
-            repeat(id)
-                .zip(bb.stmts.iter_mut_enumerated())
-                .map(|(id, (idx, stmt))| (id, idx, stmt))
-        })
     }
 }
 
