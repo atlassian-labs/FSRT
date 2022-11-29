@@ -806,12 +806,13 @@ struct FunctionCollector<'cx> {
 }
 
 struct FunctionAnalyzer<'cx> {
-    res: &'cx mut Resolver,
-    defs: &'cx mut Definitions,
+    res: &'cx mut Environment,
     module: ModId,
     current_def: DefId,
     body: Body,
     block: BasicBlockId,
+    operand_stack: Vec<Operand>,
+    in_rhs: bool,
 }
 
 impl<'cx> FunctionAnalyzer<'cx> {
@@ -827,81 +828,191 @@ impl<'cx> FunctionAnalyzer<'cx> {
 }
 
 impl Visit for FunctionAnalyzer<'_> {
-    fn visit_member_expr(&mut self, n: &MemberExpr) {}
-
-    fn visit_expr(&mut self, n: &Expr) {
-        match n {
-            Expr::This(_) => todo!(),
-            Expr::Array(_) => todo!(),
-            Expr::Object(_) => todo!(),
-            Expr::Fn(_) => todo!(),
-            Expr::Unary(_) => todo!(),
-            Expr::Update(_) => todo!(),
-            Expr::Bin(_) => todo!(),
-            Expr::Assign(_) => todo!(),
-            Expr::Member(_) => todo!(),
-            Expr::SuperProp(_) => todo!(),
-            Expr::Cond(_) => todo!(),
-            Expr::Call(_) => todo!(),
-            Expr::New(_) => todo!(),
-            Expr::Seq(_) => todo!(),
-            Expr::Ident(_) => todo!(),
-            Expr::Lit(_) => todo!(),
-            Expr::Tpl(_) => todo!(),
-            Expr::TaggedTpl(_) => todo!(),
-            Expr::Arrow(_) => todo!(),
-            Expr::Class(_) => todo!(),
-            Expr::Yield(_) => todo!(),
-            Expr::MetaProp(_) => todo!(),
-            Expr::Await(_) => todo!(),
-            Expr::Paren(_) => todo!(),
-            Expr::JSXMember(_) => todo!(),
-            Expr::JSXNamespacedName(_) => todo!(),
-            Expr::JSXEmpty(_) => todo!(),
-            Expr::JSXElement(_) => todo!(),
-            Expr::JSXFragment(_) => todo!(),
-            Expr::TsTypeAssertion(_) => todo!(),
-            Expr::TsConstAssertion(_) => todo!(),
-            Expr::TsNonNull(_) => todo!(),
-            Expr::TsAs(_) => todo!(),
-            Expr::TsInstantiation(_) => todo!(),
-            Expr::TsSatisfies(_) => todo!(),
-            Expr::PrivateName(_) => todo!(),
-            Expr::OptChain(_) => todo!(),
-            Expr::Invalid(_) => todo!(),
-        }
-    }
-    fn visit_stmt(&mut self, n: &Stmt) {
-        match n {
-            Stmt::Block(_) => todo!(),
-            Stmt::Empty(_) => todo!(),
-            Stmt::Debugger(_) => todo!(),
-            Stmt::With(_) => todo!(),
-            Stmt::Return(_) => todo!(),
-            Stmt::Labeled(_) => todo!(),
-            Stmt::Break(_) => todo!(),
-            Stmt::Continue(_) => todo!(),
-            Stmt::If(_) => todo!(),
-            Stmt::Switch(_) => todo!(),
-            Stmt::Throw(_) => todo!(),
-            Stmt::Try(_) => todo!(),
-            Stmt::While(_) => todo!(),
-            Stmt::DoWhile(_) => todo!(),
-            Stmt::For(_) => todo!(),
-            Stmt::ForIn(_) => todo!(),
-            Stmt::ForOf(_) => todo!(),
-            Stmt::Decl(_) => todo!(),
-            Stmt::Expr(_) => todo!(),
+    fn visit_call_expr(&mut self, n: &CallExpr) {
+        n.visit_children_with(self);
+        let _props = normalize_callee_expr(&n.callee, self.res, self.module);
+        match _props.first() {
+            Some(&PropPath::Def(id)) => {
+                debug!("call from: {}", self.res.def_name(id));
+                debug!("call expr: {:?}", _props);
+            }
+            Some(PropPath::Unknown(id)) => {
+                debug!("call from: {}", id.0);
+                debug!("call expr: {:?}", _props);
+            }
+            _ => (),
         }
     }
 }
 
+struct ArgDefiner<'cx> {
+    res: &'cx mut Environment,
+    module: ModId,
+    func: DefId,
+    body: Body,
+}
+
+impl Visit for ArgDefiner<'_> {
+    fn visit_ident(&mut self, n: &Ident) {
+        let id = n.to_id();
+        let defid = self
+            .res
+            .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
+        self.res.add_parent(defid, self.func);
+        self.body.add_arg(defid, id);
+    }
+
+    fn visit_object_pat_prop(&mut self, n: &ObjectPatProp) {
+        match n {
+            ObjectPatProp::KeyValue(KeyValuePatProp { key, .. }) => key.visit_with(self),
+            ObjectPatProp::Assign(AssignPatProp { key, .. }) => self.visit_ident(key),
+            ObjectPatProp::Rest(_) => {}
+        }
+    }
+
+    fn visit_pat(&mut self, n: &Pat) {
+        match n {
+            Pat::Ident(_) | Pat::Array(_) => n.visit_children_with(self),
+            Pat::Object(ObjectPat { props, .. }) => props.visit_children_with(self),
+            Pat::Assign(AssignPat { left, .. }) => left.visit_with(self),
+            Pat::Expr(id) => {
+                if let Expr::Ident(id) = &**id {
+                    id.visit_with(self);
+                }
+            }
+            Pat::Invalid(_) => {}
+            Pat::Rest(_) => {}
+            Pat::Invalid(_) => {}
+        }
+    }
+}
+
+struct LocalDefiner<'cx> {
+    res: &'cx mut Environment,
+    module: ModId,
+    func: DefId,
+    body: Body,
+}
+
+impl Visit for LocalDefiner<'_> {
+    fn visit_ident(&mut self, n: &Ident) {
+        let id = n.to_id();
+        let defid = self.res.get_or_insert_sym(id.clone(), self.module);
+        self.res.try_add_parent(defid, self.func);
+        self.body.add_local_def(defid, id);
+    }
+
+    fn visit_var_declarator(&mut self, n: &VarDeclarator) {
+        n.name.visit_with(self);
+    }
+
+    fn visit_decl(&mut self, n: &Decl) {
+        match n {
+            Decl::Class(_) => {}
+            Decl::Fn(FnDecl { ident, .. }) => {
+                ident.visit_with(self);
+            }
+            Decl::Var(vars) => vars.visit_children_with(self),
+            Decl::TsInterface(_) | Decl::TsTypeAlias(_) | Decl::TsEnum(_) | Decl::TsModule(_) => {}
+        }
+    }
+
+    fn visit_arrow_expr(&mut self, _: &ArrowExpr) {}
+    fn visit_fn_decl(&mut self, _: &FnDecl) {}
+}
+
 impl Visit for FunctionCollector<'_> {
+    fn visit_function(&mut self, n: &Function) {
+        n.visit_children_with(self);
+        let owner = self.parent.unwrap_or_else(|| {
+            self.res
+                .add_anonymous("__UNKNOWN", AnonType::Closure, self.module)
+        });
+        let mut argdef = ArgDefiner {
+            res: self.res,
+            module: self.module,
+            func: owner,
+            body: Body::with_owner(owner),
+        };
+        n.params.visit_children_with(&mut argdef);
+        let body = argdef.body;
+        let mut localdef = LocalDefiner {
+            res: self.res,
+            module: self.module,
+            func: owner,
+            body,
+        };
+        n.body.visit_children_with(&mut localdef);
+        let body = localdef.body;
+        let mut analyzer = FunctionAnalyzer {
+            res: self.res,
+            module: self.module,
+            current_def: owner,
+            body,
+            block: BasicBlockId::default(),
+            operand_stack: vec![],
+            in_rhs: false,
+        };
+        n.body.visit_with(&mut analyzer);
+    }
+
+    fn visit_var_declarator(&mut self, n: &VarDeclarator) {
+        n.visit_children_with(self);
+        let Some(BindingIdent { id, .. }) = n.name.as_ident() else {
+            return;
+        };
+        let id = id.to_id();
+        match n.init.as_deref() {
+            Some(Expr::Fn(f)) => {
+                let defid = self
+                    .res
+                    .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
+                let old_parent = self.parent.replace(defid);
+                f.visit_with(self);
+                self.parent = old_parent;
+            }
+            Some(Expr::Arrow(f)) => {
+                let defid = self
+                    .res
+                    .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
+                let old_parent = self.parent.replace(defid);
+                f.visit_with(self);
+                self.parent = old_parent;
+            }
+            _ => {}
+        }
+    }
+
+    fn visit_call_expr(&mut self, n: &CallExpr) {
+        n.visit_children_with(self);
+        if let Some((def_id, propname, expr)) = as_resolver_def(n, self.res, self.module) {
+            info!("found possible resolver: {propname}");
+            match self.res.lookup_prop(def_id, propname) {
+                Some(def) => {
+                    info!("analyzing resolver def: {def:?}");
+                    let mut analyzer = FunctionAnalyzer {
+                        res: self.res,
+                        module: self.module,
+                        current_def: def,
+                        body: Body::with_owner(def),
+                        block: BasicBlockId::default(),
+                        operand_stack: vec![],
+                        in_rhs: false,
+                    };
+                    expr.visit_with(&mut analyzer);
+                }
+                None => {
+                    warn!("resolver def not found");
+                }
+            }
+        }
+    }
+
     fn visit_fn_decl(&mut self, n: &FnDecl) {
         let id = n.ident.to_id();
         let def = self.res.get_or_insert_sym(id, self.module);
         self.parent = Some(def);
-        n.function.visit_children_with(self);
+        n.function.visit_with(self);
         self.parent = None;
     }
 }
@@ -3902,13 +4013,16 @@ impl fmt::Display for ForeignItem {
     }
 }
 
-impl fmt::Display for DefKind {
+impl<F, O, I> fmt::Display for DefKind<F, O, I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DefKind::Class(_) => write!(f, "class"),
+            DefKind::ResolverDef(_) => write!(f, "resolver def"),
             DefKind::Resolver(_) => write!(f, "resolver"),
-            DefKind::ObjLit(_) => write!(f, "object literal"),
+            DefKind::Arg => write!(f, "argument"),
+            DefKind::GlobalObj(_) => write!(f, "object literal"),
             DefKind::Function(_) => write!(f, "function"),
+            DefKind::Closure(_) => write!(f, "closure"),
             DefKind::ExportAlias(_) => write!(f, "export alias"),
             DefKind::ResolverHandler(_) => write!(f, "resolver handler"),
             DefKind::ModuleNs(_) => write!(f, "module namespace"),
