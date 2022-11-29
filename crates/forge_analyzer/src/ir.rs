@@ -11,11 +11,14 @@ use std::mem;
 
 use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
+use smallvec::smallvec;
 use smallvec::SmallVec;
+use swc_core::ecma::atoms::JsWord;
 use swc_core::ecma::{ast::Id, atoms::Atom};
 use typed_index_collections::TiVec;
 
 use crate::ctx::ModId;
+use crate::definitions::DefId;
 
 create_newtype! {
     pub struct BasicBlockId(u32);
@@ -44,11 +47,21 @@ pub(crate) enum Terminator {
     },
 }
 
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub(crate) enum Intrinsic {
+    Authorize,
+    Fetch,
+    ApiCall,
+    EnvRead,
+    StorageOp,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum Rvalue {
     Unary(UnOp, Operand),
     Bin(BinOp, Operand, Operand),
-    Read(Variable),
+    Read(Operand),
+    Intrinsics(Intrinsic),
     Template {
         quasis: Vec<Atom>,
         exprs: Vec<Operand>,
@@ -69,13 +82,20 @@ struct Location {
     stmt: u32,
 }
 
-#[derive(Clone, Default, Debug)]
-pub(crate) struct Body {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum VarKind {
+    UserDef(DefId),
+    Temp(DefId),
+    Arg(DefId),
+    Ret,
+}
+
+#[derive(Clone, Debug)]
+pub struct Body {
+    owner: Option<DefId>,
     blocks: TiVec<BasicBlockId, BasicBlock>,
-    local_vars: TiVec<VarId, Id>,
+    local_vars: TiVec<VarId, VarKind>,
     id_to_local: FxHashMap<Id, VarId>,
-    predecessors: BTreeSet<(BasicBlockId, BasicBlockId)>,
-    successors: BTreeSet<(BasicBlockId, BasicBlockId)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,7 +166,6 @@ pub(crate) enum UnOp {
 pub(crate) enum Operand {
     Var(Variable),
     Lit(Literal),
-    Global(ModId, Id),
 }
 
 create_newtype! {
@@ -165,8 +184,8 @@ pub(crate) struct Variable {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Projection {
-    Lit(Literal),
-    Var(VarId),
+    Known(JsWord),
+    Computed(VarId),
 }
 
 impl fmt::Display for VarId {
@@ -180,9 +199,8 @@ impl fmt::Display for Variable {
         write!(f, "{}", self.var)?;
         for proj in &self.projections {
             match proj {
-                Projection::Lit(Literal::Str((s, _))) => write!(f, ".{s}")?,
-                Projection::Lit(lit) => write!(f, "[{lit}]")?,
-                Projection::Var(id) => write!(f, "[{id}]")?,
+                Projection::Known(lit) => write!(f, "[\"{lit}\"]")?,
+                Projection::Computed(id) => write!(f, "[{id}]")?,
             }
         }
         Ok(())
@@ -192,7 +210,34 @@ impl fmt::Display for Variable {
 impl Body {
     #[inline]
     fn new() -> Self {
-        Body::default()
+        let local_vars = vec![VarKind::Ret].into();
+        Self {
+            local_vars,
+            owner: None,
+            blocks: Default::default(),
+            id_to_local: Default::default(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn with_owner(owner: DefId) -> Self {
+        Self {
+            owner: Some(owner),
+            ..Self::new()
+        }
+    }
+
+    #[inline]
+    pub(crate) fn add_local_def(&mut self, def: DefId, id: Id) {
+        self.id_to_local
+            .insert(id, self.local_vars.push_and_get_key(VarKind::UserDef(def)));
+    }
+
+    #[inline]
+    pub(crate) fn add_arg(&mut self, def: DefId, id: Id) {
+        self.local_vars.push(VarKind::Arg(def));
+        self.id_to_local
+            .insert(id, VarId((self.local_vars.len() - 1) as u32));
     }
 
     #[inline]
@@ -216,6 +261,23 @@ impl Body {
     #[inline]
     pub(crate) fn push_inst(&mut self, bb: BasicBlockId, inst: Inst) {
         self.blocks[bb].insts.push(inst);
+    }
+
+    #[inline]
+    pub(crate) fn push_assign(&mut self, bb: BasicBlockId, var: Variable, val: Rvalue) {
+        self.blocks[bb].insts.push(Inst::Assign(var, val));
+    }
+
+    #[inline]
+    pub(crate) fn push_expr(&mut self, bb: BasicBlockId, val: Rvalue) {
+        self.blocks[bb].insts.push(Inst::Expr(val));
+    }
+}
+
+impl Default for Body {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -260,5 +322,35 @@ impl fmt::Display for Literal {
             Literal::BigInt(ref n) => write!(f, "{n}"),
             Literal::RegExp(ref regex, ref flags) => write!(f, "/{regex}/{flags}"),
         }
+    }
+}
+
+impl Rvalue {
+    pub(crate) fn with_literal(lit: Literal) -> Self {
+        Rvalue::Read(Operand::Lit(lit))
+    }
+
+    pub(crate) fn with_name(name: VarId) -> Self {
+        Rvalue::Read(Operand::Var(Variable::new(name)))
+    }
+}
+
+impl Variable {
+    #[inline]
+    pub(crate) fn new(var: VarId) -> Self {
+        Self {
+            var,
+            projections: smallvec![],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn add_computed(&mut self, var: VarId) {
+        self.projections.push(Projection::Computed(var));
+    }
+
+    #[inline]
+    pub(crate) fn add_known(&mut self, lit: JsWord) {
+        self.projections.push(Projection::Known(lit));
     }
 }

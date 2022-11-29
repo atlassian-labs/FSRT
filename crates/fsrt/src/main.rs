@@ -203,7 +203,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     proj.opts = opts;
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
-    let (res, foreign) = run_resolver(proj.ctx.modules(), proj.ctx.file_resolver());
+    let res = run_resolver(proj.ctx.modules(), proj.ctx.file_resolver());
     proj.ctx
         .modules()
         .iter_enumerated()
@@ -214,17 +214,17 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 proj.ctx.file_resolver().get_module_path(id.into()).unwrap()
             );
             for (sym, def) in res.module_exports(id) {
-                let kind = res.def_kind(def);
+                let kind = res.def_ref(def);
                 println!("export: {sym}: {def:?} kind: {kind}");
             }
             if let Some(def) = res.default_export(id) {
-                let kind = res.def_kind(def);
+                let kind = res.def_ref(def);
                 println!("default export: {def:?} defkind: {kind}");
             }
         });
-    for item in &foreign {
-        println!("foreign: {item}");
-    }
+    // for item in &foreign {
+    //     println!("foreign: {item}");
+    // }
 
     // for path in proj.ctx.path_ids().keys() {
     //     let path = path.strip_prefix(&dir).unwrap();
