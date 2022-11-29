@@ -14,7 +14,7 @@ pub use rustc_hash::{FxHashMap, FxHashSet};
 #[macro_export]
 macro_rules! create_newtype {
     ($vis:vis struct $ident:ident ( $tyvis:vis $ty:ty );) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         $vis struct $ident($tyvis $ty);
 
         impl ::core::convert::From<usize> for $ident {

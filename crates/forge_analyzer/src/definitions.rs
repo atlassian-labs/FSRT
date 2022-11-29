@@ -9,24 +9,25 @@ use swc_core::{
     common::SyntaxContext,
     ecma::{
         ast::{
-            AssignProp, BindingIdent, CallExpr, Callee, ClassDecl, ClassExpr, ComputedPropName,
-            Decl, DefaultDecl, ExportAll, ExportDecl, ExportDefaultDecl, ExportDefaultExpr,
-            ExportNamedSpecifier, Expr, ExprOrSpread, FnDecl, FnExpr, Id, Ident, ImportDecl,
-            ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, KeyValueProp, Lit,
-            MemberExpr, MemberProp, MethodProp, Module, ModuleDecl, ModuleExportName, ModuleItem,
-            NewExpr, ObjectLit, Pat, PrivateName, Prop, PropName, PropOrSpread, Stmt, Str, VarDecl,
-            VarDeclarator,
+            ArrowExpr, AssignPat, AssignPatProp, AssignProp, BindingIdent, CallExpr, Callee,
+            ClassDecl, ClassExpr, ComputedPropName, Decl, DefaultDecl, ExportAll, ExportDecl,
+            ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier, Expr, ExprOrSpread, FnDecl,
+            FnExpr, Function, Id, Ident, ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier,
+            ImportStarAsSpecifier, KeyValuePatProp, KeyValueProp, Lit, MemberExpr, MemberProp,
+            MethodProp, Module, ModuleDecl, ModuleExportName, ModuleItem, NewExpr, ObjectLit,
+            ObjectPat, ObjectPatProp, Pat, PrivateName, Prop, PropName, PropOrSpread, Stmt, Str,
+            VarDecl, VarDeclarator,
         },
         atoms::JsWord,
         visit::{noop_visit_type, Visit, VisitWith},
     },
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, instrument, warn};
 use typed_index_collections::{TiSlice, TiVec};
 
 use crate::{
     ctx::ModId,
-    ir::{BasicBlockId, Body, Inst, Terminator},
+    ir::{BasicBlockId, Body, Inst, Operand, Terminator},
 };
 
 create_newtype! {
@@ -39,44 +40,6 @@ create_newtype! {
 
 create_newtype! {
     pub struct DefId(u32);
-}
-
-const INVALID_FUNC: FuncId = FuncId(u32::MAX);
-
-const INVALID_CLASS: ObjId = ObjId(u32::MAX);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DefKind {
-    Function(FuncId),
-    Class(ObjId),
-    ExportAlias(DefId),
-    /// exported(usuall) handler to the actual resolver definitions
-    ///
-    /// [`DefId`] should point to [`DefKind::Resolver`]
-    ///
-    /// # Example:
-    ///
-    /// ```javascript
-    /// import Resolver from '@forge/resolver';
-    ///
-    /// const resolver = new Resolver();
-    ///
-    /// resolver.define('handlerFunc' ({ payload, context }) => {
-    ///   console.log(`payload: ${payload}, ctx: ${context}`);
-    /// });
-    /// // the `handler` symbol resolves to a DefId for [`DefKind::ResolverHandler`]
-    /// export const handler = resolver.getDefinitions();
-    /// ```
-    ResolverHandler(DefId),
-    Resolver(ObjId),
-    // to account for the common pattern of object literals being used to organize
-    // functions
-    ObjLit(ObjId),
-    // Ex: `module` in import * as 'foo' from 'module'
-    ModuleNs(ModId),
-    Foreign(ForeignId),
-    // should only be set by the initial exporter
-    Undefined,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,11 +68,18 @@ struct SymbolExport {
 
 #[derive(Debug, Clone, Default)]
 struct ResolverTable {
-    defs: TiVec<DefId, DefKind>,
+    defs: TiVec<DefId, DefRes>,
     names: TiVec<DefId, JsWord>,
     symbol_to_id: FxHashMap<Symbol, DefId>,
     parent: FxHashMap<DefId, DefId>,
     owning_module: TiVec<DefId, ModId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnonType {
+    Obj,
+    Closure,
+    Unknown,
 }
 
 struct ModuleDefs {
@@ -120,14 +90,15 @@ struct ModuleDefs {
     exports: Box<[DefId]>,
 }
 
+#[instrument(skip(modules, file_resolver))]
 pub fn run_resolver(
     modules: &TiSlice<ModId, Module>,
     file_resolver: &ForgeResolver,
-) -> (Resolver, TiVec<ForeignId, ForeignItem>) {
-    let mut resolver = Resolver::new();
+) -> Environment {
+    let mut resolver = Environment::new();
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut export_collector = ExportCollector {
-            res_table: &mut resolver.res_table,
+            res_table: &mut resolver.resolver,
             curr_mod,
             exports: vec![],
             default: None,
@@ -154,15 +125,18 @@ pub fn run_resolver(
         module.visit_with(&mut import_collector);
     }
 
-    //TODO: return defs instead of cloning
-    let mut defs = Definitions {
-        foreign: foreign.clone(),
-        ..Default::default()
-    };
+    let defs = Definitions::new(
+        resolver
+            .resolver
+            .defs
+            .iter_enumerated()
+            .map(|(id, &d)| (id, d)),
+        foreign,
+    );
+    resolver.defs = defs;
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut lowerer = Lowerer {
             res: &mut resolver,
-            defs: &mut defs,
             curr_mod,
             parents: vec![],
             curr_def: None,
@@ -170,7 +144,16 @@ pub fn run_resolver(
         module.visit_with(&mut lowerer);
     }
 
-    (resolver, foreign)
+    for (curr_mod, module) in modules.iter_enumerated() {
+        let mut collector = FunctionCollector {
+            res: &mut resolver,
+            module: curr_mod,
+            parent: None,
+        };
+        module.visit_with(&mut collector);
+    }
+
+    resolver
 }
 
 /// this struct is a bit of a hack, because we also use it for
@@ -187,10 +170,16 @@ pub fn run_resolver(
 /// }
 /// ```
 #[derive(Debug, Clone)]
-struct Class {
+pub struct Class {
     def: DefId,
     pub_members: Vec<(JsWord, DefId)>,
     constructor: Option<DefId>,
+}
+
+enum PropKind {
+    Alias(DefId),
+    Unknown,
+    Setter(DefId),
 }
 
 enum ObjTy {
@@ -215,6 +204,13 @@ impl Class {
             constructor: None,
         }
     }
+
+    fn find_member(&self, name: &JsWord) -> Option<DefId> {
+        self.pub_members
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, d)| *d)
+    }
 }
 
 create_newtype! {
@@ -234,22 +230,125 @@ pub struct ForeignItem {
     module_name: JsWord,
 }
 
+type DefKey = DefKind<FuncId, ObjId, ForeignId>;
+type DefRef<'a> = DefKind<&'a Body, &'a Class, &'a ForeignItem>;
+type DefMut<'a> = DefKind<&'a mut Body, &'a mut Class, &'a mut ForeignItem>;
+type DefRes<I = ForeignId> = DefKind<(), (), I>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DefKind<F, O, I> {
+    Arg,
+    Function(F),
+    ExportAlias(DefId),
+    GlobalObj(O),
+    Class(O),
+    Foreign(I),
+    /// exported(usual) handler to the actual resolver definitions
+    ///
+    /// [`DefId`] should point to [`DefKind::Resolver`]
+    ///
+    /// # Example:
+    ///
+    /// ```javascript
+    /// import Resolver from '@forge/resolver';
+    ///
+    /// const resolver = new Resolver();
+    ///
+    /// resolver.define('handlerFunc' ({ payload, context }) => {
+    ///   console.log(`payload: ${payload}, ctx: ${context}`);
+    /// });
+    /// // the `handler` symbol resolves to a DefId for [`DefKind::ResolverHandler`]
+    /// export const handler = resolver.getDefinitions();
+    /// ```
+    ResolverHandler(DefId),
+    Resolver(O),
+    ResolverDef(DefId),
+    Closure(F),
+    // Ex: `module` in import * as 'foo' from 'module'
+    ModuleNs(ModId),
+    Undefined,
+}
+
+impl<F, O, I> Default for DefKind<F, O, I> {
+    fn default() -> Self {
+        Self::Undefined
+    }
+}
+
+impl<F, O, I> DefKind<F, O, I> {
+    fn expect_body(self) -> F {
+        match self {
+            Self::Function(f) | Self::Closure(f) => f,
+            _ => panic!("expected function"),
+        }
+    }
+
+    fn expect_class(self) -> O {
+        match self {
+            Self::Class(c) | Self::GlobalObj(c) | Self::Resolver(c) => c,
+            _ => panic!("expected class"),
+        }
+    }
+}
+
+impl PartialEq<DefKey> for DefRes {
+    fn eq(&self, other: &DefKey) -> bool {
+        match (*self, *other) {
+            (DefKind::Function(()), DefKind::Function(_)) => true,
+            (DefKind::ExportAlias(l0), DefKind::ExportAlias(r0)) => l0 == r0,
+            (DefKind::GlobalObj(()), DefKind::GlobalObj(_)) => true,
+            (DefKind::Class(()), DefKind::Class(_)) => true,
+            (DefKind::Foreign(l0), DefKind::Foreign(r0)) => l0 == r0,
+            (DefKind::ResolverHandler(l0), DefKind::ResolverHandler(r0)) => l0 == r0,
+            (DefKind::Resolver(()), DefKind::Resolver(_)) => true,
+            (DefKind::ResolverDef(l0), DefKind::ResolverDef(r0)) => l0 == r0,
+            (DefKind::Closure(()), DefKind::Closure(_)) => true,
+            (DefKind::ModuleNs(l0), DefKind::ModuleNs(r0)) => l0 == r0,
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq<DefRes> for DefKey {
+    fn eq(&self, other: &DefRes) -> bool {
+        match (*self, *other) {
+            (DefKind::Function(_), DefKind::Function(())) => true,
+            (DefKind::ExportAlias(l0), DefKind::ExportAlias(r0)) => l0 == r0,
+            (DefKind::GlobalObj(_), DefKind::GlobalObj(())) => true,
+            (DefKind::Class(_), DefKind::Class(())) => true,
+            (DefKind::Foreign(l0), DefKind::Foreign(r0)) => l0 == r0,
+            (DefKind::ResolverHandler(l0), DefKind::ResolverHandler(r0)) => l0 == r0,
+            (DefKind::Resolver(_), DefKind::Resolver(())) => true,
+            (DefKind::ResolverDef(l0), DefKind::ResolverDef(r0)) => l0 == r0,
+            (DefKind::Closure(_), DefKind::Closure(())) => true,
+            (DefKind::ModuleNs(l0), DefKind::ModuleNs(r0)) => l0 == r0,
+            _ => false,
+        }
+    }
+}
+
+impl Copy for DefKey {}
+impl Copy for DefRes {}
+impl Copy for DefRef<'_> {}
+
 #[derive(Debug, Clone, Default)]
 struct Definitions {
+    defs: TiVec<DefId, DefKey>,
     funcs: TiVec<FuncId, Body>,
     classes: TiVec<ObjId, Class>,
     foreign: TiVec<ForeignId, ForeignItem>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Resolver {
+pub struct Environment {
     exports: TiVec<ModId, Vec<(JsWord, DefId)>>,
+    defs: Definitions,
     default_exports: FxHashMap<ModId, DefId>,
-    res_table: ResolverTable,
+    resolver: ResolverTable,
 }
 
 struct ImportCollector<'cx> {
-    resolver: &'cx mut Resolver,
+    resolver: &'cx mut Environment,
     file_resolver: &'cx ForgeResolver,
     foreign_defs: &'cx mut TiVec<ForeignId, ForeignItem>,
     curr_mod: ModId,
@@ -271,13 +370,13 @@ enum LowerStage {
 }
 
 struct Lowerer<'cx> {
-    res: &'cx mut Resolver,
-    defs: &'cx mut Definitions,
+    res: &'cx mut Environment,
     curr_mod: ModId,
     parents: Vec<DefId>,
     curr_def: Option<DefId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum PropPath {
     Def(DefId),
     Str(JsWord),
@@ -289,9 +388,13 @@ enum PropPath {
     Computed(Id),
 }
 
-fn normalize_callee_expr(callee: &Callee, res_table: &ResolverTable, curr_mod: ModId) {
+fn normalize_callee_expr(
+    callee: &Callee,
+    res_table: &Environment,
+    curr_mod: ModId,
+) -> Vec<PropPath> {
     struct CalleeNormalizer<'cx> {
-        res_table: &'cx ResolverTable,
+        res_table: &'cx Environment,
         curr_mod: ModId,
         path: Vec<PropPath>,
         in_prop: bool,
@@ -325,7 +428,11 @@ fn normalize_callee_expr(callee: &Callee, res_table: &ResolverTable, curr_mod: M
             if self.in_prop {
                 self.path.push(PropPath::Computed(id));
             } else {
-                self.path.push(PropPath::Unknown(id));
+                let prop = self
+                    .res_table
+                    .sym_to_id(id.clone(), self.curr_mod)
+                    .map_or(PropPath::Unknown(id), PropPath::Def);
+                self.path.push(prop);
             }
         }
 
@@ -374,6 +481,10 @@ fn normalize_callee_expr(callee: &Callee, res_table: &ResolverTable, curr_mod: M
             path: vec![],
             in_prop: false,
         };
+        normalizer.visit_expr(expr);
+        normalizer.path
+    } else {
+        vec![]
     }
 }
 
@@ -384,14 +495,14 @@ impl ResolverTable {
     }
 
     #[inline]
-    fn sym_kind(&self, id: Id, module: ModId) -> Option<DefKind> {
+    fn sym_kind(&self, id: Id, module: ModId) -> Option<DefRes> {
         let def = self.sym_id(id, module)?;
         self.defs.get(def).copied()
     }
 
     #[inline]
     fn reserve_symbol(&mut self, id: Id, module: ModId) -> DefId {
-        self.add_sym(DefKind::Undefined, id, module)
+        self.add_sym(DefRes::default(), id, module)
     }
 
     #[inline]
@@ -401,20 +512,20 @@ impl ResolverTable {
     }
 
     fn reserve_def(&mut self, name: JsWord, module: ModId) -> DefId {
-        self.defs.push_and_get_key(DefKind::Undefined);
+        self.defs.push_and_get_key(DefRes::default());
         self.names.push_and_get_key(name);
         self.owning_module.push_and_get_key(module)
     }
 
-    fn add_prop(&mut self, def: DefKind, prop: JsWord, module: ModId) -> DefId {
+    fn add_anon(&mut self, def: DefRes, name: JsWord, module: ModId) -> DefId {
         let defid = self.defs.push_and_get_key(def);
         let defid2 = self.owning_module.push_and_get_key(module);
         debug_assert_eq!(
             defid, defid2,
             "inconsistent state while inserting {}",
-            &*prop
+            &*name
         );
-        let defid3 = self.names.push_and_get_key(prop);
+        let defid3 = self.names.push_and_get_key(name);
         debug_assert_eq!(
             defid,
             defid3,
@@ -424,7 +535,7 @@ impl ResolverTable {
         defid
     }
 
-    fn add_sym(&mut self, def: DefKind, id: Id, module: ModId) -> DefId {
+    fn add_sym(&mut self, def: DefRes, id: Id, module: ModId) -> DefId {
         let defid = self.defs.push_and_get_key(def);
         let defid2 = self.owning_module.push_and_get_key(module);
         debug_assert_eq!(defid, defid2, "inconsistent state while inserting {}", id.0);
@@ -442,19 +553,19 @@ impl ResolverTable {
 }
 
 struct FunctionCollector<'cx> {
-    res: &'cx mut Resolver,
-    defs: &'cx mut Definitions,
+    res: &'cx mut Environment,
     module: ModId,
     parent: Option<DefId>,
 }
 
 struct FunctionAnalyzer<'cx> {
-    res: &'cx mut Resolver,
-    defs: &'cx mut Definitions,
+    res: &'cx mut Environment,
     module: ModId,
     current_def: DefId,
     body: Body,
     block: BasicBlockId,
+    operand_stack: Vec<Operand>,
+    in_rhs: bool,
 }
 
 impl<'cx> FunctionAnalyzer<'cx> {
@@ -470,81 +581,191 @@ impl<'cx> FunctionAnalyzer<'cx> {
 }
 
 impl Visit for FunctionAnalyzer<'_> {
-    fn visit_member_expr(&mut self, n: &MemberExpr) {}
-
-    fn visit_expr(&mut self, n: &Expr) {
-        match n {
-            Expr::This(_) => todo!(),
-            Expr::Array(_) => todo!(),
-            Expr::Object(_) => todo!(),
-            Expr::Fn(_) => todo!(),
-            Expr::Unary(_) => todo!(),
-            Expr::Update(_) => todo!(),
-            Expr::Bin(_) => todo!(),
-            Expr::Assign(_) => todo!(),
-            Expr::Member(_) => todo!(),
-            Expr::SuperProp(_) => todo!(),
-            Expr::Cond(_) => todo!(),
-            Expr::Call(_) => todo!(),
-            Expr::New(_) => todo!(),
-            Expr::Seq(_) => todo!(),
-            Expr::Ident(_) => todo!(),
-            Expr::Lit(_) => todo!(),
-            Expr::Tpl(_) => todo!(),
-            Expr::TaggedTpl(_) => todo!(),
-            Expr::Arrow(_) => todo!(),
-            Expr::Class(_) => todo!(),
-            Expr::Yield(_) => todo!(),
-            Expr::MetaProp(_) => todo!(),
-            Expr::Await(_) => todo!(),
-            Expr::Paren(_) => todo!(),
-            Expr::JSXMember(_) => todo!(),
-            Expr::JSXNamespacedName(_) => todo!(),
-            Expr::JSXEmpty(_) => todo!(),
-            Expr::JSXElement(_) => todo!(),
-            Expr::JSXFragment(_) => todo!(),
-            Expr::TsTypeAssertion(_) => todo!(),
-            Expr::TsConstAssertion(_) => todo!(),
-            Expr::TsNonNull(_) => todo!(),
-            Expr::TsAs(_) => todo!(),
-            Expr::TsInstantiation(_) => todo!(),
-            Expr::TsSatisfies(_) => todo!(),
-            Expr::PrivateName(_) => todo!(),
-            Expr::OptChain(_) => todo!(),
-            Expr::Invalid(_) => todo!(),
-        }
-    }
-    fn visit_stmt(&mut self, n: &Stmt) {
-        match n {
-            Stmt::Block(_) => todo!(),
-            Stmt::Empty(_) => todo!(),
-            Stmt::Debugger(_) => todo!(),
-            Stmt::With(_) => todo!(),
-            Stmt::Return(_) => todo!(),
-            Stmt::Labeled(_) => todo!(),
-            Stmt::Break(_) => todo!(),
-            Stmt::Continue(_) => todo!(),
-            Stmt::If(_) => todo!(),
-            Stmt::Switch(_) => todo!(),
-            Stmt::Throw(_) => todo!(),
-            Stmt::Try(_) => todo!(),
-            Stmt::While(_) => todo!(),
-            Stmt::DoWhile(_) => todo!(),
-            Stmt::For(_) => todo!(),
-            Stmt::ForIn(_) => todo!(),
-            Stmt::ForOf(_) => todo!(),
-            Stmt::Decl(_) => todo!(),
-            Stmt::Expr(_) => todo!(),
+    fn visit_call_expr(&mut self, n: &CallExpr) {
+        n.visit_children_with(self);
+        let _props = normalize_callee_expr(&n.callee, self.res, self.module);
+        match _props.first() {
+            Some(&PropPath::Def(id)) => {
+                debug!("call from: {}", self.res.def_name(id));
+                debug!("call expr: {:?}", _props);
+            }
+            Some(PropPath::Unknown(id)) => {
+                debug!("call from: {}", id.0);
+                debug!("call expr: {:?}", _props);
+            }
+            _ => (),
         }
     }
 }
 
+struct ArgDefiner<'cx> {
+    res: &'cx mut Environment,
+    module: ModId,
+    func: DefId,
+    body: Body,
+}
+
+impl Visit for ArgDefiner<'_> {
+    fn visit_ident(&mut self, n: &Ident) {
+        let id = n.to_id();
+        let defid = self
+            .res
+            .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
+        self.res.add_parent(defid, self.func);
+        self.body.add_arg(defid, id);
+    }
+
+    fn visit_object_pat_prop(&mut self, n: &ObjectPatProp) {
+        match n {
+            ObjectPatProp::KeyValue(KeyValuePatProp { key, .. }) => key.visit_with(self),
+            ObjectPatProp::Assign(AssignPatProp { key, .. }) => self.visit_ident(key),
+            ObjectPatProp::Rest(_) => {}
+        }
+    }
+
+    fn visit_pat(&mut self, n: &Pat) {
+        match n {
+            Pat::Ident(_) | Pat::Array(_) => n.visit_children_with(self),
+            Pat::Object(ObjectPat { props, .. }) => props.visit_children_with(self),
+            Pat::Assign(AssignPat { left, .. }) => left.visit_with(self),
+            Pat::Expr(id) => {
+                if let Expr::Ident(id) = &**id {
+                    id.visit_with(self);
+                }
+            }
+            Pat::Invalid(_) => {}
+            Pat::Rest(_) => {}
+            Pat::Invalid(_) => {}
+        }
+    }
+}
+
+struct LocalDefiner<'cx> {
+    res: &'cx mut Environment,
+    module: ModId,
+    func: DefId,
+    body: Body,
+}
+
+impl Visit for LocalDefiner<'_> {
+    fn visit_ident(&mut self, n: &Ident) {
+        let id = n.to_id();
+        let defid = self.res.get_or_insert_sym(id.clone(), self.module);
+        self.res.try_add_parent(defid, self.func);
+        self.body.add_local_def(defid, id);
+    }
+
+    fn visit_var_declarator(&mut self, n: &VarDeclarator) {
+        n.name.visit_with(self);
+    }
+
+    fn visit_decl(&mut self, n: &Decl) {
+        match n {
+            Decl::Class(_) => {}
+            Decl::Fn(FnDecl { ident, .. }) => {
+                ident.visit_with(self);
+            }
+            Decl::Var(vars) => vars.visit_children_with(self),
+            Decl::TsInterface(_) | Decl::TsTypeAlias(_) | Decl::TsEnum(_) | Decl::TsModule(_) => {}
+        }
+    }
+
+    fn visit_arrow_expr(&mut self, _: &ArrowExpr) {}
+    fn visit_fn_decl(&mut self, _: &FnDecl) {}
+}
+
 impl Visit for FunctionCollector<'_> {
+    fn visit_function(&mut self, n: &Function) {
+        n.visit_children_with(self);
+        let owner = self.parent.unwrap_or_else(|| {
+            self.res
+                .add_anonymous("__UNKNOWN", AnonType::Closure, self.module)
+        });
+        let mut argdef = ArgDefiner {
+            res: self.res,
+            module: self.module,
+            func: owner,
+            body: Body::with_owner(owner),
+        };
+        n.params.visit_children_with(&mut argdef);
+        let body = argdef.body;
+        let mut localdef = LocalDefiner {
+            res: self.res,
+            module: self.module,
+            func: owner,
+            body,
+        };
+        n.body.visit_children_with(&mut localdef);
+        let body = localdef.body;
+        let mut analyzer = FunctionAnalyzer {
+            res: self.res,
+            module: self.module,
+            current_def: owner,
+            body,
+            block: BasicBlockId::default(),
+            operand_stack: vec![],
+            in_rhs: false,
+        };
+        n.body.visit_with(&mut analyzer);
+    }
+
+    fn visit_var_declarator(&mut self, n: &VarDeclarator) {
+        n.visit_children_with(self);
+        let Some(BindingIdent{id, ..}) = n.name.as_ident() else {
+            return;
+        };
+        let id = id.to_id();
+        match n.init.as_deref() {
+            Some(Expr::Fn(f)) => {
+                let defid = self
+                    .res
+                    .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
+                let old_parent = self.parent.replace(defid);
+                f.visit_with(self);
+                self.parent = old_parent;
+            }
+            Some(Expr::Arrow(f)) => {
+                let defid = self
+                    .res
+                    .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
+                let old_parent = self.parent.replace(defid);
+                f.visit_with(self);
+                self.parent = old_parent;
+            }
+            _ => {}
+        }
+    }
+
+    fn visit_call_expr(&mut self, n: &CallExpr) {
+        n.visit_children_with(self);
+        if let Some((def_id, propname, expr)) = as_resolver_def(n, self.res, self.module) {
+            info!("found possible resolver: {propname}");
+            match self.res.lookup_prop(def_id, propname) {
+                Some(def) => {
+                    info!("analyzing resolver def: {def:?}");
+                    let mut analyzer = FunctionAnalyzer {
+                        res: self.res,
+                        module: self.module,
+                        current_def: def,
+                        body: Body::with_owner(def),
+                        block: BasicBlockId::default(),
+                        operand_stack: vec![],
+                        in_rhs: false,
+                    };
+                    expr.visit_with(&mut analyzer);
+                }
+                None => {
+                    warn!("resolver def not found");
+                }
+            }
+        }
+    }
+
     fn visit_fn_decl(&mut self, n: &FnDecl) {
         let id = n.ident.to_id();
         let def = self.res.get_or_insert_sym(id, self.module);
         self.parent = Some(def);
-        n.function.visit_children_with(self);
+        n.function.visit_with(self);
         self.parent = None;
     }
 }
@@ -560,71 +781,20 @@ impl Lowerer<'_> {
         self.res.get_or_insert_sym(id, self.curr_mod)
     }
 
-    #[inline]
-    fn reserve_symbol(&mut self, id: Id) -> DefId {
-        self.res.reserve_sym(id, self.curr_mod)
-    }
-
-    fn defkind_from_ident(&self, id: Id) -> Option<DefKind> {
-        let cid = id.clone();
-        let defid = self.defid_from_ident(id)?;
-        Some(self.res.def_kind(defid))
+    fn res_from_ident(&self, id: Id) -> Option<DefRef<'_>> {
+        self.res.sym_to_def(id, self.curr_mod)
     }
 
     fn as_foreign_import(&self, imported_sym: Id, module: &str) -> Option<&ImportKind> {
-        match self.defkind_from_ident(imported_sym) {
-            Some(DefKind::Foreign(fid)) => self
-                .defs
-                .foreign
-                .get(fid)
-                .filter(|&item| item.module_name == *module)
-                .map(|item| &item.kind),
+        match self.res_from_ident(imported_sym) {
+            Some(DefRef::Foreign(item)) if item.module_name == *module => Some(&item.kind),
             _ => None,
         }
     }
 
-    #[inline]
-    fn next_key(&self) -> DefId {
-        self.res.next_key()
-    }
-
-    fn def_objlike(&mut self, id: Id, f: impl FnOnce(ObjId) -> ObjKind) -> (DefId, ObjId) {
-        let idlookup = id.clone();
-        match self.defid_from_ident(idlookup) {
-            Some(def) => {
-                let defkind = self.res.def_kind(def);
-                (def, defkind.as_objkind().unwrap().into_inner())
-            }
-            None => {
-                let next_key = self.next_key();
-                let objid = self.defs.classes.push_and_get_key(Class::new(next_key));
-                let objkind = f(objid);
-                self.res.add_sym(objkind.as_defkind(), id, self.curr_mod);
-                (next_key, objkind.into_inner())
-            }
-        }
-    }
-
-    fn add_sym_or_else(&mut self, id: Id, f: impl FnOnce(&mut Self, DefId) -> DefKind) -> DefId {
-        self.defid_from_ident(id.clone()).unwrap_or_else(|| {
-            let next_key = self.next_key();
-            let defkind = f(self, next_key);
-            self.res.add_sym(defkind, id, self.curr_mod)
-        })
-    }
-
-    fn def_method(&mut self, sym: JsWord) -> DefId {
-        let func_id = self.defs.funcs.push_and_get_key(Body::default());
-        self.res
-            .add_prop(DefKind::Function(func_id), sym, self.curr_mod)
-    }
-
     fn def_function(&mut self, id: Id) -> DefId {
-        self.defid_from_ident(id.clone()).unwrap_or_else(|| {
-            let funcid = self.defs.funcs.push_and_get_key(Body::default());
-            self.res
-                .add_sym(DefKind::Function(funcid), id, self.curr_mod)
-        })
+        self.res
+            .get_or_overwrite_sym(id, self.curr_mod, DefRes::Function(()))
     }
 }
 
@@ -634,7 +804,11 @@ enum ResolverDef {
     Handler,
 }
 
-fn as_resolver(expr: &Expr, res_table: &Resolver, module: ModId) -> Option<(ObjId, ResolverDef)> {
+fn as_resolver(
+    expr: &Expr,
+    res_table: &Environment,
+    module: ModId,
+) -> Option<(DefId, ResolverDef)> {
     if let Expr::Member(MemberExpr {
         obj,
         prop: MemberProp::Ident(prop),
@@ -642,11 +816,12 @@ fn as_resolver(expr: &Expr, res_table: &Resolver, module: ModId) -> Option<(ObjI
     }) = expr
     {
         let id = obj.as_ident()?;
-        let def = res_table.sym_to_kind(id.to_id(), module)?;
+        let def_id = res_table.sym_to_id(id.to_id(), module)?;
+        let def = res_table.def_ref(def_id);
         if let DefKind::Resolver(obj) = def {
             match &*prop.sym {
-                "getDefinitions" => return Some((obj, ResolverDef::Handler)),
-                "define" => return Some((obj, ResolverDef::FnDef)),
+                "getDefinitions" => return Some((def_id, ResolverDef::Handler)),
+                "define" => return Some((def_id, ResolverDef::FnDef)),
                 unknown => {
                     warn!("unknown prop: {unknown} on resolver: {}", &*id.sym);
                 }
@@ -654,6 +829,27 @@ fn as_resolver(expr: &Expr, res_table: &Resolver, module: ModId) -> Option<(ObjI
         }
     }
     None
+}
+
+fn as_resolver_def<'a>(
+    call: &'a CallExpr,
+    res: &Environment,
+    module: ModId,
+) -> Option<(DefId, &'a JsWord, &'a Expr)> {
+    let Some((objid, ResolverDef::FnDef)) = call
+            .callee
+            .as_expr()
+            .and_then(|expr| as_resolver(expr, res, module)) else
+    {
+        return None;
+    };
+    let [ExprOrSpread { expr: name, .. }, ExprOrSpread { expr: args, .. }] = &*call.args else {
+        return None;
+    };
+    match &**name {
+        Expr::Lit(Lit::Str(Str { value, .. })) => Some((objid, value, args)),
+        _ => None,
+    }
 }
 
 impl Visit for Lowerer<'_> {
@@ -666,7 +862,7 @@ impl Visit for Lowerer<'_> {
                 {
                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**name {
                         let fname = value.clone();
-                        let class = &mut self.defs.classes[objid];
+                        let class = self.res.def_mut(objid).expect_class();
                         class.pub_members.push((fname, self.curr_def.unwrap()));
                     }
                 }
@@ -709,24 +905,44 @@ impl Visit for Lowerer<'_> {
                                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
                                         let fname = value.clone();
                                         println!("defining function: {}", &*fname);
-                                        let class = &mut self.defs.classes[objid];
-                                        class.pub_members.push((fname, self.curr_def.unwrap()));
+                                        let member_def = match &**args {
+                                            Expr::Fn(_) | Expr::Arrow(_) => self.res.add_anonymous(
+                                                fname.clone(),
+                                                AnonType::Closure,
+                                                self.curr_mod,
+                                            ),
+                                            Expr::Ident(id) => self.get_or_insert_sym(id.to_id()),
+                                            _ => {
+                                                warn!("unknown function def: {:?}", args);
+                                                self.res.add_anonymous(
+                                                    fname.clone(),
+                                                    AnonType::Unknown,
+                                                    self.curr_mod,
+                                                )
+                                            }
+                                        };
+                                        let class = self.res.def_mut(objid).expect_class();
+                                        class.pub_members.push((fname, member_def));
                                     }
                                 }
                             }
                             ResolverDef::Handler => {
-                                let def_id = self.get_or_insert_sym(id);
-                                let res_def_id = self.defs.classes[objid].def;
-                                *self.res.def_kind_mut(def_id) =
-                                    DefKind::ResolverHandler(res_def_id);
+                                self.res.get_or_overwrite_sym(
+                                    id,
+                                    self.curr_mod,
+                                    DefKind::ResolverHandler(objid),
+                                );
                             }
                         }
                     }
                     expr.visit_children_with(self);
                 }
                 Expr::Object(ObjectLit { props, .. }) => {
-                    let (def_id, obj_id) = self.def_objlike(id, ObjKind::Lit);
+                    let def_id =
+                        self.res
+                            .get_or_overwrite_sym(id, self.curr_mod, DefKind::GlobalObj(()));
                     let old_def = self.curr_def.replace(def_id);
+                    // TODO:add parent
                     for prop in props {
                         match prop {
                             // TODO: track 'spreaded' objects
@@ -735,15 +951,19 @@ impl Visit for Lowerer<'_> {
                                 Prop::Shorthand(id) => {
                                     let id = id.to_id();
                                     let sym = id.0.clone();
-                                    let def_id = self.reserve_symbol(id);
-                                    self.defs.classes[obj_id].pub_members.push((sym, def_id));
+                                    let def_id = self.get_or_insert_sym(id);
+                                    self.res
+                                        .def_mut(def_id)
+                                        .expect_class()
+                                        .pub_members
+                                        .push((sym, self.curr_def.unwrap()));
                                 }
                                 Prop::KeyValue(KeyValueProp { key, value }) => {
-                                    let cls = &mut self.defs.classes[obj_id];
                                     if let sym @ Some(_) = key.as_symbol() {
                                         let defid = value.as_ident().map(|id| {
                                             self.res.get_or_insert_sym(id.to_id(), self.curr_mod)
                                         });
+                                        let cls = self.res.def_mut(def_id).expect_class();
                                         cls.pub_members.extend(sym.zip(defid));
                                     }
                                 }
@@ -756,9 +976,16 @@ impl Visit for Lowerer<'_> {
                                 Prop::Method(MethodProp { key, function }) => {
                                     function.body.visit_with(self);
                                     if let Some(sym) = key.as_symbol() {
-                                        let def_id = self.def_method(sym.clone());
-                                        let cls = &mut self.defs.classes[obj_id];
-                                        cls.pub_members.push((sym, def_id));
+                                        let def_id = self.res.add_anonymous(
+                                            sym.clone(),
+                                            AnonType::Closure,
+                                            self.curr_mod,
+                                        );
+                                        self.res
+                                            .def_mut(def_id)
+                                            .expect_class()
+                                            .pub_members
+                                            .push((sym, def_id));
                                     }
                                 }
                             },
@@ -774,10 +1001,8 @@ impl Visit for Lowerer<'_> {
                     if Some(&ImportKind::Default)
                         == self.as_foreign_import(callee_id, "@forge/resolver")
                     {
-                        self.add_sym_or_else(id, |this, to_insert| {
-                            let obj_id = this.defs.classes.push_and_get_key(Class::new(to_insert));
-                            DefKind::Resolver(obj_id)
-                        });
+                        self.res
+                            .get_or_overwrite_sym(id, self.curr_mod, DefKind::Resolver(()));
                     }
                     expr.visit_children_with(self);
                 }
@@ -811,14 +1036,14 @@ impl AsSymbol for PropName {
 }
 
 impl ExportCollector<'_> {
-    fn add_export(&mut self, def: DefKind, id: Id) -> DefId {
+    fn add_export(&mut self, def: DefRes, id: Id) -> DefId {
         let exported_sym = id.0.clone();
         let defid = self.res_table.add_sym(def, id, self.curr_mod);
         self.exports.push((exported_sym, defid));
         defid
     }
 
-    fn add_default(&mut self, def: DefKind, id: Option<Id>) {
+    fn add_default(&mut self, def: DefRes, id: Option<Id>) {
         let defid = match id {
             Some(id) => self.res_table.add_sym(def, id, self.curr_mod),
             None => {
@@ -863,7 +1088,7 @@ impl Visit for ImportCollector<'_> {
                     .resolver
                     .resolve_local_export(ModId::from(id), &import_name)
                 {
-                    self.resolver.res_table.symbol_to_id.insert(
+                    self.resolver.resolver.symbol_to_id.insert(
                         Symbol {
                             module: self.curr_mod,
                             id: local,
@@ -878,8 +1103,8 @@ impl Visit for ImportCollector<'_> {
                     module_name: self.current_import.clone(),
                 });
                 self.resolver
-                    .res_table
-                    .add_sym(DefKind::Foreign(foreign_id), local, self.curr_mod);
+                    .resolver
+                    .add_sym(DefRes::Foreign(foreign_id), local, self.curr_mod);
             }
         }
     }
@@ -895,7 +1120,7 @@ impl Visit for ImportCollector<'_> {
                 debug_assert_ne!(self.curr_mod, mod_id);
                 match self.resolver.default_export(mod_id) {
                     Some(def) => {
-                        self.resolver.res_table.symbol_to_id.insert(
+                        self.resolver.resolver.symbol_to_id.insert(
                             Symbol {
                                 module: self.curr_mod,
                                 id: local,
@@ -913,8 +1138,8 @@ impl Visit for ImportCollector<'_> {
                 });
 
                 self.resolver
-                    .res_table
-                    .add_sym(DefKind::Foreign(foreign_id), local, self.curr_mod);
+                    .resolver
+                    .add_sym(DefRes::Foreign(foreign_id), local, self.curr_mod);
             }
         };
     }
@@ -928,18 +1153,18 @@ impl Visit for ImportCollector<'_> {
             Ok(id) => {
                 let mod_id = ModId::from(id);
                 debug_assert_ne!(self.curr_mod, mod_id);
-                DefKind::ModuleNs(mod_id)
+                DefRes::ModuleNs(mod_id)
             }
             Err(_) => {
                 let foreign_id = self.foreign_defs.push_and_get_key(ForeignItem {
                     kind: ImportKind::Star,
                     module_name: self.current_import.clone(),
                 });
-                DefKind::Foreign(foreign_id)
+                DefRes::Foreign(foreign_id)
             }
         };
         self.resolver
-            .res_table
+            .resolver
             .add_sym(defkind, local, self.curr_mod);
     }
 
@@ -956,11 +1181,11 @@ impl Visit for ExportCollector<'_> {
         match &n.decl {
             Decl::Class(ClassDecl { ident, .. }) => {
                 let ident = ident.to_id();
-                self.add_export(DefKind::Class(INVALID_CLASS), ident);
+                self.add_export(DefRes::Class(()), ident);
             }
             Decl::Fn(FnDecl { ident, .. }) => {
                 let ident = ident.to_id();
-                self.add_export(DefKind::Function(INVALID_FUNC), ident);
+                self.add_export(DefRes::Function(()), ident);
             }
             Decl::Var(vardecls) => {
                 let VarDecl { decls, .. } = &**vardecls;
@@ -977,7 +1202,7 @@ impl Visit for ExportCollector<'_> {
         // TODO: handle other kinds of destructuring patterns
         if let Pat::Ident(BindingIdent { id, .. }) = &n.name {
             let id = id.to_id();
-            self.add_export(DefKind::Undefined, id);
+            self.add_export(DefRes::Undefined, id);
         }
     }
 
@@ -1003,54 +1228,156 @@ impl Visit for ExportCollector<'_> {
 
     fn visit_export_default_decl(&mut self, n: &ExportDefaultDecl) {
         match &n.decl {
-            DefaultDecl::Class(ClassExpr { ident, .. }) => self.add_default(
-                DefKind::Class(INVALID_CLASS),
-                ident.as_ref().map(Ident::to_id),
-            ),
-            DefaultDecl::Fn(FnExpr { ident, .. }) => self.add_default(
-                DefKind::Function(INVALID_FUNC),
-                ident.as_ref().map(Ident::to_id),
-            ),
+            DefaultDecl::Class(ClassExpr { ident, .. }) => {
+                self.add_default(DefRes::Class(()), ident.as_ref().map(Ident::to_id))
+            }
+            DefaultDecl::Fn(FnExpr { ident, .. }) => {
+                self.add_default(DefRes::Function(()), ident.as_ref().map(Ident::to_id))
+            }
             DefaultDecl::TsInterfaceDecl(_) => {}
         }
     }
 
     fn visit_export_named_specifier(&mut self, n: &ExportNamedSpecifier) {
         let orig_id = n.orig.as_id();
-        let orig = self.add_export(DefKind::Undefined, orig_id);
+        let orig = self.add_export(DefRes::default(), orig_id);
         if let Some(id) = &n.exported {
             let exported_id = id.as_id();
-            self.add_export(DefKind::ExportAlias(orig), exported_id);
+            self.add_export(DefRes::ExportAlias(orig), exported_id);
         }
     }
 
     fn visit_export_default_expr(&mut self, _: &ExportDefaultExpr) {
-        self.add_default(DefKind::Undefined, None);
+        self.add_default(DefRes::Undefined, None);
     }
 }
 
-impl Resolver {
+impl Environment {
+    #[inline]
     fn new() -> Self {
         Self::default()
     }
 
+    #[inline]
     fn next_key(&self) -> DefId {
-        self.res_table.defs.next_key()
+        self.resolver.defs.next_key()
     }
 
     #[inline]
-    fn add_prop(&mut self, kind: DefKind, sym: JsWord, module: ModId) -> DefId {
-        self.res_table.add_prop(kind, sym, module)
+    fn try_add_parent(&mut self, child: DefId, parent: DefId) {
+        self.resolver.parent.entry(child).or_insert(parent);
     }
 
     #[inline]
-    fn add_sym(&mut self, kind: DefKind, id: Id, module: ModId) -> DefId {
-        self.res_table.add_sym(kind, id, module)
+    fn add_parent(&mut self, child: DefId, parent: DefId) {
+        self.resolver.parent.insert(child, parent);
     }
 
     #[inline]
     fn get_or_insert_sym(&mut self, id: Id, module: ModId) -> DefId {
-        self.res_table.get_or_insert_sym(id, module)
+        let def_id = self.resolver.get_or_insert_sym(id, module);
+        let def_id2 = self.defs.defs.get(def_id).copied().map_or_else(
+            || self.defs.defs.push_and_get_key(DefKey::default()),
+            |_| def_id,
+        );
+        debug_assert_eq!(def_id, def_id2);
+        def_id
+    }
+
+    fn new_key_from_res(&mut self, id: DefId, res: DefRes) -> DefKey {
+        match res {
+            DefKind::Arg => DefKind::Arg,
+            DefKind::Function(_) => {
+                let func_id = self.defs.funcs.push_and_get_key(Body::with_owner(id));
+                DefKind::Function(func_id)
+            }
+            DefKind::Closure(_) => {
+                let closure_id = self.defs.funcs.push_and_get_key(Body::with_owner(id));
+                DefKind::Closure(closure_id)
+            }
+            DefKind::GlobalObj(_) => {
+                let obj_id = self.defs.classes.push_and_get_key(Class::new(id));
+                DefKind::GlobalObj(obj_id)
+            }
+            DefKind::Class(_) => {
+                let class_id = self.defs.classes.push_and_get_key(Class::new(id));
+                DefKind::Class(class_id)
+            }
+            DefKind::Resolver(_) => {
+                let obj_id = self.defs.classes.push_and_get_key(Class::new(id));
+                DefKind::Resolver(obj_id)
+            }
+            DefKind::ExportAlias(i) => DefKind::ExportAlias(i),
+            DefKind::Foreign(i) => DefKind::Foreign(i),
+            DefKind::ResolverHandler(i) => DefKind::ResolverHandler(i),
+            DefKind::ResolverDef(i) => DefKind::ResolverDef(i),
+            DefKind::ModuleNs(i) => DefKind::ModuleNs(i),
+            DefKind::Undefined => DefKind::Undefined,
+        }
+    }
+
+    fn add_anonymous(&mut self, name: impl Into<JsWord>, kind: AnonType, module: ModId) -> DefId {
+        match kind {
+            AnonType::Obj => {
+                let id = self
+                    .resolver
+                    .add_anon(DefRes::GlobalObj(()), name.into(), module);
+                let obj_id = self.defs.classes.push_and_get_key(Class::new(id));
+                let id2 = self.defs.defs.push_and_get_key(DefKind::GlobalObj(obj_id));
+                debug_assert_eq!(id, id2);
+                id
+            }
+            AnonType::Closure => {
+                let id = self
+                    .resolver
+                    .add_anon(DefRes::Closure(()), name.into(), module);
+                let func_id = self.defs.funcs.push_and_get_key(Body::with_owner(id));
+                let id2 = self.defs.defs.push_and_get_key(DefKind::Closure(func_id));
+                debug_assert_eq!(id, id2);
+                id
+            }
+            AnonType::Unknown => {
+                let id = self
+                    .resolver
+                    .add_anon(DefRes::Undefined, name.into(), module);
+                let id2 = self.defs.defs.push_and_get_key(DefKind::Undefined);
+                debug_assert_eq!(id, id2);
+                id
+            }
+        }
+    }
+
+    fn module_export<I: PartialEq<str> + ?Sized>(
+        &self,
+        module: ModId,
+        export_name: &I,
+    ) -> Option<DefId> {
+        if *export_name == *"default" {
+            self.default_export(module)
+        } else {
+            self.exports[module]
+                .iter()
+                .find_map(|(ident, defid)| (*export_name == **ident).then_some(*defid))
+        }
+    }
+
+    #[inline]
+    fn get_or_overwrite_sym(&mut self, id: Id, module: ModId, kind: DefRes) -> DefId {
+        let defid = self.resolver.get_or_insert_sym(id, module);
+        self.resolver.defs[defid] = kind;
+        match self.defs.defs.get(defid).copied() {
+            Some(key) if key == kind => return defid,
+            Some(_) => {
+                let key = self.new_key_from_res(defid, kind);
+                self.defs.defs[defid] = key;
+            }
+            None => {
+                let key = self.new_key_from_res(defid, kind);
+                let def2 = self.defs.defs.push_and_get_key(key);
+                debug_assert_eq!(defid, def2);
+            }
+        }
+        defid
     }
 
     #[inline]
@@ -1060,7 +1387,7 @@ impl Resolver {
 
     #[inline]
     pub fn def_name(&self, def: DefId) -> &str {
-        &self.res_table.names[def]
+        &self.resolver.names[def]
     }
 
     #[inline]
@@ -1069,29 +1396,110 @@ impl Resolver {
     }
 
     #[inline]
-    pub fn def_kind(&self, def: DefId) -> DefKind {
-        self.res_table.defs[def]
+    pub fn def_ref(&self, def: DefId) -> DefRef<'_> {
+        match self.defs.defs[def] {
+            DefKind::Arg => DefKind::Arg,
+            DefKind::Function(f) => {
+                let body = &self.defs.funcs[f];
+                DefKind::Function(body)
+            }
+            DefKind::ExportAlias(d) => DefKind::ExportAlias(d),
+            DefKind::GlobalObj(id) => {
+                let class = &self.defs.classes[id];
+                DefKind::GlobalObj(class)
+            }
+            DefKind::Class(id) => {
+                let class = &self.defs.classes[id];
+                DefKind::Class(class)
+            }
+            DefKind::Foreign(id) => {
+                let foreign = &self.defs.foreign[id];
+                DefKind::Foreign(foreign)
+            }
+            DefKind::ResolverHandler(id) => DefKind::ResolverHandler(id),
+            DefKind::Resolver(id) => {
+                let class = &self.defs.classes[id];
+                DefKind::Resolver(class)
+            }
+            DefKind::ResolverDef(id) => DefKind::ResolverDef(id),
+            DefKind::Closure(id) => {
+                let body = &self.defs.funcs[id];
+                DefKind::Closure(body)
+            }
+            DefKind::ModuleNs(id) => DefKind::ModuleNs(id),
+            DefKind::Undefined => DefKind::Undefined,
+        }
     }
 
-    #[inline]
-    fn reserve_sym(&mut self, id: Id, module: ModId) -> DefId {
-        self.res_table.reserve_symbol(id, module)
+    fn lookup_prop(&self, obj: DefId, prop: &JsWord) -> Option<DefId> {
+        match self.def_ref(obj) {
+            DefKind::GlobalObj(obj) | DefKind::Class(obj) | DefKind::Resolver(obj) => {
+                obj.find_member(prop)
+            }
+            DefKind::ExportAlias(def) | DefKind::ResolverHandler(def) => {
+                self.lookup_prop(def, prop)
+            }
+            DefKind::ModuleNs(mid) => self.module_export(mid, prop),
+            // FIXME: fully resolve foreign items here as well
+            DefKind::Foreign(_)
+            | DefKind::Arg
+            | DefKind::Function(_)
+            | DefKind::Closure(_)
+            | DefKind::ResolverDef(_)
+            | DefKind::Undefined => None,
+        }
     }
 
     #[inline]
     fn sym_to_id(&self, id: Id, module: ModId) -> Option<DefId> {
         let sym = Symbol { module, id };
-        self.res_table.symbol_to_id.get(&sym).copied()
+        self.resolver.symbol_to_id.get(&sym).copied()
     }
 
     #[inline]
-    fn sym_to_kind(&self, id: Id, module: ModId) -> Option<DefKind> {
-        self.res_table.sym_kind(id, module)
+    fn sym_to_def(&self, id: Id, module: ModId) -> Option<DefRef<'_>> {
+        self.resolver.sym_id(id, module).map(|id| self.def_ref(id))
     }
 
     #[inline]
-    fn def_kind_mut(&mut self, def: DefId) -> &mut DefKind {
-        &mut self.res_table.defs[def]
+    fn sym_to_def_mut(&mut self, id: Id, module: ModId) -> Option<DefMut<'_>> {
+        self.resolver.sym_id(id, module).map(|id| self.def_mut(id))
+    }
+
+    #[inline]
+    fn def_mut(&mut self, def: DefId) -> DefMut<'_> {
+        match self.defs.defs[def] {
+            DefKind::Arg => DefKind::Arg,
+            DefKind::Function(f) => {
+                let body = &mut self.defs.funcs[f];
+                DefKind::Function(body)
+            }
+            DefKind::ExportAlias(d) => DefKind::ExportAlias(d),
+            DefKind::GlobalObj(id) => {
+                let class = &mut self.defs.classes[id];
+                DefKind::GlobalObj(class)
+            }
+            DefKind::Class(id) => {
+                let class = &mut self.defs.classes[id];
+                DefKind::Class(class)
+            }
+            DefKind::Foreign(id) => {
+                let foreign = &mut self.defs.foreign[id];
+                DefKind::Foreign(foreign)
+            }
+            DefKind::ResolverHandler(id) => DefKind::ResolverHandler(id),
+            DefKind::Resolver(id) => {
+                let class = &mut self.defs.classes[id];
+                DefKind::Resolver(class)
+            }
+            DefKind::ResolverDef(id) => DefKind::ResolverDef(id),
+            DefKind::Closure(id) => {
+                let body = &mut self.defs.funcs[id];
+                DefKind::Closure(body)
+            }
+            DefKind::ModuleNs(id) => DefKind::ModuleNs(id),
+            DefKind::Undefined => DefKind::Undefined,
+        }
     }
 
     fn resolve_local_export(&self, module: ModId, name: &JsWord) -> Option<DefId> {
@@ -1102,6 +1510,54 @@ impl Resolver {
                     .iter()
                     .find_map(|&(ref export, def_id)| (*export == *name).then_some(def_id))
             }),
+        }
+    }
+}
+
+impl Definitions {
+    fn new(
+        res: impl IntoIterator<Item = (DefId, DefRes)>,
+        foreign: TiVec<ForeignId, ForeignItem>,
+    ) -> Self {
+        let mut funcs = TiVec::new();
+        let mut classes = TiVec::new();
+        let defs: TiVec<_, _> = res
+            .into_iter()
+            .map(|(id, def)| match def {
+                DefKind::Arg => DefKind::Arg,
+                DefKind::Function(_) => {
+                    let fid = funcs.push_and_get_key(Body::with_owner(id));
+                    DefKind::Function(fid)
+                }
+                DefKind::ExportAlias(d) => DefKind::ExportAlias(d),
+                DefKind::GlobalObj(_) => {
+                    let objid = classes.push_and_get_key(Class::new(id));
+                    DefKind::GlobalObj(objid)
+                }
+                DefKind::Class(_) => {
+                    let objid = classes.push_and_get_key(Class::new(id));
+                    DefKind::Class(objid)
+                }
+                DefKind::Foreign(d) => DefKind::Foreign(d),
+                DefKind::ResolverHandler(d) => DefKind::ResolverHandler(d),
+                DefKind::Resolver(_) => {
+                    let objid = classes.push_and_get_key(Class::new(id));
+                    DefKind::Resolver(objid)
+                }
+                DefKind::ResolverDef(d) => DefKind::ResolverDef(d),
+                DefKind::Closure(_) => {
+                    let fid = funcs.push_and_get_key(Body::with_owner(id));
+                    DefKind::Closure(fid)
+                }
+                DefKind::ModuleNs(d) => DefKind::ModuleNs(d),
+                DefKind::Undefined => DefKind::Undefined,
+            })
+            .collect();
+        Self {
+            defs,
+            funcs,
+            classes,
+            foreign,
         }
     }
 }
@@ -1143,39 +1599,45 @@ impl ObjKind {
     }
 
     #[inline]
-    fn as_defkind(&self) -> DefKind {
+    fn as_defkind(&self) -> DefKey {
         match *self {
-            ObjKind::Class(id) => DefKind::Class(id),
-            ObjKind::Lit(id) => DefKind::ObjLit(id),
-            ObjKind::Resolver(id) => DefKind::Resolver(id),
+            ObjKind::Class(id) => DefKey::Class(id),
+            ObjKind::Lit(id) => DefKey::GlobalObj(id),
+            ObjKind::Resolver(id) => DefKey::Resolver(id),
         }
     }
 }
 
-impl DefKind {
+impl DefKey {
     #[inline]
     fn as_objkind(&self) -> Option<ObjKind> {
         match *self {
-            DefKind::Class(id) => Some(ObjKind::Class(id)),
-            DefKind::Resolver(id) => Some(ObjKind::Resolver(id)),
-            DefKind::ObjLit(id) => Some(ObjKind::Lit(id)),
-            DefKind::Function(_)
-            | DefKind::ExportAlias(_)
-            | DefKind::ResolverHandler(_)
-            | DefKind::ModuleNs(_)
-            | DefKind::Foreign(_)
-            | DefKind::Undefined => None,
+            DefKey::Class(id) => Some(ObjKind::Class(id)),
+            DefKey::Resolver(id) => Some(ObjKind::Resolver(id)),
+            DefKey::GlobalObj(id) => Some(ObjKind::Lit(id)),
+            DefKey::Function(_)
+            | DefKey::ResolverDef(_)
+            | DefKey::Closure(_)
+            | DefKey::Arg
+            | DefKey::ExportAlias(_)
+            | DefKey::ResolverHandler(_)
+            | DefKey::ModuleNs(_)
+            | DefKey::Foreign(_)
+            | DefKey::Undefined => None,
         }
     }
 }
 
-impl fmt::Display for DefKind {
+impl<F, O, I> fmt::Display for DefKind<F, O, I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DefKind::Class(_) => write!(f, "class"),
+            DefKind::ResolverDef(_) => write!(f, "resolver def"),
             DefKind::Resolver(_) => write!(f, "resolver"),
-            DefKind::ObjLit(_) => write!(f, "object literal"),
+            DefKind::Arg => write!(f, "argument"),
+            DefKind::GlobalObj(_) => write!(f, "object literal"),
             DefKind::Function(_) => write!(f, "function"),
+            DefKind::Closure(_) => write!(f, "closure"),
             DefKind::ExportAlias(_) => write!(f, "export alias"),
             DefKind::ResolverHandler(_) => write!(f, "resolver handler"),
             DefKind::ModuleNs(_) => write!(f, "module namespace"),
@@ -1201,7 +1663,7 @@ impl fmt::Display for ForeignItem {
     }
 }
 
-impl From<ObjKind> for DefKind {
+impl From<ObjKind> for DefKey {
     #[inline]
     fn from(value: ObjKind) -> Self {
         value.as_defkind()
