@@ -9,14 +9,20 @@ use swc_core::{
     common::SyntaxContext,
     ecma::{
         ast::{
-            ArrowExpr, AssignPat, AssignPatProp, AssignProp, BindingIdent, CallExpr, Callee,
-            ClassDecl, ClassExpr, ComputedPropName, Decl, DefaultDecl, ExportAll, ExportDecl,
-            ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier, Expr, ExprOrSpread, FnDecl,
-            FnExpr, Function, Id, Ident, ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier,
-            ImportStarAsSpecifier, KeyValuePatProp, KeyValueProp, Lit, MemberExpr, MemberProp,
-            MethodProp, Module, ModuleDecl, ModuleExportName, ModuleItem, NewExpr, ObjectLit,
-            ObjectPat, ObjectPatProp, Pat, PrivateName, Prop, PropName, PropOrSpread, Stmt, Str,
-            VarDecl, VarDeclarator,
+            ArrayLit, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp, AssignProp,
+            AwaitExpr, BinExpr, BindingIdent, BlockStmt, BreakStmt, CallExpr, Callee, ClassDecl,
+            ClassExpr, ComputedPropName, CondExpr, ContinueStmt, Decl, DefaultDecl, DoWhileStmt,
+            ExportAll, ExportDecl, ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier,
+            Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForInStmt, ForOfStmt, ForStmt, Function,
+            Id, Ident, IfStmt, ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier,
+            ImportStarAsSpecifier, KeyValuePatProp, KeyValueProp, LabeledStmt, Lit, MemberExpr,
+            MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl, ModuleExportName, ModuleItem,
+            NewExpr, ObjectLit, ObjectPat, ObjectPatProp, OptCall, OptChainBase, OptChainExpr,
+            ParenExpr, Pat, PatOrExpr, PrivateName, Prop, PropName, PropOrSpread, ReturnStmt,
+            SeqExpr, Stmt, Str, Super, SuperProp, SuperPropExpr, SwitchStmt, TaggedTpl, ThisExpr,
+            ThrowStmt, Tpl, TryStmt, TsAsExpr, TsConstAssertion, TsInstantiation, TsNonNullExpr,
+            TsSatisfiesExpr, TsTypeAssertion, UnaryExpr, UpdateExpr, VarDecl, VarDeclarator,
+            WhileStmt, WithStmt, YieldExpr,
         },
         atoms::JsWord,
         visit::{noop_visit_type, Visit, VisitWith},
@@ -27,7 +33,7 @@ use typed_index_collections::{TiSlice, TiVec};
 
 use crate::{
     ctx::ModId,
-    ir::{BasicBlockId, Body, Inst, Operand, Terminator},
+    ir::{BasicBlockId, Body, Inst, Literal, Operand, Projection, Rvalue, Terminator, Variable},
 };
 
 create_newtype! {
@@ -562,10 +568,11 @@ struct FunctionAnalyzer<'cx> {
     res: &'cx mut Environment,
     module: ModId,
     current_def: DefId,
+    assigning_to: Option<Variable>,
     body: Body,
     block: BasicBlockId,
     operand_stack: Vec<Operand>,
-    in_rhs: bool,
+    in_lhs: bool,
 }
 
 impl<'cx> FunctionAnalyzer<'cx> {
@@ -578,22 +585,256 @@ impl<'cx> FunctionAnalyzer<'cx> {
     fn push_curr_inst(&mut self, inst: Inst) {
         self.body.push_inst(self.block, inst);
     }
+
+    fn lower_member(&mut self, obj: &Expr, prop: &MemberProp) -> Operand {
+        let obj = self.lower_expr(obj);
+        let Operand::Var(mut var) = obj else {
+            // FIXME: handle literals
+            return obj;
+        };
+        match prop {
+            MemberProp::Ident(id) | MemberProp::PrivateName(PrivateName { id, .. }) => {
+                let id = id.to_id();
+                var.projections.push(Projection::Known(id.0));
+            }
+            MemberProp::Computed(ComputedPropName { expr, .. }) => {
+                let opnd = self.lower_expr(expr);
+                var.projections
+                    .push(self.body.resolve_prop(self.block, opnd));
+            }
+        }
+        Operand::Var(var)
+    }
+
+    // TODO: This can probably be made into a trait
+    fn lower_expr(&mut self, n: &Expr) -> Operand {
+        match n {
+            Expr::This(_) => Operand::Var(Variable::THIS),
+            Expr::Array(ArrayLit { elems, .. }) => {
+                let array_lit: Vec<_> = elems
+                    .iter()
+                    .map(|e| {
+                        e.as_ref()
+                            .map_or(Operand::UNDEF, |ExprOrSpread { spread, expr }| {
+                                self.lower_expr(expr)
+                            })
+                    })
+                    .collect();
+                Operand::UNDEF
+            }
+            Expr::Object(ObjectLit { span, props }) => {
+                // TODO: lower object literals
+                Operand::UNDEF
+            }
+            Expr::Fn(_) => Operand::UNDEF,
+            Expr::Unary(UnaryExpr { op, arg, .. }) => {
+                let arg = self.lower_expr(arg);
+                let tmp = self
+                    .body
+                    .push_tmp(self.block, Rvalue::Unary(op.into(), arg), None);
+                Operand::with_var(tmp)
+            }
+            Expr::Update(UpdateExpr {
+                op, prefix, arg, ..
+            }) => {
+                // FIXME: Handle op
+                self.lower_expr(arg)
+            }
+            Expr::Bin(BinExpr {
+                op, left, right, ..
+            }) => {
+                let left = self.lower_expr(left);
+                let right = self.lower_expr(right);
+                let tmp = self
+                    .body
+                    .push_tmp(self.block, Rvalue::Bin(op.into(), left, right), None);
+                Operand::with_var(tmp)
+            }
+
+            Expr::SuperProp(SuperPropExpr { obj, prop, .. }) => {
+                let mut super_var = Variable::SUPER;
+                match prop {
+                    SuperProp::Ident(id) => {
+                        let id = id.to_id().0;
+                        super_var.projections.push(Projection::Known(id));
+                    }
+                    SuperProp::Computed(ComputedPropName { expr, .. }) => {
+                        let opnd = self.lower_expr(expr);
+                        let prop = self.body.resolve_prop(self.block, opnd);
+                        super_var.projections.push(prop);
+                    }
+                }
+                Operand::Var(super_var)
+            }
+            Expr::Assign(AssignExpr {
+                op, left, right, ..
+            }) => match left {
+                PatOrExpr::Expr(_) => todo!(),
+                PatOrExpr::Pat(_) => todo!(),
+            },
+            Expr::Member(MemberExpr { obj, prop, .. }) => self.lower_member(obj, prop),
+            Expr::Cond(CondExpr {
+                test, cons, alt, ..
+            }) => self.lower_expr(test),
+            Expr::Call(n) => {
+                let mut args = Vec::with_capacity(n.args.len());
+                for ExprOrSpread { spread, expr } in &n.args {
+                    let arg = self.lower_expr(expr);
+                    args.push(arg);
+                }
+                let callee = match &n.callee {
+                    Callee::Super(_) => Operand::Var(Variable::SUPER),
+                    Callee::Import(_) => Operand::UNDEF,
+                    Callee::Expr(expr) => self.lower_expr(expr),
+                };
+                let props = normalize_callee_expr(&n.callee, self.res, self.module);
+                match props.first() {
+                    Some(&PropPath::Def(id)) => {
+                        debug!("call from: {}", self.res.def_name(id));
+                        debug!("call expr: {:?}", props);
+                    }
+                    Some(PropPath::Unknown(id)) => {
+                        debug!("call from: {}", id.0);
+                        debug!("call expr: {:?}", props);
+                    }
+                    _ => (),
+                }
+                todo!()
+            }
+            Expr::New(NewExpr { callee, args, .. }) => Operand::UNDEF,
+            Expr::Seq(SeqExpr { exprs, .. }) => {
+                if let Some((last, rest)) = exprs.split_last() {
+                    for expr in rest {
+                        let opnd = self.lower_expr(expr);
+                        self.body.push_expr(self.block, Rvalue::Read(opnd));
+                    }
+                    self.lower_expr(last)
+                } else {
+                    Literal::Undef.into()
+                }
+            }
+            Expr::Ident(id) => {
+                let id = id.to_id();
+                let Some(def) = self.res.sym_to_id(id.clone(), self.module) else {
+                    warn!("unknown symbol: {}", id.0);
+                    return Literal::Undef.into();
+                };
+                let var = self.body.get_or_insert_global(def);
+                Operand::with_var(var)
+            }
+            Expr::Lit(lit) => lit.clone().into(),
+            Expr::Tpl(Tpl { exprs, quasis, .. }) => todo!(),
+            Expr::TaggedTpl(TaggedTpl { tag, tpl, .. }) => todo!(),
+            Expr::Arrow(_) => Operand::UNDEF,
+            Expr::Class(_) => Operand::UNDEF,
+            Expr::Yield(YieldExpr { arg, .. }) => arg
+                .as_deref()
+                .map_or(Operand::UNDEF, |expr| self.lower_expr(expr)),
+            Expr::MetaProp(_) => Operand::UNDEF,
+            Expr::Await(AwaitExpr { arg, .. }) => self.lower_expr(arg),
+            Expr::Paren(ParenExpr { expr, .. }) => self.lower_expr(expr),
+            Expr::JSXMember(_) => todo!(),
+            Expr::JSXNamespacedName(_) => todo!(),
+            Expr::JSXEmpty(_) => todo!(),
+            Expr::JSXElement(_) => todo!(),
+            Expr::JSXFragment(_) => todo!(),
+            Expr::TsTypeAssertion(TsTypeAssertion { expr, .. })
+            | Expr::TsConstAssertion(TsConstAssertion { expr, .. })
+            | Expr::TsNonNull(TsNonNullExpr { expr, .. })
+            | Expr::TsAs(TsAsExpr { expr, .. })
+            | Expr::TsInstantiation(TsInstantiation { expr, .. })
+            | Expr::TsSatisfies(TsSatisfiesExpr { expr, .. }) => self.lower_expr(expr),
+            Expr::PrivateName(PrivateName { id, .. }) => todo!(),
+            Expr::OptChain(OptChainExpr { base, .. }) => match base {
+                OptChainBase::Call(OptCall { callee, args, .. }) => todo!(),
+                OptChainBase::Member(MemberExpr { obj, prop, .. }) => {
+                    // TODO: create separate basic blocks
+                    self.lower_member(obj, prop)
+                }
+            },
+            Expr::Invalid(_) => Operand::UNDEF,
+        }
+    }
+
+    fn lower_stmt(&mut self, n: &Stmt) {
+        match n {
+            Stmt::Block(BlockStmt { stmts, .. }) => todo!(),
+            Stmt::Empty(_) => todo!(),
+            Stmt::Debugger(_) => todo!(),
+            Stmt::With(WithStmt { obj, body, .. }) => todo!(),
+            Stmt::Return(ReturnStmt { arg, .. }) => todo!(),
+            Stmt::Labeled(LabeledStmt { label, body, .. }) => todo!(),
+            Stmt::Break(BreakStmt { label, .. }) => todo!(),
+            Stmt::Continue(ContinueStmt { label, .. }) => todo!(),
+            Stmt::If(IfStmt {
+                test, cons, alt, ..
+            }) => todo!(),
+            Stmt::Switch(SwitchStmt {
+                discriminant,
+                cases,
+                ..
+            }) => todo!(),
+            Stmt::Throw(ThrowStmt { arg, .. }) => todo!(),
+            Stmt::Try(stmt) => {
+                let TryStmt {
+                    block,
+                    handler,
+                    finalizer,
+                    ..
+                } = &**stmt;
+                todo!()
+            }
+            Stmt::While(WhileStmt { test, body, .. }) => todo!(),
+            Stmt::DoWhile(DoWhileStmt { test, body, .. }) => todo!(),
+            Stmt::For(ForStmt {
+                init,
+                test,
+                update,
+                body,
+                ..
+            }) => todo!(),
+            Stmt::ForIn(ForInStmt {
+                left, right, body, ..
+            }) => todo!(),
+            Stmt::ForOf(ForOfStmt {
+                left, right, body, ..
+            }) => todo!(),
+            Stmt::Decl(decl) => match decl {
+                Decl::Class(_) => todo!(),
+                Decl::Fn(_) => todo!(),
+                Decl::Var(_) => todo!(),
+                Decl::TsInterface(_) => todo!(),
+                Decl::TsTypeAlias(_) => todo!(),
+                Decl::TsEnum(_) => todo!(),
+                Decl::TsModule(_) => todo!(),
+            },
+            Stmt::Expr(ExprStmt { expr, .. }) => todo!(),
+        }
+    }
 }
 
 impl Visit for FunctionAnalyzer<'_> {
-    fn visit_call_expr(&mut self, n: &CallExpr) {
-        n.visit_children_with(self);
-        let _props = normalize_callee_expr(&n.callee, self.res, self.module);
-        match _props.first() {
-            Some(&PropPath::Def(id)) => {
-                debug!("call from: {}", self.res.def_name(id));
-                debug!("call expr: {:?}", _props);
-            }
-            Some(PropPath::Unknown(id)) => {
-                debug!("call from: {}", id.0);
-                debug!("call expr: {:?}", _props);
-            }
-            _ => (),
+    fn visit_stmt(&mut self, n: &Stmt) {
+        match n {
+            Stmt::Block(_) => todo!(),
+            Stmt::Empty(_) => todo!(),
+            Stmt::Debugger(_) => todo!(),
+            Stmt::With(_) => todo!(),
+            Stmt::Return(_) => todo!(),
+            Stmt::Labeled(_) => todo!(),
+            Stmt::Break(_) => todo!(),
+            Stmt::Continue(_) => todo!(),
+            Stmt::If(_) => todo!(),
+            Stmt::Switch(_) => todo!(),
+            Stmt::Throw(_) => todo!(),
+            Stmt::Try(_) => todo!(),
+            Stmt::While(_) => todo!(),
+            Stmt::DoWhile(_) => todo!(),
+            Stmt::For(_) => todo!(),
+            Stmt::ForIn(_) => todo!(),
+            Stmt::ForOf(_) => todo!(),
+            Stmt::Decl(_) => todo!(),
+            Stmt::Expr(_) => todo!(),
         }
     }
 }
@@ -701,10 +942,11 @@ impl Visit for FunctionCollector<'_> {
             res: self.res,
             module: self.module,
             current_def: owner,
+            assigning_to: None,
             body,
             block: BasicBlockId::default(),
             operand_stack: vec![],
-            in_rhs: false,
+            in_lhs: false,
         };
         n.body.visit_with(&mut analyzer);
     }
@@ -747,10 +989,11 @@ impl Visit for FunctionCollector<'_> {
                         res: self.res,
                         module: self.module,
                         current_def: def,
+                        assigning_to: None,
                         body: Body::with_owner(def),
                         block: BasicBlockId::default(),
                         operand_stack: vec![],
-                        in_rhs: false,
+                        in_lhs: false,
                     };
                     expr.visit_with(&mut analyzer);
                 }
