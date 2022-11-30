@@ -351,12 +351,26 @@ impl Default for Body {
 impl PartialEq for Literal {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Str(l0), Self::Str(r0)) => l0 == r0,
-            (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
-            (Self::Number(l0), Self::Number(r0)) => l0 == r0,
-            (Self::RegExp(l0, l1), Self::RegExp(r0, r1)) => l0 == r0 && l1 == r1,
-            (Self::BigInt(l0), Self::BigInt(r0)) => l0 == r0,
-            (l0, r0) => mem::discriminant(l0) == mem::discriminant(r0),
+            (Self::Str(l0), Self::Str(r0)) => *l0 == *r0,
+            (Self::Bool(l0), Self::Bool(r0)) => *l0 == *r0,
+            (Self::Number(l0), Self::Number(r0)) => *l0 == *r0,
+            (Self::RegExp(l0, l1), Self::RegExp(r0, r1)) => *l0 == *r0 && *l1 == *r1,
+            (Self::BigInt(l0), Self::BigInt(r0)) => *l0 == *r0,
+            (Self::JSXText(l0), Self::JSXText(r0)) => *l0 == *r0,
+            (Self::Null, Self::Null) | (Self::Undef, Self::Undef) => true,
+            // We intentionally list out every possibility instead of using [`std::mem::discriminant`] to trigger a compile error
+            // in the event that a new variant with a field is added.
+            (
+                Self::Bool(_)
+                | Self::Str(_)
+                | Self::JSXText(_)
+                | Self::BigInt(_)
+                | Self::Number(_)
+                | Self::RegExp(_, _)
+                | Self::Null
+                | Self::Undef,
+                _,
+            ) => false,
         }
     }
 }
