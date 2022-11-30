@@ -259,7 +259,6 @@ pub(crate) enum Successors {
     One(BasicBlockId),
     Two(BasicBlockId, BasicBlockId),
 }
-
 impl BasicBlock {
     #[inline]
     pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &Inst> + ExactSizeIterator {
@@ -279,6 +278,16 @@ impl BasicBlock {
                 }
             }
             Terminator::If { cons, alt, .. } => Successors::Two(cons, alt),
+        }
+    }
+}
+
+impl fmt::Display for Base {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Base::This => write!(f, "this"),
+            Base::Super => write!(f, "super"),
+            Base::Var(id) => write!(f, "{}", id),
         }
     }
 }
