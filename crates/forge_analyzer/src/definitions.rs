@@ -806,455 +806,6 @@ struct FunctionCollector<'cx> {
 }
 
 struct FunctionAnalyzer<'cx> {
-    res: &'cx mut Environment,
-    module: ModId,
-    current_def: DefId,
-    assigning_to: Option<Variable>,
-    body: Body,
-    block: BasicBlockId,
-    operand_stack: Vec<Operand>,
-    in_lhs: bool,
-}
-
-impl<'cx> FunctionAnalyzer<'cx> {
-    #[inline]
-    fn set_curr_terminator(&mut self, term: Terminator) {
-        self.body.set_terminator(self.block, term);
-    }
-
-    #[inline]
-    fn push_curr_inst(&mut self, inst: Inst) {
-        self.body.push_inst(self.block, inst);
-    }
-
-    fn lower_member(&mut self, obj: &Expr, prop: &MemberProp) -> Operand {
-        let obj = self.lower_expr(obj);
-        let Operand::Var(mut var) = obj else {
-            // FIXME: handle literals
-            return obj;
-        };
-        match prop {
-            MemberProp::Ident(id) | MemberProp::PrivateName(PrivateName { id, .. }) => {
-                let id = id.to_id();
-                var.projections.push(Projection::Known(id.0));
-            }
-            MemberProp::Computed(ComputedPropName { expr, .. }) => {
-                let opnd = self.lower_expr(expr);
-                var.projections
-                    .push(self.body.resolve_prop(self.block, opnd));
-            }
-        }
-        Operand::Var(var)
-    }
-
-    // TODO: This can probably be made into a trait
-    fn lower_expr(&mut self, n: &Expr) -> Operand {
-        match n {
-            Expr::This(_) => Operand::Var(Variable::THIS),
-            Expr::Array(ArrayLit { elems, .. }) => {
-                let array_lit: Vec<_> = elems
-                    .iter()
-                    .map(|e| {
-                        e.as_ref()
-                            .map_or(Operand::UNDEF, |ExprOrSpread { spread, expr }| {
-                                self.lower_expr(expr)
-                            })
-                    })
-                    .collect();
-                Operand::UNDEF
-            }
-            Expr::Object(ObjectLit { span, props }) => {
-                // TODO: lower object literals
-                Operand::UNDEF
-            }
-            Expr::Fn(_) => Operand::UNDEF,
-            Expr::Unary(UnaryExpr { op, arg, .. }) => {
-                let arg = self.lower_expr(arg);
-                let tmp = self
-                    .body
-                    .push_tmp(self.block, Rvalue::Unary(op.into(), arg), None);
-                Operand::with_var(tmp)
-            }
-            Expr::Update(UpdateExpr {
-                op, prefix, arg, ..
-            }) => {
-                // FIXME: Handle op
-                self.lower_expr(arg)
-            }
-            Expr::Bin(BinExpr {
-                op, left, right, ..
-            }) => {
-                let left = self.lower_expr(left);
-                let right = self.lower_expr(right);
-                let tmp = self
-                    .body
-                    .push_tmp(self.block, Rvalue::Bin(op.into(), left, right), None);
-                Operand::with_var(tmp)
-            }
-
-            Expr::SuperProp(SuperPropExpr { obj, prop, .. }) => {
-                let mut super_var = Variable::SUPER;
-                match prop {
-                    SuperProp::Ident(id) => {
-                        let id = id.to_id().0;
-                        super_var.projections.push(Projection::Known(id));
-                    }
-                    SuperProp::Computed(ComputedPropName { expr, .. }) => {
-                        let opnd = self.lower_expr(expr);
-                        let prop = self.body.resolve_prop(self.block, opnd);
-                        super_var.projections.push(prop);
-                    }
-                }
-                Operand::Var(super_var)
-            }
-            Expr::Assign(AssignExpr {
-                op, left, right, ..
-            }) => match left {
-                PatOrExpr::Expr(_) => todo!(),
-                PatOrExpr::Pat(_) => todo!(),
-            },
-            Expr::Member(MemberExpr { obj, prop, .. }) => self.lower_member(obj, prop),
-            Expr::Cond(CondExpr {
-                test, cons, alt, ..
-            }) => self.lower_expr(test),
-            Expr::Call(n) => {
-                let mut args = Vec::with_capacity(n.args.len());
-                for ExprOrSpread { spread, expr } in &n.args {
-                    let arg = self.lower_expr(expr);
-                    args.push(arg);
-                }
-                let callee = match &n.callee {
-                    Callee::Super(_) => Operand::Var(Variable::SUPER),
-                    Callee::Import(_) => Operand::UNDEF,
-                    Callee::Expr(expr) => self.lower_expr(expr),
-                };
-                let props = normalize_callee_expr(&n.callee, self.res, self.module);
-                match props.first() {
-                    Some(&PropPath::Def(id)) => {
-                        debug!("call from: {}", self.res.def_name(id));
-                        debug!("call expr: {:?}", props);
-                    }
-                    Some(PropPath::Unknown(id)) => {
-                        debug!("call from: {}", id.0);
-                        debug!("call expr: {:?}", props);
-                    }
-                    _ => (),
-                }
-                todo!()
-            }
-            Expr::New(NewExpr { callee, args, .. }) => Operand::UNDEF,
-            Expr::Seq(SeqExpr { exprs, .. }) => {
-                if let Some((last, rest)) = exprs.split_last() {
-                    for expr in rest {
-                        let opnd = self.lower_expr(expr);
-                        self.body.push_expr(self.block, Rvalue::Read(opnd));
-                    }
-                    self.lower_expr(last)
-                } else {
-                    Literal::Undef.into()
-                }
-            }
-            Expr::Ident(id) => {
-                let id = id.to_id();
-                let Some(def) = self.res.sym_to_id(id.clone(), self.module) else {
-                    warn!("unknown symbol: {}", id.0);
-                    return Literal::Undef.into();
-                };
-                let var = self.body.get_or_insert_global(def);
-                Operand::with_var(var)
-            }
-            Expr::Lit(lit) => lit.clone().into(),
-            Expr::Tpl(Tpl { exprs, quasis, .. }) => todo!(),
-            Expr::TaggedTpl(TaggedTpl { tag, tpl, .. }) => todo!(),
-            Expr::Arrow(_) => Operand::UNDEF,
-            Expr::Class(_) => Operand::UNDEF,
-            Expr::Yield(YieldExpr { arg, .. }) => arg
-                .as_deref()
-                .map_or(Operand::UNDEF, |expr| self.lower_expr(expr)),
-            Expr::MetaProp(_) => Operand::UNDEF,
-            Expr::Await(AwaitExpr { arg, .. }) => self.lower_expr(arg),
-            Expr::Paren(ParenExpr { expr, .. }) => self.lower_expr(expr),
-            Expr::JSXMember(_) => todo!(),
-            Expr::JSXNamespacedName(_) => todo!(),
-            Expr::JSXEmpty(_) => todo!(),
-            Expr::JSXElement(_) => todo!(),
-            Expr::JSXFragment(_) => todo!(),
-            Expr::TsTypeAssertion(TsTypeAssertion { expr, .. })
-            | Expr::TsConstAssertion(TsConstAssertion { expr, .. })
-            | Expr::TsNonNull(TsNonNullExpr { expr, .. })
-            | Expr::TsAs(TsAsExpr { expr, .. })
-            | Expr::TsInstantiation(TsInstantiation { expr, .. })
-            | Expr::TsSatisfies(TsSatisfiesExpr { expr, .. }) => self.lower_expr(expr),
-            Expr::PrivateName(PrivateName { id, .. }) => todo!(),
-            Expr::OptChain(OptChainExpr { base, .. }) => match base {
-                OptChainBase::Call(OptCall { callee, args, .. }) => todo!(),
-                OptChainBase::Member(MemberExpr { obj, prop, .. }) => {
-                    // TODO: create separate basic blocks
-                    self.lower_member(obj, prop)
-                }
-            },
-            Expr::Invalid(_) => Operand::UNDEF,
-        }
-    }
-
-    fn lower_stmt(&mut self, n: &Stmt) {
-        match n {
-            Stmt::Block(BlockStmt { stmts, .. }) => todo!(),
-            Stmt::Empty(_) => todo!(),
-            Stmt::Debugger(_) => todo!(),
-            Stmt::With(WithStmt { obj, body, .. }) => todo!(),
-            Stmt::Return(ReturnStmt { arg, .. }) => todo!(),
-            Stmt::Labeled(LabeledStmt { label, body, .. }) => todo!(),
-            Stmt::Break(BreakStmt { label, .. }) => todo!(),
-            Stmt::Continue(ContinueStmt { label, .. }) => todo!(),
-            Stmt::If(IfStmt {
-                test, cons, alt, ..
-            }) => todo!(),
-            Stmt::Switch(SwitchStmt {
-                discriminant,
-                cases,
-                ..
-            }) => todo!(),
-            Stmt::Throw(ThrowStmt { arg, .. }) => todo!(),
-            Stmt::Try(stmt) => {
-                let TryStmt {
-                    block,
-                    handler,
-                    finalizer,
-                    ..
-                } = &**stmt;
-                todo!()
-            }
-            Stmt::While(WhileStmt { test, body, .. }) => todo!(),
-            Stmt::DoWhile(DoWhileStmt { test, body, .. }) => todo!(),
-            Stmt::For(ForStmt {
-                init,
-                test,
-                update,
-                body,
-                ..
-            }) => todo!(),
-            Stmt::ForIn(ForInStmt {
-                left, right, body, ..
-            }) => todo!(),
-            Stmt::ForOf(ForOfStmt {
-                left, right, body, ..
-            }) => todo!(),
-            Stmt::Decl(decl) => match decl {
-                Decl::Class(_) => todo!(),
-                Decl::Fn(_) => todo!(),
-                Decl::Var(_) => todo!(),
-                Decl::TsInterface(_) => todo!(),
-                Decl::TsTypeAlias(_) => todo!(),
-                Decl::TsEnum(_) => todo!(),
-                Decl::TsModule(_) => todo!(),
-            },
-            Stmt::Expr(ExprStmt { expr, .. }) => todo!(),
-        }
-    }
-}
-
-impl Visit for FunctionAnalyzer<'_> {
-    fn visit_stmt(&mut self, n: &Stmt) {
-        match n {
-            Stmt::Block(_) => todo!(),
-            Stmt::Empty(_) => todo!(),
-            Stmt::Debugger(_) => todo!(),
-            Stmt::With(_) => todo!(),
-            Stmt::Return(_) => todo!(),
-            Stmt::Labeled(_) => todo!(),
-            Stmt::Break(_) => todo!(),
-            Stmt::Continue(_) => todo!(),
-            Stmt::If(_) => todo!(),
-            Stmt::Switch(_) => todo!(),
-            Stmt::Throw(_) => todo!(),
-            Stmt::Try(_) => todo!(),
-            Stmt::While(_) => todo!(),
-            Stmt::DoWhile(_) => todo!(),
-            Stmt::For(_) => todo!(),
-            Stmt::ForIn(_) => todo!(),
-            Stmt::ForOf(_) => todo!(),
-            Stmt::Decl(_) => todo!(),
-            Stmt::Expr(_) => todo!(),
-        }
-    }
-}
-
-struct ArgDefiner<'cx> {
-    res: &'cx mut Environment,
-    module: ModId,
-    func: DefId,
-    body: Body,
-}
-
-impl Visit for ArgDefiner<'_> {
-    fn visit_ident(&mut self, n: &Ident) {
-        let id = n.to_id();
-        let defid = self
-            .res
-            .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
-        self.res.add_parent(defid, self.func);
-        self.body.add_arg(defid, id);
-    }
-
-    fn visit_object_pat_prop(&mut self, n: &ObjectPatProp) {
-        match n {
-            ObjectPatProp::KeyValue(KeyValuePatProp { key, .. }) => key.visit_with(self),
-            ObjectPatProp::Assign(AssignPatProp { key, .. }) => self.visit_ident(key),
-            ObjectPatProp::Rest(_) => {}
-        }
-    }
-
-    fn visit_pat(&mut self, n: &Pat) {
-        match n {
-            Pat::Ident(_) | Pat::Array(_) => n.visit_children_with(self),
-            Pat::Object(ObjectPat { props, .. }) => props.visit_children_with(self),
-            Pat::Assign(AssignPat { left, .. }) => left.visit_with(self),
-            Pat::Expr(id) => {
-                if let Expr::Ident(id) = &**id {
-                    id.visit_with(self);
-                }
-            }
-            Pat::Invalid(_) => {}
-            Pat::Rest(_) => {}
-            Pat::Invalid(_) => {}
-        }
-    }
-}
-
-struct LocalDefiner<'cx> {
-    res: &'cx mut Environment,
-    module: ModId,
-    func: DefId,
-    body: Body,
-}
-
-impl Visit for LocalDefiner<'_> {
-    fn visit_ident(&mut self, n: &Ident) {
-        let id = n.to_id();
-        let defid = self.res.get_or_insert_sym(id.clone(), self.module);
-        self.res.try_add_parent(defid, self.func);
-        self.body.add_local_def(defid, id);
-    }
-
-    fn visit_var_declarator(&mut self, n: &VarDeclarator) {
-        n.name.visit_with(self);
-    }
-
-    fn visit_decl(&mut self, n: &Decl) {
-        match n {
-            Decl::Class(_) => {}
-            Decl::Fn(FnDecl { ident, .. }) => {
-                ident.visit_with(self);
-            }
-            Decl::Var(vars) => vars.visit_children_with(self),
-            Decl::TsInterface(_) | Decl::TsTypeAlias(_) | Decl::TsEnum(_) | Decl::TsModule(_) => {}
-        }
-    }
-
-    fn visit_arrow_expr(&mut self, _: &ArrowExpr) {}
-    fn visit_fn_decl(&mut self, _: &FnDecl) {}
-}
-
-impl Visit for FunctionCollector<'_> {
-    fn visit_function(&mut self, n: &Function) {
-        n.visit_children_with(self);
-        let owner = self.parent.unwrap_or_else(|| {
-            self.res
-                .add_anonymous("__UNKNOWN", AnonType::Closure, self.module)
-        });
-        let mut argdef = ArgDefiner {
-            res: self.res,
-            module: self.module,
-            func: owner,
-            body: Body::with_owner(owner),
-        };
-        n.params.visit_children_with(&mut argdef);
-        let body = argdef.body;
-        let mut localdef = LocalDefiner {
-            res: self.res,
-            module: self.module,
-            func: owner,
-            body,
-        };
-        n.body.visit_children_with(&mut localdef);
-        let body = localdef.body;
-        let mut analyzer = FunctionAnalyzer {
-            res: self.res,
-            module: self.module,
-            current_def: owner,
-            assigning_to: None,
-            body,
-            block: BasicBlockId::default(),
-            operand_stack: vec![],
-            in_lhs: false,
-        };
-        n.body.visit_with(&mut analyzer);
-    }
-
-    fn visit_var_declarator(&mut self, n: &VarDeclarator) {
-        n.visit_children_with(self);
-        let Some(BindingIdent { id, .. }) = n.name.as_ident() else {
-            return;
-        };
-        let id = id.to_id();
-        match n.init.as_deref() {
-            Some(Expr::Fn(f)) => {
-                let defid = self
-                    .res
-                    .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
-                let old_parent = self.parent.replace(defid);
-                f.visit_with(self);
-                self.parent = old_parent;
-            }
-            Some(Expr::Arrow(f)) => {
-                let defid = self
-                    .res
-                    .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
-                let old_parent = self.parent.replace(defid);
-                f.visit_with(self);
-                self.parent = old_parent;
-            }
-            _ => {}
-        }
-    }
-
-    fn visit_call_expr(&mut self, n: &CallExpr) {
-        n.visit_children_with(self);
-        if let Some((def_id, propname, expr)) = as_resolver_def(n, self.res, self.module) {
-            info!("found possible resolver: {propname}");
-            match self.res.lookup_prop(def_id, propname) {
-                Some(def) => {
-                    info!("analyzing resolver def: {def:?}");
-                    let mut analyzer = FunctionAnalyzer {
-                        res: self.res,
-                        module: self.module,
-                        current_def: def,
-                        assigning_to: None,
-                        body: Body::with_owner(def),
-                        block: BasicBlockId::default(),
-                        operand_stack: vec![],
-                        in_lhs: false,
-                    };
-                    expr.visit_with(&mut analyzer);
-                }
-                None => {
-                    warn!("resolver def not found");
-                }
-            }
-        }
-    }
-
-    fn visit_fn_decl(&mut self, n: &FnDecl) {
-        let id = n.ident.to_id();
-        let def = self.res.get_or_insert_sym(id, self.module);
-        self.parent = Some(def);
-        n.function.visit_with(self);
-        self.parent = None;
-    }
-}
-
-struct FunctionAnalyzer<'cx> {
     pub res: &'cx mut Environment,
     module: ModId,
     current_def: DefId,
@@ -1352,6 +903,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
         fn is_storage_read(prop: &JsWord) -> bool {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
+
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
@@ -1401,20 +953,16 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     _ => None,
                 }
             }
-
             [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/api").is_some() => {
                 if let Some(ImportKind::Named(ref name)) =
                     self.res.is_imported_from(def, "@forge/api")
                 {
                     if *name == *"authorize" {
-                        Some(Intrinsic::Authorize(IntrinsicName::Other));
-                    } else {
-                        return None;
+                        return Some(Intrinsic::Authorize(IntrinsicName::Other));
                     }
                 }
                 None
             }
-
             //[PropPath::Def(def), PropPath::Static(a), PropPath::Static(b)]
             // 1. Star, identifier, method
             [PropPath::Def(def), PropPath::Static(ref identifier), PropPath::Static(ref method)] => {
@@ -1674,6 +1222,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
+        // debug!("in da lower call");
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first() {
             if self.res.is_imported_from(id, "@forge/ui").map_or(
@@ -1686,7 +1235,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 || calls_method(callee, "catch")
             {
                 if let [ExprOrSpread { expr, .. }] = args {
-                    debug!("found useState/then/map/foreach/filter");
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, .. }) => match &**body {
                             BlockStmtOrExpr::BlockStmt(stmt) => {
@@ -1726,15 +1274,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
         let first_arg = args.first().map(|expr| &*expr.expr);
         let intrinsic = self.as_intrinsic(&props, first_arg);
-        debug!("HELLO INTRINSIC!? {intrinsic:?}");
-        let call = match self.as_intrinsic(&props, first_arg) {
-            Some(int) => {
-                debug!("this should be working T.T");
-                Rvalue::Intrinsic(int, lowered_args)
-            }
+        let call = match intrinsic {
+            Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
         };
-
         let res = self.body.push_tmp(self.block, call, None);
         Operand::with_var(res)
     }
@@ -2087,10 +1630,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 );
                 Operand::with_var(phi)
             }
-            Expr::Call(CallExpr { callee, args, .. }) => {
-                debug!("Did this lower_call get called?");
-                self.lower_call(callee.into(), args)
-            }
+            Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
             Expr::New(NewExpr { callee, args, .. }) => {
                 if let Expr::Ident(ident) = &**callee {
                     // remove the clone
@@ -2353,7 +1893,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 | Decl::TsModule(_) => {}
             },
             Stmt::Expr(ExprStmt { expr, .. }) => {
-                debug!("guessing it's getting called here? In expression statement");
                 let opnd = self.lower_expr(expr, None);
                 self.body.push_expr(self.block, Rvalue::Read(opnd));
             }
@@ -2959,7 +2498,6 @@ impl Visit for FunctionCollector<'_> {
 
 impl FunctionCollector<'_> {
     fn handle_function(&mut self, n: &Function, owner: Option<DefId>) {
-        debug!("When does this function get called T.T");
         let owner = self.parent.unwrap_or_else(|| {
             if let Some(defid) = owner {
                 defid
@@ -3169,7 +2707,6 @@ impl Visit for Lowerer<'_> {
     }
 
     fn visit_call_expr(&mut self, n: &CallExpr) {
-        debug!("checking function call~!~");
         if let Some(expr) = n.callee.as_expr() {
             if let Some((objid, ResolverDef::FnDef)) = as_resolver(expr, self.res, self.curr_mod) {
                 if let [ExprOrSpread { expr: name, .. }, ExprOrSpread { expr: args, .. }] = &*n.args
@@ -4212,41 +3749,6 @@ impl DefKey {
             | DefKey::Foreign(_)
             | DefKey::Undefined => None,
         }
-    }
-}
-
-impl<F, O, I> fmt::Display for DefKind<F, O, I> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DefKind::Class(_) => write!(f, "class"),
-            DefKind::ResolverDef(_) => write!(f, "resolver def"),
-            DefKind::Resolver(_) => write!(f, "resolver"),
-            DefKind::Arg => write!(f, "argument"),
-            DefKind::GlobalObj(_) => write!(f, "object literal"),
-            DefKind::Function(_) => write!(f, "function"),
-            DefKind::Closure(_) => write!(f, "closure"),
-            DefKind::ExportAlias(_) => write!(f, "export alias"),
-            DefKind::ResolverHandler(_) => write!(f, "resolver handler"),
-            DefKind::ModuleNs(_) => write!(f, "module namespace"),
-            DefKind::Foreign(_) => write!(f, "foreign"),
-            DefKind::Undefined => write!(f, "undefined"),
-        }
-    }
-}
-
-impl fmt::Display for ImportKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ImportKind::Star => write!(f, "*"),
-            ImportKind::Default => write!(f, "default"),
-            ImportKind::Named(sym) => write!(f, "{}", &**sym),
-        }
-    }
-}
-
-impl fmt::Display for ForeignItem {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "import {} from {}", self.kind, &*self.module_name)
     }
 }
 
