@@ -4,10 +4,12 @@
 // [`SSA`]: https://pfalcon.github.io/ssabook/latest/book-full.pdf
 
 use core::fmt;
+use std::array;
 use std::collections::BTreeSet;
 use std::hash;
 use std::hash::Hash;
 use std::mem;
+use std::num::NonZeroUsize;
 
 use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
@@ -28,6 +30,8 @@ use typed_index_collections::TiVec;
 use crate::ctx::ModId;
 use crate::definitions::DefId;
 
+pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
+
 create_newtype! {
     pub struct BasicBlockId(u32);
 }
@@ -44,11 +48,6 @@ pub(crate) enum Terminator {
     Ret,
     Goto(BasicBlockId),
     Throw,
-    Call {
-        callee: Operand,
-        args: Vec<Operand>,
-        ret: Option<Variable>,
-    },
     Switch {
         scrutinee: Operand,
         targets: BranchTargets,
@@ -69,18 +68,24 @@ pub(crate) enum Intrinsic {
     StorageRead,
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Template {
+    pub(crate) quasis: Vec<Atom>,
+    pub(crate) exprs: Vec<Operand>,
+    // TODO: make this more memory efficient
+    // the semantics of this operation can probably be moved to call
+    pub(crate) tag: Option<Operand>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum Rvalue {
     Unary(UnOp, Operand),
     Bin(BinOp, Operand, Operand),
+    Call { callee: Operand, args: Vec<Operand> },
     Read(Operand),
+    Phi(Vec<(VarId, BasicBlockId)>),
     Intrinsics(Intrinsic),
-    Template {
-        quasis: Vec<Atom>,
-        exprs: Vec<Operand>,
-        // TODO: make this more memory efficient
-        tag: Option<Operand>,
-    },
+    Template(Template),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -104,6 +109,11 @@ enum VarKind {
     Arg(DefId),
     Ret,
 }
+
+pub(crate) const RETURN_VAR: Variable = Variable {
+    base: Base::Var(VarId(0)),
+    projections: SmallVec::new_const(),
+};
 
 #[derive(Clone, Debug)]
 pub struct Body {
@@ -251,7 +261,7 @@ impl Body {
         Self {
             vars: local_vars,
             owner: None,
-            blocks: Default::default(),
+            blocks: vec![BasicBlock::default()].into(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
         }
@@ -291,6 +301,10 @@ impl Body {
         self.blocks.push_and_get_key(BasicBlock::default())
     }
 
+    pub(crate) fn new_blocks<const NUM: usize>(&mut self) -> [BasicBlockId; NUM] {
+        array::from_fn(|_| self.new_block())
+    }
+
     #[inline]
     pub(crate) fn new_block_with_terminator(&mut self, term: Terminator) -> BasicBlockId {
         self.blocks.push_and_get_key(BasicBlock {
@@ -319,6 +333,20 @@ impl Body {
         }
     }
 
+    pub(crate) fn coerce_to_lval(&mut self, bb: BasicBlockId, val: Operand) -> Variable {
+        match val {
+            Operand::Var(var) => var,
+            Operand::Lit(_) => Variable {
+                base: Base::Var({
+                    let var = self.vars.push_and_get_key(VarKind::Temp { parent: None });
+                    self.push_inst(bb, Inst::Assign(Variable::new(var), Rvalue::Read(val)));
+                    var
+                }),
+                projections: Default::default(),
+            },
+        }
+    }
+
     pub(crate) fn push_tmp(
         &mut self,
         bb: BasicBlockId,
@@ -338,6 +366,11 @@ impl Body {
     #[inline]
     pub(crate) fn push_expr(&mut self, bb: BasicBlockId, val: Rvalue) {
         self.blocks[bb].insts.push(Inst::Expr(val));
+    }
+
+    #[inline]
+    pub(crate) fn block(&self, bb: BasicBlockId) -> &BasicBlock {
+        &self.blocks[bb]
     }
 }
 

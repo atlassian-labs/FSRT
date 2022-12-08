@@ -216,6 +216,13 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
             for (sym, def) in res.module_exports(id) {
                 let kind = res.def_ref(def);
                 println!("export: {sym}: {def:?} kind: {kind}");
+                if kind.is_resolver_handler() {
+                    for (sym, def) in res.resolver_defs(def) {
+                        println!("resolver handler: {sym}: {def:?}");
+                        let body = res.def_ref(def).expect_body();
+                        println!("body: {body:?}");
+                    }
+                }
             }
             if let Some(def) = res.default_export(id) {
                 let kind = res.def_ref(def);

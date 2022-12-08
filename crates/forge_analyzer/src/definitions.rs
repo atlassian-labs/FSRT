@@ -9,20 +9,22 @@ use swc_core::{
     common::SyntaxContext,
     ecma::{
         ast::{
-            ArrayLit, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp, AssignProp,
-            AwaitExpr, BinExpr, BindingIdent, BlockStmt, BreakStmt, CallExpr, Callee, ClassDecl,
-            ClassExpr, ComputedPropName, CondExpr, ContinueStmt, Decl, DefaultDecl, DoWhileStmt,
-            ExportAll, ExportDecl, ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier,
-            Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForInStmt, ForOfStmt, ForStmt, Function,
-            Id, Ident, IfStmt, ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier,
-            ImportStarAsSpecifier, KeyValuePatProp, KeyValueProp, LabeledStmt, Lit, MemberExpr,
-            MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl, ModuleExportName, ModuleItem,
-            NewExpr, ObjectLit, ObjectPat, ObjectPatProp, OptCall, OptChainBase, OptChainExpr,
-            ParenExpr, Pat, PatOrExpr, PrivateName, Prop, PropName, PropOrSpread, ReturnStmt,
-            SeqExpr, Stmt, Str, Super, SuperProp, SuperPropExpr, SwitchStmt, TaggedTpl, ThisExpr,
-            ThrowStmt, Tpl, TryStmt, TsAsExpr, TsConstAssertion, TsInstantiation, TsNonNullExpr,
-            TsSatisfiesExpr, TsTypeAssertion, UnaryExpr, UpdateExpr, VarDecl, VarDeclarator,
-            WhileStmt, WithStmt, YieldExpr,
+            ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
+            AssignProp, AwaitExpr, BinExpr, BindingIdent, BlockStmt, BlockStmtOrExpr, BreakStmt,
+            CallExpr, Callee, ClassDecl, ClassExpr, ComputedPropName, CondExpr, ContinueStmt, Decl,
+            DefaultDecl, DoWhileStmt, ExportAll, ExportDecl, ExportDefaultDecl, ExportDefaultExpr,
+            ExportNamedSpecifier, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForInStmt,
+            ForOfStmt, ForStmt, Function, Id, Ident, IfStmt, Import, ImportDecl,
+            ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, JSXFragment,
+            JSXMemberExpr, JSXNamespacedName, KeyValuePatProp, KeyValueProp, LabeledStmt, Lit,
+            MemberExpr, MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl, ModuleExportName,
+            ModuleItem, NewExpr, Number, ObjectLit, ObjectPat, ObjectPatProp, OptCall,
+            OptChainBase, OptChainExpr, ParenExpr, Pat, PatOrExpr, PrivateName, Prop, PropName,
+            PropOrSpread, RestPat, ReturnStmt, SeqExpr, Stmt, Str, Super, SuperProp, SuperPropExpr,
+            SwitchStmt, TaggedTpl, ThisExpr, ThrowStmt, Tpl, TplElement, TryStmt, TsAsExpr,
+            TsConstAssertion, TsInstantiation, TsNonNullExpr, TsSatisfiesExpr, TsTypeAssertion,
+            UnaryExpr, UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclOrPat, VarDeclarator, WhileStmt,
+            WithStmt, YieldExpr,
         },
         atoms::JsWord,
         visit::{noop_visit_type, Visit, VisitWith},
@@ -33,7 +35,10 @@ use typed_index_collections::{TiSlice, TiVec};
 
 use crate::{
     ctx::ModId,
-    ir::{BasicBlockId, Body, Inst, Literal, Operand, Projection, Rvalue, Terminator, Variable},
+    ir::{
+        BasicBlockId, Body, Inst, Literal, Operand, Projection, Rvalue, Template, Terminator,
+        Variable, RETURN_VAR,
+    },
 };
 
 create_newtype! {
@@ -101,19 +106,21 @@ pub fn run_resolver(
     modules: &TiSlice<ModId, Module>,
     file_resolver: &ForgeResolver,
 ) -> Environment {
-    let mut resolver = Environment::new();
+    let mut environment = Environment::new();
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut export_collector = ExportCollector {
-            res_table: &mut resolver.resolver,
+            res_table: &mut environment.resolver,
             curr_mod,
             exports: vec![],
             default: None,
         };
         module.visit_children_with(&mut export_collector);
-        let mod_id = resolver.exports.push_and_get_key(export_collector.exports);
+        let mod_id = environment
+            .exports
+            .push_and_get_key(export_collector.exports);
         debug_assert_eq!(curr_mod, mod_id);
         if let Some(default) = export_collector.default {
-            let def_id = resolver.default_exports.insert(curr_mod, default);
+            let def_id = environment.default_exports.insert(curr_mod, default);
             debug_assert_eq!(def_id, None, "def_id shouldn't be set");
         }
     }
@@ -121,7 +128,7 @@ pub fn run_resolver(
     let mut foreign = TiVec::default();
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut import_collector = ImportCollector {
-            resolver: &mut resolver,
+            resolver: &mut environment,
             file_resolver,
             foreign_defs: &mut foreign,
             curr_mod,
@@ -132,17 +139,17 @@ pub fn run_resolver(
     }
 
     let defs = Definitions::new(
-        resolver
+        environment
             .resolver
             .defs
             .iter_enumerated()
             .map(|(id, &d)| (id, d)),
         foreign,
     );
-    resolver.defs = defs;
+    environment.defs = defs;
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut lowerer = Lowerer {
-            res: &mut resolver,
+            res: &mut environment,
             curr_mod,
             parents: vec![],
             curr_def: None,
@@ -152,14 +159,14 @@ pub fn run_resolver(
 
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut collector = FunctionCollector {
-            res: &mut resolver,
+            res: &mut environment,
             module: curr_mod,
             parent: None,
         };
         module.visit_with(&mut collector);
     }
 
-    resolver
+    environment
 }
 
 /// this struct is a bit of a hack, because we also use it for
@@ -211,11 +218,29 @@ impl Class {
         }
     }
 
-    fn find_member(&self, name: &JsWord) -> Option<DefId> {
+    /// Locate a property on this object.
+    ///
+    /// Note that this does not look up the prototype chain.
+    ///
+    /// # Example
+    ///
+    /// ```javascript
+    /// const obj = {
+    ///   foo: 1,
+    /// };
+    /// ```
+    ///
+    /// ```rust
+    /// let obj = Class::new(obj_id);
+    /// obj.find_member("foo");
+    /// ```
+    fn find_member<N: ?Sized>(&self, name: &N) -> Option<DefId>
+    where
+        JsWord: PartialEq<N>,
+    {
         self.pub_members
             .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, d)| *d)
+            .find_map(|(n, d)| (*n == *name).then_some(*d))
     }
 }
 
@@ -224,13 +249,13 @@ create_newtype! {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ImportKind {
+pub enum ImportKind {
     Star,
     Default,
     Named(JsWord),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForeignItem {
     kind: ImportKind,
     module_name: JsWord,
@@ -245,15 +270,26 @@ type DefRes<I = ForeignId> = DefKind<(), (), I>;
 pub enum DefKind<F, O, I> {
     Arg,
     Function(F),
+    /// The renamed [`DefId`]
+    ///
+    /// # Example
+    ///
+    /// ```javascript
+    /// function foo() {}
+    /// // The [`DefId`] of `foo` will be the field in [`ExportAlias`]
+    /// // The [`DefKind`] of bar will be [`ExportAlias`]
+    /// export { foo as bar };
+    /// ```
     ExportAlias(DefId),
     GlobalObj(O),
     Class(O),
+    /// any imports that are not from the current project
     Foreign(I),
     /// exported(usual) handler to the actual resolver definitions
     ///
     /// [`DefId`] should point to [`DefKind::Resolver`]
     ///
-    /// # Example:
+    /// # Example
     ///
     /// ```javascript
     /// import Resolver from '@forge/resolver';
@@ -267,10 +303,28 @@ pub enum DefKind<F, O, I> {
     /// export const handler = resolver.getDefinitions();
     /// ```
     ResolverHandler(DefId),
+    /// the actual resolver object
+    ///
+    /// # Example
+    ///
+    /// ```javascript
+    /// import Resolver from '@forge/resolver';
+    ///
+    /// const resolver = new Resolver();
+    /// // `resolver` resolves to a DefId pointing to [`DefKind::Resolver`]
+    /// ```
     Resolver(O),
+    /// function defined on a resolver object
+    ///
+    /// # Example
+    ///
+    /// ```javascript
+    /// // the `handler` symbol resolves to a DefId for [`DefKind::ResolverHandler`]
+    /// resolver.define('handlerFunc', ({ payload, context }) => {}
+    /// ```
     ResolverDef(DefId),
     Closure(F),
-    // Ex: `module` in import * as 'foo' from 'module'
+    // Example: `module` in import * as 'foo' from 'module'
     ModuleNs(ModId),
     Undefined,
 }
@@ -282,36 +336,49 @@ impl<F, O, I> Default for DefKind<F, O, I> {
 }
 
 impl<F, O, I> DefKind<F, O, I> {
-    fn expect_body(self) -> F {
+    pub fn expect_body(self) -> F {
         match self {
             Self::Function(f) | Self::Closure(f) => f,
-            _ => panic!("expected function"),
+            k => panic!("expected function"),
         }
     }
 
-    fn expect_class(self) -> O {
+    pub fn expect_class(self) -> O {
         match self {
             Self::Class(c) | Self::GlobalObj(c) | Self::Resolver(c) => c,
             _ => panic!("expected class"),
         }
     }
+
+    pub fn as_handler(&self) -> Option<DefId> {
+        match *self {
+            Self::ResolverHandler(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    pub fn as_resolver(&self) -> Option<&O> {
+        match self {
+            Self::Resolver(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    pub fn as_resolver_def(&self) -> Option<DefId> {
+        match *self {
+            Self::ResolverDef(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    pub fn is_resolver_handler(&self) -> bool {
+        matches!(self, Self::ResolverHandler(_))
+    }
 }
 
 impl PartialEq<DefKey> for DefRes {
     fn eq(&self, other: &DefKey) -> bool {
-        match (*self, *other) {
-            (DefKind::Function(()), DefKind::Function(_)) => true,
-            (DefKind::ExportAlias(l0), DefKind::ExportAlias(r0)) => l0 == r0,
-            (DefKind::GlobalObj(()), DefKind::GlobalObj(_)) => true,
-            (DefKind::Class(()), DefKind::Class(_)) => true,
-            (DefKind::Foreign(l0), DefKind::Foreign(r0)) => l0 == r0,
-            (DefKind::ResolverHandler(l0), DefKind::ResolverHandler(r0)) => l0 == r0,
-            (DefKind::Resolver(()), DefKind::Resolver(_)) => true,
-            (DefKind::ResolverDef(l0), DefKind::ResolverDef(r0)) => l0 == r0,
-            (DefKind::Closure(()), DefKind::Closure(_)) => true,
-            (DefKind::ModuleNs(l0), DefKind::ModuleNs(r0)) => l0 == r0,
-            _ => false,
-        }
+        *other == *self
     }
 }
 
@@ -328,7 +395,23 @@ impl PartialEq<DefRes> for DefKey {
             (DefKind::ResolverDef(l0), DefKind::ResolverDef(r0)) => l0 == r0,
             (DefKind::Closure(_), DefKind::Closure(())) => true,
             (DefKind::ModuleNs(l0), DefKind::ModuleNs(r0)) => l0 == r0,
-            _ => false,
+            (DefKind::Arg, DefKind::Arg) => true,
+            (DefKind::Undefined, DefKind::Undefined) => true,
+            (
+                DefKind::Function(_)
+                | DefKind::Arg
+                | DefKind::Undefined
+                | DefKind::ExportAlias(_)
+                | DefKind::GlobalObj(_)
+                | DefKind::Class(_)
+                | DefKind::Foreign(_)
+                | DefKind::Resolver(_)
+                | DefKind::ResolverHandler(_)
+                | DefKind::ResolverDef(_)
+                | DefKind::Closure(_)
+                | DefKind::ModuleNs(_),
+                _,
+            ) => false,
         }
     }
 }
@@ -395,7 +478,7 @@ enum PropPath {
 }
 
 fn normalize_callee_expr(
-    callee: &Callee,
+    callee: CalleeRef<'_>,
     res_table: &Environment,
     curr_mod: ModId,
 ) -> Vec<PropPath> {
@@ -480,17 +563,19 @@ fn normalize_callee_expr(
             }
         }
     }
-    if let Some(expr) = callee.as_expr() {
-        let mut normalizer = CalleeNormalizer {
-            res_table,
-            curr_mod,
-            path: vec![],
-            in_prop: false,
-        };
-        normalizer.visit_expr(expr);
-        normalizer.path
-    } else {
-        vec![]
+    match callee {
+        CalleeRef::Expr(expr) => {
+            let mut normalizer = CalleeNormalizer {
+                res_table,
+                curr_mod,
+                path: vec![],
+                in_prop: false,
+            };
+            normalizer.visit_expr(expr);
+            normalizer.path
+        }
+        CalleeRef::Import => vec![],
+        CalleeRef::Super => vec![PropPath::Super],
     }
 }
 
@@ -575,10 +660,85 @@ struct FunctionAnalyzer<'cx> {
     in_lhs: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CalleeRef<'a> {
+    Expr(&'a Expr),
+    Import,
+    Super,
+}
+
+impl<'a> From<&'a Callee> for CalleeRef<'a> {
+    fn from(value: &'a Callee) -> Self {
+        match value {
+            Callee::Super(_) => Self::Super,
+            Callee::Import(_) => Self::Import,
+            Callee::Expr(expr) => Self::Expr(expr),
+        }
+    }
+}
+
+impl<'a> From<&'a Expr> for CalleeRef<'a> {
+    fn from(value: &'a Expr) -> Self {
+        Self::Expr(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ApiCallKind {
+    Unknown,
+    Trivial,
+    Authorize,
+}
+
+fn classify_api_call(expr: &Expr) -> ApiCallKind {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+
+    static TRIVIAL: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"user|instance|avatar|license|preferences|serverinfo").unwrap());
+
+    struct ApiCallClassifier {
+        kind: ApiCallKind,
+    }
+
+    impl ApiCallClassifier {
+        fn check(&mut self, name: &str) {
+            if name.contains("permission") {
+                self.kind = self.kind.max(ApiCallKind::Authorize);
+            } else if TRIVIAL.is_match(name) {
+                self.kind = self.kind.max(ApiCallKind::Trivial);
+            }
+        }
+    }
+
+    impl Visit for ApiCallClassifier {
+        fn visit_tpl_element(&mut self, n: &TplElement) {
+            self.check(&n.raw);
+        }
+
+        fn visit_str(&mut self, s: &Str) {
+            self.check(&s.value);
+        }
+    }
+
+    let mut classifier = ApiCallClassifier {
+        kind: ApiCallKind::Unknown,
+    };
+    expr.visit_with(&mut classifier);
+    classifier.kind
+}
+
 impl<'cx> FunctionAnalyzer<'cx> {
     #[inline]
     fn set_curr_terminator(&mut self, term: Terminator) {
         self.body.set_terminator(self.block, term);
+    }
+
+    /// Sets the current block to `block` and returns the previous block.
+    #[inline]
+    fn goto_block(&mut self, block: BasicBlockId) -> BasicBlockId {
+        self.set_curr_terminator(Terminator::Goto(block));
+        mem::replace(&mut self.block, block)
     }
 
     #[inline]
@@ -604,6 +764,150 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }
         }
         Operand::Var(var)
+    }
+
+    fn bind_pats_helper(&mut self, n: &Pat, rhs: Variable) {
+        match n {
+            Pat::Ident(BindingIdent { id, .. }) => {
+                let id = id.to_id();
+                let def = self.res.get_or_insert_sym(id, self.module);
+                let var = self.body.get_or_insert_global(def);
+                self.push_curr_inst(Inst::Assign(
+                    Variable::new(var),
+                    Rvalue::Read(Operand::Var(rhs)),
+                ));
+            }
+            Pat::Array(ArrayPat { elems, .. }) => {
+                for (i, elem) in elems.iter().enumerate() {
+                    if let Some(elem) = elem {
+                        let prop = Projection::Known(i.to_string().into());
+                        let mut var = rhs.clone();
+                        var.projections.push(prop);
+                        self.bind_pats_helper(elem, var);
+                    }
+                }
+            }
+            Pat::Rest(RestPat { arg, .. }) => self.bind_pats_helper(arg, rhs),
+            Pat::Object(obj) => {
+                for prop in &obj.props {
+                    let mut rhs = rhs.clone();
+                    match prop {
+                        ObjectPatProp::KeyValue(KeyValuePatProp { key, value }) => match key {
+                            PropName::Ident(Ident { sym: prop, .. })
+                            | PropName::Str(Str { value: prop, .. }) => {
+                                let prop = Projection::Known(prop.clone());
+                                rhs.projections.push(prop);
+                                self.bind_pats_helper(value, rhs);
+                            }
+                            PropName::Num(Number { value: num, .. }) => {
+                                // FIXME: derive Eq and Hash for Projection so we can use floats
+                                // (Yes, I know ^ is cringe, but it matches JS semantics)
+                                let prop = Projection::Known(num.to_string().into());
+                                rhs.projections.push(prop);
+                                self.bind_pats_helper(value, rhs);
+                            }
+                            PropName::Computed(ComputedPropName { expr, .. }) => {
+                                let opnd = self.lower_expr(expr);
+                                let proj = self.body.resolve_prop(self.block, opnd);
+                                rhs.projections.push(proj);
+                                self.bind_pats_helper(value, rhs);
+                            }
+                            PropName::BigInt(bigint) => {
+                                let proj = Projection::Known(bigint.value.to_string().into());
+                                rhs.projections.push(proj);
+                                self.bind_pats_helper(value, rhs);
+                            }
+                        },
+                        ObjectPatProp::Assign(AssignPatProp { key, value, .. }) => {
+                            let id = key.to_id();
+                            rhs.projections.push(Projection::Known(id.0.clone()));
+                            let def = self.res.get_or_insert_sym(id, self.module);
+                            let var = self.body.get_or_insert_global(def);
+                            self.push_curr_inst(Inst::Assign(
+                                Variable::new(var),
+                                Rvalue::Read(Operand::Var(rhs)),
+                            ));
+                        }
+                        ObjectPatProp::Rest(rest) => self.bind_pats_helper(&rest.arg, rhs),
+                    }
+                }
+            }
+            Pat::Assign(AssignPat { left, right, .. }) => self.bind_pats_helper(left, rhs),
+            Pat::Invalid(_) => {}
+            Pat::Expr(_) => {}
+        }
+    }
+
+    fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
+        let args = args.iter().map(|arg| self.lower_expr(&arg.expr)).collect();
+        let props = normalize_callee_expr(callee, self.res, self.module);
+        match props.first() {
+            Some(&PropPath::Def(id)) => {
+                debug!("call from: {}", self.res.def_name(id));
+                debug!("call expr: {:?}", props);
+            }
+            Some(PropPath::Unknown(id)) => {
+                debug!("call from: {}", id.0);
+                debug!("call expr: {:?}", props);
+            }
+            _ => (),
+        }
+        let callee = match callee {
+            CalleeRef::Super => Operand::Var(Variable::SUPER),
+            CalleeRef::Import => Operand::UNDEF,
+            CalleeRef::Expr(expr) => self.lower_expr(expr),
+        };
+        Operand::with_var(
+            self.body
+                .push_tmp(self.block, Rvalue::Call { callee, args }, None),
+        )
+    }
+
+    fn bind_pats(&mut self, n: &Pat, val: Rvalue) {
+        match n {
+            Pat::Ident(BindingIdent { id, .. }) => {
+                let id = id.to_id();
+                let def = self.res.get_or_insert_sym(id, self.module);
+                let var = self.body.get_or_insert_global(def);
+                self.push_curr_inst(Inst::Assign(Variable::new(var), val));
+            }
+            Pat::Array(ArrayPat { elems, .. }) => {
+                let lval = self.body.push_tmp(self.block, val, None);
+                self.bind_pats_helper(n, Variable::new(lval));
+            }
+            Pat::Rest(RestPat { arg, .. }) => self.bind_pats(arg, val),
+            Pat::Object(ObjectPat { props, .. }) => {
+                let lval = self.body.push_tmp(self.block, val, None);
+                self.bind_pats_helper(n, Variable::new(lval));
+            }
+            Pat::Assign(AssignPat { left, right, .. }) => {
+                // TODO: handle default
+                self.bind_pats(left, val);
+            }
+            Pat::Invalid(_) => {}
+            Pat::Expr(expr) => {
+                let opnd = self.lower_expr(expr);
+                self.body.coerce_to_lval(self.block, opnd);
+            }
+        }
+    }
+
+    fn lower_tpl(&mut self, n: &Tpl) -> Template {
+        let exprs = n
+            .exprs
+            .iter()
+            .map(|expr| self.lower_expr(expr))
+            .collect::<Vec<_>>();
+        let quasis = n
+            .quasis
+            .iter()
+            .map(|quasi| quasi.raw.clone())
+            .collect::<Vec<_>>();
+        Template {
+            exprs,
+            quasis,
+            ..Default::default()
+        }
     }
 
     // TODO: This can probably be made into a trait
@@ -668,39 +972,51 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }
             Expr::Assign(AssignExpr {
                 op, left, right, ..
-            }) => match left {
-                PatOrExpr::Expr(_) => todo!(),
-                PatOrExpr::Pat(_) => todo!(),
-            },
+            }) => {
+                let rhs = self.lower_expr(right);
+                match left {
+                    PatOrExpr::Expr(expr) => {
+                        let opnd = self.lower_expr(expr);
+                        let lval = self.body.coerce_to_lval(self.block, opnd);
+                        self.push_curr_inst(Inst::Assign(lval, Rvalue::Read(rhs.clone())));
+                    }
+                    PatOrExpr::Pat(pat) => {
+                        self.bind_pats(pat, Rvalue::Read(rhs.clone()));
+                    }
+                };
+                rhs
+            }
             Expr::Member(MemberExpr { obj, prop, .. }) => self.lower_member(obj, prop),
             Expr::Cond(CondExpr {
                 test, cons, alt, ..
-            }) => self.lower_expr(test),
-            Expr::Call(n) => {
-                let mut args = Vec::with_capacity(n.args.len());
-                for ExprOrSpread { spread, expr } in &n.args {
-                    let arg = self.lower_expr(expr);
-                    args.push(arg);
-                }
-                let callee = match &n.callee {
-                    Callee::Super(_) => Operand::Var(Variable::SUPER),
-                    Callee::Import(_) => Operand::UNDEF,
-                    Callee::Expr(expr) => self.lower_expr(expr),
-                };
-                let props = normalize_callee_expr(&n.callee, self.res, self.module);
-                match props.first() {
-                    Some(&PropPath::Def(id)) => {
-                        debug!("call from: {}", self.res.def_name(id));
-                        debug!("call expr: {:?}", props);
-                    }
-                    Some(PropPath::Unknown(id)) => {
-                        debug!("call from: {}", id.0);
-                        debug!("call expr: {:?}", props);
-                    }
-                    _ => (),
-                }
-                todo!()
+            }) => {
+                let cond = self.lower_expr(test);
+                let curr = self.block;
+                let rest = self.body.new_block();
+                let cons_block = self.body.new_block();
+                let alt_block = self.body.new_block();
+                self.set_curr_terminator(Terminator::If {
+                    cond,
+                    cons: cons_block,
+                    alt: alt_block,
+                });
+                self.block = cons_block;
+                let cons = self.lower_expr(cons);
+                let cons_phi = self.body.push_tmp(self.block, Rvalue::Read(cons), None);
+                self.set_curr_terminator(Terminator::Goto(rest));
+                self.block = alt_block;
+                let alt = self.lower_expr(alt);
+                let alt_phi = self.body.push_tmp(self.block, Rvalue::Read(alt), None);
+                self.set_curr_terminator(Terminator::Goto(rest));
+                self.block = rest;
+                let phi = self.body.push_tmp(
+                    self.block,
+                    Rvalue::Phi(vec![(cons_phi, cons_block), (alt_phi, alt_block)]),
+                    None,
+                );
+                Operand::with_var(phi)
             }
+            Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
             Expr::New(NewExpr { callee, args, .. }) => Operand::UNDEF,
             Expr::Seq(SeqExpr { exprs, .. }) => {
                 if let Some((last, rest)) = exprs.split_last() {
@@ -723,8 +1039,18 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 Operand::with_var(var)
             }
             Expr::Lit(lit) => lit.clone().into(),
-            Expr::Tpl(Tpl { exprs, quasis, .. }) => todo!(),
-            Expr::TaggedTpl(TaggedTpl { tag, tpl, .. }) => todo!(),
+            Expr::Tpl(tpl) => {
+                let tpl = self.lower_tpl(tpl);
+                Operand::with_var(self.body.push_tmp(self.block, Rvalue::Template(tpl), None))
+            }
+            Expr::TaggedTpl(TaggedTpl { tag, tpl, .. }) => {
+                let tag = Some(self.lower_expr(tag));
+                let tpl = Template {
+                    tag,
+                    ..self.lower_tpl(tpl)
+                };
+                Operand::with_var(self.body.push_tmp(self.block, Rvalue::Template(tpl), None))
+            }
             Expr::Arrow(_) => Operand::UNDEF,
             Expr::Class(_) => Operand::UNDEF,
             Expr::Yield(YieldExpr { arg, .. }) => arg
@@ -733,11 +1059,16 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Expr::MetaProp(_) => Operand::UNDEF,
             Expr::Await(AwaitExpr { arg, .. }) => self.lower_expr(arg),
             Expr::Paren(ParenExpr { expr, .. }) => self.lower_expr(expr),
-            Expr::JSXMember(_) => todo!(),
-            Expr::JSXNamespacedName(_) => todo!(),
-            Expr::JSXEmpty(_) => todo!(),
-            Expr::JSXElement(_) => todo!(),
-            Expr::JSXFragment(_) => todo!(),
+            Expr::JSXMember(JSXMemberExpr { obj, prop, .. }) => todo!(),
+            Expr::JSXNamespacedName(JSXNamespacedName { ns, name, .. }) => todo!(),
+            Expr::JSXEmpty(_) => Operand::UNDEF,
+            Expr::JSXElement(elem) => todo!(),
+            Expr::JSXFragment(JSXFragment {
+                opening,
+                children,
+                closing,
+                ..
+            }) => todo!(),
             Expr::TsTypeAssertion(TsTypeAssertion { expr, .. })
             | Expr::TsConstAssertion(TsConstAssertion { expr, .. })
             | Expr::TsNonNull(TsNonNullExpr { expr, .. })
@@ -746,7 +1077,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
             | Expr::TsSatisfies(TsSatisfiesExpr { expr, .. }) => self.lower_expr(expr),
             Expr::PrivateName(PrivateName { id, .. }) => todo!(),
             Expr::OptChain(OptChainExpr { base, .. }) => match base {
-                OptChainBase::Call(OptCall { callee, args, .. }) => todo!(),
+                OptChainBase::Call(OptCall { callee, args, .. }) => {
+                    self.lower_call(callee.as_ref().into(), args)
+                }
                 OptChainBase::Member(MemberExpr { obj, prop, .. }) => {
                     // TODO: create separate basic blocks
                     self.lower_member(obj, prop)
@@ -756,85 +1089,191 @@ impl<'cx> FunctionAnalyzer<'cx> {
         }
     }
 
+    fn lower_stmts(&mut self, stmts: &[Stmt]) {
+        for stmt in stmts {
+            self.lower_stmt(stmt);
+        }
+    }
+
     fn lower_stmt(&mut self, n: &Stmt) {
         match n {
-            Stmt::Block(BlockStmt { stmts, .. }) => todo!(),
-            Stmt::Empty(_) => todo!(),
-            Stmt::Debugger(_) => todo!(),
-            Stmt::With(WithStmt { obj, body, .. }) => todo!(),
-            Stmt::Return(ReturnStmt { arg, .. }) => todo!(),
-            Stmt::Labeled(LabeledStmt { label, body, .. }) => todo!(),
-            Stmt::Break(BreakStmt { label, .. }) => todo!(),
-            Stmt::Continue(ContinueStmt { label, .. }) => todo!(),
+            Stmt::Block(BlockStmt { stmts, .. }) => self.lower_stmts(stmts),
+            Stmt::Empty(_) => {}
+            Stmt::Debugger(_) => {}
+            Stmt::With(WithStmt { obj, body, .. }) => {
+                let opnd = self.lower_expr(obj);
+                self.body.push_expr(self.block, Rvalue::Read(opnd));
+                self.lower_stmt(body);
+            }
+            Stmt::Return(ReturnStmt { arg, .. }) => {
+                if let Some(arg) = arg {
+                    let opnd = self.lower_expr(arg);
+                    self.body
+                        .push_inst(self.block, Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)));
+                }
+                self.body.set_terminator(self.block, Terminator::Ret);
+            }
+            Stmt::Labeled(LabeledStmt { label, body, .. }) => {
+                self.lower_stmt(body);
+            }
+            Stmt::Break(BreakStmt { label, .. }) => {}
+            Stmt::Continue(ContinueStmt { label, .. }) => {}
             Stmt::If(IfStmt {
                 test, cons, alt, ..
-            }) => todo!(),
+            }) => {
+                let [cons_block, cont] = self.body.new_blocks();
+                let alt_block = if let Some(alt) = alt {
+                    let alt_block = self.body.new_block();
+                    let old_block = mem::replace(&mut self.block, alt_block);
+                    self.lower_stmt(alt);
+                    self.set_curr_terminator(Terminator::Goto(cont));
+                    self.block = old_block;
+                    alt_block
+                } else {
+                    cont
+                };
+                let cond = self.lower_expr(test);
+                self.set_curr_terminator(Terminator::If {
+                    cond,
+                    cons: cons_block,
+                    alt: alt_block,
+                });
+                self.block = cons_block;
+                self.lower_stmt(cons);
+                self.goto_block(cont);
+            }
             Stmt::Switch(SwitchStmt {
                 discriminant,
                 cases,
                 ..
-            }) => todo!(),
-            Stmt::Throw(ThrowStmt { arg, .. }) => todo!(),
+            }) => {
+                let opnd = self.lower_expr(discriminant);
+                // TODO: lower switch
+            }
+            Stmt::Throw(ThrowStmt { arg, .. }) => {
+                let opnd = self.lower_expr(arg);
+                self.body.push_expr(self.block, Rvalue::Read(opnd));
+                self.body.set_terminator(self.block, Terminator::Throw);
+            }
             Stmt::Try(stmt) => {
                 let TryStmt {
-                    block,
+                    block: BlockStmt { stmts, .. },
                     handler,
                     finalizer,
                     ..
                 } = &**stmt;
-                todo!()
+                self.lower_stmts(stmts);
+                if let Some(BlockStmt { stmts, .. }) = finalizer {
+                    self.lower_stmts(stmts);
+                }
             }
-            Stmt::While(WhileStmt { test, body, .. }) => todo!(),
-            Stmt::DoWhile(DoWhileStmt { test, body, .. }) => todo!(),
+            Stmt::While(WhileStmt { test, body, .. }) => {
+                let [check, cont, body_id] = self.body.new_blocks();
+                self.set_curr_terminator(Terminator::Goto(check));
+                self.block = check;
+                let cond = self.lower_expr(test);
+                self.set_curr_terminator(Terminator::If {
+                    cond,
+                    cons: body_id,
+                    alt: cont,
+                });
+                let check = mem::replace(&mut self.block, body_id);
+                self.lower_stmt(body);
+                self.set_curr_terminator(Terminator::Goto(check));
+                self.block = cont;
+            }
+            Stmt::DoWhile(DoWhileStmt { test, body, .. }) => {
+                let [check, cont, body_id] = self.body.new_blocks();
+                self.set_curr_terminator(Terminator::Goto(body_id));
+                self.block = body_id;
+                self.lower_stmt(body);
+                self.set_curr_terminator(Terminator::Goto(check));
+                self.block = check;
+                let cond = self.lower_expr(test);
+                self.set_curr_terminator(Terminator::If {
+                    cond,
+                    cons: body_id,
+                    alt: cont,
+                });
+                self.block = cont;
+            }
             Stmt::For(ForStmt {
                 init,
                 test,
                 update,
                 body,
                 ..
-            }) => todo!(),
+            }) => {
+                match init {
+                    Some(VarDeclOrExpr::VarDecl(decl)) => {
+                        self.lower_var_decl(decl);
+                    }
+                    Some(VarDeclOrExpr::Expr(expr)) => {
+                        self.lower_expr(expr);
+                    }
+                    None => {}
+                }
+                let [check, cont, body_id] = self.body.new_blocks();
+                self.goto_block(check);
+                if let Some(test) = test {
+                    let cond = self.lower_expr(test);
+                    self.set_curr_terminator(Terminator::If {
+                        cond,
+                        cons: body_id,
+                        alt: cont,
+                    });
+                } else {
+                    self.set_curr_terminator(Terminator::Goto(body_id));
+                }
+                self.block = body_id;
+                self.lower_stmt(body);
+                if let Some(update) = update {
+                    self.lower_expr(update);
+                }
+                self.set_curr_terminator(Terminator::Goto(check));
+                self.goto_block(cont);
+            }
             Stmt::ForIn(ForInStmt {
                 left, right, body, ..
-            }) => todo!(),
+            }) => self.lower_loop(left, right, body),
             Stmt::ForOf(ForOfStmt {
                 left, right, body, ..
-            }) => todo!(),
+            }) => self.lower_loop(left, right, body),
             Stmt::Decl(decl) => match decl {
-                Decl::Class(_) => todo!(),
-                Decl::Fn(_) => todo!(),
-                Decl::Var(_) => todo!(),
-                Decl::TsInterface(_) => todo!(),
-                Decl::TsTypeAlias(_) => todo!(),
-                Decl::TsEnum(_) => todo!(),
-                Decl::TsModule(_) => todo!(),
+                Decl::Class(_) => {}
+                Decl::Fn(_) => {}
+                Decl::Var(var) => {
+                    self.lower_var_decl(var);
+                }
+                Decl::TsInterface(_)
+                | Decl::TsTypeAlias(_)
+                | Decl::TsEnum(_)
+                | Decl::TsModule(_) => {}
             },
-            Stmt::Expr(ExprStmt { expr, .. }) => todo!(),
+            Stmt::Expr(ExprStmt { expr, .. }) => {
+                let opnd = self.lower_expr(expr);
+                self.body.push_expr(self.block, Rvalue::Read(opnd));
+            }
         }
     }
-}
 
-impl Visit for FunctionAnalyzer<'_> {
-    fn visit_stmt(&mut self, n: &Stmt) {
-        match n {
-            Stmt::Block(_) => todo!(),
-            Stmt::Empty(_) => todo!(),
-            Stmt::Debugger(_) => todo!(),
-            Stmt::With(_) => todo!(),
-            Stmt::Return(_) => todo!(),
-            Stmt::Labeled(_) => todo!(),
-            Stmt::Break(_) => todo!(),
-            Stmt::Continue(_) => todo!(),
-            Stmt::If(_) => todo!(),
-            Stmt::Switch(_) => todo!(),
-            Stmt::Throw(_) => todo!(),
-            Stmt::Try(_) => todo!(),
-            Stmt::While(_) => todo!(),
-            Stmt::DoWhile(_) => todo!(),
-            Stmt::For(_) => todo!(),
-            Stmt::ForIn(_) => todo!(),
-            Stmt::ForOf(_) => todo!(),
-            Stmt::Decl(_) => todo!(),
-            Stmt::Expr(_) => todo!(),
+    fn lower_loop(&mut self, left: &VarDeclOrPat, right: &Expr, body: &Stmt) {
+        // FIXME: don't assume loops are infinite
+        let opnd = self.lower_expr(right);
+        match left {
+            VarDeclOrPat::VarDecl(var) => self.lower_var_decl(var),
+            VarDeclOrPat::Pat(pat) => self.bind_pats(pat, Rvalue::Read(opnd)),
+        }
+        self.lower_stmt(body);
+    }
+
+    fn lower_var_decl(&mut self, var: &VarDecl) {
+        for decl in &var.decls {
+            let opnd = decl
+                .init
+                .as_deref()
+                .map_or(Operand::UNDEF, |init| self.lower_expr(init));
+            self.bind_pats(&decl.name, Rvalue::Read(opnd));
         }
     }
 }
@@ -948,7 +1387,67 @@ impl Visit for FunctionCollector<'_> {
             operand_stack: vec![],
             in_lhs: false,
         };
-        n.body.visit_with(&mut analyzer);
+        if let Some(BlockStmt { stmts, .. }) = &n.body {
+            analyzer.lower_stmts(stmts);
+            let body = analyzer.body;
+            println!("name: {}", self.res.def_name(owner));
+            *self.res.def_mut(owner).expect_body() = body;
+        }
+    }
+
+    fn visit_arrow_expr(
+        &mut self,
+        ArrowExpr {
+            body: func_body,
+            params,
+            ..
+        }: &ArrowExpr,
+    ) {
+        let owner = self.parent.unwrap_or_else(|| {
+            self.res
+                .add_anonymous("__UNKNOWN", AnonType::Closure, self.module)
+        });
+        let old_parent = self.parent.replace(owner);
+        func_body.visit_with(self);
+        let mut argdef = ArgDefiner {
+            res: self.res,
+            module: self.module,
+            func: owner,
+            body: Body::with_owner(owner),
+        };
+        params.visit_children_with(&mut argdef);
+        let body = argdef.body;
+        let mut localdef = LocalDefiner {
+            res: self.res,
+            module: self.module,
+            func: owner,
+            body,
+        };
+        func_body.visit_children_with(&mut localdef);
+        let body = localdef.body;
+        let mut analyzer = FunctionAnalyzer {
+            res: self.res,
+            module: self.module,
+            current_def: owner,
+            assigning_to: None,
+            body,
+            block: BasicBlockId::default(),
+            operand_stack: vec![],
+            in_lhs: false,
+        };
+        match func_body {
+            BlockStmtOrExpr::BlockStmt(BlockStmt { stmts, .. }) => {
+                analyzer.lower_stmts(stmts);
+            }
+            BlockStmtOrExpr::Expr(e) => {
+                let opnd = analyzer.lower_expr(e);
+                analyzer
+                    .body
+                    .push_inst(analyzer.block, Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)));
+            }
+        }
+        *self.res.def_mut(owner).expect_body() = analyzer.body;
+        self.parent = old_parent;
     }
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
@@ -966,12 +1465,12 @@ impl Visit for FunctionCollector<'_> {
                 f.visit_with(self);
                 self.parent = old_parent;
             }
-            Some(Expr::Arrow(f)) => {
-                let defid = self
+            Some(Expr::Arrow(arrow)) => {
+                let owner = self
                     .res
                     .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
-                let old_parent = self.parent.replace(defid);
-                f.visit_with(self);
+                let old_parent = self.parent.replace(owner);
+                self.visit_arrow_expr(arrow);
                 self.parent = old_parent;
             }
             _ => {}
@@ -984,18 +1483,17 @@ impl Visit for FunctionCollector<'_> {
             info!("found possible resolver: {propname}");
             match self.res.lookup_prop(def_id, propname) {
                 Some(def) => {
+                    self.res.overwrite_def(def, DefKind::Function(()));
                     info!("analyzing resolver def: {def:?}");
-                    let mut analyzer = FunctionAnalyzer {
-                        res: self.res,
-                        module: self.module,
-                        current_def: def,
-                        assigning_to: None,
-                        body: Body::with_owner(def),
-                        block: BasicBlockId::default(),
-                        operand_stack: vec![],
-                        in_lhs: false,
-                    };
-                    expr.visit_with(&mut analyzer);
+                    let old_parent = self.parent.replace(def);
+                    match expr {
+                        Expr::Fn(f) => {
+                            f.visit_with(self);
+                        }
+                        Expr::Arrow(arrow) => self.visit_arrow_expr(arrow),
+                        _ => {}
+                    }
+                    self.parent = old_parent;
                 }
                 None => {
                     warn!("resolver def not found");
@@ -1006,7 +1504,9 @@ impl Visit for FunctionCollector<'_> {
 
     fn visit_fn_decl(&mut self, n: &FnDecl) {
         let id = n.ident.to_id();
-        let def = self.res.get_or_insert_sym(id, self.module);
+        let def = self
+            .res
+            .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
         self.parent = Some(def);
         n.function.visit_with(self);
         self.parent = None;
@@ -1516,6 +2016,11 @@ impl Environment {
         self.resolver.parent.insert(child, parent);
     }
 
+    fn overwrite_def(&mut self, def: DefId, res: DefRes) {
+        let key = self.new_key_from_res(def, res);
+        self.defs.defs[def] = key;
+    }
+
     #[inline]
     fn get_or_insert_sym(&mut self, id: Id, module: ModId) -> DefId {
         let def_id = self.resolver.get_or_insert_sym(id, module);
@@ -1742,6 +2247,45 @@ impl Environment {
             }
             DefKind::ModuleNs(id) => DefKind::ModuleNs(id),
             DefKind::Undefined => DefKind::Undefined,
+        }
+    }
+
+    /// Check if def is exported from the foreign module specified in `module_name`.
+    pub fn as_foreign_import(&self, def: DefId, module_name: &str) -> Option<&ImportKind> {
+        match self.def_ref(def) {
+            DefKind::Foreign(f) if f.module_name == *module_name => Some(&f.kind),
+            _ => None,
+        }
+    }
+
+    pub fn resolve_alias(&self, def: DefId) -> DefId {
+        match self.def_ref(def) {
+            DefKind::Arg
+            | DefKind::GlobalObj(_)
+            | DefKind::Class(_)
+            | DefKind::Foreign(_)
+            | DefKind::Resolver(_)
+            | DefKind::ModuleNs(_)
+            | DefKind::Undefined
+            | DefKind::Closure(_)
+            | DefKind::Function(_) => def,
+            DefKind::ExportAlias(def)
+            | DefKind::ResolverDef(def)
+            | DefKind::ResolverHandler(def) => self.resolve_alias(def),
+        }
+    }
+
+    pub fn resolver_defs(&self, def: DefId) -> Vec<(JsWord, DefId)> {
+        let def = self.resolve_alias(def);
+        // TODO: return an iterator instead of a Vec
+        if let DefKind::Resolver(class) = self.def_ref(def) {
+            class
+                .pub_members
+                .iter()
+                .map(|(k, v)| (k.clone(), self.resolve_alias(*v)))
+                .collect()
+        } else {
+            vec![]
         }
     }
 
