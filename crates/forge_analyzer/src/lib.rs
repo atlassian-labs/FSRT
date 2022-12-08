@@ -3,6 +3,7 @@ pub mod ctx;
 pub mod definitions;
 pub mod engine;
 pub mod exports;
+pub mod interp;
 pub mod ir;
 pub mod lattice;
 pub mod resolver;
