@@ -10,9 +10,11 @@ use std::hash;
 use std::hash::Hash;
 use std::mem;
 use std::num::NonZeroUsize;
+use std::slice;
 
 use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
+use once_cell::unsync::OnceCell;
 use smallvec::smallvec;
 use smallvec::smallvec_inline;
 use smallvec::SmallVec;
@@ -29,6 +31,8 @@ use typed_index_collections::TiVec;
 
 use crate::ctx::ModId;
 use crate::definitions::DefId;
+use crate::definitions::DefKind;
+use crate::definitions::Environment;
 
 pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
 
@@ -60,16 +64,17 @@ pub(crate) enum Terminator {
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
-pub(crate) enum Intrinsic {
+pub enum Intrinsic {
     Authorize,
     Fetch,
     ApiCall,
+    SafeCall,
     EnvRead,
     StorageRead,
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Template {
+pub struct Template {
     pub(crate) quasis: Vec<Atom>,
     pub(crate) exprs: Vec<Operand>,
     // TODO: make this more memory efficient
@@ -78,30 +83,30 @@ pub(crate) struct Template {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum Rvalue {
+pub enum Rvalue {
     Unary(UnOp, Operand),
     Bin(BinOp, Operand, Operand),
-    Call { callee: Operand, args: Vec<Operand> },
     Read(Operand),
+    Call(Operand, SmallVec<[Operand; 4]>),
+    Intrinsic(Intrinsic, SmallVec<[Operand; 4]>),
     Phi(Vec<(VarId, BasicBlockId)>),
-    Intrinsics(Intrinsic),
     Template(Template),
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct BasicBlock {
+pub struct BasicBlock {
     insts: Vec<Inst>,
     term: Terminator,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct Location {
-    block: BasicBlockId,
-    stmt: u32,
+pub struct Location {
+    pub block: BasicBlockId,
+    pub stmt: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum VarKind {
+pub(crate) enum VarKind {
     LocalDef(DefId),
     GlobalRef(DefId),
     Temp { parent: Option<DefId> },
@@ -122,6 +127,7 @@ pub struct Body {
     vars: TiVec<VarId, VarKind>,
     ident_to_local: FxHashMap<Id, VarId>,
     def_id_to_vars: FxHashMap<DefId, VarId>,
+    predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,14 +138,14 @@ enum ApiCall {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum Inst {
+pub enum Inst {
     // maybe just use assign with a dummy VARIABLE for these?
     Expr(Rvalue),
     Assign(Variable, Rvalue),
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) enum Literal {
+pub enum Literal {
     Str(JsWord),
     JSXText(Atom),
     Bool(bool),
@@ -153,7 +159,7 @@ pub(crate) enum Literal {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BinOp {
+pub enum BinOp {
     Lt,
     Gt,
     EqEq,
@@ -182,7 +188,7 @@ pub(crate) enum BinOp {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum UnOp {
+pub enum UnOp {
     Neg,
     Not,
     BitNot,
@@ -193,7 +199,7 @@ pub(crate) enum UnOp {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Operand {
+pub enum Operand {
     Var(Variable),
     Lit(Literal),
 }
@@ -214,7 +220,7 @@ create_newtype! {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct Variable {
+pub struct Variable {
     pub(crate) base: Base,
     pub(crate) projections: SmallVec<[Projection; 1]>,
 }
@@ -225,31 +231,32 @@ pub(crate) enum Projection {
     Computed(Base),
 }
 
-impl fmt::Display for VarId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "%{}", self.0)
-    }
+#[derive(Clone, Debug, PartialEq, Eq, Copy)]
+pub(crate) enum Successors {
+    Return,
+    One(BasicBlockId),
+    Two(BasicBlockId, BasicBlockId),
 }
 
-impl fmt::Display for Variable {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.base)?;
-        for proj in &self.projections {
-            match proj {
-                Projection::Known(lit) => write!(f, "[\"{lit}\"]")?,
-                Projection::Computed(id) => write!(f, "[{id}]")?,
+impl BasicBlock {
+    #[inline]
+    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &Inst> + ExactSizeIterator {
+        self.insts.iter()
+    }
+
+    pub(crate) fn successors(&self) -> Successors {
+        match self.term {
+            Terminator::Ret => Successors::Return,
+            Terminator::Goto(bb) => Successors::One(bb),
+            Terminator::Throw => Successors::Return,
+            Terminator::Switch { ref targets, .. } => {
+                if targets.branch.len() == 1 {
+                    Successors::One(targets.branch[0])
+                } else {
+                    Successors::Two(targets.branch[0], targets.branch[1])
+                }
             }
-        }
-        Ok(())
-    }
-}
-
-impl fmt::Display for Base {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Base::This => write!(f, "this"),
-            Base::Super => write!(f, "super"),
-            Base::Var(id) => write!(f, "{}", id),
+            Terminator::If { cons, alt, .. } => Successors::Two(cons, alt),
         }
     }
 }
@@ -264,6 +271,7 @@ impl Body {
             blocks: vec![BasicBlock::default()].into(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
+            predecessors: Default::default(),
         }
     }
 
@@ -273,6 +281,39 @@ impl Body {
             owner: Some(owner),
             ..Self::new()
         }
+    }
+
+    #[inline]
+    pub(crate) fn iter_vars(&self) -> impl Iterator<Item = &VarKind> {
+        self.vars.iter()
+    }
+
+    #[inline]
+    pub(crate) fn iter_vars_enumerated(&self) -> impl Iterator<Item = (VarId, &VarKind)> {
+        self.vars.iter_enumerated()
+    }
+
+    pub(crate) fn iter_block_keys(
+        &self,
+    ) -> impl ExactSizeIterator<Item = BasicBlockId> + DoubleEndedIterator + '_ {
+        self.blocks.iter_enumerated().map(|(bb, _)| bb)
+    }
+
+    #[inline]
+    pub(crate) fn iter_blocks_enumerated(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (BasicBlockId, &BasicBlock)> + DoubleEndedIterator {
+        self.blocks.iter_enumerated()
+    }
+
+    #[inline]
+    pub(crate) fn owner(&self) -> Option<DefId> {
+        self.owner
+    }
+
+    #[inline]
+    pub(crate) fn add_var(&mut self, kind: VarKind) -> VarId {
+        self.vars.push_and_get_key(kind)
     }
 
     #[inline]
@@ -313,6 +354,23 @@ impl Body {
         })
     }
 
+    pub(crate) fn predecessors(&self, block: BasicBlockId) -> &[BasicBlockId] {
+        &self.predecessors.get_or_init(|| {
+            let mut preds: TiVec<_, _> = vec![SmallVec::new(); self.blocks.len()].into();
+            for (bb, block) in self.iter_blocks_enumerated() {
+                match block.successors() {
+                    Successors::Return => {}
+                    Successors::One(s) => preds[s].push(bb),
+                    Successors::Two(s1, s2) => {
+                        preds[s1].push(bb);
+                        preds[s2].push(bb);
+                    }
+                }
+            }
+            preds
+        })[block]
+    }
+
     #[inline]
     pub(crate) fn set_terminator(&mut self, bb: BasicBlockId, term: Terminator) -> Terminator {
         mem::replace(&mut self.blocks[bb].term, term)
@@ -330,6 +388,49 @@ impl Body {
             Operand::Var(_) => {
                 Projection::Computed(Base::Var(self.push_tmp(bb, Rvalue::Read(opnd), None)))
             }
+        }
+    }
+
+    pub fn resolve_call<'cx>(
+        &self,
+        env: &'cx Environment,
+        callee: &Operand,
+    ) -> Option<(DefId, &'cx Body)> {
+        match callee {
+            Operand::Var(Variable {
+                base: Base::Var(var),
+                projections,
+            }) => match self.vars[*var] {
+                VarKind::LocalDef(def) | VarKind::GlobalRef(def) => {
+                    let def = env.resolve_alias(def);
+                    match env.def_ref(def) {
+                        DefKind::Function(f) | DefKind::Closure(f) => Some((def, f)),
+                        DefKind::GlobalObj(o) | DefKind::Class(o) => {
+                            let [Projection::Known(ref mem)] = **projections else {
+                                return None;
+                            };
+                            let mem_def = o.find_member(mem);
+                            mem_def.zip(env.def_ref(mem_def?).as_body().copied())
+                        }
+                        DefKind::ModuleNs(n) => {
+                            let [Projection::Known(ref mem)] = **projections else {
+                                return None;
+                            };
+                            let module_export = env.module_export(n, mem);
+                            module_export.zip(env.def_ref(module_export?).as_body().copied())
+                        }
+                        DefKind::ExportAlias(_)
+                        | DefKind::Foreign(_)
+                        | DefKind::ResolverHandler(_)
+                        | DefKind::Resolver(_)
+                        | DefKind::ResolverDef(_)
+                        | DefKind::Undefined
+                        | DefKind::Arg => None,
+                    }
+                }
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -374,70 +475,33 @@ impl Body {
     }
 }
 
-impl Default for Body {
+impl Variable {
+    pub(crate) const THIS: Self = Self {
+        base: Base::This,
+        projections: SmallVec::new_const(),
+    };
+
+    pub(crate) const SUPER: Self = Self {
+        base: Base::Super,
+        projections: SmallVec::new_const(),
+    };
+
     #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PartialEq for Literal {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Str(l0), Self::Str(r0)) => *l0 == *r0,
-            (Self::Bool(l0), Self::Bool(r0)) => *l0 == *r0,
-            (Self::Number(l0), Self::Number(r0)) => *l0 == *r0,
-            (Self::RegExp(l0, l1), Self::RegExp(r0, r1)) => *l0 == *r0 && *l1 == *r1,
-            (Self::BigInt(l0), Self::BigInt(r0)) => *l0 == *r0,
-            (Self::JSXText(l0), Self::JSXText(r0)) => *l0 == *r0,
-            (Self::Null, Self::Null) | (Self::Undef, Self::Undef) => true,
-            // We intentionally list out every possibility instead of using [`std::mem::discriminant`] to trigger a compile error
-            // in the event that a new variant with a field is added.
-            (
-                Self::Bool(_)
-                | Self::Str(_)
-                | Self::JSXText(_)
-                | Self::BigInt(_)
-                | Self::Number(_)
-                | Self::RegExp(_, _)
-                | Self::Null
-                | Self::Undef,
-                _,
-            ) => false,
+    pub(crate) const fn new(var: VarId) -> Self {
+        Self {
+            base: Base::Var(var),
+            projections: SmallVec::new_const(),
         }
     }
-}
 
-// I don't like it either, but in JS NaNs are compared bitwise
-impl Eq for Literal {}
-
-impl Hash for Literal {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        mem::discriminant(self).hash(state);
-        match self {
-            Literal::Str(s) => s.hash(state),
-            Literal::Bool(b) => b.hash(state),
-            Literal::Null | Literal::Undef => {}
-            Literal::Number(n) => n.to_bits().hash(state),
-            Literal::BigInt(bn) => bn.hash(state),
-            Literal::RegExp(s, t) => (s, t).hash(state),
-            Literal::JSXText(r) => r.hash(state),
-        }
+    #[inline]
+    pub(crate) fn add_computed_var(&mut self, var: VarId) {
+        self.projections.push(Projection::Computed(Base::Var(var)));
     }
-}
 
-impl fmt::Display for Literal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Literal::Str(ref s) => write!(f, "\"{s}\""),
-            Literal::Bool(b) => write!(f, "{b}"),
-            Literal::Null => write!(f, "[null]"),
-            Literal::Undef => write!(f, "[undefined]"),
-            Literal::Number(n) => write!(f, "{n}"),
-            Literal::BigInt(ref n) => write!(f, "{n}"),
-            Literal::RegExp(ref regex, ref flags) => write!(f, "/{regex}/{flags}"),
-            Literal::JSXText(ref r) => write!(f, "JSX: \"{r}\""),
-        }
+    #[inline]
+    pub(crate) fn add_known(&mut self, lit: JsWord) {
+        self.projections.push(Projection::Known(lit));
     }
 }
 
@@ -464,6 +528,28 @@ impl Rvalue {
     pub(crate) fn with_var(name: VarId) -> Self {
         Rvalue::Read(Operand::Var(Variable::new(name)))
     }
+
+    pub(crate) fn as_call(&self) -> Option<(&Operand, &[Operand])> {
+        match self {
+            Rvalue::Call(callee, args) => Some((callee, args)),
+            _ => None,
+        }
+    }
+}
+
+impl Location {
+    #[inline]
+    pub fn new(block: BasicBlockId, stmt: u32) -> Self {
+        Self { block, stmt }
+    }
+}
+
+impl Inst {
+    pub(crate) fn rvalue(&self) -> &Rvalue {
+        match self {
+            Inst::Assign(_, r) | Inst::Expr(r) => r,
+        }
+    }
 }
 
 impl Operand {
@@ -477,6 +563,213 @@ impl Operand {
     #[inline]
     pub(crate) const fn with_var(name: VarId) -> Self {
         Self::Var(Variable::new(name))
+    }
+}
+
+impl<'a> IntoIterator for &'a BasicBlock {
+    type Item = &'a Inst;
+
+    type IntoIter = slice::Iter<'a, Inst>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.insts.iter()
+    }
+}
+
+impl fmt::Display for Literal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Literal::Str(ref s) => write!(f, "\"{s}\""),
+            Literal::Bool(b) => write!(f, "{b}"),
+            Literal::Null => write!(f, "[null]"),
+            Literal::Undef => write!(f, "[undefined]"),
+            Literal::Number(n) => write!(f, "{n}"),
+            Literal::BigInt(ref n) => write!(f, "{n}"),
+            Literal::RegExp(ref regex, ref flags) => write!(f, "/{regex}/{flags}"),
+            Literal::JSXText(ref r) => write!(f, "JSX: \"{r}\""),
+        }
+    }
+}
+
+impl fmt::Display for VarId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "%{}", self.0)
+    }
+}
+
+impl fmt::Display for Variable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.base)?;
+        for proj in &self.projections {
+            match proj {
+                Projection::Known(lit) => write!(f, "[\"{lit}\"]")?,
+                Projection::Computed(id) => write!(f, "[{id}]")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Base {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Base::This => write!(f, "this"),
+            Base::Super => write!(f, "super"),
+            Base::Var(id) => write!(f, "{id}"),
+        }
+    }
+}
+
+impl fmt::Display for BasicBlockId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "bb{}", self.0)
+    }
+}
+
+impl fmt::Display for Operand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Operand::Var(v) => write!(f, "{v}"),
+            Operand::Lit(l) => write!(f, "{l}"),
+        }
+    }
+}
+
+impl fmt::Display for Terminator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Terminator::Ret => write!(f, "return"),
+            Terminator::Goto(bb) => write!(f, "goto {bb}"),
+            Terminator::Throw => write!(f, "throw"),
+            Terminator::Switch { .. } => write!(f, "switch"),
+            Terminator::If { cond, cons, alt } => {
+                write!(f, "if ({cond}) then goto {cons} else goto {alt}")
+            }
+        }
+    }
+}
+
+impl fmt::Display for BasicBlock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for inst in &self.insts {
+            writeln!(f, "    {inst}")?;
+        }
+        write!(f, "    {}", &self.term)
+    }
+}
+
+impl fmt::Display for UnOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            UnOp::Neg => write!(f, "-"),
+            UnOp::Not => write!(f, "!"),
+            UnOp::BitNot => write!(f, "~"),
+            UnOp::Plus => write!(f, "+"),
+            UnOp::TypeOf => write!(f, "typeof"),
+            UnOp::Delete => write!(f, "delete"),
+            UnOp::Void => write!(f, "void"),
+        }
+    }
+}
+
+impl fmt::Display for BinOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            BinOp::Lt => write!(f, "<"),
+            BinOp::Gt => write!(f, ">"),
+            BinOp::EqEq => write!(f, "=="),
+            BinOp::Neq => write!(f, "!="),
+            BinOp::NeqEq => write!(f, "!=="),
+            BinOp::EqEqEq => write!(f, "==="),
+            BinOp::Ge => write!(f, ">="),
+            BinOp::Le => write!(f, "<="),
+            BinOp::Add => write!(f, "+"),
+            BinOp::Sub => write!(f, "-"),
+            BinOp::Mul => write!(f, "*"),
+            BinOp::Div => write!(f, "/"),
+            BinOp::Exp => write!(f, "**"),
+            BinOp::Mod => write!(f, "%"),
+            BinOp::Or => write!(f, "||"),
+            BinOp::And => write!(f, "&&"),
+            BinOp::BitOr => write!(f, "|"),
+            BinOp::BitAnd => write!(f, "&"),
+            BinOp::BitXor => write!(f, "^"),
+            BinOp::Lshift => write!(f, "<<"),
+            BinOp::Rshift => write!(f, ">>"),
+            BinOp::RshiftLogical => write!(f, ">>>"),
+            BinOp::In => write!(f, "in"),
+            BinOp::InstanceOf => write!(f, "instanceof"),
+            BinOp::NullishCoalesce => write!(f, "??"),
+        }
+    }
+}
+
+impl fmt::Display for Template {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "`")?;
+        let mut exprs = self.exprs.iter();
+        for quasi in &self.quasis {
+            write!(f, "{quasi}")?;
+            if let Some(expr) = exprs.next() {
+                write!(f, "{{{}}}", expr)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Inst {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Inst::Expr(rval) => write!(f, "_ = {rval}"),
+            Inst::Assign(lval, rval) => write!(f, "{lval} = {rval}"),
+        }
+    }
+}
+
+impl fmt::Display for Intrinsic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Intrinsic::Fetch => write!(f, "fetch"),
+            Intrinsic::Authorize => write!(f, "authorize"),
+            Intrinsic::ApiCall => write!(f, "api call"),
+            Intrinsic::SafeCall => write!(f, "safe api call"),
+            Intrinsic::EnvRead => write!(f, "env read"),
+            Intrinsic::StorageRead => write!(f, "forge storage read"),
+        }
+    }
+}
+
+impl fmt::Display for Rvalue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Rvalue::Unary(op, ref opnd) => write!(f, "{op} {opnd}"),
+            Rvalue::Bin(op, ref lhs, ref rhs) => write!(f, "{lhs} {op} {rhs}"),
+            Rvalue::Call(ref op, ref args) => {
+                write!(f, "{op}(")?;
+                for arg in args {
+                    write!(f, "{arg}, ")?;
+                }
+                write!(f, ")")
+            }
+            Rvalue::Intrinsic(ref intrinsic, ref args) => {
+                write!(f, "{intrinsic}(")?;
+                for arg in args {
+                    write!(f, "{arg}, ")?;
+                }
+                write!(f, ")")
+            }
+            Rvalue::Read(ref opnd) => write!(f, "{opnd}"),
+            Rvalue::Phi(ref phis) => {
+                write!(f, "phi(")?;
+                for &(var, block) in phis {
+                    write!(f, "{block}: {var}, ")?;
+                }
+                write!(f, ")")
+            }
+            Rvalue::Template(ref template) => write!(f, "{template}"),
+        }
     }
 }
 
@@ -564,33 +857,54 @@ impl From<&BinaryOp> for BinOp {
         Self::from(*value)
     }
 }
-
-impl Variable {
-    pub(crate) const THIS: Self = Self {
-        base: Base::This,
-        projections: SmallVec::new_const(),
-    };
-
-    pub(crate) const SUPER: Self = Self {
-        base: Base::Super,
-        projections: SmallVec::new_const(),
-    };
-
+impl Default for Body {
     #[inline]
-    pub(crate) const fn new(var: VarId) -> Self {
-        Self {
-            base: Base::Var(var),
-            projections: SmallVec::new_const(),
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PartialEq for Literal {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Str(l0), Self::Str(r0)) => *l0 == *r0,
+            (Self::Bool(l0), Self::Bool(r0)) => *l0 == *r0,
+            (Self::Number(l0), Self::Number(r0)) => *l0 == *r0,
+            (Self::RegExp(l0, l1), Self::RegExp(r0, r1)) => *l0 == *r0 && *l1 == *r1,
+            (Self::BigInt(l0), Self::BigInt(r0)) => *l0 == *r0,
+            (Self::JSXText(l0), Self::JSXText(r0)) => *l0 == *r0,
+            (Self::Null, Self::Null) | (Self::Undef, Self::Undef) => true,
+            // We intentionally list out every possibility instead of using [`std::mem::discriminant`] to trigger a compile error
+            // in the event that a new variant with a field is added.
+            (
+                Self::Bool(_)
+                | Self::Str(_)
+                | Self::JSXText(_)
+                | Self::BigInt(_)
+                | Self::Number(_)
+                | Self::RegExp(_, _)
+                | Self::Null
+                | Self::Undef,
+                _,
+            ) => false,
         }
     }
+}
 
-    #[inline]
-    pub(crate) fn add_computed_var(&mut self, var: VarId) {
-        self.projections.push(Projection::Computed(Base::Var(var)));
-    }
+// I don't like it either, but in JS NaNs are compared bitwise
+impl Eq for Literal {}
 
-    #[inline]
-    pub(crate) fn add_known(&mut self, lit: JsWord) {
-        self.projections.push(Projection::Known(lit));
+impl Hash for Literal {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        mem::discriminant(self).hash(state);
+        match self {
+            Literal::Str(s) => s.hash(state),
+            Literal::Bool(b) => b.hash(state),
+            Literal::Null | Literal::Undef => {}
+            Literal::Number(n) => n.to_bits().hash(state),
+            Literal::BigInt(bn) => bn.hash(state),
+            Literal::RegExp(s, t) => (s, t).hash(state),
+            Literal::JSXText(r) => r.hash(state),
+        }
     }
 }

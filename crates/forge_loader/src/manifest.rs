@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::Error;
+use forge_utils::FxHashMap;
 use itertools::{Either, Itertools};
 use serde::Deserialize;
 use tracing::trace;
@@ -79,6 +80,8 @@ pub struct ForgeModules<'a> {
     scheduled_triggers: Vec<ScheduledTrigger<'a>>,
     #[serde(rename = "consumer", default, borrow)]
     consumers: Vec<Consumer<'a>>,
+    #[serde(flatten)]
+    extra: FxHashMap<String, serde_yaml::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

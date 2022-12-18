@@ -36,8 +36,8 @@ use typed_index_collections::{TiSlice, TiVec};
 use crate::{
     ctx::ModId,
     ir::{
-        BasicBlockId, Body, Inst, Literal, Operand, Projection, Rvalue, Template, Terminator,
-        Variable, RETURN_VAR,
+        BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, Rvalue, Template,
+        Terminator, VarKind, Variable, RETURN_VAR,
     },
 };
 
@@ -234,7 +234,7 @@ impl Class {
     /// let obj = Class::new(obj_id);
     /// obj.find_member("foo");
     /// ```
-    fn find_member<N: ?Sized>(&self, name: &N) -> Option<DefId>
+    pub(crate) fn find_member<N: ?Sized>(&self, name: &N) -> Option<DefId>
     where
         JsWord: PartialEq<N>,
     {
@@ -347,6 +347,13 @@ impl<F, O, I> DefKind<F, O, I> {
         match self {
             Self::Class(c) | Self::GlobalObj(c) | Self::Resolver(c) => c,
             _ => panic!("expected class"),
+        }
+    }
+
+    pub fn as_body(&self) -> Option<&F> {
+        match self {
+            Self::Function(f) | Self::Closure(f) => Some(f),
+            _ => None,
         }
     }
 
@@ -468,7 +475,8 @@ struct Lowerer<'cx> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum PropPath {
     Def(DefId),
-    Str(JsWord),
+    Static(JsWord),
+    MemberCall(JsWord),
     Unknown(Id),
     Expr,
     This,
@@ -500,7 +508,9 @@ fn normalize_callee_expr(
     impl Visit for CalleeNormalizer<'_> {
         fn visit_member_prop(&mut self, n: &MemberProp) {
             match n {
-                MemberProp::Ident(n) => n.visit_with(self),
+                MemberProp::Ident(n) => {
+                    self.path.push(PropPath::Static(n.sym.clone()));
+                }
                 MemberProp::PrivateName(PrivateName { id, .. }) => {
                     self.path.push(PropPath::Private(id.to_id()))
                 }
@@ -527,7 +537,7 @@ fn normalize_callee_expr(
 
         fn visit_str(&mut self, n: &Str) {
             let str = n.value.clone();
-            self.path.push(PropPath::Str(str));
+            self.path.push(PropPath::Static(str));
         }
 
         fn visit_lit(&mut self, n: &Lit) {
@@ -557,6 +567,25 @@ fn normalize_callee_expr(
                 }
                 expr @ (Expr::Lit(_) | Expr::Paren(_) | Expr::Ident(_)) => {
                     expr.visit_children_with(self)
+                }
+                Expr::Call(CallExpr { callee, .. }) => {
+                    let Some(expr) = callee.as_expr() else {
+                        self.path.push(PropPath::Expr);
+                        return;
+                    };
+                    match &**expr {
+                        Expr::Member(MemberExpr {
+                            obj,
+                            prop: MemberProp::Ident(ident),
+                            ..
+                        }) => {
+                            obj.visit_with(self);
+                            self.path.push(PropPath::MemberCall(ident.sym.clone()));
+                        }
+                        _ => {
+                            self.path.push(PropPath::Expr);
+                        }
+                    }
                 }
 
                 _ => self.path.push(PropPath::Expr),
@@ -683,8 +712,9 @@ impl<'a> From<&'a Expr> for CalleeRef<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 enum ApiCallKind {
+    #[default]
     Unknown,
     Trivial,
     Authorize,
@@ -697,6 +727,7 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
     static TRIVIAL: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"user|instance|avatar|license|preferences|serverinfo").unwrap());
 
+    #[derive(Default)]
     struct ApiCallClassifier {
         kind: ApiCallKind,
     }
@@ -721,9 +752,7 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
         }
     }
 
-    let mut classifier = ApiCallClassifier {
-        kind: ApiCallKind::Unknown,
-    };
+    let mut classifier = ApiCallClassifier::default();
     expr.visit_with(&mut classifier);
     classifier.kind
 }
@@ -732,6 +761,50 @@ impl<'cx> FunctionAnalyzer<'cx> {
     #[inline]
     fn set_curr_terminator(&mut self, term: Terminator) {
         self.body.set_terminator(self.block, term);
+    }
+
+    fn as_intrinsic(&self, callee: &[PropPath], first_arg: Option<&Expr>) -> Option<Intrinsic> {
+        fn is_storage_read(prop: &JsWord) -> bool {
+            *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
+        }
+
+        match *callee {
+            [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
+            [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
+                if *last == *"requestJira"
+                    || *last == *"requestConfluence"
+                        && Some(&ImportKind::Default)
+                            == self.res.as_foreign_import(def, "@forge/api") =>
+            {
+                let first_arg = first_arg?;
+                match classify_api_call(first_arg) {
+                    ApiCallKind::Unknown => {
+                        if authn.first() == Some(&PropPath::MemberCall("asApp".into())) {
+                            Some(Intrinsic::ApiCall)
+                        } else {
+                            Some(Intrinsic::SafeCall)
+                        }
+                    }
+                    ApiCallKind::Trivial => Some(Intrinsic::SafeCall),
+                    ApiCallKind::Authorize => Some(Intrinsic::Authorize),
+                }
+            }
+            [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
+                match self.res.as_foreign_import(def, "@forge/api") {
+                    Some(ImportKind::Named(ref name)) if *name == *"storage" => {
+                        Some(Intrinsic::StorageRead)
+                    }
+                    _ => None,
+                }
+            }
+            [PropPath::Def(def), ..] => match self.res.as_foreign_import(def, "@forge/api") {
+                Some(ImportKind::Named(ref name)) if *name == *"authorize" => {
+                    Some(Intrinsic::Authorize)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// Sets the current block to `block` and returns the previous block.
@@ -839,7 +912,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
-        let args = args.iter().map(|arg| self.lower_expr(&arg.expr)).collect();
+        let lowered_args = args.iter().map(|arg| self.lower_expr(&arg.expr)).collect();
         let props = normalize_callee_expr(callee, self.res, self.module);
         match props.first() {
             Some(&PropPath::Def(id)) => {
@@ -857,10 +930,13 @@ impl<'cx> FunctionAnalyzer<'cx> {
             CalleeRef::Import => Operand::UNDEF,
             CalleeRef::Expr(expr) => self.lower_expr(expr),
         };
-        Operand::with_var(
-            self.body
-                .push_tmp(self.block, Rvalue::Call { callee, args }, None),
-        )
+        let first_arg = args.first().map(|expr| &*expr.expr);
+        let call = match self.as_intrinsic(&props, first_arg) {
+            Some(int) => Rvalue::Intrinsic(int, lowered_args),
+            None => Rvalue::Call(callee, lowered_args),
+        };
+        let res = self.body.push_tmp(self.block, call, None);
+        Operand::with_var(res)
     }
 
     fn bind_pats(&mut self, n: &Pat, val: Rvalue) {
@@ -1390,7 +1466,6 @@ impl Visit for FunctionCollector<'_> {
         if let Some(BlockStmt { stmts, .. }) = &n.body {
             analyzer.lower_stmts(stmts);
             let body = analyzer.body;
-            println!("name: {}", self.res.def_name(owner));
             *self.res.def_mut(owner).expect_body() = body;
         }
     }
@@ -1483,7 +1558,7 @@ impl Visit for FunctionCollector<'_> {
             info!("found possible resolver: {propname}");
             match self.res.lookup_prop(def_id, propname) {
                 Some(def) => {
-                    self.res.overwrite_def(def, DefKind::Function(()));
+                    //self.res.overwrite_def(def, DefKind::Function(()));
                     info!("analyzing resolver def: {def:?}");
                     let old_parent = self.parent.replace(def);
                     match expr {
@@ -1605,8 +1680,11 @@ impl Visit for Lowerer<'_> {
                 {
                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**name {
                         let fname = value.clone();
+                        let new_def =
+                            self.res
+                                .add_anonymous(fname.clone(), AnonType::Closure, self.curr_mod);
                         let class = self.res.def_mut(objid).expect_class();
-                        class.pub_members.push((fname, self.curr_def.unwrap()));
+                        class.pub_members.push((fname, new_def));
                     }
                 }
             }
@@ -2022,6 +2100,11 @@ impl Environment {
     }
 
     #[inline]
+    pub fn bodies(&self) -> impl Iterator<Item = &Body> + '_ {
+        self.defs.funcs.iter()
+    }
+
+    #[inline]
     fn get_or_insert_sym(&mut self, id: Id, module: ModId) -> DefId {
         let def_id = self.resolver.get_or_insert_sym(id, module);
         let def_id2 = self.defs.defs.get(def_id).copied().map_or_else(
@@ -2095,7 +2178,7 @@ impl Environment {
         }
     }
 
-    fn module_export<I: PartialEq<str> + ?Sized>(
+    pub fn module_export<I: PartialEq<str> + ?Sized>(
         &self,
         module: ModId,
         export_name: &I,

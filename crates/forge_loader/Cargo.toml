@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 clap.workspace = true
+forge_utils.workspace = true
 itertools.workspace = true
 miette.workspace = true
 serde.workspace = true
