@@ -96,7 +96,6 @@ pub struct Template {
 pub enum Rvalue {
     Unary(UnOp, Operand),
     Bin(BinOp, Operand, Operand),
-    Call { callee: Operand, args: Vec<Operand> },
     Read(Operand),
     Call(Operand, SmallVec<[Operand; 4]>),
     Intrinsic(Intrinsic, SmallVec<[Operand; 4]>),
@@ -468,7 +467,6 @@ impl Body {
             _ => None,
         }
     }
-
     pub(crate) fn coerce_to_lval(
         &mut self,
         bb: BasicBlockId,

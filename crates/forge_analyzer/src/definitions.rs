@@ -1222,7 +1222,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
-        // debug!("in da lower call");
+        let args = args.iter().map(|arg| self.lower_expr(&arg.expr)).collect();
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first() {
             if self.res.is_imported_from(id, "@forge/ui").map_or(
