@@ -3,7 +3,7 @@ use std::{
     collections::HashSet,
     convert::TryFrom,
     fs,
-    io::stdout,
+    io::{self, stdout, Write as _},
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -27,9 +27,12 @@ use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
     analyzer::AuthZVal,
+    checkers::AuthZChecker,
     ctx::{AppCtx, ModId, ModItem},
-    definitions::run_resolver,
+    definitions::{run_resolver, DefId, Environment},
     engine::Machine,
+    interp::Interp,
+    pretty::dump_ir,
     resolver::{dump_callgraph_dot, dump_cfg_dot, resolve_calls},
 };
 use forge_file_resolver::FileResolver;
@@ -70,48 +73,12 @@ struct ForgeProject {
     #[allow(dead_code)]
     sm: Arc<SourceMap>,
     ctx: AppCtx,
-    funcs: Vec<FunctionTy<(ModId, Id)>>,
+    env: Environment,
+    funcs: Vec<FunctionTy<(ModId, DefId)>>,
     opts: Opts,
 }
 
 impl ForgeProject {
-    #[instrument(level = "debug", skip(self))]
-    fn verify_funs(&mut self) -> impl Iterator<Item = (ModId, Id, AuthZVal)> + '_ {
-        self.funcs.iter().cloned().map(|fty| {
-            let (modid, func) = fty.into_inner();
-            // TODO(perf): reuse the same `Machine` between iterations
-            let func_item = ModItem::new(modid, func.clone());
-            let mut machine = Machine::new(modid, func.clone(), &mut self.ctx);
-            let res = (modid, func, machine.run());
-            if self.opts.dump_callgraph {
-                let _ = dump_cfg_dot(&self.ctx, &func_item, stdout());
-            }
-            res
-        })
-    }
-
-    fn verify_fun(&mut self, func: &str) -> (ModItem, AuthZVal) {
-        let (modid, ref ident) = *self
-            .funcs
-            .iter()
-            .find(|&ty| {
-                let (_, ref ident) = *ty.as_ref();
-                *ident.0 == *func
-            })
-            .unwrap()
-            .as_ref();
-        let funcitem = ModItem::new(modid, ident.clone());
-        let mut machine = Machine::new(modid, ident.clone(), &mut self.ctx);
-        let res = machine.run();
-        if self.opts.dump_cfg {
-            let _ = dump_cfg_dot(&self.ctx, &funcitem, stdout());
-        }
-        if self.opts.dump_callgraph {
-            let _ = dump_callgraph_dot(&self.ctx, &funcitem, stdout());
-        }
-        (funcitem, res)
-    }
-
     fn with_files_and_sourceroot<P: AsRef<Path>, I: IntoIterator<Item = PathBuf>>(
         src: P,
         iter: I,
@@ -144,9 +111,11 @@ impl ForgeProject {
         });
         let keys = ctx.module_ids().collect::<Vec<_>>();
         debug!(?keys);
+        let env = run_resolver(ctx.modules(), ctx.file_resolver());
         Self {
             sm,
             ctx,
+            env,
             funcs: vec![],
             opts: Opts::default(),
         }
@@ -156,7 +125,7 @@ impl ForgeProject {
         self.funcs.extend(iter.into_iter().flat_map(|ftype| {
             ftype.sequence(|(func, path)| {
                 let modid = self.ctx.modid_from_path(&path)?;
-                let func = self.ctx.export(modid, func)?;
+                let func = self.env.module_export(modid, func)?;
                 Some((modid, func))
             })
         }));
@@ -203,7 +172,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     proj.opts = opts;
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
-    let res = run_resolver(proj.ctx.modules(), proj.ctx.file_resolver());
     proj.ctx
         .modules()
         .iter_enumerated()
@@ -213,19 +181,20 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 "path: {:?}",
                 proj.ctx.file_resolver().get_module_path(id.into()).unwrap()
             );
-            for (sym, def) in res.module_exports(id) {
-                let kind = res.def_ref(def);
+            for (sym, def) in proj.env.module_exports(id) {
+                let kind = proj.env.def_ref(def);
                 println!("export: {sym}: {def:?} kind: {kind}");
                 if kind.is_resolver_handler() {
-                    for (sym, def) in res.resolver_defs(def) {
-                        println!("resolver handler: {sym}: {def:?}");
-                        let body = res.def_ref(def).expect_body();
-                        println!("body: {body:?}");
+                    let mut lock = io::stdout().lock();
+                    for (sym, def) in proj.env.resolver_defs(def) {
+                        let _ = writeln!(lock, "{sym}: {def:?}");
+                        let body = proj.env.def_ref(def).expect_body();
+                        let _ = dump_ir(&mut lock, &proj.env, body);
                     }
                 }
             }
-            if let Some(def) = res.default_export(id) {
-                let kind = res.def_ref(def);
+            if let Some(def) = proj.env.default_export(id) {
+                let kind = proj.env.def_ref(def);
                 println!("default export: {def:?} defkind: {kind}");
             }
         });
@@ -246,11 +215,15 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     //     let (base, src) = path.split_once("src/").unwrap();
     //     println!("resolved path = {base} {src}");
     // }
-    if let Some(func) = function {
-        proj.verify_fun(func);
-    } else {
-        for (modid, fun, res) in proj.verify_funs() {
-            debug!(module = ?modid, function = ?fun.0, result = ?res, "analysis of");
+
+    let mut interp = Interp::new(&proj.env);
+    let mut checker = AuthZChecker::new();
+    for func in &proj.funcs {
+        match *func {
+            FunctionTy::Invokable((_, def)) => {
+                interp.run_checker(def, &mut checker);
+            }
+            FunctionTy::WebTrigger((_, def)) => {}
         }
     }
     Ok(proj)
