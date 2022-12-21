@@ -18,7 +18,8 @@ impl<V, W> WorkList<V, W>
 where
     V: Eq + Hash,
 {
-    pub(crate) fn new() -> Self {
+    #[inline]
+    pub fn new() -> Self {
         Self {
             worklist: VecDeque::new(),
             visited: FxHashSet::default(),
@@ -26,27 +27,27 @@ where
     }
 
     #[inline]
-    pub(crate) fn pop_front(&mut self) -> Option<(V, W)> {
+    pub fn pop_front(&mut self) -> Option<(V, W)> {
         self.worklist.pop_front()
     }
 
     #[inline]
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.worklist.len()
     }
 
     #[inline]
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.worklist.is_empty()
     }
 
     #[inline]
-    pub(crate) fn reserve(&mut self, n: usize) {
+    pub fn reserve(&mut self, n: usize) {
         self.worklist.reserve(n);
     }
 
     #[inline]
-    pub(crate) fn visited<Q>(&self, key: &Q) -> bool
+    pub fn visited<Q>(&self, key: &Q) -> bool
     where
         V: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -60,14 +61,14 @@ where
     V: Eq + Hash + Copy,
 {
     #[inline]
-    pub(crate) fn push_back(&mut self, v: V, w: W) {
+    pub fn push_back(&mut self, v: V, w: W) {
         if self.visited.insert(v) {
             self.worklist.push_back((v, w));
         }
     }
 
     #[inline]
-    pub(crate) fn push_back_force(&mut self, v: V, w: W) {
+    pub fn push_back_force(&mut self, v: V, w: W) {
         self.worklist.push_back((v, w));
     }
 }

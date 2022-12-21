@@ -30,7 +30,7 @@ use forge_analyzer::{
     definitions::{run_resolver, DefId, Environment},
     interp::Interp,
     reporter::Reporter,
-    resolver::{resolve_calls},
+    resolver::resolve_calls,
 };
 
 use forge_loader::manifest::{ForgeManifest, FunctionRef, FunctionTy};
