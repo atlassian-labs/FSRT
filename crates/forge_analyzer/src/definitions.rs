@@ -15,18 +15,19 @@ use swc_core::{
             DefaultDecl, DoWhileStmt, ExportAll, ExportDecl, ExportDefaultDecl, ExportDefaultExpr,
             ExportNamedSpecifier, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForInStmt,
             ForOfStmt, ForStmt, Function, Id, Ident, IfStmt, Import, ImportDecl,
-            ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, JSXFragment,
-            JSXMemberExpr, JSXNamespacedName, KeyValuePatProp, KeyValueProp, LabeledStmt, Lit,
-            MemberExpr, MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl, ModuleExportName,
-            ModuleItem, NewExpr, Number, ObjectLit, ObjectPat, ObjectPatProp, OptCall,
-            OptChainBase, OptChainExpr, ParenExpr, Pat, PatOrExpr, PrivateName, Prop, PropName,
-            PropOrSpread, RestPat, ReturnStmt, SeqExpr, Stmt, Str, Super, SuperProp, SuperPropExpr,
-            SwitchStmt, TaggedTpl, ThisExpr, ThrowStmt, Tpl, TplElement, TryStmt, TsAsExpr,
-            TsConstAssertion, TsInstantiation, TsNonNullExpr, TsSatisfiesExpr, TsTypeAssertion,
-            UnaryExpr, UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclOrPat, VarDeclarator, WhileStmt,
-            WithStmt, YieldExpr,
+            ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, JSXElement,
+            JSXElementChild, JSXElementName, JSXExpr, JSXExprContainer, JSXFragment, JSXMemberExpr,
+            JSXNamespacedName, JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp, LabeledStmt,
+            Lit, MemberExpr, MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl,
+            ModuleExportName, ModuleItem, NewExpr, Number, ObjectLit, ObjectPat, ObjectPatProp,
+            OptCall, OptChainBase, OptChainExpr, ParenExpr, Pat, PatOrExpr, PrivateName, Prop,
+            PropName, PropOrSpread, RestPat, ReturnStmt, SeqExpr, Stmt, Str, Super, SuperProp,
+            SuperPropExpr, SwitchStmt, TaggedTpl, ThisExpr, ThrowStmt, Tpl, TplElement, TryStmt,
+            TsAsExpr, TsConstAssertion, TsInstantiation, TsNonNullExpr, TsSatisfiesExpr,
+            TsTypeAssertion, UnaryExpr, UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclOrPat,
+            VarDeclarator, WhileStmt, WithStmt, YieldExpr, JSXObject,
         },
-        atoms::JsWord,
+        atoms::{JsWord, Atom},
         visit::{noop_visit_type, Visit, VisitWith},
     },
 };
@@ -911,20 +912,47 @@ impl<'cx> FunctionAnalyzer<'cx> {
         }
     }
 
-    fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
-        let lowered_args = args.iter().map(|arg| self.lower_expr(&arg.expr)).collect();
-        let props = normalize_callee_expr(callee, self.res, self.module);
-        match props.first() {
-            Some(&PropPath::Def(id)) => {
-                debug!("call from: {}", self.res.def_name(id));
-                debug!("call expr: {:?}", props);
-            }
-            Some(PropPath::Unknown(id)) => {
-                debug!("call from: {}", id.0);
-                debug!("call expr: {:?}", props);
-            }
-            _ => (),
+    fn lower_jsx_member(&mut self, n: &JSXMemberExpr) -> Operand {
+        let mut var = match &n.obj {
+            JSXObject::JSXMemberExpr(obj) => self.lower_jsx_member(&obj),
+            JSXObject::Ident(ident) => self.lower_ident(&ident),
+        };
+        if let Operand::Var(var) = &mut var {
+            var.projections.push(Projection::Known(n.prop.sym.clone()));
         }
+        var
+    }
+
+    fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
+        let props = normalize_callee_expr(callee, self.res, self.module);
+        if let Some(&PropPath::Def(id)) = props.first() {
+            if self.res.as_foreign_import(id, "@forge/ui").map_or(false, |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState")) {
+                if let [ExprOrSpread { expr, .. }] = args {
+                    debug!("found useState");
+                    match &**expr {
+                        Expr::Arrow(ArrowExpr {body, ..}) => {
+                            match body {
+                                BlockStmtOrExpr::BlockStmt(stmt) => {
+                                    self.lower_stmts(&stmt.stmts);
+                                    return Operand::UNDEF;
+                                }
+                                BlockStmtOrExpr::Expr(expr) => {
+                                    return self.lower_expr(&expr);
+                                }
+                            }
+                        }
+                        Expr::Fn(FnExpr { ident: _, function }) => {
+                            if let Some(body) = &function.body {
+                                self.lower_stmts(&body.stmts);
+                                return Operand::UNDEF;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let lowered_args = args.iter().map(|arg| self.lower_expr(&arg.expr)).collect();
         let callee = match callee {
             CalleeRef::Super => Operand::Var(Variable::SUPER),
             CalleeRef::Import => Operand::UNDEF,
@@ -984,6 +1012,72 @@ impl<'cx> FunctionAnalyzer<'cx> {
             quasis,
             ..Default::default()
         }
+    }
+
+    fn lower_jsx_child(&mut self, n: &JSXElementChild) -> Operand {
+        match n {
+            JSXElementChild::JSXText(JSXText { value, .. }) => {
+                let value = JsWord::from(value.to_string());
+                Operand::Lit(Literal::Str(value))
+            }
+            JSXElementChild::JSXExprContainer(JSXExprContainer { expr, .. }) => {
+                match expr {
+                    JSXExpr::JSXEmptyExpr(_) => Operand::UNDEF,
+                    JSXExpr::Expr(expr) => self.lower_expr(expr),
+                }
+            }
+            JSXElementChild::JSXSpreadChild(JSXSpreadChild { expr, .. }) => self.lower_expr(expr),
+            JSXElementChild::JSXElement(elem) => self.lower_jsx_elem(elem),
+            JSXElementChild::JSXFragment(JSXFragment { children, .. }) => {
+                for child in children {
+                    self.lower_jsx_child(child);
+                }
+                Operand::UNDEF
+            }
+        }
+    }
+
+    fn lower_ident(&mut self, ident: &Ident) -> Operand {
+        let id = ident.to_id();
+        let Some(def) = self.res.sym_to_id(id.clone(), self.module) else {
+            warn!("unknown symbol: {}", id.0);
+            return Literal::Undef.into();
+        };
+        let var = self.body.get_or_insert_global(def);
+        Operand::with_var(var)
+    }
+
+    fn lower_jsx_elem(&mut self, n: &JSXElement) -> Operand {
+        let args = n
+            .children
+            .iter()
+            .map(|child| self.lower_jsx_child(child))
+            .collect();
+        let callee = match &n.opening.name {
+            JSXElementName::Ident(ident) => {
+                let id = ident.to_id();
+                let Some(def) = self.res.sym_to_id(id.clone(), self.module) else {
+                    warn!("unknown symbol: {}", id.0);
+                    return Literal::Undef.into();
+                };
+                let var = self.body.get_or_insert_global(def);
+                Operand::with_var(var)
+            }
+            JSXElementName::JSXMemberExpr(mem) => self.lower_jsx_member(&mem),
+            JSXElementName::JSXNamespacedName(JSXNamespacedName { ns, name }) => {
+                let ns = ns.to_id();
+                let Some(def) = self.res.sym_to_id(ns.clone(), self.module) else {
+                    warn!("unknown symbol: {}", ns.0);
+                    return Literal::Undef.into();
+                };
+                let var = self.body.get_or_insert_global(def);
+                let mut var = Variable::new(var);
+                var.projections.push(Projection::Known(name.sym.clone()));
+                Operand::Var(var)
+            }
+        };
+        let call = Rvalue::Call(callee, args);
+        Operand::with_var(self.body.push_tmp(self.block, call, None))
     }
 
     // TODO: This can probably be made into a trait
@@ -1135,16 +1229,27 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Expr::MetaProp(_) => Operand::UNDEF,
             Expr::Await(AwaitExpr { arg, .. }) => self.lower_expr(arg),
             Expr::Paren(ParenExpr { expr, .. }) => self.lower_expr(expr),
-            Expr::JSXMember(JSXMemberExpr { obj, prop, .. }) => todo!(),
-            Expr::JSXNamespacedName(JSXNamespacedName { ns, name, .. }) => todo!(),
+            Expr::JSXMember(mem) => self.lower_jsx_member(&mem),
+            Expr::JSXNamespacedName(JSXNamespacedName { ns, name, .. }) => {
+                let mut ident = self.lower_ident(&ns);
+                if let Operand::Var(var) = &mut ident {
+                    var.projections.push(Projection::Known(name.sym.clone()));
+                }
+                ident
+            }
             Expr::JSXEmpty(_) => Operand::UNDEF,
-            Expr::JSXElement(elem) => todo!(),
+            Expr::JSXElement(elem) => self.lower_jsx_elem(&elem),
             Expr::JSXFragment(JSXFragment {
                 opening,
                 children,
                 closing,
                 ..
-            }) => todo!(),
+            }) => {
+                for child in children {
+                    self.lower_jsx_child(child);
+                }
+                Operand::UNDEF
+            }
             Expr::TsTypeAssertion(TsTypeAssertion { expr, .. })
             | Expr::TsConstAssertion(TsConstAssertion { expr, .. })
             | Expr::TsNonNull(TsNonNullExpr { expr, .. })
@@ -1547,6 +1652,35 @@ impl Visit for FunctionCollector<'_> {
                 let old_parent = self.parent.replace(owner);
                 self.visit_arrow_expr(arrow);
                 self.parent = old_parent;
+            }
+            Some(Expr::Call(CallExpr { callee: Callee::Expr(expr), args, .. })) => {
+                if let Expr::Ident(ident) = &**expr {
+                    let ident = ident.to_id();
+                    let Some(def) = self.res.sym_to_id(ident, self.module) else {
+                        return;
+                    };
+                    if matches!(self.res.as_foreign_import(def, "@forge/ui"), Some(ImportKind::Named(imp)) if *imp == *"render") {
+                        let owner = self.res.get_or_overwrite_sym(id, self.module, DefKind::Function(()));
+                        let Some(ExprOrSpread { expr, .. }) = &args.first() else { return; };
+                        let old_parent = self.parent.replace(owner);
+                        let mut analyzer = FunctionAnalyzer {
+                            res: self.res,
+                            module: self.module,
+                            current_def: owner,
+                            assigning_to: None,
+                            body: Body::with_owner(owner),
+                            block: BasicBlockId::default(),
+                            operand_stack: vec![],
+                            in_lhs: false,
+                        };
+                        let opnd = analyzer.lower_expr(expr);
+                        analyzer
+                            .body
+                            .push_inst(analyzer.block, Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)));
+                        *self.res.def_mut(owner).expect_body() = analyzer.body;
+                        self.parent = old_parent;
+                    }
+                }
             }
             _ => {}
         }

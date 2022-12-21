@@ -15,7 +15,7 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Vulnerability {
     pub(crate) check_name: String,
-    pub(crate) description: &'static str,
+    pub(crate) description: String,
     pub(crate) recommendation: &'static str,
     pub(crate) proof: String,
     pub(crate) severity: Severity,
