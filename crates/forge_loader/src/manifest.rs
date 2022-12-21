@@ -115,9 +115,9 @@ struct Perms<'a> {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct AppInfo<'a> {
-    name: Option<&'a str>,
-    id: &'a str,
+pub struct AppInfo<'a> {
+    pub name: Option<&'a str>,
+    pub id: &'a str,
 }
 
 /// The representation of a Forge app's `manifest.yml`
@@ -128,7 +128,7 @@ struct AppInfo<'a> {
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ForgeManifest<'a> {
     #[serde(borrow)]
-    app: AppInfo<'a>,
+    pub app: AppInfo<'a>,
     #[serde(borrow)]
     pub modules: ForgeModules<'a>,
     #[serde(borrow)]
