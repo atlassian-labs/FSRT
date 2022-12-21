@@ -6,7 +6,7 @@ use std::{
     iter,
     marker::PhantomData,
     ops::ControlFlow,
-    path::{PathBuf},
+    path::PathBuf,
 };
 
 use forge_utils::{FxHashMap, FxHashSet};
@@ -417,17 +417,6 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         (*self.callstack.borrow()).clone()
     }
 
-    pub(crate) fn note_vuln(&self, mut vuln: C::Vuln) {
-        vuln.add_call_stack(
-            self.callstack
-                .borrow()
-                .iter()
-                .map(|f| f.calling_function)
-                .collect::<Vec<_>>(),
-        );
-        self.vulns.borrow_mut().push(vuln);
-    }
-
     pub(crate) fn checker_visit(&self, def: DefId) -> bool {
         self.checker_visited.borrow_mut().insert(def)
     }
@@ -479,16 +468,19 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    fn func_state_mut(&self, def: DefId) -> RefMut<'_, C::State> {
-        let func_state = self.func_state.borrow_mut();
-        RefMut::map(func_state, |state| {
-            state.entry(def).or_insert(C::State::BOTTOM)
-        })
+    pub(crate) fn entry(&self) -> &EntryPoint {
+        &self.entry
     }
 
     #[inline]
-    pub(crate) fn entry(&self) -> &EntryPoint {
-        &self.entry
+    pub fn callees(
+        &self,
+        caller: DefId,
+    ) -> impl DoubleEndedIterator<Item = (DefId, Location)> + '_ {
+        self.call_graph
+            .callgraph
+            .range((caller, DefId::new(0))..(caller, DefId::new(u32::MAX)))
+            .map(|(&(_, callee), &loc)| (callee, loc))
     }
 
     fn run(&mut self, func_def: DefId) {

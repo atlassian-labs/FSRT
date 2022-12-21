@@ -2693,3 +2693,10 @@ impl AsId for ModuleExportName {
         }
     }
 }
+
+impl DefId {
+    #[inline]
+    pub(crate) fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+}

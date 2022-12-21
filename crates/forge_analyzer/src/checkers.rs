@@ -153,15 +153,16 @@ impl AuthZVuln {
             }
         };
         let file = entry.file.clone();
-        let stack = iter::once(&*entry_func)
-            .chain(
+        let stack = Itertools::intersperse(
+            iter::once(&*entry_func).chain(
                 callstack
                     .into_iter()
                     .rev()
                     .map(|frame| env.def_name(frame.calling_function)),
-            )
-            .intersperse(" -> ")
-            .collect();
+            ),
+            " -> ",
+        )
+        .collect();
         Self {
             stack,
             entry_func,
@@ -397,15 +398,16 @@ impl AuthNVuln {
             }
         };
         let file = entry.file.clone();
-        let stack = iter::once(&*entry_func)
-            .chain(
+        let stack = Itertools::intersperse(
+            iter::once(&*entry_func).chain(
                 callstack
                     .into_iter()
                     .rev()
                     .map(|frame| env.def_name(frame.calling_function)),
-            )
-            .intersperse(" -> ")
-            .collect();
+            ),
+            " -> ",
+        )
+        .collect();
         Self {
             stack,
             entry_func,
