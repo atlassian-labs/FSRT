@@ -1,34 +1,12 @@
 use core::fmt;
-use forge_permission_resolver::permissions_resolver::{check_url_for_permissions, RequestType};
-use forge_utils::FxHashMap;
-use itertools::Itertools;
-use smallvec::SmallVec;
-use std::{
-    cmp::max,
-    iter::{self, zip},
-    mem,
-    ops::ControlFlow,
-    path::PathBuf,
-};
+use std::{cmp::max, mem, ops::ControlFlow};
 
 use tracing::{debug, info, warn};
 
 use crate::{
-    definitions::{Const, DefId, Environment, IntrinsicName, Value},
-    interp::{
-        Checker, Dataflow, EntryKind, EntryPoint, Frame, Interp, JoinSemiLattice, Runner,
-        WithCallStack,
-    },
-    ir::{
-        Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
-        Projection, Rvalue, VarId, VarKind, Variable,
-    },
-    reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    utils::{
-        add_const_to_val_vec, add_elements_to_intrinsic_struct, convert_operand_to_raw,
-        get_defid_from_varkind, get_prev_value, get_str_from_operand, return_value_from_string,
-        translate_request_type,
-    },
+    definitions::DefId,
+    interp::{Checker, Dataflow, Frame, Interp, JoinSemiLattice, WithCallStack},
+    ir::{BasicBlock, BasicBlockId, Intrinsic, Location},
     worklist::WorkList,
 };
 
@@ -387,6 +365,11 @@ impl AuthZChecker {
         // TODO: make this an associated function on the Checker trait.
         self.vulns.into_iter()
     }
+
+    pub fn into_vulns(self) -> impl IntoIterator<Item = AuthZVuln> {
+        // TODO: make this an associated function on the Checker trait.
+        self.vulns.into_iter()
+    }
 }
 
 impl Default for AuthZChecker {
@@ -397,68 +380,12 @@ impl Default for AuthZChecker {
 
 #[derive(Debug)]
 pub struct AuthZVuln {
-    stack: String,
-    entry_func: String,
-    file: PathBuf,
-}
-
-impl AuthZVuln {
-    fn new(callstack: Vec<Frame>, env: &Environment, entry: &EntryPoint) -> Self {
-        let entry_func = match &entry.kind {
-            EntryKind::Function(func) => func.clone(),
-            EntryKind::Resolver(res, prop) => format!("{res}.{prop}"),
-            EntryKind::Empty => {
-                warn!("empty function");
-                String::new()
-            }
-        };
-        let file = entry.file.clone();
-        let stack = Itertools::intersperse(
-            iter::once(&*entry_func).chain(
-                callstack
-                    .into_iter()
-                    .rev()
-                    .map(|frame| env.def_name(frame.calling_function)),
-            ),
-            " -> ",
-        )
-        .collect();
-        Self {
-            stack,
-            entry_func,
-            file,
-        }
-    }
+    stackframe: Vec<Frame>,
 }
 
 impl fmt::Display for AuthZVuln {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Authorization vulnerability")
-    }
-}
-
-impl IntoVuln for AuthZVuln {
-    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        self.file
-            .iter()
-            .skip_while(|comp| *comp != "src")
-            .for_each(|comp| comp.hash(&mut hasher));
-        self.entry_func.hash(&mut hasher);
-        self.stack.hash(&mut hasher);
-        Vulnerability {
-            check_name: format!("Custom-Check-Authorization-{}", hasher.finish()),
-            description: format!("Authorization bypass detected through {} in {:?}.", self.entry_func, self.file),
-            recommendation: "Use the authorize API _https://developer.atlassian.com/platform/forge/runtime-reference/authorize-api/_ or manually authorize the user via the product REST APIs.",
-            proof: format!("Unauthorized API call via asApp() found via {}", self.stack),
-            severity: Severity::High,
-            app_key: reporter.app_key().to_owned(),
-            app_name: reporter.app_name().to_owned(),
-            date: reporter.current_date(),
-        }
     }
 }
 
@@ -486,182 +413,10 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                 ControlFlow::Continue(AuthorizeState::Yes)
             }
             Intrinsic::Fetch => ControlFlow::Continue(*state),
-            Intrinsic::ApiCall(_) if *state != AuthorizeState::Yes => {
-                let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
-                info!("Found a vuln!");
-                self.vulns.push(vuln);
-                ControlFlow::Break(())
-            }
-            Intrinsic::ApiCustomField if *state < AuthorizeState::CustomFieldOnly => {
-                let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
-                info!("Found a vuln!");
-                self.vulns.push(vuln);
-                ControlFlow::Break(())
-            }
-            Intrinsic::SecretFunction(_)
-            | Intrinsic::ApiCall(_)
-            | Intrinsic::SafeCall(_)
-            | Intrinsic::EnvRead
-            | Intrinsic::UserFieldAccess
-            | Intrinsic::ApiCustomField
-            | Intrinsic::StorageRead => ControlFlow::Continue(*state),
-        }
-    }
-}
-
-impl<'cx> Checker<'cx> for AuthZChecker {
-    type Vuln = AuthZVuln;
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
-pub enum Authenticated {
-    No,
-    Yes,
-}
-
-impl JoinSemiLattice for Authenticated {
-    const BOTTOM: Self = Self::No;
-
-    #[inline]
-    fn join_changed(&mut self, other: &Self) -> bool {
-        let old = mem::replace(self, max(*other, *self));
-        old == *self
-    }
-
-    #[inline]
-    fn join(&self, other: &Self) -> Self {
-        max(*other, *self)
-    }
-}
-
-pub struct AuthenticateDataflow {
-    needs_call: Vec<DefId>,
-}
-
-impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
-    type State = Authenticated;
-
-    fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
-        _interp: &Interp<'cx, C>,
-    ) -> Self {
-        Self { needs_call: vec![] }
-    }
-
-    fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
-        &mut self,
-        _interp: &mut Interp<'cx, C>,
-        _def: DefId,
-        _loc: Location,
-        _block: &'cx BasicBlock,
-        intrinsic: &'cx Intrinsic,
-        initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
-    ) -> Self::State {
-        match *intrinsic {
-            Intrinsic::Authorize(_) => initial_state,
-            Intrinsic::Fetch | Intrinsic::EnvRead | Intrinsic::StorageRead => {
-                debug!("authenticated");
-                Authenticated::Yes
-            }
-            Intrinsic::SecretFunction(_)
-            | Intrinsic::ApiCall(_)
-            | Intrinsic::ApiCustomField
-            | Intrinsic::UserFieldAccess
-            | Intrinsic::SafeCall(_) => initial_state,
-        }
-    }
-
-    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &Interp<'cx, C>,
-        def: DefId,
-        loc: Location,
-        _block: &'cx BasicBlock,
-        callee: &'cx crate::ir::Operand,
-        initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
-    ) -> Self::State {
-        let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
-            return initial_state;
-        };
-        match interp.func_state(callee_def) {
-            Some(state) => {
-                if state == Authenticated::Yes {
-                    debug!("Found call to authenticate at {def:?} {loc:?}");
-                }
-                initial_state.join(&state)
-            }
-            None => {
-                let callee_name = interp.env().def_name(callee_def);
-                let caller_name = interp.env().def_name(def);
-                debug!("Found call to {callee_name} at {def:?} {caller_name}");
-                self.needs_call.push(callee_def);
-                initial_state
-            }
-        }
-    }
-
-    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        block: &'cx BasicBlock,
-        state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
-    ) {
-        self.super_join_term(interp, def, block, state, worklist);
-        for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, interp.call_all);
-        }
-    }
-}
-
-pub struct AuthenticateChecker {
-    visit: bool,
-    vulns: Vec<AuthNVuln>,
-}
-
-impl AuthenticateChecker {
-    pub fn new() -> Self {
-        Self {
-            visit: false,
-            vulns: vec![],
-        }
-    }
-
-    pub fn into_vulns(self) -> impl IntoIterator<Item = AuthNVuln> {
-        self.vulns.into_iter()
-    }
-}
-
-impl Default for AuthenticateChecker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<'cx> Runner<'cx> for AuthenticateChecker {
-    type State = Authenticated;
-    type Dataflow = AuthenticateDataflow;
-
-    const NAME: &'static str = "Authentication";
-
-    fn visit_intrinsic(
-        &mut self,
-        interp: &Interp<'cx, Self>,
-        intrinsic: &'cx Intrinsic,
-        def: DefId,
-        state: &Self::State,
-        operands: Option<SmallVec<[Operand; 4]>>,
-    ) -> ControlFlow<(), Self::State> {
-        match *intrinsic {
-            Intrinsic::Authorize(_) => ControlFlow::Continue(*state),
-            Intrinsic::Fetch | Intrinsic::EnvRead | Intrinsic::StorageRead => {
-                debug!("authenticated");
-                ControlFlow::Continue(Authenticated::Yes)
-            }
-            Intrinsic::ApiCall(_) | Intrinsic::ApiCustomField if *state == Authenticated::No => {
-                let vuln = AuthNVuln::new(interp.callstack(), interp.env(), interp.entry());
+            Intrinsic::ApiCall if *state == AuthorizeState::No => {
+                let vuln = AuthZVuln {
+                    stackframe: interp.callstack(),
+                };
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
