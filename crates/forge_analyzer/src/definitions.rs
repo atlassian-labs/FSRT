@@ -211,7 +211,7 @@ struct Object {
 }
 
 impl Class {
-    fn new(def: DefId) -> Self {
+    pub fn new(def: DefId) -> Self {
         Self {
             def,
             pub_members: vec![],
@@ -232,10 +232,14 @@ impl Class {
     /// ```
     ///
     /// ```rust
+    /// use forge_analyzer::definitions::{Class, DefId};
+    ///
+    /// # fn foo(obj_id: DefId) {
     /// let obj = Class::new(obj_id);
     /// obj.find_member("foo");
+    /// # }
     /// ```
-    pub(crate) fn find_member<N: ?Sized>(&self, name: &N) -> Option<DefId>
+    pub fn find_member<N: ?Sized>(&self, name: &N) -> Option<DefId>
     where
         JsWord: PartialEq<N>,
     {
