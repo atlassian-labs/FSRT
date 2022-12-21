@@ -1,12 +1,12 @@
 use std::{
-    cell::{Cell, Ref, RefCell, RefMut},
+    cell::{Cell, RefCell, RefMut},
     collections::BTreeMap,
     fmt::{self, Display},
     io::{self, Write},
     iter,
     marker::PhantomData,
     ops::ControlFlow,
-    path::{Path, PathBuf},
+    path::{PathBuf},
 };
 
 use forge_utils::{FxHashMap, FxHashSet};
