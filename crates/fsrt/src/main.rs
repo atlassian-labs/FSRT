@@ -3,7 +3,6 @@ use std::{
     collections::HashSet,
     convert::TryFrom,
     fs,
-    io::{self, Write as _},
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -26,15 +25,14 @@ use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
-    checkers::{AuthNVuln, AuthZChecker, AuthenticateChecker},
+    checkers::{AuthZChecker, AuthenticateChecker},
     ctx::{AppCtx, ModId},
     definitions::{run_resolver, DefId, Environment},
     interp::Interp,
-    pretty::dump_ir,
     reporter::Reporter,
-    resolver::{dump_callgraph_dot, dump_cfg_dot, resolve_calls},
+    resolver::{resolve_calls},
 };
-use forge_file_resolver::FileResolver;
+
 use forge_loader::manifest::{ForgeManifest, FunctionRef, FunctionTy};
 use walkdir::WalkDir;
 
