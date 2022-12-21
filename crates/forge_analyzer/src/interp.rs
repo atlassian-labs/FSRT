@@ -5,7 +5,8 @@ use std::{
     io::{self, Write},
     iter,
     marker::PhantomData,
-    ops::ControlFlow, path::{PathBuf, Path},
+    ops::ControlFlow,
+    path::{Path, PathBuf},
 };
 
 use forge_utils::{FxHashMap, FxHashSet};
@@ -532,7 +533,13 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
     }
 
     #[instrument(skip(self, checker))]
-    pub fn run_checker(&mut self, def: DefId, checker: &mut C, entry_file: PathBuf, fname: String) -> Result<(), Error> {
+    pub fn run_checker(
+        &mut self,
+        def: DefId,
+        checker: &mut C,
+        entry_file: PathBuf,
+        fname: String,
+    ) -> Result<(), Error> {
         self.entry = EntryPoint {
             file: entry_file,
             kind: EntryKind::Function(fname),

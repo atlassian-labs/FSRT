@@ -17,17 +17,17 @@ use swc_core::{
             ForOfStmt, ForStmt, Function, Id, Ident, IfStmt, Import, ImportDecl,
             ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, JSXElement,
             JSXElementChild, JSXElementName, JSXExpr, JSXExprContainer, JSXFragment, JSXMemberExpr,
-            JSXNamespacedName, JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp, LabeledStmt,
-            Lit, MemberExpr, MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl,
+            JSXNamespacedName, JSXObject, JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp,
+            LabeledStmt, Lit, MemberExpr, MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl,
             ModuleExportName, ModuleItem, NewExpr, Number, ObjectLit, ObjectPat, ObjectPatProp,
             OptCall, OptChainBase, OptChainExpr, ParenExpr, Pat, PatOrExpr, PrivateName, Prop,
             PropName, PropOrSpread, RestPat, ReturnStmt, SeqExpr, Stmt, Str, Super, SuperProp,
             SuperPropExpr, SwitchStmt, TaggedTpl, ThisExpr, ThrowStmt, Tpl, TplElement, TryStmt,
             TsAsExpr, TsConstAssertion, TsInstantiation, TsNonNullExpr, TsSatisfiesExpr,
             TsTypeAssertion, UnaryExpr, UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclOrPat,
-            VarDeclarator, WhileStmt, WithStmt, YieldExpr, JSXObject,
+            VarDeclarator, WhileStmt, WithStmt, YieldExpr,
         },
-        atoms::{JsWord, Atom},
+        atoms::{Atom, JsWord},
         visit::{noop_visit_type, Visit, VisitWith},
     },
 };
@@ -930,21 +930,22 @@ impl<'cx> FunctionAnalyzer<'cx> {
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first() {
-            if self.res.as_foreign_import(id, "@forge/ui").map_or(false, |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState")) {
+            if self.res.as_foreign_import(id, "@forge/ui").map_or(
+                false,
+                |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState"),
+            ) {
                 if let [ExprOrSpread { expr, .. }] = args {
                     debug!("found useState");
                     match &**expr {
-                        Expr::Arrow(ArrowExpr {body, ..}) => {
-                            match body {
-                                BlockStmtOrExpr::BlockStmt(stmt) => {
-                                    self.lower_stmts(&stmt.stmts);
-                                    return Operand::UNDEF;
-                                }
-                                BlockStmtOrExpr::Expr(expr) => {
-                                    return self.lower_expr(&expr);
-                                }
+                        Expr::Arrow(ArrowExpr { body, .. }) => match body {
+                            BlockStmtOrExpr::BlockStmt(stmt) => {
+                                self.lower_stmts(&stmt.stmts);
+                                return Operand::UNDEF;
                             }
-                        }
+                            BlockStmtOrExpr::Expr(expr) => {
+                                return self.lower_expr(&expr);
+                            }
+                        },
                         Expr::Fn(FnExpr { ident: _, function }) => {
                             if let Some(body) = &function.body {
                                 self.lower_stmts(&body.stmts);
@@ -1024,12 +1025,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let value = JsWord::from(value.to_string());
                 Operand::Lit(Literal::Str(value))
             }
-            JSXElementChild::JSXExprContainer(JSXExprContainer { expr, .. }) => {
-                match expr {
-                    JSXExpr::JSXEmptyExpr(_) => Operand::UNDEF,
-                    JSXExpr::Expr(expr) => self.lower_expr(expr),
-                }
-            }
+            JSXElementChild::JSXExprContainer(JSXExprContainer { expr, .. }) => match expr {
+                JSXExpr::JSXEmptyExpr(_) => Operand::UNDEF,
+                JSXExpr::Expr(expr) => self.lower_expr(expr),
+            },
             JSXElementChild::JSXSpreadChild(JSXSpreadChild { expr, .. }) => self.lower_expr(expr),
             JSXElementChild::JSXElement(elem) => self.lower_jsx_elem(elem),
             JSXElementChild::JSXFragment(JSXFragment { children, .. }) => {
@@ -1657,14 +1656,21 @@ impl Visit for FunctionCollector<'_> {
                 self.visit_arrow_expr(arrow);
                 self.parent = old_parent;
             }
-            Some(Expr::Call(CallExpr { callee: Callee::Expr(expr), args, .. })) => {
+            Some(Expr::Call(CallExpr {
+                callee: Callee::Expr(expr),
+                args,
+                ..
+            })) => {
                 if let Expr::Ident(ident) = &**expr {
                     let ident = ident.to_id();
                     let Some(def) = self.res.sym_to_id(ident, self.module) else {
                         return;
                     };
-                    if matches!(self.res.as_foreign_import(def, "@forge/ui"), Some(ImportKind::Named(imp)) if *imp == *"render") {
-                        let owner = self.res.get_or_overwrite_sym(id, self.module, DefKind::Function(()));
+                    if matches!(self.res.as_foreign_import(def, "@forge/ui"), Some(ImportKind::Named(imp)) if *imp == *"render")
+                    {
+                        let owner =
+                            self.res
+                                .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
                         let Some(ExprOrSpread { expr, .. }) = &args.first() else { return; };
                         let old_parent = self.parent.replace(owner);
                         let mut analyzer = FunctionAnalyzer {
@@ -1678,9 +1684,10 @@ impl Visit for FunctionCollector<'_> {
                             in_lhs: false,
                         };
                         let opnd = analyzer.lower_expr(expr);
-                        analyzer
-                            .body
-                            .push_inst(analyzer.block, Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)));
+                        analyzer.body.push_inst(
+                            analyzer.block,
+                            Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)),
+                        );
                         *self.res.def_mut(owner).expect_body() = analyzer.body;
                         self.parent = old_parent;
                     }

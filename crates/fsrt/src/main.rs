@@ -26,7 +26,7 @@ use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
-    checkers::{AuthZChecker, AuthNVuln, AuthenticateChecker},
+    checkers::{AuthNVuln, AuthZChecker, AuthenticateChecker},
     ctx::{AppCtx, ModId},
     definitions::{run_resolver, DefId, Environment},
     interp::Interp,
@@ -192,7 +192,8 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
             FunctionTy::Invokable((ref func, ref path, _, def)) => {
                 let mut checker = AuthZChecker::new();
                 debug!("checking {func} at {path:?}");
-                if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone()) {
+                if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
+                {
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
@@ -200,7 +201,9 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
                 let mut checker = AuthenticateChecker::new();
                 debug!("checking webtrigger {func} at {path:?}");
-                if let Err(err) = authn_interp.run_checker(def, &mut checker, path.clone(), func.clone()) {
+                if let Err(err) =
+                    authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
+                {
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
