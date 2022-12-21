@@ -3,7 +3,7 @@ use std::{
     collections::HashSet,
     convert::TryFrom,
     fs,
-    io::{self, stdout, Write as _},
+    io::{self, Write as _},
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -15,22 +15,20 @@ use miette::{IntoDiagnostic, Result};
 use swc_core::{
     common::{Globals, Mark, SourceMap, GLOBALS},
     ecma::{
-        ast::{EsVersion, Id},
+        ast::EsVersion,
         parser::{parse_file_as_module, Syntax, TsConfig},
         transforms::base::resolver,
         visit::FoldWith,
     },
 };
-use tracing::{debug, instrument, warn};
+use tracing::{debug, warn};
 use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
-    analyzer::AuthZVal,
-    checkers::AuthZChecker,
-    ctx::{AppCtx, ModId, ModItem},
+    checkers::{AuthZChecker, AuthNVuln, AuthenticateChecker},
+    ctx::{AppCtx, ModId},
     definitions::{run_resolver, DefId, Environment},
-    engine::Machine,
     interp::Interp,
     pretty::dump_ir,
     reporter::Reporter,
@@ -85,7 +83,7 @@ struct ForgeProject {
     sm: Arc<SourceMap>,
     ctx: AppCtx,
     env: Environment,
-    funcs: Vec<FunctionTy<(ModId, DefId)>>,
+    funcs: Vec<FunctionTy<(String, PathBuf, ModId, DefId)>>,
     opts: Opts,
 }
 
@@ -134,10 +132,10 @@ impl ForgeProject {
 
     fn add_funcs<'a, I: IntoIterator<Item = FunctionTy<(&'a str, PathBuf)>>>(&mut self, iter: I) {
         self.funcs.extend(iter.into_iter().flat_map(|ftype| {
-            ftype.sequence(|(func, path)| {
+            ftype.sequence(|(func_name, path)| {
                 let modid = self.ctx.modid_from_path(&path)?;
-                let func = self.env.module_export(modid, func)?;
-                Some((modid, func))
+                let func = self.env.module_export(modid, func_name)?;
+                Some((func_name.to_owned(), path, modid, func))
             })
         }));
     }
@@ -184,64 +182,33 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     proj.opts = opts.clone();
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
-    proj.ctx
-        .modules()
-        .iter_enumerated()
-        .map(|(id, _)| id)
-        .for_each(|id| {
-            println!(
-                "path: {:?}",
-                proj.ctx.file_resolver().get_module_path(id.into()).unwrap()
-            );
-            for (sym, def) in proj.env.module_exports(id) {
-                let kind = proj.env.def_ref(def);
-                println!("export: {sym}: {def:?} kind: {kind}");
-                if kind.is_resolver_handler() {
-                    let mut lock = io::stdout().lock();
-                    for (sym, def) in proj.env.resolver_defs(def) {
-                        let _ = writeln!(lock, "{sym}: {def:?}");
-                        let body = proj.env.def_ref(def).expect_body();
-                        let _ = dump_ir(&mut lock, &proj.env, body);
-                    }
-                }
-            }
-            if let Some(def) = proj.env.default_export(id) {
-                let kind = proj.env.def_ref(def);
-                println!("default export: {def:?} defkind: {kind}");
-            }
-        });
-    // for item in &foreign {
-    //     println!("foreign: {item}");
-    // }
-
-    // for path in proj.ctx.path_ids().keys() {
-    //     let path = path.strip_prefix(&dir).unwrap();
-    //     let path = path
-    //         .parent()
-    //         .unwrap()
-    //         .join("../src/auth.jsx")
-    //         .canonicalize()
-    //         .unwrap();
-    //     println!("stripped path: {path:?}");
-    //     let path = path.to_string_lossy();
-    //     let (base, src) = path.split_once("src/").unwrap();
-    //     println!("resolved path = {base} {src}");
-    // }
 
     let mut interp = Interp::new(&proj.env);
-    let mut checker = AuthZChecker::new();
+    let mut authn_interp = Interp::new(&proj.env);
     let mut reporter = Reporter::new();
     reporter.add_app(opts.appkey.unwrap_or_default(), name.to_owned());
     for func in &proj.funcs {
         match *func {
-            FunctionTy::Invokable((_, def)) => {
-                interp.run_checker(def, &mut checker);
+            FunctionTy::Invokable((ref func, ref path, _, def)) => {
+                let mut checker = AuthZChecker::new();
+                debug!("checking {func} at {path:?}");
+                if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone()) {
+                    warn!("error while scanning {func} in {path:?}: {err}");
+                }
+                reporter.add_vulnerabilities(checker.into_vulns());
             }
-            FunctionTy::WebTrigger((_, def)) => {}
+            FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
+                let mut checker = AuthenticateChecker::new();
+                debug!("checking webtrigger {func} at {path:?}");
+                if let Err(err) = authn_interp.run_checker(def, &mut checker, path.clone(), func.clone()) {
+                    warn!("error while scanning {func} in {path:?}: {err}");
+                }
+                reporter.add_vulnerabilities(checker.into_vulns());
+            }
         }
     }
-    reporter.add_vulnerabilities(checker.into_vulns());
     let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
+    debug!("Writing Report");
     match opts.out {
         Some(path) => {
             fs::write(path, report).into_diagnostic()?;

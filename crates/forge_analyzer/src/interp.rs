@@ -5,10 +5,11 @@ use std::{
     io::{self, Write},
     iter,
     marker::PhantomData,
-    ops::ControlFlow,
+    ops::ControlFlow, path::{PathBuf, Path},
 };
 
 use forge_utils::{FxHashMap, FxHashSet};
+use swc_core::ecma::atoms::JsWord;
 use tracing::{debug, info, instrument, warn};
 
 use crate::{
@@ -294,11 +295,26 @@ pub(crate) struct Frame {
     pub(crate) inst_idx: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub(crate) enum EntryKind {
+    Function(String),
+    Resolver(String, JsWord),
+    #[default]
+    Empty,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub(crate) struct EntryPoint {
+    pub(crate) file: PathBuf,
+    pub(crate) kind: EntryKind,
+}
+
 pub struct Interp<'cx, C: Checker<'cx>> {
     env: &'cx Environment,
     // We can probably get rid of these RefCells by refactoring the Interp and Checker into
     // two fields in another struct.
     call_graph: CallGraph,
+    entry: EntryPoint,
     func_state: RefCell<FxHashMap<DefId, C::State>>,
     curr_body: Cell<Option<&'cx Body>>,
     states: RefCell<BTreeMap<(DefId, BasicBlockId), C::State>>,
@@ -368,6 +384,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         Self {
             env,
             call_graph,
+            entry: Default::default(),
             func_state: RefCell::new(FxHashMap::default()),
             curr_body: Cell::new(None),
             states: RefCell::new(BTreeMap::new()),
@@ -468,6 +485,11 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         })
     }
 
+    #[inline]
+    pub(crate) fn entry(&self) -> &EntryPoint {
+        &self.entry
+    }
+
     fn run(&mut self, func_def: DefId) {
         if self.dataflow_visited.contains(&func_def) {
             return;
@@ -510,7 +532,11 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
     }
 
     #[instrument(skip(self, checker))]
-    pub fn run_checker(&mut self, def: DefId, checker: &mut C) -> Result<(), Error> {
+    pub fn run_checker(&mut self, def: DefId, checker: &mut C, entry_file: PathBuf, fname: String) -> Result<(), Error> {
+        self.entry = EntryPoint {
+            file: entry_file,
+            kind: EntryKind::Function(fname),
+        };
         let Err(error) = self.try_check_function(def, checker) else {
             return Ok(());
         };
@@ -521,6 +547,11 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         info!("Found potential resolver");
         for (name, prop) in resolver {
             debug!("Checking resolver prop: {name}");
+            self.entry.kind = match std::mem::take(&mut self.entry.kind) {
+                EntryKind::Function(fname) => EntryKind::Resolver(fname, name.clone()),
+                EntryKind::Resolver(res, _) => EntryKind::Resolver(res, name.clone()),
+                EntryKind::Empty => unreachable!(),
+            };
             if let Err(error) = self.try_check_function(prop, checker) {
                 warn!("Resolver prop {name} failed: {error}");
             }
