@@ -1,12 +1,14 @@
 use core::fmt;
 use std::{cmp::max, mem, ops::ControlFlow};
+use itertools::Itertools;
 
 use tracing::{debug, info};
 
 use crate::{
-    definitions::DefId,
+    definitions::{DefId, Environment},
     interp::{Checker, Dataflow, Frame, Interp, JoinSemiLattice, WithCallStack},
     ir::{BasicBlock, BasicBlockId, Intrinsic, Location},
+    reporter::{Vulnerability, IntoVuln, Reporter, Severity},
     worklist::WorkList,
 };
 
@@ -118,6 +120,11 @@ impl AuthZChecker {
     pub fn new() -> Self {
         Self { vulns: vec![] }
     }
+
+    pub fn into_vulns(self) -> impl IntoIterator<Item = AuthZVuln> {
+        // TODO: make this an associated function on the Checker trait.
+        self.vulns.into_iter()
+    }
 }
 
 impl Default for AuthZChecker {
@@ -128,12 +135,36 @@ impl Default for AuthZChecker {
 
 #[derive(Debug)]
 pub struct AuthZVuln {
-    stackframe: Vec<Frame>,
+    stack: String,
+}
+
+impl AuthZVuln {
+    fn new(mut callstack: Vec<Frame>, env: &Environment) -> Self {
+        let stack = callstack.into_iter().rev().map(|frame| env.def_name(frame.calling_function)).intersperse(" -> ").collect();
+        Self {
+            stack,
+        }
+    }
 }
 
 impl fmt::Display for AuthZVuln {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Authorization vulnerability")
+    }
+}
+
+impl IntoVuln for AuthZVuln {
+    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+        Vulnerability {
+            check_name: "Custom_Check".to_owned(),
+            description: "Authorization bypass detected.",
+            recommendation: "",
+            proof: format!("API call via asApp() found via {}", self.stack),
+            severity: Severity::High,
+            app_key: reporter.app_key().to_owned(),
+            app_name: reporter.app_name().to_owned(),
+            date: reporter.current_date(),
+        }
     }
 }
 
@@ -159,9 +190,7 @@ impl<'cx> Checker<'cx> for AuthZChecker {
             }
             Intrinsic::Fetch => ControlFlow::Continue(*state),
             Intrinsic::ApiCall if *state == AuthorizeState::No => {
-                let vuln = AuthZVuln {
-                    stackframe: interp.callstack(),
-                };
+                let vuln = AuthZVuln::new(interp.callstack(), interp.env());
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
                 ControlFlow::Break(())

@@ -33,6 +33,7 @@ use forge_analyzer::{
     engine::Machine,
     interp::Interp,
     pretty::dump_ir,
+    reporter::Reporter,
     resolver::{dump_callgraph_dot, dump_cfg_dot, resolve_calls},
 };
 use forge_file_resolver::FileResolver;
@@ -57,16 +58,26 @@ struct Args {
     #[arg(short, long)]
     function: Option<String>,
 
+    /// The Marketplace app key.
+    #[arg(long)]
+    appkey: Option<String>,
+
+    /// A file to redirect output to.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the source code is located in `src/`
     #[arg(name = "DIRS", value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct Opts {
     dump_cfg: bool,
     dump_callgraph: bool,
+    appkey: Option<String>,
+    out: Option<PathBuf>,
 }
 
 struct ForgeProject {
@@ -160,6 +171,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     debug!(?manifest_file);
     let manifest = fs::read_to_string(&manifest_file).into_diagnostic()?;
     let manifest: ForgeManifest = serde_yaml::from_str(&manifest).into_diagnostic()?;
+    let name = manifest.app.name.unwrap_or_default();
     let paths = collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>();
     let funcrefs = manifest.modules.into_analyzable_functions().flat_map(|f| {
         f.sequence(|fmod| {
@@ -169,7 +181,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     });
     let src_root = dir.join("src");
     let mut proj = ForgeProject::with_files_and_sourceroot(src_root, paths.clone());
-    proj.opts = opts;
+    proj.opts = opts.clone();
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
     proj.ctx
@@ -218,6 +230,8 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 
     let mut interp = Interp::new(&proj.env);
     let mut checker = AuthZChecker::new();
+    let mut reporter = Reporter::new();
+    reporter.add_app(opts.appkey.unwrap_or_default(), name.to_owned());
     for func in &proj.funcs {
         match *func {
             FunctionTy::Invokable((_, def)) => {
@@ -225,6 +239,14 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
             }
             FunctionTy::WebTrigger((_, def)) => {}
         }
+    }
+    reporter.add_vulnerabilities(checker.into_vulns());
+    let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
+    match opts.out {
+        Some(path) => {
+            fs::write(path, report).into_diagnostic()?;
+        }
+        None => println!("{report}"),
     }
     Ok(proj)
 }
@@ -239,10 +261,12 @@ fn main() -> Result<()> {
     let opts = Opts {
         dump_callgraph: args.callgraph,
         dump_cfg: args.cfg,
+        out: args.out,
+        appkey: args.appkey,
     };
     for dir in args.dirs {
         debug!(?dir);
-        scan_directory(dir, function, opts)?;
+        scan_directory(dir, function, opts.clone())?;
     }
     Ok(())
 }
