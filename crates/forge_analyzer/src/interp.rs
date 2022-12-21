@@ -484,6 +484,20 @@ pub(crate) struct EntryPoint {
     pub(crate) kind: EntryKind,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub(crate) enum EntryKind {
+    Function(String),
+    Resolver(String, JsWord),
+    #[default]
+    Empty,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub(crate) struct EntryPoint {
+    pub(crate) file: PathBuf,
+    pub(crate) kind: EntryKind,
+}
+
 #[derive(Debug)]
 pub struct Interp<'cx, C: Runner<'cx>> {
     pub env: &'cx Environment,
@@ -732,6 +746,11 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             .callgraph
             .range((caller, DefId::new(0))..(caller, DefId::new(u32::MAX)))
             .map(|(&(_, callee), &loc)| (callee, loc))
+    }
+
+    #[inline]
+    pub(crate) fn entry(&self) -> &EntryPoint {
+        &self.entry
     }
 
     fn run(&mut self, func_def: DefId) {
