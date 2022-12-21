@@ -363,9 +363,7 @@ impl<'cx> Checker<'cx> for AuthenticateChecker {
     ) -> ControlFlow<(), Self::State> {
         match *intrinsic {
             Intrinsic::Authorize => ControlFlow::Continue(*state),
-            Intrinsic::Fetch
-            | Intrinsic::EnvRead
-            | Intrinsic::StorageRead => {
+            Intrinsic::Fetch | Intrinsic::EnvRead | Intrinsic::StorageRead => {
                 debug!("authenticated");
                 ControlFlow::Continue(Authenticated::Yes)
             }
