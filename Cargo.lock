@@ -605,6 +605,7 @@ dependencies = [
  "miette 5.5.0",
  "rustc-hash",
  "serde",
+ "serde_json",
  "serde_yaml",
  "swc_core",
  "tracing",
