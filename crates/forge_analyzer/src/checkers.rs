@@ -43,7 +43,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
     type State = AuthorizeState;
 
     fn with_interp<C: crate::interp::Checker<'cx, State = Self::State>>(
-        interp: &Interp<'cx, C>,
+        _interp: &Interp<'cx, C>,
     ) -> Self {
         Self { needs_call: vec![] }
     }
@@ -75,11 +75,11 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         interp: &Interp<'cx, C>,
         def: DefId,
         loc: Location,
-        block: &'cx BasicBlock,
+        _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
     ) -> Self::State {
-        let Some((callee_def, body)) = self.resolve_call(interp, callee) else {
+        let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
             return initial_state;
         };
         match interp.func_state(callee_def) {
@@ -143,7 +143,7 @@ pub struct AuthZVuln {
 }
 
 impl AuthZVuln {
-    fn new(mut callstack: Vec<Frame>, env: &Environment, entry: &EntryPoint) -> Self {
+    fn new(callstack: Vec<Frame>, env: &Environment, entry: &EntryPoint) -> Self {
         let entry_func = match &entry.kind {
             EntryKind::Function(func) => func.clone(),
             EntryKind::Resolver(res, prop) => format!("{res}.{prop}"),
@@ -198,7 +198,7 @@ impl IntoVuln for AuthZVuln {
 }
 
 impl WithCallStack for AuthZVuln {
-    fn add_call_stack(&mut self, stack: Vec<DefId>) {}
+    fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
 }
 
 impl<'cx> Checker<'cx> for AuthZChecker {
@@ -261,7 +261,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
     type State = Authenticated;
 
     fn with_interp<C: crate::interp::Checker<'cx, State = Self::State>>(
-        interp: &Interp<'cx, C>,
+        _interp: &Interp<'cx, C>,
     ) -> Self {
         Self { needs_call: vec![] }
     }
@@ -291,11 +291,11 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         interp: &Interp<'cx, C>,
         def: DefId,
         loc: Location,
-        block: &'cx BasicBlock,
+        _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
     ) -> Self::State {
-        let Some((callee_def, body)) = self.resolve_call(interp, callee) else {
+        let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
                                                 return initial_state;
                                                         };
         match interp.func_state(callee_def) {
@@ -387,7 +387,7 @@ pub struct AuthNVuln {
 }
 
 impl AuthNVuln {
-    fn new(mut callstack: Vec<Frame>, env: &Environment, entry: &EntryPoint) -> Self {
+    fn new(callstack: Vec<Frame>, env: &Environment, entry: &EntryPoint) -> Self {
         let entry_func = match &entry.kind {
             EntryKind::Function(func) => func.clone(),
             EntryKind::Resolver(res, prop) => format!("{res}.{prop}"),
@@ -442,5 +442,5 @@ impl IntoVuln for AuthNVuln {
 }
 
 impl WithCallStack for AuthNVuln {
-    fn add_call_stack(&mut self, stack: Vec<DefId>) {}
+    fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
 }
