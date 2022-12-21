@@ -14,14 +14,14 @@ pub enum Severity {
 // TODO: Can probably use [`Rc`] instead of [`String`]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Vulnerability {
-    check_name: String,
-    description: &'static str,
-    recommendation: &'static str,
-    proof: String,
-    severity: Severity,
-    app_key: String,
-    app_name: String,
-    date: Date,
+    pub(crate) check_name: String,
+    pub(crate) description: &'static str,
+    pub(crate) recommendation: &'static str,
+    pub(crate) proof: String,
+    pub(crate) severity: Severity,
+    pub(crate) app_key: String,
+    pub(crate) app_name: String,
+    pub(crate) date: Date,
 }
 
 pub trait IntoVuln {
@@ -92,7 +92,7 @@ impl Reporter {
     pub fn into_report(self) -> Report {
         Report {
             vulns: self.vulns,
-            scanner: "Forge",
+            scanner: "FSRT",
             started_at: self.started_at,
             ended_at: OffsetDateTime::now_utc(),
             scanned: self.apps.into_iter().map(|(key, _)| key).collect(),
