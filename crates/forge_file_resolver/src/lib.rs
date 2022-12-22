@@ -111,11 +111,8 @@ impl ForgeResolver {
         let path_no_extension = path.with_extension("");
         self.modules
             .iter()
-            .enumerate()
             .zip(&self.no_ext)
-            .find_map(|((modid, modpath), no_ext)| {
-                (*modpath == path || *no_ext == path_no_extension).then_some(modid)
-            })
+            .position(|(modpath, no_ext)| (*modpath == path || *no_ext == path_no_extension))
     }
 
     fn resolve_import_path(&self, module: usize, import: &Path) -> Result<usize, Error> {
