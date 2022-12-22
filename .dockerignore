@@ -1,3 +1,7 @@
 *.md
+**/.git
+.atlassian
+.github
+.mailmap
 LICENSE-*
 test-apps
