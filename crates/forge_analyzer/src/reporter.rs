@@ -30,9 +30,9 @@ pub trait IntoVuln {
 pub struct Report {
     vulns: Vec<Vulnerability>,
     scanner: &'static str,
-    #[serde(with = "time::serde::iso8601")]
+    #[serde(with = "time::serde::rfc3339")]
     started_at: OffsetDateTime,
-    #[serde(with = "time::serde::iso8601")]
+    #[serde(with = "time::serde::rfc3339")]
     ended_at: OffsetDateTime,
     scanned: Vec<String>,
     errors: bool,
