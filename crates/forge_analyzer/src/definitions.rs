@@ -729,8 +729,9 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
     use once_cell::sync::Lazy;
     use regex::Regex;
 
+    // FIXME: this should be done as a dataflow analysis instead of on the AST.
     static TRIVIAL: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"user|instance|avatar|license|preferences|serverinfo").unwrap());
+        Lazy::new(|| Regex::new(r"user|instance|avatar|license|preferences|server[iI]nfo").unwrap());
 
     #[derive(Default)]
     struct ApiCallClassifier {
