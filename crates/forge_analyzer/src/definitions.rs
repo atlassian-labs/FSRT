@@ -1919,12 +1919,12 @@ impl Visit for Lowerer<'_> {
                                 Prop::Shorthand(id) => {
                                     let id = id.to_id();
                                     let sym = id.0.clone();
-                                    let def_id = self.get_or_insert_sym(id);
+                                    let new_def = self.get_or_insert_sym(id);
                                     self.res
                                         .def_mut(def_id)
                                         .expect_class()
                                         .pub_members
-                                        .push((sym, self.curr_def.unwrap()));
+                                        .push((sym, new_def));
                                 }
                                 Prop::KeyValue(KeyValueProp { key, value }) => {
                                     if let sym @ Some(_) = key.as_symbol() {
