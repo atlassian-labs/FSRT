@@ -20,7 +20,7 @@ use swc_core::{
         visit::FoldWith,
     },
 };
-use tracing::{debug, warn, instrument};
+use tracing::{debug, instrument, warn};
 use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
