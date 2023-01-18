@@ -20,7 +20,7 @@ use swc_core::{
         visit::FoldWith,
     },
 };
-use tracing::{debug, warn};
+use tracing::{debug, warn, instrument};
 use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
@@ -86,6 +86,7 @@ struct ForgeProject {
 }
 
 impl ForgeProject {
+    #[instrument(skip(src, iter))]
     fn with_files_and_sourceroot<P: AsRef<Path>, I: IntoIterator<Item = PathBuf>>(
         src: P,
         iter: I,
@@ -97,12 +98,15 @@ impl ForgeProject {
         let ctx = iter.into_iter().fold(ctx, |mut ctx, p| {
             let sourcemap = Arc::clone(&sm);
             GLOBALS.set(&globals, || {
+                debug!(file = %p.display(), "parsing");
                 let src = sourcemap.load_file(&p).unwrap();
+                debug!("loaded sourcemap");
                 let mut recovered_errors = vec![];
                 let module = parse_file_as_module(
                     &src,
                     Syntax::Typescript(TsConfig {
                         tsx: true,
+                        decorators: true,
                         ..Default::default()
                     }),
                     target,
@@ -110,6 +114,7 @@ impl ForgeProject {
                     &mut recovered_errors,
                 )
                 .unwrap();
+                debug!("finished parsing");
                 let mut hygeine = resolver(Mark::new(), Mark::new(), true);
                 let module = module.fold_with(&mut hygeine);
                 ctx.load_module(p, module);
