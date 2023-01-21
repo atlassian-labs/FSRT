@@ -8,7 +8,6 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap.workspace = true
 fixedbitset.workspace = true
 forge_file_resolver.workspace = true
 forge_utils.workspace = true
@@ -19,13 +18,10 @@ petgraph.workspace = true
 regex.workspace = true
 serde_json.workspace = true
 serde.workspace = true
-serde_yaml.workspace = true
 smallvec.workspace = true
 swc_core.workspace = true
 time.workspace = true
-tracing-subscriber.workspace = true
 tracing.workspace = true
-typed-arena.workspace = true
 typed-index-collections.workspace = true
 
 [dev-dependencies]
