@@ -73,8 +73,9 @@ pub fn lower_module(module: &Module) -> ModuleCtx {
         ident_to_import: external.ident_to_import,
         exports: export_collector.exports,
         functions: Default::default(),
+        permissions_used: Vec::new(),
     };
-    ctx.functions = analyzer::collect_functions(module, &ctx);
+    ctx.functions = analyzer::collect_functions(module, &mut ctx);
     ctx
 }
 

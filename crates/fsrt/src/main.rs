@@ -2,7 +2,7 @@
 use std::{
     collections::HashSet,
     convert::TryFrom,
-    fs,
+    fs::{self, Permissions},
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -25,12 +25,13 @@ use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
-    checkers::{AuthZChecker, AuthenticateChecker},
+    checkers::{AuthZChecker, AuthenticateChecker, PermissionVuln},
     ctx::{AppCtx, ModId},
     definitions::{run_resolver, DefId, Environment},
     interp::Interp,
     reporter::Reporter,
     resolver::resolve_calls,
+    analyzer::{ForgePermissions, resolve_permission}
 };
 
 use forge_loader::manifest::{ForgeManifest, FunctionRef, FunctionTy};
@@ -76,7 +77,7 @@ struct Opts {
     out: Option<PathBuf>,
 }
 
-struct ForgeProject {
+pub struct ForgeProject {
     #[allow(dead_code)]
     sm: Arc<SourceMap>,
     ctx: AppCtx,
@@ -164,7 +165,9 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 
 #[tracing::instrument(level = "debug")]
 fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<ForgeProject> {
-    let mut manifest_file = dir.clone();
+    let mut manifest_file: PathBuf = dir.clone();
+    // DEBUG LINE REMOVE
+    // println(manifest_file);
     manifest_file.push("manifest.yaml");
     if !manifest_file.exists() {
         manifest_file.set_extension("yml");
@@ -181,7 +184,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         })
     });
     let src_root = dir.join("src");
-    let mut proj = ForgeProject::with_files_and_sourceroot(src_root, paths.clone());
+    let mut proj: ForgeProject = ForgeProject::with_files_and_sourceroot(src_root, paths.clone());
     proj.opts = opts.clone();
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
@@ -213,6 +216,24 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
             }
         }
     }
+    let requested_permissions = manifest.permissions;
+    let permission_scopes: Vec<&str> = requested_permissions.scopes;
+    let mut permissions_declared: HashSet<_> = HashSet::from_iter(permission_scopes.iter().cloned().map(|permission| permission.to_string()));
+
+    for ctx in &proj.ctx.modctx {
+        for permission in &ctx.permissions_used {
+            if permissions_declared.contains(&*permission.clone()) {
+                permissions_declared.remove(&*permission.clone());
+            }
+        }
+    }
+
+    if permissions_declared.len() > 0 {
+        let perm_vuln = PermissionVuln::new(permissions_declared);
+        let permission_vulnerabilities = vec![perm_vuln];
+        reporter.add_vulnerabilities(permission_vulnerabilities);
+    }
+
     let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
     debug!("Writing Report");
     match opts.out {
@@ -225,7 +246,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let args: Args = Args::parse();
     tracing_subscriber::registry()
         .with(HierarchicalLayer::new(2))
         .with(EnvFilter::from_env("FORGE_LOG"))

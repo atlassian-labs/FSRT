@@ -11,4 +11,11 @@ modules:
 app:
   id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
 permissions:
-  scopes: []
+  scopes:
+    - 'storage:app'
+    - 'read:jira-user'
+    - 'read:jira-work'
+    - 'write:jira-work'
+    - 'manage:jira-project'
+    - 'manage:jira-configuration'
+    - 'manage:jira-webhook'

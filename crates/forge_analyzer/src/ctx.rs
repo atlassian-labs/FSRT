@@ -109,6 +109,7 @@ pub struct ModuleCtx {
     pub(crate) ident_to_import: FxHashMap<Id, Id>,
     pub(crate) exports: Option<Exports>,
     pub(crate) functions: FxHashMap<Id, FunctionMeta>,
+    pub permissions_used: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -116,10 +117,9 @@ pub struct AppCtx {
     // Map from import Id -> module name
     pub(crate) import_ids: FxHashMap<Id, Id>,
     pub(crate) file_resolver: ForgeResolver,
-
     pub(crate) path_ids: FxHashMap<PathBuf, ModId>,
     pub(crate) modules: TiVec<ModId, Module>,
-    pub(crate) modctx: TiVec<ModId, ModuleCtx>,
+    pub modctx: TiVec<ModId, ModuleCtx>,
 }
 
 impl AppCtx {

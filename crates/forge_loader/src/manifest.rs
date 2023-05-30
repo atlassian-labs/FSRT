@@ -99,19 +99,19 @@ struct Resolver<'a> {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct Content<'a> {
+pub struct Content<'a> {
     #[serde(default, borrow)]
-    scripts: Vec<&'a str>,
+    pub scripts: Vec<&'a str>,
     #[serde(default, borrow)]
-    styles: Vec<&'a str>,
+    pub styles: Vec<&'a str>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct Perms<'a> {
+pub struct Perms<'a> {
     #[serde(default, borrow)]
-    scopes: Vec<&'a str>,
+    pub scopes: Vec<&'a str>,
     #[serde(default, borrow)]
-    content: Content<'a>,
+    pub content: Content<'a>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -132,7 +132,7 @@ pub struct ForgeManifest<'a> {
     #[serde(borrow)]
     pub modules: ForgeModules<'a>,
     #[serde(borrow)]
-    permissions: Perms<'a>,
+    pub permissions: Perms<'a>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -191,7 +191,7 @@ impl<T> AsRef<T> for FunctionTy<T> {
 
 impl<'a> ForgeModules<'a> {
     pub fn into_analyzable_functions(
-        mut self,
+        mut self
     ) -> impl Iterator<Item = FunctionTy<FunctionMod<'a>>> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         // the vec's storage instead of using a HashSet
