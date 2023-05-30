@@ -52,7 +52,9 @@ pub fn resolve_permission(permission: ForgePermissions) -> &'static str {
         ForgePermissions::ReadConfluenceUser => "search:confluence",
         ForgePermissions::ReadConfluenceGroups => "read:confluence-content.permission",
         ForgePermissions::WriteConfluenceGroups => "write:confluence-groups",
-        ForgePermissions::ReadOnlyContentAttachmentConfluence => "readonly:content.attachment:confluence",
+        ForgePermissions::ReadOnlyContentAttachmentConfluence => {
+            "readonly:content.attachment:confluence"
+        }
         ForgePermissions::ReadJiraUser => "read:jira-user",
         ForgePermissions::ReadJiraWork => "read:jira-work",
         ForgePermissions::WriteJiraWork => "write:jira-work",
@@ -91,7 +93,7 @@ struct FunctionAnalyzer<'a> {
     ctx: &'a mut ModuleCtx,
     meta: FunctionMeta,
     curr_block: BasicBlockId,
-    api_permissions_used: Vec<String>
+    api_permissions_used: Vec<String>,
 }
 
 // technically the HRTB is unnecessary, since we only need the lifetime from `ForgeImports`,
@@ -113,12 +115,12 @@ struct CheckApiCalls {
 
 impl CheckApiCalls {
     pub(crate) fn new() -> CheckApiCalls {
-        CheckApiCalls{
+        CheckApiCalls {
             perms_related: false,
             function_name: String::new(),
-            args: Vec::new()
+            args: Vec::new(),
         }
-    } 
+    }
 }
 
 fn contains_perms_check<N: VisitWith<CheckApiCalls>>(node: &N) -> CheckApiCalls {
@@ -174,7 +176,7 @@ impl<'a> FunctionAnalyzer<'a> {
             ctx,
             meta: FunctionMeta::new(),
             curr_block: STARTING_BLOCK,
-            api_permissions_used: Vec::new()
+            api_permissions_used: Vec::new(),
         }
     }
 
@@ -277,7 +279,6 @@ impl Visit for FunctionAnalyzer<'_> {
         self.add_throw_stmt();
     }
 
-    // NOTE: RETREIVE FUNCTION HERE
     fn visit_call_expr(&mut self, n: &CallExpr) {
         n.visit_children_with(self);
         let CallExpr { callee, args, .. } = n;
@@ -312,7 +313,10 @@ impl Visit for FunctionAnalyzer<'_> {
                     MemberProp::Ident(ident) => {
                         let ident = ident.to_id();
                         debug!(propname = ?&ident.0, "analyzing method call");
-                        let mut api_call_information = ApiCallData{args: Vec::new(), function_name: ident.0.to_string()};
+                        let mut api_call_information = ApiCallData {
+                            args: Vec::new(),
+                            function_name: ident.0.to_string(),
+                        };
                         if &ident.0 == "requestJira" || &ident.0 == "requestConfluence" {
                             debug!(api = ?&ident.0, "found api call");
                             for arg in args.into_iter() {
@@ -330,8 +334,10 @@ impl Visit for FunctionAnalyzer<'_> {
                                 }
                                 // resolve the function and arguments to a permission here
                             }
-                            self.ctx.permissions_used
-                                .push(resolve_permission(api_call_information.check_permission_used()).to_string());
+                            self.ctx.permissions_used.push(
+                                resolve_permission(api_call_information.check_permission_used())
+                                    .to_string(),
+                            );
                         }
                     }
                     // FIXME: also check asApp calls using these params
@@ -353,7 +359,7 @@ impl Visit for FunctionAnalyzer<'_> {
 
 pub(crate) struct ApiCallData {
     function_name: String,
-    args: Vec<String>
+    args: Vec<String>,
 }
 
 impl ApiCallData {
@@ -363,22 +369,22 @@ impl ApiCallData {
         let contains_post = joined_args.contains("POST");
         match self.function_name.as_str() {
             "requestJira" => {
-                    if contains_post {  
-                        if contains_issue {
-                            ForgePermissions::WriteJiraWork
-                        } else {
-                            ForgePermissions::Unknown
-                        }
+                if contains_post {
+                    if contains_issue {
+                        ForgePermissions::WriteJiraWork
                     } else {
-                        if contains_issue {
-                            ForgePermissions::ReadJiraWork
-                        } else {
-                            ForgePermissions::Unknown
-                        }
+                        ForgePermissions::Unknown
+                    }
+                } else {
+                    if contains_issue {
+                        ForgePermissions::ReadJiraWork
+                    } else {
+                        ForgePermissions::Unknown
                     }
                 }
+            }
             "requestConfluence" => {
-                if contains_post {  
+                if contains_post {
                     if contains_issue {
                         ForgePermissions::WriteConfluenceContent
                     } else {
@@ -391,8 +397,8 @@ impl ApiCallData {
                         ForgePermissions::Unknown
                     }
                 }
-            },
-            _ => { ForgePermissions::Unknown }
+            }
+            _ => ForgePermissions::Unknown,
         }
     }
 }

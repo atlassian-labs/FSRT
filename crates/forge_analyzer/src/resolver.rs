@@ -17,6 +17,7 @@ pub fn resolve_calls(ctx: &mut AppCtx) {
         curr_functions.extend(mod_ctx.functions.keys().cloned());
         for func in mod_ctx.functions.values_mut() {
             for stmt in &mut func.iter_stmts_mut() {
+                println!("{}", stmt);
                 if let IrStmt::Call(ModItem {
                     mod_id: id @ UNKNOWN_MODULE,
                     ident,

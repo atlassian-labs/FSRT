@@ -25,13 +25,13 @@ use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
+    analyzer::{resolve_permission, ForgePermissions},
     checkers::{AuthZChecker, AuthenticateChecker, PermissionVuln},
     ctx::{AppCtx, ModId},
     definitions::{run_resolver, DefId, Environment},
     interp::Interp,
     reporter::Reporter,
     resolver::resolve_calls,
-    analyzer::{ForgePermissions, resolve_permission}
 };
 
 use forge_loader::manifest::{ForgeManifest, FunctionRef, FunctionTy};
@@ -218,7 +218,12 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     }
     let requested_permissions = manifest.permissions;
     let permission_scopes: Vec<&str> = requested_permissions.scopes;
-    let mut permissions_declared: HashSet<_> = HashSet::from_iter(permission_scopes.iter().cloned().map(|permission| permission.to_string()));
+    let mut permissions_declared: HashSet<_> = HashSet::from_iter(
+        permission_scopes
+            .iter()
+            .cloned()
+            .map(|permission| permission.to_string()),
+    );
 
     for ctx in &proj.ctx.modctx {
         for permission in &ctx.permissions_used {

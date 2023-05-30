@@ -1,6 +1,6 @@
 use core::fmt;
 use itertools::Itertools;
-use std::{cmp::max, iter, mem, ops::ControlFlow, path::PathBuf, collections::HashSet};
+use std::{cmp::max, collections::HashSet, iter, mem, ops::ControlFlow, path::PathBuf};
 
 use tracing::{debug, info, warn};
 
@@ -449,12 +449,12 @@ impl WithCallStack for AuthNVuln {
 
 #[derive(Debug)]
 pub struct PermissionVuln {
-    unused_permissions: HashSet<String>
+    unused_permissions: HashSet<String>,
 }
 
 impl PermissionVuln {
     pub fn new(unused_permissions: HashSet<String>) -> PermissionVuln {
-        PermissionVuln{unused_permissions}
+        PermissionVuln { unused_permissions }
     }
 }
 
@@ -462,7 +462,10 @@ impl IntoVuln for PermissionVuln {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
         Vulnerability {
             check_name: format!("Least-Privilege"),
-            description: format!("Unused permissions listed in manifest file: {}.", self.unused_permissions.into_iter().join(", ")),
+            description: format!(
+                "Unused permissions listed in manifest file: {}.",
+                self.unused_permissions.into_iter().join(", ")
+            ),
             recommendation: "Remove permissions in manifest file that are not needed.",
             proof: format!("Unused permissions found in manifest.yml"),
             severity: Severity::Low,

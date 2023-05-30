@@ -191,7 +191,7 @@ impl<T> AsRef<T> for FunctionTy<T> {
 
 impl<'a> ForgeModules<'a> {
     pub fn into_analyzable_functions(
-        mut self
+        mut self,
     ) -> impl Iterator<Item = FunctionTy<FunctionMod<'a>>> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         // the vec's storage instead of using a HashSet
