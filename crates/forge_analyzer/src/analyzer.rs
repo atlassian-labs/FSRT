@@ -39,32 +39,32 @@ pub enum ForgePermissions {
     Unknown,
 }
 
-    pub fn resolve_permission(permission: ForgePermissions) -> &'static str {
-        match permission {
-            ForgePermissions::WriteConfluenceContent => "write:confluence-content",
-            ForgePermissions::ReadConfluenceSpaceSummary => "read:confluence-space.summary",
-            ForgePermissions::WriteConfluenceSpaceSummary => "write:confluence-space",
-            ForgePermissions::WriteConfluenceFile => "write:confluence-file",
-            ForgePermissions::ReadConfluenceProps => "read:confluence-props",
-            ForgePermissions::ReadConfluenceContentAll => "write:confluence-props",
-            ForgePermissions::ReadConfluenceContentSummary => "manage:confluence-configuration",
-            ForgePermissions::SearchConfluence => "read:confluence-content.all",
-            ForgePermissions::ReadConfluenceContentPermission => "read:confluence-content.summary",
-            ForgePermissions::ReadConfluenceUser => "search:confluence",
-            ForgePermissions::ReadConfluenceGroups => "read:confluence-content.permission",
-            ForgePermissions::WriteConfluenceGroups => "write:confluence-groups",
-            ForgePermissions::ReadOnlyContentAttachmentConfluence => {
-                "readonly:content.attachment:confluence"
-            }
-            ForgePermissions::ReadJiraUser => "read:jira-user",
-            ForgePermissions::ReadJiraWork => "read:jira-work",
-            ForgePermissions::WriteJiraWork => "write:jira-work",
-            ForgePermissions::ManageJiraProject => "manage:jira-project",
-            ForgePermissions::ManageJiraConfiguration => "manage:jira-configuration",
-            ForgePermissions::ManageJiraWebhook => "manage:jira-webhook",
-            ForgePermissions::Unknown => "unknown",
+pub fn resolve_permission(permission: ForgePermissions) -> &'static str {
+    match permission {
+        ForgePermissions::WriteConfluenceContent => "write:confluence-content",
+        ForgePermissions::ReadConfluenceSpaceSummary => "read:confluence-space.summary",
+        ForgePermissions::WriteConfluenceSpaceSummary => "write:confluence-space",
+        ForgePermissions::WriteConfluenceFile => "write:confluence-file",
+        ForgePermissions::ReadConfluenceProps => "read:confluence-props",
+        ForgePermissions::ReadConfluenceContentAll => "write:confluence-props",
+        ForgePermissions::ReadConfluenceContentSummary => "manage:confluence-configuration",
+        ForgePermissions::SearchConfluence => "read:confluence-content.all",
+        ForgePermissions::ReadConfluenceContentPermission => "read:confluence-content.summary",
+        ForgePermissions::ReadConfluenceUser => "search:confluence",
+        ForgePermissions::ReadConfluenceGroups => "read:confluence-content.permission",
+        ForgePermissions::WriteConfluenceGroups => "write:confluence-groups",
+        ForgePermissions::ReadOnlyContentAttachmentConfluence => {
+            "readonly:content.attachment:confluence"
         }
+        ForgePermissions::ReadJiraUser => "read:jira-user",
+        ForgePermissions::ReadJiraWork => "read:jira-work",
+        ForgePermissions::WriteJiraWork => "write:jira-work",
+        ForgePermissions::ManageJiraProject => "manage:jira-project",
+        ForgePermissions::ManageJiraConfiguration => "manage:jira-configuration",
+        ForgePermissions::ManageJiraWebhook => "manage:jira-webhook",
+        ForgePermissions::Unknown => "unknown",
     }
+}
 
 #[instrument(level = "debug", skip_all)]
 pub(crate) fn collect_functions<N>(node: &N, ctx: &mut ModuleCtx) -> FxHashMap<Id, FunctionMeta>
@@ -320,7 +320,8 @@ impl Visit for FunctionAnalyzer<'_> {
                         };
                         if &ident.0 == "requestJira" || &ident.0 == "requestConfluence" {
                             debug!(api = ?&ident.0, "found api call");
-                            let mut api_call_data = contains_perms_check(&args.get(0).unwrap().expr);
+                            let mut api_call_data =
+                                contains_perms_check(&args.get(0).unwrap().expr);
                             api_call_data.function_name = ident.0.to_string();
                             if api_call_data.perms_related {
                                 self.add_ir_stmt(IrStmt::Resolved(AuthZVal::Authorize));
