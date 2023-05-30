@@ -251,7 +251,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 }
 
 fn main() -> Result<()> {
-    let args: Args = Args::parse();
+    let args = Args::parse();
     tracing_subscriber::registry()
         .with(HierarchicalLayer::new(2))
         .with(EnvFilter::from_env("FORGE_LOG"))

@@ -469,8 +469,8 @@ impl IntoVuln for PermissionVuln {
             recommendation: "Remove permissions in manifest file that are not needed.",
             proof: format!("Unused permissions found in manifest.yml"),
             severity: Severity::Low,
-            app_key: reporter.app_key().to_owned(),
-            app_name: reporter.app_name().to_owned(),
+            app_key: reporter.app_key().to_string(),
+            app_name: reporter.app_name().to_string(),
             date: reporter.current_date(),
         }
     }
