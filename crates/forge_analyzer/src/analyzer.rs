@@ -323,13 +323,10 @@ impl Visit for FunctionAnalyzer<'_> {
                                 } else if self.is_as_app_access(obj) {
                                     self.add_ir_stmt(IrStmt::Resolved(AuthZVal::Unauthorized));
                                 }
-                                api_call
-                                    .args
-                                    .extend_from_slice(&api_call_data.args.clone());
+                                api_call.args.extend_from_slice(&api_call_data.args.clone());
                             }
                             self.ctx.permissions_used.push(
-                                resolve_permission(api_call.check_permission_used())
-                                    .to_string(),
+                                resolve_permission(api_call.check_permission_used()).to_string(),
                             );
                         }
                     }
