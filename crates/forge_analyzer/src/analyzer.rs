@@ -7,7 +7,7 @@ use crate::ctx::{BasicBlockId, FunctionMeta, IrStmt, ModuleCtx, TerminatorKind, 
 use crate::lattice::MeetSemiLattice;
 use swc_core::ecma::ast::{
     ArrowExpr, BindingIdent, CallExpr, Callee, Expr, ExprOrSpread, FnDecl, FnExpr, Id, IfStmt,
-    JSXElementName, JSXOpeningElement, MemberExpr, MemberProp, Pat, Stmt, Str, ThrowStmt,
+    JSXElementName, JSXOpeningElement, Lit, MemberExpr, MemberProp, Pat, Stmt, Str, ThrowStmt,
     TplElement, VarDeclarator,
 };
 use swc_core::ecma::visit::{noop_visit_type, Visit, VisitWith};
@@ -94,7 +94,6 @@ struct FunctionAnalyzer<'a> {
     ctx: &'a mut ModuleCtx,
     meta: FunctionMeta,
     curr_block: BasicBlockId,
-    api_permissions_used: Vec<String>,
 }
 
 // technically the HRTB is unnecessary, since we only need the lifetime from `ForgeImports`,
@@ -110,7 +109,6 @@ where
 
 struct CheckApiCalls {
     perms_related: bool,
-    function_name: String,
     args: Vec<String>,
 }
 
@@ -118,7 +116,6 @@ impl CheckApiCalls {
     pub(crate) fn new() -> CheckApiCalls {
         CheckApiCalls {
             perms_related: false,
-            function_name: String::new(),
             args: Vec::new(),
         }
     }
@@ -177,7 +174,6 @@ impl<'a> FunctionAnalyzer<'a> {
             ctx,
             meta: FunctionMeta::new(),
             curr_block: STARTING_BLOCK,
-            api_permissions_used: Vec::new(),
         }
     }
 
@@ -314,25 +310,25 @@ impl Visit for FunctionAnalyzer<'_> {
                     MemberProp::Ident(ident) => {
                         let ident = ident.to_id();
                         debug!(propname = ?&ident.0, "analyzing method call");
-                        let mut api_call_information = ApiCallData {
+                        let mut api_call = ApiCallData {
                             args: Vec::new(),
                             function_name: ident.0.to_string(),
                         };
                         if &ident.0 == "requestJira" || &ident.0 == "requestConfluence" {
                             debug!(api = ?&ident.0, "found api call");
-                            let mut api_call_data =
-                                contains_perms_check(&args.get(0).unwrap().expr);
-                            api_call_data.function_name = ident.0.to_string();
-                            if api_call_data.perms_related {
-                                self.add_ir_stmt(IrStmt::Resolved(AuthZVal::Authorize));
-                            } else if self.is_as_app_access(obj) {
-                                self.add_ir_stmt(IrStmt::Resolved(AuthZVal::Unauthorized));
-                            }
-                            for arg in api_call_data.args {
-                                api_call_information.args.push(arg.clone());
+                            for arg in args.into_iter() {
+                                let api_call_data = contains_perms_check(&arg.expr);
+                                if api_call_data.perms_related {
+                                    self.add_ir_stmt(IrStmt::Resolved(AuthZVal::Authorize));
+                                } else if self.is_as_app_access(obj) {
+                                    self.add_ir_stmt(IrStmt::Resolved(AuthZVal::Unauthorized));
+                                }
+                                api_call
+                                    .args
+                                    .extend_from_slice(&api_call_data.args.clone());
                             }
                             self.ctx.permissions_used.push(
-                                resolve_permission(api_call_information.check_permission_used())
+                                resolve_permission(api_call.check_permission_used())
                                     .to_string(),
                             );
                         }
