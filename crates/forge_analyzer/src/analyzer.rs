@@ -426,6 +426,11 @@ impl ApiCallData {
         let contains_relation = joined_args.contains("relation");
         let contains_settings = joined_args.contains("settings");
         let contains_permission = joined_args.contains("permission");
+        let contains_download = joined_args.contains("download");
+        let contains_descendants = joined_args.contains("descendants");
+        let contains_comment = joined_args.contains("comment");
+        let contains_label = joined_args.contains("contains_label");
+        let contains_restriction = joined_args.contains("restriction");
 
         match self.function_name.as_str() {
             "requestJira" => {
@@ -494,11 +499,17 @@ impl ApiCallData {
                 } else {
                     if contains_issue {
                         used_permissions.push(ForgePermissions::ReadJiraWork);
-                    } else if contains_analytics {
-                        used_permissions.push(ForgePermissions::ReadConfluenceContentSummary);
+                    } else if contains_audit {
+                        used_permissions.push(ForgePermissions::ReadAuditLogsConfluence)
                     } else if contains_cql {
                         used_permissions.push(ForgePermissions::SearchConfluence)
-                    } else if contains_content {
+                    } else if contains_attachment && contains_download {
+                        used_permissions.push(ForgePermissions::ReadOnlyContentAttachmentConfluence)
+                    } else if contains_content && contains_property {
+                        used_permissions.push(ForgePermissions::ReadConfluenceProps);
+                    } else if contains_content && (contains_comment || contains_descendants || contains_label) {
+                        used_permissions.push(ForgePermissions::ReadConfluenceContentSummary);
+                    } else if contains_content || contains_analytics {
                         used_permissions.push(ForgePermissions::ReadConfluenceContentAll);
                     } else {
                         used_permissions.push(ForgePermissions::Unknown);
