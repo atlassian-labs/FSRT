@@ -78,7 +78,7 @@ struct Opts {
     out: Option<PathBuf>,
 }
 
-pub struct ForgeProject {
+struct ForgeProject {
     #[allow(dead_code)]
     sm: Arc<SourceMap>,
     ctx: AppCtx,
@@ -183,7 +183,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         })
     });
     let src_root = dir.join("src");
-    let mut proj: ForgeProject = ForgeProject::with_files_and_sourceroot(src_root, paths.clone());
+    let mut proj = ForgeProject::with_files_and_sourceroot(src_root, paths.clone());
     proj.opts = opts.clone();
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
