@@ -24,8 +24,9 @@ use tracing::{debug, instrument, warn};
 use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
+use forge_loader::forgepermissions::ForgePermissions;
+
 use forge_analyzer::{
-    analyzer::{resolve_permission, ForgePermissions},
     checkers::{AuthZChecker, AuthenticateChecker, PermissionVuln},
     ctx::{AppCtx, ModId},
     definitions::{run_resolver, DefId, Environment},
@@ -165,9 +166,7 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 
 #[tracing::instrument(level = "debug")]
 fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<ForgeProject> {
-    let mut manifest_file: PathBuf = dir.clone();
-    // DEBUG LINE REMOVE
-    // println(manifest_file);
+    let mut manifest_file = dir.clone();
     manifest_file.push("manifest.yaml");
     if !manifest_file.exists() {
         manifest_file.set_extension("yml");
@@ -217,18 +216,17 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         }
     }
     let requested_permissions = manifest.permissions;
-    let permission_scopes: Vec<&str> = requested_permissions.scopes;
+    let permission_scopes: Vec<ForgePermissions> = requested_permissions.scopes;
     let mut permissions_declared: HashSet<_> = HashSet::from_iter(
         permission_scopes
             .iter()
             .cloned()
-            .map(|permission| permission.to_string()),
     );
 
     for ctx in &proj.ctx.modctx {
         for permission in &ctx.permissions_used {
-            if permissions_declared.contains(&*permission.clone()) {
-                permissions_declared.remove(&*permission.clone());
+            if permissions_declared.contains(permission) {
+                permissions_declared.remove(permission);
             }
         }
     }

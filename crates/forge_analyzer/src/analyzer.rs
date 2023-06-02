@@ -14,77 +14,7 @@ use swc_core::ecma::visit::{noop_visit_type, Visit, VisitWith};
 use tracing::{debug, instrument};
 
 use forge_utils::FxHashMap;
-
-#[derive(Hash)]
-pub enum ForgePermissions {
-    WriteAuditLogsConfluence,
-    ReadAuditLogsConfluence,
-    WriteConfluenceContent,
-    ReadConfluenceSpaceSummary,
-    WriteConfluenceSpace,
-    WriteConfluenceFile,
-    ReadConfluenceProps,
-    WriteConfluenceProps,
-    ReadConfluenceContentAll,
-    ReadConfluenceContentSummary,
-    ReadInlineTaskConfluence,
-    SearchConfluence,
-    ReadConfluenceContentPermission,
-    ReadConfluenceUser,
-    ReadUserPropertyConfluence,
-    ManageConfluenceConfiguration,
-    ReadConfluenceGroups,
-    WriteConfluenceGroups,
-    WriteUserPropertyConfluence,
-    ReadSpacePermissionConfluence,
-    WriteSpacePermissionsConfluence,
-    WriteInlineTaskConfluence,
-    ReadOnlyContentAttachmentConfluence,
-    ReadJiraUser,
-    ReadJiraWork,
-    WriteJiraWork,
-    ManageJiraProject,
-    ManageJiraConfiguration,
-    ManageJiraWebhook,
-    Unknown,
-}
-
-pub fn resolve_permission(permission: ForgePermissions) -> &'static str {
-    match permission {
-        ForgePermissions::ReadAuditLogsConfluence => "read:audit-log:confluence",
-        ForgePermissions::WriteAuditLogsConfluence => "write:audit-log:confluence",
-        ForgePermissions::WriteConfluenceContent => "wwrite:confluence-content",
-        ForgePermissions::ReadConfluenceSpaceSummary => "read:confluence-space.summary",
-        ForgePermissions::WriteConfluenceSpace => "write:confluence-space",
-        ForgePermissions::WriteConfluenceFile => "write:confluence-file",
-        ForgePermissions::WriteUserPropertyConfluence => "write:user.property:confluence",
-        ForgePermissions::ReadConfluenceProps => "read:confluence-props",
-        ForgePermissions::WriteConfluenceProps => "write:confluence-props",
-        ForgePermissions::ManageConfluenceConfiguration => "manage:confluence-configuration",
-        ForgePermissions::ReadConfluenceContentAll => "read:confluence-content.all",
-        ForgePermissions::ReadConfluenceContentSummary => "read:confluence-content.summary",
-        ForgePermissions::SearchConfluence => "search:confluence",
-        ForgePermissions::ReadConfluenceContentPermission => "read:confluence-content.permission",
-        ForgePermissions::ReadConfluenceUser => "read:confluence-user",
-        ForgePermissions::ReadUserPropertyConfluence => "read:user.property:confluence",
-        ForgePermissions::ReadConfluenceGroups => "read:confluence-content.permission",
-        ForgePermissions::WriteConfluenceGroups => "write:confluence-groups",
-        ForgePermissions::ReadSpacePermissionConfluence => "read:space.permission:confluence",
-        ForgePermissions::WriteSpacePermissionsConfluence => "write:space.permission:confluence",
-        ForgePermissions::ReadOnlyContentAttachmentConfluence => {
-            "readonly:content.attachment:confluence"
-        },
-        ForgePermissions::ReadInlineTaskConfluence => "read:inlinetask:confluence",
-        ForgePermissions::WriteInlineTaskConfluence => "write:inlinetask:confluence",
-        ForgePermissions::ReadJiraUser => "read:jira-user",
-        ForgePermissions::ReadJiraWork => "read:jira-work",
-        ForgePermissions::WriteJiraWork => "write:jira-work",
-        ForgePermissions::ManageJiraProject => "manage:jira-project",
-        ForgePermissions::ManageJiraConfiguration => "manage:jira-configuration",
-        ForgePermissions::ManageJiraWebhook => "manage:jira-webhook",
-        ForgePermissions::Unknown => "unknown",
-    }
-}
+use forge_loader::forgepermissions::{ForgePermissions};
 
 #[instrument(level = "debug", skip_all)]
 pub(crate) fn collect_functions<N>(node: &N, ctx: &mut ModuleCtx) -> FxHashMap<Id, FunctionMeta>
@@ -345,9 +275,10 @@ impl Visit for FunctionAnalyzer<'_> {
                                 }
                                 api_call.args.extend_from_slice(&api_call_data.args.clone());
                             }
-                            self.ctx.permissions_used.push(
-                                resolve_permission(api_call.check_permission_used()).to_string(),
-                            );
+                            for perm in api_call.check_permission_used() {
+                                self.ctx.permissions_used.push(perm);
+                            }
+                        
                         }
                     }
                     // FIXME: also check asApp calls using these params
@@ -374,28 +305,6 @@ pub(crate) struct ApiCallData {
 
 impl ApiCallData {
     pub(crate) fn check_permission_used(&self) -> Vec<ForgePermissions> {
-        /**
-             *     WriteConfluenceContent,
-        ReadConfluenceSpaceSummary,
-        WriteConfluenceSpaceSummary,
-        WriteConfluenceFile, *
-        ReadConfluenceProps,
-        ReadConfluenceContentAll, *
-        ReadConfluenceContentSummary,
-        SearchConfluence,
-        ReadConfluenceContentPermission,
-        ReadConfluenceUser,
-        ReadConfluenceGroups,
-        WriteConfluenceGroups,
-        ReadOnlyContentAttachmentConfluence,
-        ReadJiraUser,
-        ReadJiraWork,
-        WriteJiraWork,
-        ManageJiraProject,
-        ManageJiraConfiguration,
-        ManageJiraWebhook,
-        Unknown,
-             */
         let mut used_permissions: Vec<ForgePermissions> = Vec::new();
 
         let joined_args = self.args.join("");
@@ -431,6 +340,14 @@ impl ApiCallData {
         let contains_comment = joined_args.contains("comment");
         let contains_label = joined_args.contains("contains_label");
         let contains_restriction = joined_args.contains("restriction");
+        let contains_selected = joined_args.contains("selected");
+        let contains_search = joined_args.contains("contains_search");
+        let contains_longtask = joined_args.contains("contains_longtask");
+        let contains_notification = joined_args.contains("notification");
+        let contains_watch = joined_args.contains("watch");
+        let contains_version = joined_args.contains("version");
+        let contains_state = joined_args.contains("contains_state");
+        let contains_available = joined_args.contains("available");
 
         match self.function_name.as_str() {
             "requestJira" => {
@@ -448,18 +365,18 @@ impl ApiCallData {
                     }
                 }
             }
+
+            // bit flags
             "requestConfluence" => {
                 if post_call || delete_call || put_call {
                     if contains_content {
                         used_permissions.push(ForgePermissions::WriteConfluenceContent);
                     } else if contains_audit {
+                        used_permissions.push(ForgePermissions::WriteAuditLogsConfluence);
                         if post_call {
                             used_permissions.push(ForgePermissions::ReadAuditLogsConfluence);
-                            used_permissions.push(ForgePermissions::WriteAuditLogsConfluence)
-                        } else {
-                            used_permissions.push(ForgePermissions::WriteAuditLogsConfluence)
                         }
-                    } else if contains_content && contains_attachment { 
+                    } else if contains_content && contains_attachment {
                         if put_call {
                             // review this more specifically
                             // /wiki/rest/api/content/{id}/child/attachment/{attachmentId}`,
@@ -474,7 +391,11 @@ impl ApiCallData {
                         used_permissions.push(ForgePermissions::ReadConfluenceContentPermission)
                     } else if contains_property {
                         used_permissions.push(ForgePermissions::WriteConfluenceProps)
-                    } else if contains_content || contains_page_tree || contains_relation {
+                    } else if contains_content
+                        || contains_page_tree
+                        || contains_relation
+                        || contains_template
+                    {
                         used_permissions.push(ForgePermissions::WriteConfluenceContent)
                     } else if contains_group {
                         used_permissions.push(ForgePermissions::WriteConfluenceGroups)
@@ -487,8 +408,6 @@ impl ApiCallData {
                         used_permissions.push(ForgePermissions::WriteSpacePermissionsConfluence)
                     } else if contains_space || contains_theme {
                         used_permissions.push(ForgePermissions::WriteConfluenceSpace);
-                    } else if contains_template {
-                        used_permissions.push(ForgePermissions::WriteConfluenceContent);
                     } else if contains_inlinetasks {
                         used_permissions.push(ForgePermissions::WriteInlineTaskConfluence)
                     } else if contains_user && contains_property {
@@ -502,21 +421,62 @@ impl ApiCallData {
                     } else if contains_audit {
                         used_permissions.push(ForgePermissions::ReadAuditLogsConfluence)
                     } else if contains_cql {
-                        used_permissions.push(ForgePermissions::SearchConfluence)
+                        if contains_user {
+                            used_permissions.push(ForgePermissions::ReadContentDetailsConfluence);
+                        } else {
+                            used_permissions.push(ForgePermissions::SearchConfluence);
+                        }
                     } else if contains_attachment && contains_download {
                         used_permissions.push(ForgePermissions::ReadOnlyContentAttachmentConfluence)
+                    } else if contains_longtask {
+                        used_permissions.push(ForgePermissions::ReadContentMetadataConfluence);
+                        used_permissions.push(ForgePermissions::ReadConfluenceSpaceSummary)
                     } else if contains_content && contains_property {
                         used_permissions.push(ForgePermissions::ReadConfluenceProps);
-                    } else if contains_content && (contains_comment || contains_descendants || contains_label) {
-                        used_permissions.push(ForgePermissions::ReadConfluenceContentSummary);
+                    } else if contains_template
+                        || contains_relation
+                        || (contains_content
+                            && (contains_comment || contains_descendants || contains_label))
+                    {
+                        used_permissions.push(ForgePermissions::ReadConfluenceContentSummary)
+                    } else if contains_space && contains_settings {
+                        used_permissions.push(ForgePermissions::ReadConfluenceSpaceSummary)
+                    } else if contains_space && contains_theme {
+                        used_permissions.push(ForgePermissions::ManageConfluenceConfiguration)
+                    } else if contains_space && contains_content && contains_state {
+                        used_permissions.push(ForgePermissions::ReadConfluenceContentAll)
+                    } else if contains_space && contains_content {
+                        used_permissions.push(ForgePermissions::ReadConfluenceContentSummary)
+                    } else if contains_state && contains_content && contains_available {
+                        used_permissions.push(ForgePermissions::WriteConfluenceContent)
+                    } else if contains_content && (contains_notification || contains_watch || contains_version || contains_state) {
+                        used_permissions.push(ForgePermissions::ReadConfluenceContentSummary)
+                    } else if contains_space {
+                        used_permissions.push(ForgePermissions::ReadConfluenceProps)
                     } else if contains_content || contains_analytics {
+                        used_permissions.push(ForgePermissions::ReadConfluenceContentAll)
+                    } else if contains_user && contains_property {
+                        used_permissions.push(ForgePermissions::WriteUserPropertyConfluence)
+                    } else if contains_settings {
+                        used_permissions.push(ForgePermissions::ManageConfluenceConfiguration)
+                    } else if contains_search {
+                        used_permissions.push(ForgePermissions::ReadContentDetailsConfluence)
+                    } else if contains_space {
+                        used_permissions.push(ForgePermissions::ReadConfluenceSpaceSummary)
+                    } else if contains_user {
+                        used_permissions.push(ForgePermissions::ReadConfluenceUser)
+                    } else if contains_label {
+                        used_permissions.push(ForgePermissions::ReadConfluenceContentSummary)
+                    } else if contains_inlinetasks {
                         used_permissions.push(ForgePermissions::ReadConfluenceContentAll);
                     } else {
                         used_permissions.push(ForgePermissions::Unknown);
                     }
                 }
             }
-            _ => {used_permissions.push(ForgePermissions::Unknown);}
+            _ => {
+                used_permissions.push(ForgePermissions::Unknown);
+            }
         }
         used_permissions
     }

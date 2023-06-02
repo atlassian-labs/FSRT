@@ -1,4 +1,5 @@
 use core::fmt;
+use forge_loader::forgepermissions::ForgePermissions;
 use itertools::Itertools;
 use std::{cmp::max, collections::HashSet, iter, mem, ops::ControlFlow, path::PathBuf};
 
@@ -191,6 +192,7 @@ impl IntoVuln for AuthZVuln {
             recommendation: "Use the authorize API _https://developer.atlassian.com/platform/forge/runtime-reference/authorize-api/_ or manually authorize the user via the product REST APIs.",
             proof: format!("Unauthorized API call via asApp() found via {}", self.stack),
             severity: Severity::High,
+            unused_permissions: None,
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
             date: reporter.current_date(),
@@ -435,6 +437,7 @@ impl IntoVuln for AuthNVuln {
             description: format!("Insufficient Authentication through webhook {} in {:?}.", self.entry_func, self.file),
             recommendation: "Properly authenticate incoming webhooks and ensure that any shared secrets are stored in Forge Secure Storage.",
             proof: format!("Unauthenticated API call via asApp() found via {}", self.stack),
+            unused_permissions: None,
             severity: Severity::High,
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
@@ -449,11 +452,11 @@ impl WithCallStack for AuthNVuln {
 
 #[derive(Debug)]
 pub struct PermissionVuln {
-    unused_permissions: HashSet<String>,
+    unused_permissions: HashSet<ForgePermissions>,
 }
 
 impl PermissionVuln {
-    pub fn new(unused_permissions: HashSet<String>) -> PermissionVuln {
+    pub fn new(unused_permissions: HashSet<ForgePermissions>) -> PermissionVuln {
         PermissionVuln { unused_permissions }
     }
 }
@@ -463,9 +466,10 @@ impl IntoVuln for PermissionVuln {
         Vulnerability {
             check_name: format!("Least-Privilege"),
             description: format!(
-                "Unused permissions listed in manifest file: {}.",
-                self.unused_permissions.into_iter().join(", ")
+                "Unused permissions listed in manifest file:.",
+                // self.unused_permissions.into_iter().join(", ")
             ),
+            unused_permissions: Some(self.unused_permissions),
             recommendation: "Remove permissions in manifest file that are not needed.",
             proof: format!("Unused permissions found in manifest.yml"),
             severity: Severity::Low,

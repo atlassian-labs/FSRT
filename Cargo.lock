@@ -525,6 +525,7 @@ version = "0.1.0"
 dependencies = [
  "fixedbitset",
  "forge_file_resolver",
+ "forge_loader",
  "forge_utils",
  "itertools",
  "num-bigint",

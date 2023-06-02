@@ -2,6 +2,7 @@ use std::path::Path;
 use std::{borrow::Borrow, hash::Hash, path::PathBuf};
 
 use forge_file_resolver::{FileResolver, ForgeResolver};
+use forge_loader::forgepermissions::ForgePermissions;
 use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
 use once_cell::unsync::OnceCell;
@@ -109,7 +110,7 @@ pub struct ModuleCtx {
     pub(crate) ident_to_import: FxHashMap<Id, Id>,
     pub(crate) exports: Option<Exports>,
     pub(crate) functions: FxHashMap<Id, FunctionMeta>,
-    pub permissions_used: Vec<String>,
+    pub permissions_used: Vec<ForgePermissions>,
 }
 
 #[derive(Clone, Debug)]

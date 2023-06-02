@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::Error;
+use crate::{Error, forgepermissions::ForgePermissions};
 use forge_utils::FxHashMap;
 use itertools::{Either, Itertools};
 use serde::Deserialize;
@@ -108,8 +108,8 @@ pub struct Content<'a> {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Perms<'a> {
-    #[serde(default, borrow)]
-    pub scopes: Vec<&'a str>,
+    #[serde(default)]
+    pub scopes: Vec<ForgePermissions>,
     #[serde(default, borrow)]
     pub content: Content<'a>,
 }
