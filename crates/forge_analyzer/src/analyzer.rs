@@ -361,6 +361,20 @@ impl ApiCallData {
         let contains_role = joined_args.contains("contains_role");
         let contains_project_validate = joined_args.contains("projectvalidate");
         let contains_email = joined_args.contains("email");
+        let contains_notification_scheme = joined_args.contains("notificationscheme");
+        let contains_priority = joined_args.contains("priority");
+        let contains_properties = joined_args.contains("properties");
+        let contains_remote_link = joined_args.contains("remotelink");
+        let contains_resolution = joined_args.contains("resolution");
+        let contains_security_level = joined_args.contains("securitylevel");
+        let contains_issue_security_schemes = joined_args.contains("issuesecurityschemes");
+        let contains_issue_type = joined_args.contains("issuetype");
+        let contains_issue_type_schemes = joined_args.contains("issuetypescheme");
+        let contains_votes = joined_args.contains("contains_votes");
+        let contains_worklog = joined_args.contains("worklog");
+        let contains_expression = joined_args.contains("expression");
+        let contains_configuration = joined_args.contains("configuration");
+        let contains_application_properties = joined_args.contains("application-properties");
 
         match self.function_name.as_str() {
             "requestJira" => {
@@ -372,28 +386,46 @@ impl ApiCallData {
                     if contains_gadget {
                         used_permissions.push(ForgePermissions::ReadJiraWork)
                     }
+                } else if contains_expression {
+                    used_permissions.push(ForgePermissions::ReadJiraUser);
+                    used_permissions.push(ForgePermissions::ReadJiraUser)
                 } else if (contains_avatar && contains_size)
                     || contains_dashboard
                     || contains_status
                     || contains_groupuserpicker
                 {
                     used_permissions.push(ForgePermissions::ReadJiraWork)
-                } else if !non_get_call && contains_user {
+                } else if (!non_get_call && contains_user) || contains_configuration {
                     used_permissions.push(ForgePermissions::ReadJiraUser)
                 } else if contains_webhook {
                     used_permissions.push(ForgePermissions::ManageJiraWebhook);
                     used_permissions.push(ForgePermissions::ReadJiraWork)
-                } else if contains_announcement_banner
+                } else if (contains_remote_link && non_get_call)
+                    || (contains_issue && contains_votes && non_get_call)
+                    || (contains_worklog && non_get_call)
+                {
+                    used_permissions.push(ForgePermissions::WriteJiraWork)
+                } else if (contains_issue_type && non_get_call)
+                    || (contains_issue_type && non_get_call)
+                    || (contains_project && non_get_call)
+                    || (contains_project && contains_actor)
+                    || (contains_project && contains_role)
+                    || (contains_project && contains_email)
+                    || (contains_priority && (non_get_call || contains_search))
+                    || (contains_properties && contains_issue && non_get_call)
+                    || (contains_resolution && non_get_call)
                     || contains_audit
                     || contains_avatar
                     || contains_workflow
                     || contains_tracking
                     || contains_status
                     || contains_screen
-                    || (contains_project && non_get_call)
-                    || (contains_project && contains_actor)
-                    || (contains_project && contains_role)
-                    || (contains_project && contains_email)
+                    || contains_notification_scheme
+                    || contains_security_level
+                    || contains_issue_security_schemes
+                    || contains_issue_type_schemes
+                    || contains_announcement_banner
+                    || contains_application_properties
                 {
                     used_permissions.push(ForgePermissions::ManageJiraConfiguration)
                 } else if contains_filter {
@@ -402,7 +434,17 @@ impl ApiCallData {
                     } else {
                         used_permissions.push(ForgePermissions::ReadJiraWork)
                     }
-                } else if contains_project || contains_project_validate {
+                } else if contains_project
+                    || contains_project_validate
+                    || contains_priority
+                    || contains_search
+                    || contains_issue_type
+                    || (contains_issue && contains_votes)
+                    || (contains_properties && contains_issue)
+                    || (contains_remote_link && !non_get_call)
+                    || (contains_resolution && !non_get_call)
+                    || contains_worklog
+                {
                     used_permissions.push(ForgePermissions::ReadJiraWork)
                 } else if post_call {
                     if contains_issue {
