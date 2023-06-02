@@ -1,5 +1,5 @@
 pub mod error;
-pub mod manifest;
 pub mod forgepermissions;
+pub mod manifest;
 
 pub use self::error::{Error, Result};

@@ -1,5 +1,4 @@
-
-use serde::{self, Serialize, Deserialize};
+use serde::{self, Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Hash)]
 pub enum ForgePermissions {
@@ -34,7 +33,7 @@ pub enum ForgePermissions {
     #[serde(rename = "read:confluence-user")]
     ReadConfluenceUser,
     #[serde(rename = "read:user.property:confluence")]
-    ReadUserPropertyConfluence,    
+    ReadUserPropertyConfluence,
     #[serde(rename = "manage:confluence-configuration")]
     ManageConfluenceConfiguration,
     #[serde(rename = "read:content.metadata:confluence")]
@@ -50,7 +49,7 @@ pub enum ForgePermissions {
     #[serde(rename = "write:space.permission:confluence")]
     WriteSpacePermissionsConfluence,
     #[serde(rename = "write:inlinetask:confluence")]
-    WriteInlineTaskConfluence,    
+    WriteInlineTaskConfluence,
     #[serde(rename = "readonly:content.attachment:confluence")]
     ReadOnlyContentAttachmentConfluence,
     #[serde(rename = "read:jira-user")]
@@ -62,7 +61,7 @@ pub enum ForgePermissions {
     #[serde(rename = "manage:jira-project")]
     ManageJiraProject,
     #[serde(rename = "manage:jira-configuration")]
-    ManageJiraConfiguration,    
+    ManageJiraConfiguration,
     #[serde(rename = "manage:jira-webhook")]
     ManageJiraWebhook,
     #[serde(other)]

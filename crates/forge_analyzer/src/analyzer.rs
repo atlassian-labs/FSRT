@@ -13,8 +13,8 @@ use swc_core::ecma::ast::{
 use swc_core::ecma::visit::{noop_visit_type, Visit, VisitWith};
 use tracing::{debug, instrument};
 
+use forge_loader::forgepermissions::ForgePermissions;
 use forge_utils::FxHashMap;
-use forge_loader::forgepermissions::{ForgePermissions};
 
 #[instrument(level = "debug", skip_all)]
 pub(crate) fn collect_functions<N>(node: &N, ctx: &mut ModuleCtx) -> FxHashMap<Id, FunctionMeta>
@@ -71,7 +71,7 @@ impl CheckApiCalls {
     }
 }
 
-fn contains_perms_check<N: VisitWith<CheckApiCalls>>(node: &N) -> CheckApiCalls {
+fn check_api_call<N: VisitWith<CheckApiCalls>>(node: &N) -> CheckApiCalls {
     let mut api_call_metadata = CheckApiCalls::new();
     node.visit_with(&mut api_call_metadata);
     return api_call_metadata;
@@ -267,7 +267,7 @@ impl Visit for FunctionAnalyzer<'_> {
                         if &ident.0 == "requestJira" || &ident.0 == "requestConfluence" {
                             debug!(api = ?&ident.0, "found api call");
                             for arg in args.into_iter() {
-                                let api_call_data = contains_perms_check(&arg.expr);
+                                let api_call_data = check_api_call(&arg.expr);
                                 if api_call_data.perms_related {
                                     self.add_ir_stmt(IrStmt::Resolved(AuthZVal::Authorize));
                                 } else if self.is_as_app_access(obj) {
@@ -275,10 +275,9 @@ impl Visit for FunctionAnalyzer<'_> {
                                 }
                                 api_call.args.extend_from_slice(&api_call_data.args.clone());
                             }
-                            for perm in api_call.check_permission_used() {
-                                self.ctx.permissions_used.push(perm);
+                            for permmission in api_call.check_permission_used() {
+                                self.ctx.permissions_used.push(permmission);
                             }
-                        
                         }
                     }
                     // FIXME: also check asApp calls using these params
@@ -317,15 +316,12 @@ impl ApiCallData {
         let contains_issue = joined_args.contains("issue");
         let contains_content = joined_args.contains("content");
         let contains_user = joined_args.contains("user");
-        let contains_property = joined_args.contains("property");
         let contains_theme = joined_args.contains("theme");
         let contains_template = joined_args.contains("template");
         let contains_space = joined_args.contains("space");
         let contains_analytics = joined_args.contains("analytics");
         let contains_cql = joined_args.contains("cql");
-        let contains_history = joined_args.contains("history");
         let contains_attachment = joined_args.contains("attachment");
-        let contains_data = joined_args.contains("data");
         let contains_contentbody = joined_args.contains("contentbody");
         let contians_permissions = joined_args.contains("permissions");
         let contains_property = joined_args.contains("property");
@@ -339,8 +335,6 @@ impl ApiCallData {
         let contains_descendants = joined_args.contains("descendants");
         let contains_comment = joined_args.contains("comment");
         let contains_label = joined_args.contains("contains_label");
-        let contains_restriction = joined_args.contains("restriction");
-        let contains_selected = joined_args.contains("selected");
         let contains_search = joined_args.contains("contains_search");
         let contains_longtask = joined_args.contains("contains_longtask");
         let contains_notification = joined_args.contains("notification");
@@ -348,10 +342,69 @@ impl ApiCallData {
         let contains_version = joined_args.contains("version");
         let contains_state = joined_args.contains("contains_state");
         let contains_available = joined_args.contains("available");
+        let contains_announcement_banner = joined_args.contains("announcementBanner");
+        let contains_avatar = joined_args.contains("avatar");
+        let contains_size = joined_args.contains("size");
+        let contains_dashboard = joined_args.contains("dashboard");
+        let contains_gadget = joined_args.contains("gadget");
+        let contains_filter = joined_args.contains("filter");
+        let contains_tracking = joined_args.contains("tracking");
+        let contains_groupuserpicker = joined_args.contains("groupuserpicker");
+        let contains_workflow = joined_args.contains("workflow");
+        let contains_status = joined_args.contains("status");
+        let contains_task = joined_args.contains("task");
+        let contains_screen = joined_args.contains("screen");
+        let non_get_call = post_call || delete_call || put_call;
+        let contains_webhook = joined_args.contains("webhook");
+        let contains_project = joined_args.contains("project");
+        let contains_actor = joined_args.contains("actor");
+        let contains_role = joined_args.contains("contains_role");
+        let contains_project_validate = joined_args.contains("projectvalidate");
+        let contains_email = joined_args.contains("email");
 
         match self.function_name.as_str() {
             "requestJira" => {
-                if post_call {
+                if (contains_dashboard && non_get_call)
+                    || (contains_user && non_get_call)
+                    || contains_task
+                {
+                    used_permissions.push(ForgePermissions::WriteJiraWork);
+                    if contains_gadget {
+                        used_permissions.push(ForgePermissions::ReadJiraWork)
+                    }
+                } else if (contains_avatar && contains_size)
+                    || contains_dashboard
+                    || contains_status
+                    || contains_groupuserpicker
+                {
+                    used_permissions.push(ForgePermissions::ReadJiraWork)
+                } else if !non_get_call && contains_user {
+                    used_permissions.push(ForgePermissions::ReadJiraUser)
+                } else if contains_webhook {
+                    used_permissions.push(ForgePermissions::ManageJiraWebhook);
+                    used_permissions.push(ForgePermissions::ReadJiraWork)
+                } else if contains_announcement_banner
+                    || contains_audit
+                    || contains_avatar
+                    || contains_workflow
+                    || contains_tracking
+                    || contains_status
+                    || contains_screen
+                    || (contains_project && non_get_call)
+                    || (contains_project && contains_actor)
+                    || (contains_project && contains_role)
+                    || (contains_project && contains_email)
+                {
+                    used_permissions.push(ForgePermissions::ManageJiraConfiguration)
+                } else if contains_filter {
+                    if non_get_call {
+                        used_permissions.push(ForgePermissions::WriteJiraWork)
+                    } else {
+                        used_permissions.push(ForgePermissions::ReadJiraWork)
+                    }
+                } else if contains_project || contains_project_validate {
+                    used_permissions.push(ForgePermissions::ReadJiraWork)
+                } else if post_call {
                     if contains_issue {
                         used_permissions.push(ForgePermissions::WriteJiraWork);
                     } else {
@@ -368,7 +421,7 @@ impl ApiCallData {
 
             // bit flags
             "requestConfluence" => {
-                if post_call || delete_call || put_call {
+                if non_get_call {
                     if contains_content {
                         used_permissions.push(ForgePermissions::WriteConfluenceContent);
                     } else if contains_audit {
@@ -449,7 +502,12 @@ impl ApiCallData {
                         used_permissions.push(ForgePermissions::ReadConfluenceContentSummary)
                     } else if contains_state && contains_content && contains_available {
                         used_permissions.push(ForgePermissions::WriteConfluenceContent)
-                    } else if contains_content && (contains_notification || contains_watch || contains_version || contains_state) {
+                    } else if contains_content
+                        && (contains_notification
+                            || contains_watch
+                            || contains_version
+                            || contains_state)
+                    {
                         used_permissions.push(ForgePermissions::ReadConfluenceContentSummary)
                     } else if contains_space {
                         used_permissions.push(ForgePermissions::ReadConfluenceProps)

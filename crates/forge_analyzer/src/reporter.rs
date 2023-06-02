@@ -1,7 +1,7 @@
 use forge_loader::forgepermissions::ForgePermissions;
 use serde::Serialize;
-use time::{Date, OffsetDateTime};
 use std::collections::HashSet;
+use time::{Date, OffsetDateTime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Severity {

@@ -2,7 +2,7 @@
 use std::{
     collections::HashSet,
     convert::TryFrom,
-    fs::{self, Permissions},
+    fs,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -217,11 +217,8 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     }
     let requested_permissions = manifest.permissions;
     let permission_scopes: Vec<ForgePermissions> = requested_permissions.scopes;
-    let mut permissions_declared: HashSet<_> = HashSet::from_iter(
-        permission_scopes
-            .iter()
-            .cloned()
-    );
+    let mut permissions_declared: HashSet<_> =
+        HashSet::from_iter(permission_scopes.iter().cloned());
 
     for ctx in &proj.ctx.modctx {
         for permission in &ctx.permissions_used {
