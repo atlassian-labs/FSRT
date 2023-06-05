@@ -791,13 +791,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         && Some(&ImportKind::Default)
                             == self.res.as_foreign_import(def, "@forge/api") =>
             {
-                let permissions_used =
-                    check_permission_used(&*last.to_string(), first_arg, second_arg);
+                let permissions_from_endpoints =
+                    self.resolve_api_endpoints((*last).to_string(), first_arg, second_arg);
                 self.res
                     .permissions_used
-                    .extend_from_slice(&permissions_used.clone());
-
-                self.resolve_api_endpoints(first_arg, second_arg);
+                    .extend_from_slice(&permissions_from_endpoints.clone());
 
                 let first_arg = first_arg?;
                 match classify_api_call(first_arg) {
@@ -832,10 +830,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
     fn resolve_api_endpoints(
         &self,
+        function_name: String,
         first_arg: Option<&Expr>,
         second_arg: Option<&Expr>,
     ) -> Vec<ForgePermissions> {
-        let permissions = Vec::new();
+        let mut permissions: Vec<ForgePermissions> = Vec::new();
         let mut endpoints: Vec<String> = Vec::new();
         match first_arg.unwrap() {
             Expr::Lit(lit) => {}
@@ -880,6 +879,13 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
             }
             _ => {}
+        }
+        for endpoint in endpoints {
+            permissions.extend_from_slice(&check_permission_used(
+                &function_name,
+                endpoint,
+                second_arg,
+            ));
         }
         permissions
     }
@@ -1676,12 +1682,12 @@ impl Visit for LocalDefiner<'_> {
 
 pub(crate) fn check_permission_used(
     function_name: &str,
-    first_arg: Option<&Expr>,
+    first_arg: String,
     second_arg: Option<&Expr>,
 ) -> Vec<ForgePermissions> {
     let mut used_permissions: Vec<ForgePermissions> = Vec::new();
 
-    let joined_args = "";
+    let joined_args = first_arg;
 
     let post_call = joined_args.contains("POST");
     let delete_call = joined_args.contains("DELTE");

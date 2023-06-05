@@ -224,11 +224,9 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     let mut permissions_declared: HashSet<_> =
         HashSet::from_iter(permission_scopes.iter().cloned());
 
-    for ctx in &proj.ctx.modctx {
-        for permission in &ctx.permissions_used {
-            if permissions_declared.contains(permission) {
-                permissions_declared.remove(permission);
-            }
+    for permission in &proj.env.permissions_used {
+        if permissions_declared.contains(permission) {
+            permissions_declared.remove(permission);
         }
     }
 
