@@ -1,8 +1,9 @@
 #![allow(dead_code, unused)]
 
-use std::{borrow::Borrow, fmt, mem};
+use std::{borrow::Borrow, collections::HashMap, fmt, mem};
 
 use forge_file_resolver::{FileResolver, ForgeResolver};
+use forge_loader::forgepermissions::ForgePermissions;
 use forge_utils::{create_newtype, FxHashMap};
 
 use swc_core::{
@@ -446,6 +447,7 @@ pub struct Environment {
     defs: Definitions,
     default_exports: FxHashMap<ModId, DefId>,
     resolver: ResolverTable,
+    pub permissions_used: Vec<ForgePermissions>,
 }
 
 struct ImportCollector<'cx> {
@@ -692,6 +694,7 @@ struct FunctionAnalyzer<'cx> {
     block: BasicBlockId,
     operand_stack: Vec<Operand>,
     in_lhs: bool,
+    vars: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -770,7 +773,12 @@ impl<'cx> FunctionAnalyzer<'cx> {
         self.body.set_terminator(self.block, term);
     }
 
-    fn as_intrinsic(&self, callee: &[PropPath], first_arg: Option<&Expr>) -> Option<Intrinsic> {
+    fn as_intrinsic(
+        &mut self,
+        callee: &[PropPath],
+        first_arg: Option<&Expr>,
+        second_arg: Option<&Expr>,
+    ) -> Option<Intrinsic> {
         fn is_storage_read(prop: &JsWord) -> bool {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
@@ -783,6 +791,14 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         && Some(&ImportKind::Default)
                             == self.res.as_foreign_import(def, "@forge/api") =>
             {
+                let permissions_used =
+                    check_permission_used(&*last.to_string(), first_arg, second_arg);
+                self.res
+                    .permissions_used
+                    .extend_from_slice(&permissions_used.clone());
+
+                self.resolve_api_endpoints(first_arg, second_arg);
+
                 let first_arg = first_arg?;
                 match classify_api_call(first_arg) {
                     ApiCallKind::Unknown => {
@@ -812,6 +828,60 @@ impl<'cx> FunctionAnalyzer<'cx> {
             },
             _ => None,
         }
+    }
+
+    fn resolve_api_endpoints(
+        &self,
+        first_arg: Option<&Expr>,
+        second_arg: Option<&Expr>,
+    ) -> Vec<ForgePermissions> {
+        let permissions = Vec::new();
+        let mut endpoints: Vec<String> = Vec::new();
+        match first_arg.unwrap() {
+            Expr::Lit(lit) => {}
+            Expr::TaggedTpl(tpl) => {
+                let final_strs: Vec<String> = tpl
+                    .tpl
+                    .quasis
+                    .iter()
+                    .map(|val| val.raw.to_string())
+                    .collect();
+                let final_str = final_strs.join("");
+                endpoints.push(final_str);
+                for tpl_element in &tpl.tpl.exprs {
+                    match &**tpl_element {
+                        Expr::Ident(ident) => {
+                            let key = &ident.sym.to_string();
+                            if self.vars.contains_key(key) {
+                                let mut new_endpoints: Vec<String> = Vec::new();
+                                let var_values = self.vars.get(key);
+                                for var_value in var_values.unwrap() {
+                                    let temp = endpoints
+                                        .clone()
+                                        .into_iter()
+                                        .map(|prev_endpoint| prev_endpoint + var_value)
+                                        .collect();
+                                    new_endpoints.push(temp)
+                                }
+                                endpoints = new_endpoints;
+                            }
+                        }
+                        Expr::Tpl(tpl) => {
+                            for tpl_expression in &tpl.exprs {
+                                match &**tpl_expression {
+                                    Expr::Ident(ident) => {}
+                                    Expr::Lit(lit) => {}
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        permissions
     }
 
     /// Sets the current block to `block` and returns the previous block.
@@ -966,7 +1036,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
             CalleeRef::Expr(expr) => self.lower_expr(expr),
         };
         let first_arg = args.first().map(|expr| &*expr.expr);
-        let call = match self.as_intrinsic(&props, first_arg) {
+        let second_arg = args.get(1).map(|expr| &*expr.expr);
+        let call = match self.as_intrinsic(&props, first_arg, second_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
         };
@@ -1511,8 +1582,8 @@ struct LocalDefiner<'cx> {
     module: ModId,
     func: DefId,
     body: Body,
+    vars: HashMap<String, Vec<String>>,
 }
-
 impl Visit for LocalDefiner<'_> {
     fn visit_ident(&mut self, n: &Ident) {
         let id = n.to_id();
@@ -1521,7 +1592,70 @@ impl Visit for LocalDefiner<'_> {
         self.body.add_local_def(defid, id);
     }
 
+    fn visit_assign_expr(&mut self, n: &AssignExpr) {
+        let (mut var_name, mut var_value) = (None::<String>, None::<String>);
+
+        match &(n.left) {
+            PatOrExpr::Pat(pat) => match pat.as_ref() {
+                Pat::Ident(ident) => {
+                    var_name = Some(ident.sym.to_string());
+                }
+                _ => {}
+            },
+            _ => {}
+        };
+
+        match (n.right).as_ref() {
+            Expr::Lit(lit) => match lit {
+                Lit::Str(str) => {
+                    var_value = Some(str.value.to_string());
+                }
+                _ => {}
+            },
+            _ => {}
+        };
+
+        if !var_name.is_none() && !var_value.is_none() {
+            if self.vars.contains_key(&var_name.clone().unwrap()) {
+                let mut temp_vars = self.vars[&var_name.clone().unwrap()].clone();
+                temp_vars.push(var_value.clone().unwrap());
+                self.vars.insert(var_name.clone().unwrap(), temp_vars);
+            } else {
+                self.vars
+                    .insert(var_name.clone().unwrap(), vec![var_value.clone().unwrap()]);
+            }
+        }
+    }
+
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
+        let (mut var_name, mut var_value) = (None::<String>, None::<String>);
+
+        match (n.name.clone()) {
+            Pat::Ident(pat) => {
+                var_name = Some(pat.sym.to_string());
+            }
+            _ => {}
+        };
+
+        match (n.init.clone().unwrap()).as_ref() {
+            Expr::Lit(lit) => match lit {
+                Lit::Str(str) => var_value = Some(str.value.to_string()),
+                _ => {}
+            },
+            _ => {}
+        };
+
+        if !var_name.is_none() && !var_value.is_none() {
+            if self.vars.contains_key(&var_name.clone().unwrap()) {
+                let mut temp_vars = self.vars[&var_name.clone().unwrap()].clone();
+                temp_vars.push(var_value.clone().unwrap());
+                self.vars.insert(var_name.clone().unwrap(), temp_vars);
+            } else {
+                self.vars
+                    .insert(var_name.clone().unwrap(), vec![var_value.clone().unwrap()]);
+            }
+        }
+
         n.name.visit_with(self);
     }
 
@@ -1538,6 +1672,288 @@ impl Visit for LocalDefiner<'_> {
 
     fn visit_arrow_expr(&mut self, _: &ArrowExpr) {}
     fn visit_fn_decl(&mut self, _: &FnDecl) {}
+}
+
+pub(crate) fn check_permission_used(
+    function_name: &str,
+    first_arg: Option<&Expr>,
+    second_arg: Option<&Expr>,
+) -> Vec<ForgePermissions> {
+    let mut used_permissions: Vec<ForgePermissions> = Vec::new();
+
+    let joined_args = "";
+
+    let post_call = joined_args.contains("POST");
+    let delete_call = joined_args.contains("DELTE");
+    let put_call = joined_args.contains("PUT");
+
+    let contains_audit = joined_args.contains("audit");
+    let contains_issue = joined_args.contains("issue");
+    let contains_content = joined_args.contains("content");
+    let contains_user = joined_args.contains("user");
+    let contains_theme = joined_args.contains("theme");
+    let contains_template = joined_args.contains("template");
+    let contains_space = joined_args.contains("space");
+    let contains_analytics = joined_args.contains("analytics");
+    let contains_cql = joined_args.contains("cql");
+    let contains_attachment = joined_args.contains("attachment");
+    let contains_contentbody = joined_args.contains("contentbody");
+    let contians_permissions = joined_args.contains("permissions");
+    let contains_property = joined_args.contains("property");
+    let contains_page_tree = joined_args.contains("pageTree");
+    let contains_group = joined_args.contains("group");
+    let contains_inlinetasks = joined_args.contains("inlinetasks");
+    let contains_relation = joined_args.contains("relation");
+    let contains_settings = joined_args.contains("settings");
+    let contains_permission = joined_args.contains("permission");
+    let contains_download = joined_args.contains("download");
+    let contains_descendants = joined_args.contains("descendants");
+    let contains_comment = joined_args.contains("comment");
+    let contains_label = joined_args.contains("contains_label");
+    let contains_search = joined_args.contains("contains_search");
+    let contains_longtask = joined_args.contains("contains_longtask");
+    let contains_notification = joined_args.contains("notification");
+    let contains_watch = joined_args.contains("watch");
+    let contains_version = joined_args.contains("version");
+    let contains_state = joined_args.contains("contains_state");
+    let contains_available = joined_args.contains("available");
+    let contains_announcement_banner = joined_args.contains("announcementBanner");
+    let contains_avatar = joined_args.contains("avatar");
+    let contains_size = joined_args.contains("size");
+    let contains_dashboard = joined_args.contains("dashboard");
+    let contains_gadget = joined_args.contains("gadget");
+    let contains_filter = joined_args.contains("filter");
+    let contains_tracking = joined_args.contains("tracking");
+    let contains_groupuserpicker = joined_args.contains("groupuserpicker");
+    let contains_workflow = joined_args.contains("workflow");
+    let contains_status = joined_args.contains("status");
+    let contains_task = joined_args.contains("task");
+    let contains_screen = joined_args.contains("screen");
+    let non_get_call = post_call || delete_call || put_call;
+    let contains_webhook = joined_args.contains("webhook");
+    let contains_project = joined_args.contains("project");
+    let contains_actor = joined_args.contains("actor");
+    let contains_role = joined_args.contains("contains_role");
+    let contains_project_validate = joined_args.contains("projectvalidate");
+    let contains_email = joined_args.contains("email");
+    let contains_notification_scheme = joined_args.contains("notificationscheme");
+    let contains_priority = joined_args.contains("priority");
+    let contains_properties = joined_args.contains("properties");
+    let contains_remote_link = joined_args.contains("remotelink");
+    let contains_resolution = joined_args.contains("resolution");
+    let contains_security_level = joined_args.contains("securitylevel");
+    let contains_issue_security_schemes = joined_args.contains("issuesecurityschemes");
+    let contains_issue_type = joined_args.contains("issuetype");
+    let contains_issue_type_schemes = joined_args.contains("issuetypescheme");
+    let contains_votes = joined_args.contains("contains_votes");
+    let contains_worklog = joined_args.contains("worklog");
+    let contains_expression = joined_args.contains("expression");
+    let contains_configuration = joined_args.contains("configuration");
+    let contains_application_properties = joined_args.contains("application-properties");
+
+    match function_name {
+        "requestJira" => {
+            if (contains_dashboard && non_get_call)
+                || (contains_user && non_get_call)
+                || contains_task
+            {
+                used_permissions.push(ForgePermissions::WriteJiraWork);
+                if contains_gadget {
+                    used_permissions.push(ForgePermissions::ReadJiraWork)
+                }
+            } else if contains_expression {
+                used_permissions.push(ForgePermissions::ReadJiraUser);
+                used_permissions.push(ForgePermissions::ReadJiraUser)
+            } else if (contains_avatar && contains_size)
+                || contains_dashboard
+                || contains_status
+                || contains_groupuserpicker
+            {
+                used_permissions.push(ForgePermissions::ReadJiraWork)
+            } else if (!non_get_call && contains_user) || contains_configuration {
+                used_permissions.push(ForgePermissions::ReadJiraUser)
+            } else if contains_webhook {
+                used_permissions.push(ForgePermissions::ManageJiraWebhook);
+                used_permissions.push(ForgePermissions::ReadJiraWork)
+            } else if (contains_remote_link && non_get_call)
+                || (contains_issue && contains_votes && non_get_call)
+                || (contains_worklog && non_get_call)
+            {
+                used_permissions.push(ForgePermissions::WriteJiraWork)
+            } else if (contains_issue_type && non_get_call)
+                || (contains_issue_type && non_get_call)
+                || (contains_project && non_get_call)
+                || (contains_project && contains_actor)
+                || (contains_project && contains_role)
+                || (contains_project && contains_email)
+                || (contains_priority && (non_get_call || contains_search))
+                || (contains_properties && contains_issue && non_get_call)
+                || (contains_resolution && non_get_call)
+                || contains_audit
+                || contains_avatar
+                || contains_workflow
+                || contains_tracking
+                || contains_status
+                || contains_screen
+                || contains_notification_scheme
+                || contains_security_level
+                || contains_issue_security_schemes
+                || contains_issue_type_schemes
+                || contains_announcement_banner
+                || contains_application_properties
+            {
+                used_permissions.push(ForgePermissions::ManageJiraConfiguration)
+            } else if contains_filter {
+                if non_get_call {
+                    used_permissions.push(ForgePermissions::WriteJiraWork)
+                } else {
+                    used_permissions.push(ForgePermissions::ReadJiraWork)
+                }
+            } else if contains_project
+                || contains_project_validate
+                || contains_priority
+                || contains_search
+                || contains_issue_type
+                || (contains_issue && contains_votes)
+                || (contains_properties && contains_issue)
+                || (contains_remote_link && !non_get_call)
+                || (contains_resolution && !non_get_call)
+                || contains_worklog
+            {
+                used_permissions.push(ForgePermissions::ReadJiraWork)
+            } else if post_call {
+                if contains_issue {
+                    used_permissions.push(ForgePermissions::WriteJiraWork);
+                } else {
+                    used_permissions.push(ForgePermissions::Unknown);
+                }
+            } else {
+                if contains_issue {
+                    used_permissions.push(ForgePermissions::ReadJiraWork);
+                } else {
+                    used_permissions.push(ForgePermissions::Unknown);
+                }
+            }
+        }
+
+        // bit flags
+        "requestConfluence" => {
+            if non_get_call {
+                if contains_content {
+                    used_permissions.push(ForgePermissions::WriteConfluenceContent);
+                } else if contains_audit {
+                    used_permissions.push(ForgePermissions::WriteAuditLogsConfluence);
+                    if post_call {
+                        used_permissions.push(ForgePermissions::ReadAuditLogsConfluence);
+                    }
+                } else if contains_content && contains_attachment {
+                    if put_call {
+                        // review this more specifically
+                        // /wiki/rest/api/content/{id}/child/attachment/{attachmentId}`,
+                        used_permissions.push(ForgePermissions::WriteConfluenceFile);
+                        used_permissions.push(ForgePermissions::WriteConfluenceProps)
+                    } else {
+                        used_permissions.push(ForgePermissions::WriteConfluenceFile)
+                    }
+                } else if contains_contentbody {
+                    used_permissions.push(ForgePermissions::ReadConfluenceContentAll)
+                } else if contains_content && contians_permissions {
+                    used_permissions.push(ForgePermissions::ReadConfluenceContentPermission)
+                } else if contains_property {
+                    used_permissions.push(ForgePermissions::WriteConfluenceProps)
+                } else if contains_content
+                    || contains_page_tree
+                    || contains_relation
+                    || contains_template
+                {
+                    used_permissions.push(ForgePermissions::WriteConfluenceContent)
+                } else if contains_group {
+                    used_permissions.push(ForgePermissions::WriteConfluenceGroups)
+                } else if contains_settings {
+                    used_permissions.push(ForgePermissions::ManageConfluenceConfiguration)
+                } else if contains_space && contains_permission {
+                    if !delete_call {
+                        used_permissions.push(ForgePermissions::ReadSpacePermissionConfluence);
+                    }
+                    used_permissions.push(ForgePermissions::WriteSpacePermissionsConfluence)
+                } else if contains_space || contains_theme {
+                    used_permissions.push(ForgePermissions::WriteConfluenceSpace);
+                } else if contains_inlinetasks {
+                    used_permissions.push(ForgePermissions::WriteInlineTaskConfluence)
+                } else if contains_user && contains_property {
+                    used_permissions.push(ForgePermissions::WriteUserPropertyConfluence);
+                } else {
+                    used_permissions.push(ForgePermissions::Unknown);
+                }
+            } else {
+                if contains_issue {
+                    used_permissions.push(ForgePermissions::ReadJiraWork);
+                } else if contains_audit {
+                    used_permissions.push(ForgePermissions::ReadAuditLogsConfluence)
+                } else if contains_cql {
+                    if contains_user {
+                        used_permissions.push(ForgePermissions::ReadContentDetailsConfluence);
+                    } else {
+                        used_permissions.push(ForgePermissions::SearchConfluence);
+                    }
+                } else if contains_attachment && contains_download {
+                    used_permissions.push(ForgePermissions::ReadOnlyContentAttachmentConfluence)
+                } else if contains_longtask {
+                    used_permissions.push(ForgePermissions::ReadContentMetadataConfluence);
+                    used_permissions.push(ForgePermissions::ReadConfluenceSpaceSummary)
+                } else if contains_content && contains_property {
+                    used_permissions.push(ForgePermissions::ReadConfluenceProps);
+                } else if contains_template
+                    || contains_relation
+                    || (contains_content
+                        && (contains_comment || contains_descendants || contains_label))
+                {
+                    used_permissions.push(ForgePermissions::ReadConfluenceContentSummary)
+                } else if contains_space && contains_settings {
+                    used_permissions.push(ForgePermissions::ReadConfluenceSpaceSummary)
+                } else if contains_space && contains_theme {
+                    used_permissions.push(ForgePermissions::ManageConfluenceConfiguration)
+                } else if contains_space && contains_content && contains_state {
+                    used_permissions.push(ForgePermissions::ReadConfluenceContentAll)
+                } else if contains_space && contains_content {
+                    used_permissions.push(ForgePermissions::ReadConfluenceContentSummary)
+                } else if contains_state && contains_content && contains_available {
+                    used_permissions.push(ForgePermissions::WriteConfluenceContent)
+                } else if contains_content
+                    && (contains_notification
+                        || contains_watch
+                        || contains_version
+                        || contains_state)
+                {
+                    used_permissions.push(ForgePermissions::ReadConfluenceContentSummary)
+                } else if contains_space {
+                    used_permissions.push(ForgePermissions::ReadConfluenceProps)
+                } else if contains_content || contains_analytics {
+                    used_permissions.push(ForgePermissions::ReadConfluenceContentAll)
+                } else if contains_user && contains_property {
+                    used_permissions.push(ForgePermissions::WriteUserPropertyConfluence)
+                } else if contains_settings {
+                    used_permissions.push(ForgePermissions::ManageConfluenceConfiguration)
+                } else if contains_search {
+                    used_permissions.push(ForgePermissions::ReadContentDetailsConfluence)
+                } else if contains_space {
+                    used_permissions.push(ForgePermissions::ReadConfluenceSpaceSummary)
+                } else if contains_user {
+                    used_permissions.push(ForgePermissions::ReadConfluenceUser)
+                } else if contains_label {
+                    used_permissions.push(ForgePermissions::ReadConfluenceContentSummary)
+                } else if contains_inlinetasks {
+                    used_permissions.push(ForgePermissions::ReadConfluenceContentAll);
+                } else {
+                    used_permissions.push(ForgePermissions::Unknown);
+                }
+            }
+        }
+        _ => {
+            used_permissions.push(ForgePermissions::Unknown);
+        }
+    }
+    used_permissions
 }
 
 impl Visit for FunctionCollector<'_> {
@@ -1560,9 +1976,11 @@ impl Visit for FunctionCollector<'_> {
             module: self.module,
             func: owner,
             body,
+            vars: HashMap::new(),
         };
         n.body.visit_children_with(&mut localdef);
         let body = localdef.body;
+        let vars = localdef.vars;
         let mut analyzer = FunctionAnalyzer {
             res: self.res,
             module: self.module,
@@ -1572,6 +1990,7 @@ impl Visit for FunctionCollector<'_> {
             block: BasicBlockId::default(),
             operand_stack: vec![],
             in_lhs: false,
+            vars,
         };
         if let Some(BlockStmt { stmts, .. }) = &n.body {
             analyzer.lower_stmts(stmts);
@@ -1607,9 +2026,11 @@ impl Visit for FunctionCollector<'_> {
             module: self.module,
             func: owner,
             body,
+            vars: HashMap::new(),
         };
         func_body.visit_children_with(&mut localdef);
         let body = localdef.body;
+        let vars = localdef.vars;
         let mut analyzer = FunctionAnalyzer {
             res: self.res,
             module: self.module,
@@ -1619,6 +2040,7 @@ impl Visit for FunctionCollector<'_> {
             block: BasicBlockId::default(),
             operand_stack: vec![],
             in_lhs: false,
+            vars,
         };
         match func_body {
             BlockStmtOrExpr::BlockStmt(BlockStmt { stmts, .. }) => {
@@ -1684,6 +2106,7 @@ impl Visit for FunctionCollector<'_> {
                             block: BasicBlockId::default(),
                             operand_stack: vec![],
                             in_lhs: false,
+                            vars: HashMap::new(),
                         };
                         let opnd = analyzer.lower_expr(expr);
                         analyzer.body.push_inst(

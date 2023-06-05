@@ -2,9 +2,11 @@ import api, { route } from '@forge/api';
 
 export async function fetchIssueSummary(issueIdOrKey) {
   /* const api = await import('@forge/api'); */
+  let issuevar = "overwriten";
+  issuevar = "issue";
   const resp = await api
     .asApp()
-    .requestJira(route`/rest/api/3/issue/${issueIdOrKey}?fields=summary`, {
+    .requestJira(route`/rest/api/3/${issuevar}/${issueIdOrKey}?fields=summary`, {
       headers: {
         Accept: 'application/json',
       },
