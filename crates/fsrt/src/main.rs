@@ -188,10 +188,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
 
-    for i in &proj.env.permissions_used {
-        println!("permissions found {:#?}", i)
-    }
-
     let mut interp = Interp::new(&proj.env);
     let mut authn_interp = Interp::new(&proj.env);
     let mut reporter = Reporter::new();
