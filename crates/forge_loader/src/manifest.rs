@@ -122,7 +122,7 @@ pub struct AppInfo<'a> {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ModuleResolve<'a> {
-    pub function: Option<&'a str>
+    pub function: Option<&'a str>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -231,7 +231,14 @@ impl<'a> ForgeModules<'a> {
                 if !module_functions.function.is_none() {
                     alternate_functions.push(&module_functions.function.unwrap());
                 }
-                if !module_functions.resolver.is_none() && !module_functions.clone().resolver.unwrap().function.is_none() {
+                if !module_functions.resolver.is_none()
+                    && !module_functions
+                        .clone()
+                        .resolver
+                        .unwrap()
+                        .function
+                        .is_none()
+                {
                     alternate_functions.push(module_functions.resolver.unwrap().function.unwrap())
                 }
             }
