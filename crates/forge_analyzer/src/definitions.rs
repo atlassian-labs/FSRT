@@ -1872,7 +1872,6 @@ impl Visit for Lowerer<'_> {
                                 {
                                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
                                         let fname = value.clone();
-                                        println!("defining function: {}", &*fname);
                                         let member_def = match &**args {
                                             Expr::Fn(_) | Expr::Arrow(_) => self.res.add_anonymous(
                                                 fname.clone(),
