@@ -79,23 +79,23 @@ pub struct ForgeModules<'a> {
     #[serde(rename = "scheduledTrigger", default, borrow)]
     scheduled_triggers: Vec<ScheduledTrigger<'a>>,
     #[serde(rename = "consumer", default, borrow)]
-    consumers: Vec<Consumer<'a>>,
+    pub consumers: Vec<Consumer<'a>>,
     #[serde(flatten)]
-    extra: FxHashMap<String, serde_yaml::Value>,
+    extra: FxHashMap<String, Vec<Module<'a>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct Consumer<'a> {
+pub struct Consumer<'a> {
     key: &'a str,
     queue: &'a str,
     #[serde(borrow)]
-    resolver: Resolver<'a>,
+    pub resolver: Resolver<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct Resolver<'a> {
-    function: &'a str,
-    method: &'a str,
+pub struct Resolver<'a> {
+    pub function: &'a str,
+    method: Option<&'a str>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -118,6 +118,16 @@ struct Perms<'a> {
 pub struct AppInfo<'a> {
     pub name: Option<&'a str>,
     pub id: &'a str,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Module<'a> {
+    #[serde(default, borrow)]
+    pub function: Option<&'a str>,
+    #[serde(default)]
+    pub resolver: Option<Resolver<'a>>,
+    #[serde(flatten)]
+    extra: FxHashMap<String, serde_yaml::Value>,
 }
 
 /// The representation of a Forge app's `manifest.yml`
@@ -199,7 +209,7 @@ impl<'a> ForgeModules<'a> {
             .sort_unstable_by_key(|trigger| trigger.function);
 
         // same rational for using a BTreeSet
-        let ignored_functions: BTreeSet<_> = self
+        let mut ignored_functions: BTreeSet<_> = self
             .scheduled_triggers
             .into_iter()
             .map(|trigger| trigger.raw.function)
@@ -209,6 +219,21 @@ impl<'a> ForgeModules<'a> {
                     .map(|trigger| trigger.raw.function),
             )
             .collect();
+
+        let mut alternate_functions: Vec<&str> = Vec::new();
+        for module in self.extra.into_values().flatten() {
+            alternate_functions.extend(module.function);
+            if let Some(resolver) = module.resolver {
+                alternate_functions.push(resolver.function);
+            }
+        }
+
+        self.consumers.iter().for_each(|consumer| {
+            if !alternate_functions.contains(&consumer.resolver.function) {
+                ignored_functions.insert(consumer.resolver.function);
+            }
+        });
+
         self.functions.into_iter().filter_map(move |func| {
             if ignored_functions.contains(&func.key) {
                 return None;
