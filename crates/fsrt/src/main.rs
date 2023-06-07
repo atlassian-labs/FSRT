@@ -173,6 +173,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     let manifest = fs::read_to_string(&manifest_file).into_diagnostic()?;
     let manifest: ForgeManifest = serde_yaml::from_str(&manifest).into_diagnostic()?;
     let name = manifest.app.name.unwrap_or_default();
+
     let paths = collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>();
     let funcrefs = manifest.modules.into_analyzable_functions().flat_map(|f| {
         f.sequence(|fmod| {
