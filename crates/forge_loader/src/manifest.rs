@@ -95,7 +95,7 @@ pub struct Consumer<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Resolver<'a> {
     pub function: &'a str,
-    method: &'a str,
+    method: Option<&'a str>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -121,16 +121,11 @@ pub struct AppInfo<'a> {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct ModuleResolve<'a> {
-    pub function: Option<&'a str>,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Module<'a> {
     #[serde(default, borrow)]
     pub function: Option<&'a str>,
-    #[serde(default, borrow)]
-    pub resolver: Option<ModuleResolve<'a>>,
+    #[serde(default)]
+    pub resolver: Option<Resolver<'a>>,
     #[serde(flatten)]
     extra: FxHashMap<String, serde_yaml::Value>,
 }
@@ -226,21 +221,10 @@ impl<'a> ForgeModules<'a> {
             .collect();
 
         let mut alternate_functions: Vec<&str> = Vec::new();
-        for module in self.extra {
-            for module_functions in module.1 {
-                if !module_functions.function.is_none() {
-                    alternate_functions.push(&module_functions.function.unwrap());
-                }
-                if !module_functions.resolver.is_none()
-                    && !module_functions
-                        .clone()
-                        .resolver
-                        .unwrap()
-                        .function
-                        .is_none()
-                {
-                    alternate_functions.push(module_functions.resolver.unwrap().function.unwrap())
-                }
+        for module in self.extra.into_values().flatten() {
+            alternate_functions.extend(module.function);
+            if let Some(resolver) = module.resolver {
+                alternate_functions.push(resolver.function);
             }
         }
 
