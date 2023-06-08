@@ -801,7 +801,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
                             Inst::Expr(expr) => {}
                             Inst::Assign((var), (rvalue)) => match var.base {
                                 Base::Var(var) => {
-                                    if let Some(str) = self.handle_expr(rvalue.clone(), &mut common_endpoint, &mut endpoint_variables) {
+                                    if let Some(str) = self.handle_expr(
+                                        rvalue.clone(),
+                                        &mut common_endpoint,
+                                        &mut endpoint_variables,
+                                    ) {
                                         if !all_vars.contains_key(&var) {
                                             all_vars.insert(var.clone(), vec![str.clone()]);
                                         } else {
@@ -810,22 +814,35 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                             all_vars.insert(var.clone(), i.to_vec());
                                         }
                                     }
-                                },
+                                }
                                 _ => {}
                             },
                         }
                     });
                 });
 
+                let mut new_endpoints: Vec<String> = Vec::new();
+                for var_id in &endpoint_variables {
+                    for vars in all_vars.get(&var_id) {
+                        for var in vars {
+                            new_endpoints.push(common_endpoint.clone().join("") + &var.clone())
+                        }
+                    }
+                }
+
                 println!("common endpoints {:#?}", common_endpoint);
                 println!("endpoint vars {:#?}", endpoint_variables);
                 println!("endpoint options {:#?}", all_vars);
+                println!("new endpoints {:#?}", new_endpoints);
 
-                // let permissions_from_endpoints =
-                //     self.resolve_api_endpoints((*last).to_string(), first_arg, second_arg);
-                // self.res
-                //     .permissions_used
-                //     .extend_from_slice(&permissions_from_endpoints.clone());
+                let mut permissions_from_endpoints = Vec::new();
+                new_endpoints.iter().for_each(|endpoint| {
+                    permissions_from_endpoints
+                        .extend_from_slice(&check_permission_used(last, endpoint, second_arg))
+                });
+                self.res
+                    .permissions_used
+                    .extend_from_slice(&permissions_from_endpoints.clone());
 
                 let first_arg = first_arg?;
                 match classify_api_call(first_arg) {
@@ -856,15 +873,18 @@ impl<'cx> FunctionAnalyzer<'cx> {
             },
             _ => None,
         }
-
     }
 
-    fn handle_expr(&self, value: Rvalue, common_endpoint: &mut Vec<String>, endpoint_variables: &mut Vec<VarId>) -> Option<String> {
+    fn handle_expr(
+        &self,
+        value: Rvalue,
+        common_endpoint: &mut Vec<String>,
+        endpoint_variables: &mut Vec<VarId>,
+    ) -> Option<String> {
         match value {
             Rvalue::Read(read_value) => match read_value {
                 Operand::Lit(lit) => match lit {
-                    Literal::Str(str) => {
-                        Some(str.to_string())},
+                    Literal::Str(str) => Some(str.to_string()),
                     _ => None,
                 },
                 Operand::Var(var) => None,
@@ -872,26 +892,21 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Rvalue::Template(tpl) => {
                 let vec: Vec<String> = tpl.quasis.iter().map(|atom| atom.to_string()).collect();
                 common_endpoint.push(vec.join(""));
-                tpl.exprs.iter().for_each(|expr| {
-                    match expr {
-                        Operand::Var(var) => match var.base {
-                            Base::Var(var_id) => { endpoint_variables.push(var_id) }
-                            _ => {}
+                tpl.exprs.iter().for_each(|expr| match expr {
+                    Operand::Var(var) => match var.base {
+                        Base::Var(var_id) => endpoint_variables.push(var_id),
+                        _ => {}
+                    },
+                    Operand::Lit(lit) => match lit {
+                        Literal::Str(str) => {
+                            common_endpoint.push(lit.to_string());
                         }
-                        Operand::Lit(lit) => match lit {
-                            Literal::Str(str) => { 
-                                common_endpoint.push(lit.to_string());
-                                
-                            }
-                            _ => {}
-                        },
-                    }
+                        _ => {}
+                    },
                 });
                 None
             }
-            Rvalue::Call(op, op2) => {
-                None
-            }
+            Rvalue::Call(op, op2) => None,
             _ => None,
         }
     }
@@ -1186,6 +1201,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }
             Expr::Object(ObjectLit { span, props }) => {
                 // TODO: lower object literals
+                // println!("object lowering{:#?}", props);
                 Operand::UNDEF
             }
             Expr::Fn(_) => Operand::UNDEF,
@@ -1690,7 +1706,7 @@ impl Visit for LocalDefiner<'_> {
 
 pub(crate) fn check_permission_used(
     function_name: &str,
-    first_arg: String,
+    first_arg: &String,
     second_arg: Option<&Expr>,
 ) -> Vec<ForgePermissions> {
     let mut used_permissions: Vec<ForgePermissions> = Vec::new();
