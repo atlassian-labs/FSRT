@@ -1,0 +1,129 @@
+[
+            Assign(
+                Variable {
+                    base: Var(
+                        VarId(
+                            12,
+                        ),
+                    ),
+                    projections: [],
+                },
+                Read(
+                    Lit(
+                        Str(
+                            Atom('overwriten' type=dynamic),
+                        ),
+                    ),
+                ),
+            ),
+            Assign(
+                Variable {
+                    base: Var(
+                        VarId(
+                            12,
+                        ),
+                    ),
+                    projections: [],
+                },
+                Read(
+                    Lit(
+                        Str(
+                            Atom('issue' type=inline),
+                        ),
+                    ),
+                ),
+            ),
+            Expr(
+                Read(
+                    Lit(
+                        Str(
+                            Atom('issue' type=inline),
+                        ),
+                    ),
+                ),
+            ),
+            Assign(
+                Variable {
+                    base: Var(
+                        VarId(
+                            15,
+                        ),
+                    ),
+                    projections: [],
+                },
+                Template(
+                    Template {
+                        quasis: [
+                            "/rest/api/3/",
+                            "/",
+                            "?fields=summary",
+                        ],
+                        exprs: [
+                            Var(
+                                Variable {
+                                    base: Var(
+                                        VarId(
+                                            12,
+                                        ),
+                                    ),
+                                    projections: [],
+                                },
+                            ),
+                            Var(
+                                Variable {
+                                    base: Var(
+                                        VarId(
+                                            14,
+                                        ),
+                                    ),
+                                    projections: [],
+                                },
+                            ),
+                        ],
+                        tag: Some(
+                            Var(
+                                Variable {
+                                    base: Var(
+                                        VarId(
+                                            13,
+                                        ),
+                                    ),
+                                    projections: [],
+                                },
+                            ),
+                        ),
+                    },
+                ),
+            ),
+            Assign(
+                Variable {
+                    base: Var(
+                        VarId(
+                            17,
+                        ),
+                    ),
+                    projections: [],
+                },
+                Call(
+                    Var(
+                        Variable {
+                            base: Var(
+                                VarId(
+                                    16,
+                                ),
+                            ),
+                            projections: [
+                                Known(
+                                    Atom('asApp' type=inline),
+                                ),
+                            ],
+                        },
+                    ),
+                    [],
+                ),
+            ),
+        ],
+        term: Ret,
+    },
+}
+operands []

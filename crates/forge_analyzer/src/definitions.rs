@@ -38,8 +38,8 @@ use typed_index_collections::{TiSlice, TiVec};
 use crate::{
     ctx::ModId,
     ir::{
-        BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, Rvalue, Template,
-        Terminator, VarKind, Variable, RETURN_VAR,
+        Base, BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, Rvalue, Template,
+        Terminator, VarId, VarKind, Variable, RETURN_VAR,
     },
 };
 
@@ -79,6 +79,7 @@ struct SymbolExport {
     name: JsWord,
 }
 
+// resolve the args
 #[derive(Debug, Clone, Default)]
 struct ResolverTable {
     defs: TiVec<DefId, DefRes>,
@@ -692,9 +693,7 @@ struct FunctionAnalyzer<'cx> {
     assigning_to: Option<Variable>,
     body: Body,
     block: BasicBlockId,
-    operand_stack: Vec<Operand>,
     in_lhs: bool,
-    vars: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -783,6 +782,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
 
+        let mut all_vars: HashMap<VarId, Vec<String>> = HashMap::new();
+        let mut common_endpoint: Vec<String> = Vec::new();
+        let mut endpoint_variables: Vec<VarId> = Vec::new();
+
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
@@ -791,11 +794,38 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         && Some(&ImportKind::Default)
                             == self.res.as_foreign_import(def, "@forge/api") =>
             {
-                let permissions_from_endpoints =
-                    self.resolve_api_endpoints((*last).to_string(), first_arg, second_arg);
-                self.res
-                    .permissions_used
-                    .extend_from_slice(&permissions_from_endpoints.clone());
+                self.body.blocks.iter().rev().for_each(|block| {
+                    block.insts.iter().for_each(|inst| {
+                        // println!("{:#?}", inst);
+                        match inst {
+                            Inst::Expr(expr) => {}
+                            Inst::Assign((var), (rvalue)) => match var.base {
+                                Base::Var(var) => {
+                                    if let Some(str) = self.handle_expr(rvalue.clone(), &mut common_endpoint, &mut endpoint_variables) {
+                                        if !all_vars.contains_key(&var) {
+                                            all_vars.insert(var.clone(), vec![str.clone()]);
+                                        } else {
+                                            let mut i = all_vars.get(&var).unwrap().clone();
+                                            i.push(str.clone());
+                                            all_vars.insert(var.clone(), i.to_vec());
+                                        }
+                                    }
+                                },
+                                _ => {}
+                            },
+                        }
+                    });
+                });
+
+                println!("common endpoints {:#?}", common_endpoint);
+                println!("endpoint vars {:#?}", endpoint_variables);
+                println!("endpoint options {:#?}", all_vars);
+
+                // let permissions_from_endpoints =
+                //     self.resolve_api_endpoints((*last).to_string(), first_arg, second_arg);
+                // self.res
+                //     .permissions_used
+                //     .extend_from_slice(&permissions_from_endpoints.clone());
 
                 let first_arg = first_arg?;
                 match classify_api_call(first_arg) {
@@ -826,68 +856,44 @@ impl<'cx> FunctionAnalyzer<'cx> {
             },
             _ => None,
         }
+
     }
 
-    fn resolve_api_endpoints(
-        &self,
-        function_name: String,
-        first_arg: Option<&Expr>,
-        second_arg: Option<&Expr>,
-    ) -> Vec<ForgePermissions> {
-        let mut permissions: Vec<ForgePermissions> = Vec::new();
-        let mut endpoints: Vec<String> = Vec::new();
-        match first_arg.unwrap() {
-            Expr::Lit(lit) => {}
-            Expr::TaggedTpl(tpl) => {
-                let final_strs: Vec<String> = tpl
-                    .tpl
-                    .quasis
-                    .iter()
-                    .map(|val| val.raw.to_string())
-                    .collect();
-                let final_str = final_strs.join("");
-                endpoints.push(final_str);
-                for tpl_element in &tpl.tpl.exprs {
-                    match &**tpl_element {
-                        Expr::Ident(ident) => {
-                            let key = &ident.sym.to_string();
-                            if self.vars.contains_key(key) {
-                                let mut new_endpoints: Vec<String> = Vec::new();
-                                let var_values = self.vars.get(key);
-                                for var_value in var_values.unwrap() {
-                                    let temp = endpoints
-                                        .clone()
-                                        .into_iter()
-                                        .map(|prev_endpoint| prev_endpoint + var_value)
-                                        .collect();
-                                    new_endpoints.push(temp)
-                                }
-                                endpoints = new_endpoints;
-                            }
+    fn handle_expr(&self, value: Rvalue, common_endpoint: &mut Vec<String>, endpoint_variables: &mut Vec<VarId>) -> Option<String> {
+        match value {
+            Rvalue::Read(read_value) => match read_value {
+                Operand::Lit(lit) => match lit {
+                    Literal::Str(str) => {
+                        Some(str.to_string())},
+                    _ => None,
+                },
+                Operand::Var(var) => None,
+            },
+            Rvalue::Template(tpl) => {
+                let vec: Vec<String> = tpl.quasis.iter().map(|atom| atom.to_string()).collect();
+                common_endpoint.push(vec.join(""));
+                tpl.exprs.iter().for_each(|expr| {
+                    match expr {
+                        Operand::Var(var) => match var.base {
+                            Base::Var(var_id) => { endpoint_variables.push(var_id) }
+                            _ => {}
                         }
-                        Expr::Tpl(tpl) => {
-                            for tpl_expression in &tpl.exprs {
-                                match &**tpl_expression {
-                                    Expr::Ident(ident) => {}
-                                    Expr::Lit(lit) => {}
-                                    _ => {}
-                                }
+                        Operand::Lit(lit) => match lit {
+                            Literal::Str(str) => { 
+                                common_endpoint.push(lit.to_string());
+                                
                             }
-                        }
-                        _ => {}
+                            _ => {}
+                        },
                     }
-                }
+                });
+                None
             }
-            _ => {}
+            Rvalue::Call(op, op2) => {
+                None
+            }
+            _ => None,
         }
-        for endpoint in endpoints {
-            permissions.extend_from_slice(&check_permission_used(
-                &function_name,
-                endpoint,
-                second_arg,
-            ));
-        }
-        permissions
     }
 
     /// Sets the current block to `block` and returns the previous block.
@@ -1531,6 +1537,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn lower_var_decl(&mut self, var: &VarDecl) {
+        // println!("here lowering var: {:#?}", var);
         for decl in &var.decls {
             let opnd = decl
                 .init
@@ -1588,8 +1595,9 @@ struct LocalDefiner<'cx> {
     module: ModId,
     func: DefId,
     body: Body,
-    vars: HashMap<String, Vec<String>>,
+    // vars: HashMap<String, Vec<String>>,
 }
+
 impl Visit for LocalDefiner<'_> {
     fn visit_ident(&mut self, n: &Ident) {
         let id = n.to_id();
@@ -1621,16 +1629,16 @@ impl Visit for LocalDefiner<'_> {
             _ => {}
         };
 
-        if !var_name.is_none() && !var_value.is_none() {
-            if self.vars.contains_key(&var_name.clone().unwrap()) {
-                let mut temp_vars = self.vars[&var_name.clone().unwrap()].clone();
-                temp_vars.push(var_value.clone().unwrap());
-                self.vars.insert(var_name.clone().unwrap(), temp_vars);
-            } else {
-                self.vars
-                    .insert(var_name.clone().unwrap(), vec![var_value.clone().unwrap()]);
-            }
-        }
+        // if !var_name.is_none() && !var_value.is_none() {
+        //     if self.vars.contains_key(&var_name.clone().unwrap()) {
+        //         let mut temp_vars = self.vars[&var_name.clone().unwrap()].clone();
+        //         temp_vars.push(var_value.clone().unwrap());
+        //         self.vars.insert(var_name.clone().unwrap(), temp_vars);
+        //     } else {
+        //         self.vars
+        //             .insert(var_name.clone().unwrap(), vec![var_value.clone().unwrap()]);
+        //     }
+        // }
     }
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
@@ -1651,16 +1659,16 @@ impl Visit for LocalDefiner<'_> {
             _ => {}
         };
 
-        if !var_name.is_none() && !var_value.is_none() {
-            if self.vars.contains_key(&var_name.clone().unwrap()) {
-                let mut temp_vars = self.vars[&var_name.clone().unwrap()].clone();
-                temp_vars.push(var_value.clone().unwrap());
-                self.vars.insert(var_name.clone().unwrap(), temp_vars);
-            } else {
-                self.vars
-                    .insert(var_name.clone().unwrap(), vec![var_value.clone().unwrap()]);
-            }
-        }
+        // if !var_name.is_none() && !var_value.is_none() {
+        //     if self.vars.contains_key(&var_name.clone().unwrap()) {
+        //         let mut temp_vars = self.vars[&var_name.clone().unwrap()].clone();
+        //         temp_vars.push(var_value.clone().unwrap());
+        //         self.vars.insert(var_name.clone().unwrap(), temp_vars);
+        //     } else {
+        //         self.vars
+        //             .insert(var_name.clone().unwrap(), vec![var_value.clone().unwrap()]);
+        //     }
+        // }
 
         n.name.visit_with(self);
     }
@@ -1982,11 +1990,9 @@ impl Visit for FunctionCollector<'_> {
             module: self.module,
             func: owner,
             body,
-            vars: HashMap::new(),
         };
         n.body.visit_children_with(&mut localdef);
         let body = localdef.body;
-        let vars = localdef.vars;
         let mut analyzer = FunctionAnalyzer {
             res: self.res,
             module: self.module,
@@ -1994,9 +2000,7 @@ impl Visit for FunctionCollector<'_> {
             assigning_to: None,
             body,
             block: BasicBlockId::default(),
-            operand_stack: vec![],
             in_lhs: false,
-            vars,
         };
         if let Some(BlockStmt { stmts, .. }) = &n.body {
             analyzer.lower_stmts(stmts);
@@ -2032,11 +2036,9 @@ impl Visit for FunctionCollector<'_> {
             module: self.module,
             func: owner,
             body,
-            vars: HashMap::new(),
         };
         func_body.visit_children_with(&mut localdef);
         let body = localdef.body;
-        let vars = localdef.vars;
         let mut analyzer = FunctionAnalyzer {
             res: self.res,
             module: self.module,
@@ -2044,9 +2046,7 @@ impl Visit for FunctionCollector<'_> {
             assigning_to: None,
             body,
             block: BasicBlockId::default(),
-            operand_stack: vec![],
             in_lhs: false,
-            vars,
         };
         match func_body {
             BlockStmtOrExpr::BlockStmt(BlockStmt { stmts, .. }) => {
@@ -2110,9 +2110,7 @@ impl Visit for FunctionCollector<'_> {
                             assigning_to: None,
                             body: Body::with_owner(owner),
                             block: BasicBlockId::default(),
-                            operand_stack: vec![],
                             in_lhs: false,
-                            vars: HashMap::new(),
                         };
                         let opnd = analyzer.lower_expr(expr);
                         analyzer.body.push_inst(

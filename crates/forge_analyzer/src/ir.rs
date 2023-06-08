@@ -95,7 +95,7 @@ pub enum Rvalue {
 
 #[derive(Clone, Debug, Default)]
 pub struct BasicBlock {
-    insts: Vec<Inst>,
+    pub insts: Vec<Inst>,
     term: Terminator,
 }
 
@@ -123,11 +123,11 @@ pub(crate) const RETURN_VAR: Variable = Variable {
 #[derive(Clone, Debug)]
 pub struct Body {
     owner: Option<DefId>,
-    blocks: TiVec<BasicBlockId, BasicBlock>,
+    pub blocks: TiVec<BasicBlockId, BasicBlock>,
     pub vars: TiVec<VarId, VarKind>,
     ident_to_local: FxHashMap<Id, VarId>,
     def_id_to_vars: FxHashMap<DefId, VarId>,
-    predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
+    pub predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -378,6 +378,7 @@ impl Body {
 
     #[inline]
     pub(crate) fn push_inst(&mut self, bb: BasicBlockId, inst: Inst) {
+        // println!("storing the raw value in the block");
         self.blocks[bb].insts.push(inst);
     }
 
@@ -454,6 +455,7 @@ impl Body {
         val: Rvalue,
         parent: Option<DefId>,
     ) -> VarId {
+        // println!("rvalue {}", val);
         let var = self.vars.push_and_get_key(VarKind::Temp { parent });
         self.push_inst(bb, Inst::Assign(Variable::new(var), val));
         var
