@@ -688,7 +688,7 @@ struct FunctionAnalyzer<'cx> {
     module: ModId,
     current_def: DefId,
     assigning_to: Option<Variable>,
-    pub body: Body,
+    body: Body,
     block: BasicBlockId,
     operand_stack: Vec<Operand>,
     in_lhs: bool,
