@@ -1102,8 +1102,42 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 Operand::UNDEF
             }
             Expr::Object(ObjectLit { span, props }) => {
-                // TODO: lower object literals
-                Operand::UNDEF
+                let def_id = self
+                    .res
+                    .add_anonymous("__UNKNOWN", AnonType::Obj, self.module);
+                if let DefKind::GlobalObj(class_id) = self.res.defs.defs[def_id] {
+                    let mut class = self.res.defs.classes[class_id].clone();
+                    props
+                        .iter()
+                        .for_each(|prop_or_spread| match prop_or_spread {
+                            PropOrSpread::Prop(prop) => match &**prop {
+                                Prop::Shorthand(id) => {
+                                    let id = id.to_id();
+                                    let sym = id.0.clone();
+                                    let new_def =
+                                        self.res.get_or_insert_sym(id.clone(), self.module);
+                                    self.res
+                                        .def_mut(def_id)
+                                        .expect_class()
+                                        .pub_members
+                                        .push((sym, new_def));
+                                }
+                                Prop::KeyValue(KeyValueProp { key, value }) => {
+                                    if let sym @ Some(_) = key.as_symbol() {
+                                        let defid = value.as_ident().map(|id| {
+                                            self.res.get_or_insert_sym(id.to_id(), self.module)
+                                        });
+                                        let cls = self.res.def_mut(def_id).expect_class();
+                                        cls.pub_members.extend(sym.zip(defid));
+                                    }
+                                }
+                                _ => {}
+                            },
+                            PropOrSpread::Spread(spread) => {}
+                        })
+                }
+                let var_id = self.body.add_var(VarKind::LocalDef((def_id)));
+                Operand::Var(Variable::new(var_id))
             }
             Expr::Fn(_) => Operand::UNDEF,
             Expr::Unary(UnaryExpr { op, arg, .. }) => {
