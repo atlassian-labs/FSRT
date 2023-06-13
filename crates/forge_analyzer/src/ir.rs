@@ -106,7 +106,7 @@ pub struct Location {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum VarKind {
+pub(crate) enum VarKind {
     LocalDef(DefId),
     GlobalRef(DefId),
     Temp { parent: Option<DefId> },
