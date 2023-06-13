@@ -688,7 +688,7 @@ struct FunctionAnalyzer<'cx> {
     module: ModId,
     current_def: DefId,
     assigning_to: Option<Variable>,
-    body: Body,
+    pub body: Body,
     block: BasicBlockId,
     operand_stack: Vec<Operand>,
     in_lhs: bool,
@@ -1127,6 +1127,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                         let defid = value.as_ident().map(|id| {
                                             self.res.get_or_insert_sym(id.to_id(), self.module)
                                         });
+                                        let var = self.body.get_or_insert_global(def_id);
+                                        let lowered_value = self.lower_expr(&value);
+                                        self.body.coerce_to_lval(self.block, lowered_value.clone());
                                         let cls = self.res.def_mut(def_id).expect_class();
                                         cls.pub_members.extend(sym.zip(defid));
                                     }
