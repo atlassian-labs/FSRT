@@ -1128,7 +1128,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                         });
                                         let var = self.body.get_or_insert_global(def_id);
                                         let lowered_value = self.lower_expr(&value);
-                                        self.body.coerce_to_lval(self.block, lowered_value.clone());
+                                        self.body.coerce_to_lval(self.block, lowered_value);
                                         let cls = self.res.def_mut(def_id).expect_class();
                                         cls.pub_members.extend(sym.zip(defid));
                                     }
