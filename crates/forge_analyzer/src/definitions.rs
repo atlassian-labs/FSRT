@@ -1115,7 +1115,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                     let id = id.to_id();
                                     let sym = id.0.clone();
                                     let new_def =
-                                        self.res.get_or_insert_sym(id.clone(), self.module);
+                                        self.res.get_or_insert_sym(id, self.module);
                                     self.res
                                         .def_mut(def_id)
                                         .expect_class()
