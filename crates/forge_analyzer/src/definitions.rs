@@ -1106,7 +1106,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     .res
                     .add_anonymous("__UNKNOWN", AnonType::Obj, self.module);
                 if let DefKind::GlobalObj(class_id) = self.res.defs.defs[def_id] {
-                    let mut class = self.res.defs.classes[class_id].clone();
                     props
                         .iter()
                         .for_each(|prop_or_spread| match prop_or_spread {
