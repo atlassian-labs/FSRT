@@ -420,6 +420,7 @@ pub trait Runner<'cx>: Sized {
             Rvalue::Unary(_, _)
             | Rvalue::Bin(_, _, _)
             | Rvalue::Read(_)
+            | Rvalue::ClassAssignment(_, _, _)
             | Rvalue::Phi(_)
             | Rvalue::Template(_) => ControlFlow::Continue(curr_state.clone()),
         }
