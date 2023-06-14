@@ -37,7 +37,7 @@ use typed_index_collections::{TiSlice, TiVec};
 use crate::{
     ctx::ModId,
     ir::{
-        BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, Rvalue, Template,
+        Base, BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, Rvalue, Template,
         Terminator, VarKind, Variable, RETURN_VAR,
     },
 };
@@ -1105,6 +1105,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let def_id = self
                     .res
                     .add_anonymous("__UNKNOWN", AnonType::Obj, self.module);
+                let class_var_id = self.body.add_var(VarKind::LocalDef((def_id)));
                 if let DefKind::GlobalObj(class_id) = self.res.defs.defs[def_id] {
                     props
                         .iter()
@@ -1113,33 +1114,47 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                 Prop::Shorthand(id) => {
                                     let id = id.to_id();
                                     let sym = id.0.clone();
-                                    let new_def =
-                                        self.res.get_or_insert_sym(id, self.module);
+                                    let new_def = self.res.get_or_insert_sym(id, self.module);
                                     self.res
                                         .def_mut(def_id)
                                         .expect_class()
                                         .pub_members
                                         .push((sym, new_def));
                                 }
-                                Prop::KeyValue(KeyValueProp { key, value }) => {
-                                    if let sym @ Some(_) = key.as_symbol() {
-                                        let defid = value.as_ident().map(|id| {
-                                            self.res.get_or_insert_sym(id.to_id(), self.module)
-                                        });
-                                        let var = self.body.get_or_insert_global(def_id);
+                                Prop::KeyValue(KeyValueProp { key, value }) => match key {
+                                    PropName::Ident(ident) => {
                                         let lowered_value = self.lower_expr(&value);
-                                        self.body.coerce_to_lval(self.block, lowered_value);
+                                        let lowered_var =
+                                            self.body.coerce_to_lval(self.block, lowered_value);
+                                        let def_id_key =
+                                            self.res.get_or_insert_sym(ident.to_id(), self.module);
+
+                                        match lowered_var.base {
+                                            Base::Var(var) => {
+                                                let rval = Rvalue::ClassAssignment(
+                                                    class_var_id,
+                                                    def_id_key,
+                                                    var,
+                                                );
+                                                self.body.push_inst(
+                                                    self.block,
+                                                    Inst::Assign(Variable::new(class_var_id), rval),
+                                                );
+                                            }
+                                            _ => {}
+                                        }
                                         let cls = self.res.def_mut(def_id).expect_class();
-                                        cls.pub_members.extend(sym.zip(defid));
+                                        cls.pub_members
+                                            .push((key.as_symbol().unwrap(), def_id_key));
                                     }
-                                }
+                                    _ => {}
+                                },
                                 _ => {}
                             },
                             PropOrSpread::Spread(spread) => {}
                         })
                 }
-                let var_id = self.body.add_var(VarKind::LocalDef((def_id)));
-                Operand::Var(Variable::new(var_id))
+                Operand::Var(Variable::new(class_var_id))
             }
             Expr::Fn(_) => Operand::UNDEF,
             Expr::Unary(UnaryExpr { op, arg, .. }) => {
