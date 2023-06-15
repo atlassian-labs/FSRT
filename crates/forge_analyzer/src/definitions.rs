@@ -1106,19 +1106,16 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     .res
                     .add_anonymous("__UNKNOWN", AnonType::Obj, self.module);
                 let class_var_id = self.body.add_var(VarKind::LocalDef((def_id)));
-                let mut var = Variable::new(class_var_id);
                 if let DefKind::GlobalObj(class_id) = self.res.defs.defs[def_id] {
-                    props
-                        .iter()
-                        .for_each(|prop_or_spread| match prop_or_spread {
+                    props.iter().for_each(|prop_or_spread| {
+                        let mut var = Variable::new(class_var_id);
+                        match prop_or_spread {
                             PropOrSpread::Prop(prop) => match &**prop {
                                 Prop::Shorthand(id) => {
                                     let id = id.to_id();
                                     let new_def =
                                         self.res.get_or_insert_sym(id.clone(), self.module);
-                                    let var_def_id = self.res.sym_to_id(id.clone(), self.module);
-                                    let var_id =
-                                        self.body.get_or_insert_global(var_def_id.unwrap());
+                                    let var_id = self.body.get_or_insert_global(new_def);
                                     var.projections
                                         .push(Projection::Computed(Base::Var((var_id))));
                                     self.res
@@ -1134,13 +1131,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                     let rval = Rvalue::Read(lowered_value);
                                     match lowered_var.base {
                                         Base::Var(var_id) => {
-                                            var.projections
-                                                .push(Projection::Computed(Base::Var((var_id))));
-                                            self.body.push_inst(
-                                                self.block,
-                                                Inst::Assign(Variable::new(var_id), rval),
-                                            );
-
                                             match key {
                                                 PropName::Str(str) => {
                                                     let def_id_prop = self.res.add_anonymous(
@@ -1154,6 +1144,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                                         key.as_symbol().unwrap(),
                                                         def_id_prop,
                                                     ));
+                                                    var.projections
+                                                        .push(Projection::Known(str.value.clone()));
                                                 }
                                                 PropName::Ident(ident) => {
                                                     let def_id_prop = self.res.get_or_insert_sym(
@@ -1166,9 +1158,15 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                                         key.as_symbol().unwrap(),
                                                         def_id_prop,
                                                     ));
+                                                    var.projections
+                                                        .push(Projection::Known(ident.sym.clone()));
                                                 }
                                                 _ => {}
                                             }
+                                            self.body.push_inst(
+                                                self.block,
+                                                Inst::Assign(Variable::new(var_id), rval),
+                                            );
                                         }
                                         _ => {}
                                     }
@@ -1176,7 +1174,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                 _ => {}
                             },
                             PropOrSpread::Spread(spread) => {}
-                        })
+                        }
+                    })
                 }
                 Operand::Var(Variable::new(class_var_id))
             }
