@@ -37,7 +37,7 @@ use typed_index_collections::{TiSlice, TiVec};
 use crate::{
     ctx::ModId,
     ir::{
-        BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, Rvalue, Template,
+        Base, BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, Rvalue, Template,
         Terminator, VarKind, Variable, RETURN_VAR,
     },
 };
@@ -1102,8 +1102,83 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 Operand::UNDEF
             }
             Expr::Object(ObjectLit { span, props }) => {
-                // TODO: lower object literals
-                Operand::UNDEF
+                let def_id = self
+                    .res
+                    .add_anonymous("__UNKNOWN", AnonType::Obj, self.module);
+                let class_var_id = self.body.add_var(VarKind::LocalDef((def_id)));
+                if let DefKind::GlobalObj(class_id) = self.res.defs.defs[def_id] {
+                    props.iter().for_each(|prop_or_spread| {
+                        let mut var = Variable::new(class_var_id);
+                        match prop_or_spread {
+                            PropOrSpread::Prop(prop) => match &**prop {
+                                Prop::Shorthand(ident) => {
+                                    let id = ident.to_id();
+                                    let new_def =
+                                        self.res.get_or_insert_sym(id.clone(), self.module);
+                                    let var_id = self.body.get_or_insert_global(new_def);
+                                    var.projections.push(Projection::Known(ident.sym.clone()));
+                                    self.res
+                                        .def_mut(def_id)
+                                        .expect_class()
+                                        .pub_members
+                                        .push((id.0, new_def));
+                                    self.body.push_inst(
+                                        self.block,
+                                        Inst::Assign(var, Rvalue::Read(Operand::with_var(var_id))),
+                                    );
+                                }
+                                Prop::KeyValue(KeyValueProp { key, value }) => {
+                                    let lowered_value = self.lower_expr(&value);
+                                    let lowered_var =
+                                        self.body.coerce_to_lval(self.block, lowered_value.clone());
+                                    let rval = Rvalue::Read(lowered_value);
+                                    match lowered_var.base {
+                                        Base::Var(var_id) => {
+                                            match key {
+                                                PropName::Str(str) => {
+                                                    let def_id_prop = self.res.add_anonymous(
+                                                        str.value.clone(),
+                                                        AnonType::Unknown,
+                                                        self.module,
+                                                    );
+                                                    let cls =
+                                                        self.res.def_mut(def_id).expect_class();
+                                                    cls.pub_members.push((
+                                                        key.as_symbol().unwrap(),
+                                                        def_id_prop,
+                                                    ));
+                                                    var.projections
+                                                        .push(Projection::Known(str.value.clone()));
+                                                }
+                                                PropName::Ident(ident) => {
+                                                    let def_id_prop = self.res.get_or_insert_sym(
+                                                        ident.to_id(),
+                                                        self.module,
+                                                    );
+                                                    let cls =
+                                                        self.res.def_mut(def_id).expect_class();
+                                                    cls.pub_members.push((
+                                                        key.as_symbol().unwrap(),
+                                                        def_id_prop,
+                                                    ));
+                                                    var.projections
+                                                        .push(Projection::Known(ident.sym.clone()));
+                                                }
+                                                _ => {}
+                                            }
+                                            self.body
+                                                .push_inst(self.block, Inst::Assign(var, rval));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                _ => {}
+                            },
+                            PropOrSpread::Spread(spread) => {}
+                        }
+                    })
+                }
+                Operand::Var(Variable::new(class_var_id))
             }
             Expr::Fn(_) => Operand::UNDEF,
             Expr::Unary(UnaryExpr { op, arg, .. }) => {
