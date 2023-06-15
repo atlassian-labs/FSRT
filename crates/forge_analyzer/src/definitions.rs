@@ -1165,7 +1165,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                             }
                                             self.body.push_inst(
                                                 self.block,
-                                                Inst::Assign(Variable::new(var_id), rval),
+                                                Inst::Assign(var, rval),
                                             );
                                         }
                                         _ => {}
