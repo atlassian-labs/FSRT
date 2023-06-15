@@ -89,7 +89,6 @@ pub trait Dataflow<'cx>: Sized {
             Rvalue::Call(callee, _) => {
                 self.transfer_call(interp, def, loc, block, callee, initial_state)
             }
-            Rvalue::ClassAssignment(_, _, _) => initial_state,
             Rvalue::Unary(_, _) => initial_state,
             Rvalue::Bin(_, _, _) => initial_state,
             Rvalue::Read(_) => initial_state,
@@ -253,7 +252,6 @@ pub trait Checker<'cx>: Sized {
             Rvalue::Unary(_, _)
             | Rvalue::Bin(_, _, _)
             | Rvalue::Read(_)
-            | Rvalue::ClassAssignment(_, _, _)
             | Rvalue::Phi(_)
             | Rvalue::Template(_) => ControlFlow::Continue(curr_state.clone()),
         }
