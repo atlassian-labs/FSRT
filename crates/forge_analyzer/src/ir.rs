@@ -98,7 +98,6 @@ pub enum Rvalue {
     Bin(BinOp, Operand, Operand),
     Read(Operand),
     Call(Operand, SmallVec<[Operand; 4]>),
-    ClassAssignment(VarId, DefId, VarId),
     Intrinsic(Intrinsic, SmallVec<[Operand; 4]>),
     Phi(Vec<(VarId, BasicBlockId)>),
     Template(Template),
@@ -117,7 +116,7 @@ pub struct Location {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum VarKind {
+pub enum VarKind {
     LocalDef(DefId),
     GlobalRef(DefId),
     Temp { parent: Option<DefId> },
@@ -810,9 +809,6 @@ impl fmt::Display for Rvalue {
                     write!(f, "{arg}, ")?;
                 }
                 write!(f, ")")
-            }
-            Rvalue::ClassAssignment(class_id, def_id, prop_id) => {
-                write!(f, "{class_id}.insert({def_id:?}, {prop_id})")
             }
             Rvalue::Intrinsic(ref intrinsic, ref args) => {
                 write!(f, "{intrinsic}(")?;

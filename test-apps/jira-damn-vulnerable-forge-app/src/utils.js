@@ -104,7 +104,7 @@ export async function writeComment(issueIdOrKey, comment) {
   const resp = await api
     .asApp()
     .requestJira(route`/rest/api/3/issue/${issueIdOrKey}/comment`, {
-      method: 'POST',
+      method,
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
