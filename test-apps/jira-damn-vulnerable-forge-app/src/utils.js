@@ -14,14 +14,12 @@ export async function fetchIssueSummary(issueIdOrKey) {
   return data['fields']['summary'];
 }
 
-let method = 'POST';
-
 export async function writeComment(issueIdOrKey, comment) {
   /* const api = require('@forge/api'); */
   const resp = await api
     .asApp()
     .requestJira(route`/rest/api/3/issue/${issueIdOrKey}/comment`, {
-      method,
+      method: 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',

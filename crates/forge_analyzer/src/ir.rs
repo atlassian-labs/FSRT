@@ -95,7 +95,7 @@ pub enum Rvalue {
 
 #[derive(Clone, Debug, Default)]
 pub struct BasicBlock {
-    pub insts: Vec<Inst>,
+    insts: Vec<Inst>,
     term: Terminator,
 }
 
@@ -123,10 +123,10 @@ pub(crate) const RETURN_VAR: Variable = Variable {
 #[derive(Clone, Debug)]
 pub struct Body {
     owner: Option<DefId>,
-    pub blocks: TiVec<BasicBlockId, BasicBlock>,
-    pub vars: TiVec<VarId, VarKind>,
+    blocks: TiVec<BasicBlockId, BasicBlock>,
+    vars: TiVec<VarId, VarKind>,
     ident_to_local: FxHashMap<Id, VarId>,
-    pub def_id_to_vars: FxHashMap<DefId, VarId>,
+    def_id_to_vars: FxHashMap<DefId, VarId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
 }
 
