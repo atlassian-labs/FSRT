@@ -1106,6 +1106,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     .res
                     .add_anonymous("__UNKNOWN", AnonType::Obj, self.module);
                 let class_var_id = self.body.add_var(VarKind::LocalDef((def_id)));
+                let mut var = Variable::new(class_var_id);
                 if let DefKind::GlobalObj(class_id) = self.res.defs.defs[def_id] {
                     props
                         .iter()
@@ -1114,41 +1115,65 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                 Prop::Shorthand(id) => {
                                     let id = id.to_id();
                                     let sym = id.0.clone();
-                                    let new_def = self.res.get_or_insert_sym(id, self.module);
+                                    let new_def =
+                                        self.res.get_or_insert_sym(id.clone(), self.module);
+                                    let var_def_id = self.res.sym_to_id(id.clone(), self.module);
+                                    let var_id =
+                                        self.body.get_or_insert_global(var_def_id.unwrap());
+                                    var.projections
+                                        .push(Projection::Computed(Base::Var((var_id))));
                                     self.res
                                         .def_mut(def_id)
                                         .expect_class()
                                         .pub_members
                                         .push((sym, new_def));
                                 }
-                                Prop::KeyValue(KeyValueProp { key, value }) => match key {
-                                    PropName::Ident(ident) => {
-                                        let lowered_value = self.lower_expr(&value);
-                                        let lowered_var =
-                                            self.body.coerce_to_lval(self.block, lowered_value);
-                                        let def_id_key =
-                                            self.res.get_or_insert_sym(ident.to_id(), self.module);
+                                Prop::KeyValue(KeyValueProp { key, value }) => {
+                                    let lowered_value = self.lower_expr(&value);
+                                    let lowered_var =
+                                        self.body.coerce_to_lval(self.block, lowered_value.clone());
+                                    let rval = Rvalue::Read(lowered_value);
+                                    match lowered_var.base {
+                                        Base::Var(var_id) => {
+                                            var.projections
+                                                .push(Projection::Computed(Base::Var((var_id))));
+                                            self.body.push_inst(
+                                                self.block,
+                                                Inst::Assign(Variable::new(var_id), rval),
+                                            );
 
-                                        match lowered_var.base {
-                                            Base::Var(var) => {
-                                                let rval = Rvalue::ClassAssignment(
-                                                    class_var_id,
-                                                    def_id_key,
-                                                    var,
-                                                );
-                                                self.body.push_inst(
-                                                    self.block,
-                                                    Inst::Assign(Variable::new(class_var_id), rval),
-                                                );
+                                            match key {
+                                                PropName::Str(str) => {
+                                                    let def_id_prop = self.res.add_anonymous(
+                                                        str.value.clone(),
+                                                        AnonType::Unknown,
+                                                        self.module,
+                                                    );
+                                                    let cls =
+                                                        self.res.def_mut(def_id).expect_class();
+                                                    cls.pub_members.push((
+                                                        key.as_symbol().unwrap(),
+                                                        def_id_prop,
+                                                    ));
+                                                }
+                                                PropName::Ident(ident) => {
+                                                    let def_id_prop = self.res.get_or_insert_sym(
+                                                        ident.to_id(),
+                                                        self.module,
+                                                    );
+                                                    let cls =
+                                                        self.res.def_mut(def_id).expect_class();
+                                                    cls.pub_members.push((
+                                                        key.as_symbol().unwrap(),
+                                                        def_id_prop,
+                                                    ));
+                                                }
+                                                _ => {}
                                             }
-                                            _ => {}
                                         }
-                                        let cls = self.res.def_mut(def_id).expect_class();
-                                        cls.pub_members
-                                            .push((key.as_symbol().unwrap(), def_id_key));
+                                        _ => {}
                                     }
-                                    _ => {}
-                                },
+                                }
                                 _ => {}
                             },
                             PropOrSpread::Spread(spread) => {}
