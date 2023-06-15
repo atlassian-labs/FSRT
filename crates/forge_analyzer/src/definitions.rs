@@ -1111,18 +1111,21 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         let mut var = Variable::new(class_var_id);
                         match prop_or_spread {
                             PropOrSpread::Prop(prop) => match &**prop {
-                                Prop::Shorthand(id) => {
-                                    let id = id.to_id();
+                                Prop::Shorthand(ident) => {
+                                    let id = ident.to_id();
                                     let new_def =
                                         self.res.get_or_insert_sym(id.clone(), self.module);
                                     let var_id = self.body.get_or_insert_global(new_def);
-                                    var.projections
-                                        .push(Projection::Computed(Base::Var((var_id))));
+                                    var.projections.push(Projection::Known(ident.sym.clone()));
                                     self.res
                                         .def_mut(def_id)
                                         .expect_class()
                                         .pub_members
                                         .push((id.0, new_def));
+                                    self.body.push_inst(
+                                        self.block,
+                                        Inst::Assign(var, Rvalue::Read(Operand::with_var(var_id))),
+                                    );
                                 }
                                 Prop::KeyValue(KeyValueProp { key, value }) => {
                                     let lowered_value = self.lower_expr(&value);
@@ -1163,10 +1166,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                                 }
                                                 _ => {}
                                             }
-                                            self.body.push_inst(
-                                                self.block,
-                                                Inst::Assign(Variable::new(var_id), rval),
-                                            );
+                                            self.body
+                                                .push_inst(self.block, Inst::Assign(var, rval));
                                         }
                                         _ => {}
                                     }
