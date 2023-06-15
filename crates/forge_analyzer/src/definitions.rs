@@ -1489,7 +1489,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     .res
                     .add_anonymous("__UNKNOWN", AnonType::Obj, self.module);
                 let class_var_id = self.body.add_var(VarKind::LocalDef((def_id)));
-                let mut var = Variable::new(class_var_id);
                 if let DefKind::GlobalObj(class_id) = self.res.defs.defs[def_id] {
                     props.iter().for_each(|prop_or_spread| {
                         let mut var = Variable::new(class_var_id);
