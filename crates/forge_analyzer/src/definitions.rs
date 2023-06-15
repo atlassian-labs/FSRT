@@ -1114,7 +1114,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                             PropOrSpread::Prop(prop) => match &**prop {
                                 Prop::Shorthand(id) => {
                                     let id = id.to_id();
-                                    let sym = id.0.clone();
                                     let new_def =
                                         self.res.get_or_insert_sym(id.clone(), self.module);
                                     let var_def_id = self.res.sym_to_id(id.clone(), self.module);
@@ -1126,7 +1125,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                         .def_mut(def_id)
                                         .expect_class()
                                         .pub_members
-                                        .push((sym, new_def));
+                                        .push((id.0, new_def));
                                 }
                                 Prop::KeyValue(KeyValueProp { key, value }) => {
                                     let lowered_value = self.lower_expr(&value);
