@@ -1932,24 +1932,13 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
             }
         }
 
-        let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
-            return initial_state;
-        };
-        match interp.func_state(callee_def) {
-            Some(state) => {
-                if state == PermissionTest::Yes {
-                    debug!("Found call to authorize at {def:?} {loc:?}");
-                }
-                initial_state.join(&state)
-            }
-            None => {
-                let callee_name = interp.env().def_name(callee_def);
-                let caller_name = interp.env().def_name(def);
-                debug!("Found call to {callee_name} at {def:?} {caller_name}");
-                self.needs_call.push(callee_def);
-                initial_state
-            }
+        // println!("self.variables {:#?}", self.variables);
+
+        for (stmt, inst) in block.iter().enumerate() {
+            let loc = Location::new(bb, stmt as u32);
+            state = self.transfer_inst(interp, def, loc, block, inst, state);
         }
+        state
     }
 
     fn join_term<C: crate::interp::Checker<'cx, State = Self::State>>(
