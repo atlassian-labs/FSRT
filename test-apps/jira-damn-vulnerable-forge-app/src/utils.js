@@ -12,6 +12,12 @@ export async function fetchIssueSummary(issueIdOrKey) {
 
   test_function1(hi_string1);
 
+  let never_phi = "never_phi1";
+
+  if (true) {
+    never_phi = "not_never_phi";
+  }
+
   /* const api = await import('@forge/api'); */
   const resp = await api
     .asApp()
