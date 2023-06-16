@@ -1664,20 +1664,17 @@ impl Visit for FunctionCollector<'_> {
             in_lhs: false,
         };
         if let Some(BlockStmt { stmts, .. }) = &n.body {
-
-            println!("here test 5567");
-
             analyzer.lower_stmts(stmts);
 
-            for block in &analyzer.body.blocks {
-                println!("----------------------",);
-                for inst in &block.insts {
-                    println!("inst-- {}", inst);
-                }
-                println!("block_insts {:#?}", &block.insts);
-                println!("var_ids {:#?}", analyzer.body.vars);
-                println!("block_term {:#?}", &block.term)
-            }
+            // for block in &analyzer.body.blocks {
+            //     println!("----------------------",);
+            //     for inst in &block.insts {
+            //         println!("inst-- {}", inst);
+            //     }
+            //     println!("block_insts {:#?}", &block.insts);
+            //     println!("var_ids {:#?}", analyzer.body.vars);
+            //     println!("block_term {:#?}", &block.term)
+            // }
 
             let body = analyzer.body;
 

@@ -497,7 +497,40 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
     ) -> Self::State {            
-        for inst in &_block.insts {
+        let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
+            return initial_state;
+        };
+
+        match interp.func_state(callee_def) {
+            Some(state) => {
+                if state == PermissionTest::Yes {
+                    debug!("Found call to authorize at {def:?} {loc:?}");
+                }
+                initial_state.join(&state)
+            }
+            None => {
+                let callee_name = interp.env().def_name(callee_def);
+                let caller_name = interp.env().def_name(def);
+                debug!("Found call to {callee_name} at {def:?} {caller_name}");
+                self.needs_call.push(callee_def);
+                initial_state
+            }
+        }
+
+    
+    }
+
+    fn transfer_block<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        interp: &Interp<'cx, C>,
+        def: DefId,
+        bb: BasicBlockId,
+        block: &'cx BasicBlock,
+        initial_state: Self::State,
+    ) -> Self::State {
+        let mut state = initial_state;
+
+        for inst in &block.insts {
             match inst {
                 Inst::Assign(variable, rvalue) => match variable.base {
                     Base::Var(varid) => {
@@ -505,7 +538,7 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
                     Rvalue::Read(operand) => {
                         
                         // case not phi
-                        if self.variables.contains_key(&varid) {
+                        if self.variables.contains_key(&varid) && self.variables.get(&varid).unwrap() != &Value::Const(Const::Literal(operand.clone())) {
                             // currently assuming prev value is not phi
                             let prev_vars = &self.variables[&varid];
                             match prev_vars {
@@ -530,24 +563,13 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
             }
         }
 
-        let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
-            return initial_state;
-        };
-        match interp.func_state(callee_def) {
-            Some(state) => {
-                if state == PermissionTest::Yes {
-                    debug!("Found call to authorize at {def:?} {loc:?}");
-                }
-                initial_state.join(&state)
-            }
-            None => {
-                let callee_name = interp.env().def_name(callee_def);
-                let caller_name = interp.env().def_name(def);
-                debug!("Found call to {callee_name} at {def:?} {caller_name}");
-                self.needs_call.push(callee_def);
-                initial_state
-            }
+        // println!("self.variables {:#?}", self.variables);
+
+        for (stmt, inst) in block.iter().enumerate() {
+            let loc = Location::new(bb, stmt as u32);
+            state = self.transfer_inst(interp, def, loc, block, inst, state);
         }
+        state
     }
 
     fn join_term<C: crate::interp::Checker<'cx, State = Self::State>>(
