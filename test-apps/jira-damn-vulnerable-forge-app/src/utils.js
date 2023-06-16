@@ -8,9 +8,9 @@ export async function fetchIssueSummary(issueIdOrKey) {
     url = route`/rest/api/3/issue/${issueIdOrKey}?fields=summary`;
   }
 
-  let hi_string1 = "hi_string_value"
+  let test_string1 = "test_string1_value"
 
-  test_function1(hi_string1);
+  test_function1(test_string1);
 
   let never_phi = "never_phi1";
 
