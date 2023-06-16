@@ -304,6 +304,7 @@ impl Body {
             class_instantiations: Default::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
+            var_id_to_value: Default::default(),
             predecessors: Default::default(),
         }
     }

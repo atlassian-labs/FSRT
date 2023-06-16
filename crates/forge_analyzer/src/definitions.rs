@@ -810,7 +810,7 @@ struct FunctionAnalyzer<'cx> {
     module: ModId,
     current_def: DefId,
     assigning_to: Option<Variable>,
-    body: Body,
+    pub body: Body,
     block: BasicBlockId,
     secret_packages: Vec<PackageData>,
     operand_stack: Vec<Operand>,

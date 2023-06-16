@@ -1841,3 +1841,231 @@ impl IntoVuln for AuthNVuln {
 impl WithCallStack for AuthNVuln {
     fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
 }
+
+pub struct PermisisionDataflow {
+    needs_call: Vec<DefId>,
+    variables: FxHashMap<VarId, Value>,
+}
+
+impl WithCallStack for PermissionVuln {
+    fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
+}
+
+impl<'cx> Dataflow<'cx> for PermisisionDataflow {
+    type State = PermissionTest;
+
+    fn with_interp<C: crate::interp::Checker<'cx, State = Self::State>>(
+        _interp: &Interp<'cx, C>,
+    ) -> Self {
+        Self {
+            needs_call: vec![],
+            variables: FxHashMap::default(),
+        }
+    }
+
+    fn transfer_intrinsic<C: crate::interp::Checker<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        _loc: Location,
+        _block: &'cx BasicBlock,
+        intrinsic: &'cx Intrinsic,
+        initial_state: Self::State,
+    ) -> Self::State {
+        match *intrinsic {
+            Intrinsic::Authorize => {
+                debug!("authorize intrinsic found");
+                PermissionTest::Yes
+            }
+            Intrinsic::Fetch => initial_state,
+            Intrinsic::ApiCall => initial_state,
+            Intrinsic::SafeCall => initial_state,
+            Intrinsic::EnvRead => initial_state,
+            Intrinsic::StorageRead => initial_state,
+        }
+    }
+
+    fn transfer_call<C: crate::interp::Checker<'cx, State = Self::State>>(
+        &mut self,
+        interp: &Interp<'cx, C>,
+        def: DefId,
+        loc: Location,
+        _block: &'cx BasicBlock,
+        callee: &'cx crate::ir::Operand,
+        initial_state: Self::State,
+    ) -> Self::State {
+        for inst in &_block.insts {
+            match inst {
+                Inst::Assign(variable, rvalue) => match variable.base {
+                    Base::Var(varid) => {
+                        match rvalue {
+                            Rvalue::Read(operand) => {
+                                // case not phi
+                                if self.variables.contains_key(&varid) {
+                                    // currently assuming prev value is not phi
+                                    let prev_vars = &self.variables[&varid];
+                                    match prev_vars {
+                                        Value::Const(prev_var_const) => {
+                                            let var_vec = vec![
+                                                prev_var_const.clone(),
+                                                Const::Literal(operand.clone()),
+                                            ];
+
+                                            self.variables
+                                                .insert(varid, Value::Phi(Vec::from(var_vec)));
+                                        }
+                                        _ => {}
+                                    }
+                                } else {
+                                    self.variables.insert(
+                                        varid,
+                                        Value::Const(Const::Literal(operand.clone())),
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+
+        let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
+            return initial_state;
+        };
+        match interp.func_state(callee_def) {
+            Some(state) => {
+                if state == PermissionTest::Yes {
+                    debug!("Found call to authorize at {def:?} {loc:?}");
+                }
+                initial_state.join(&state)
+            }
+            None => {
+                let callee_name = interp.env().def_name(callee_def);
+                let caller_name = interp.env().def_name(def);
+                debug!("Found call to {callee_name} at {def:?} {caller_name}");
+                self.needs_call.push(callee_def);
+                initial_state
+            }
+        }
+    }
+
+    fn join_term<C: crate::interp::Checker<'cx, State = Self::State>>(
+        &mut self,
+        interp: &Interp<'cx, C>,
+        def: DefId,
+        block: &'cx BasicBlock,
+        state: Self::State,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
+    ) {
+        self.super_join_term(interp, def, block, state, worklist);
+        for def in self.needs_call.drain(..) {
+            worklist.push_front_blocks(interp.env(), def);
+        }
+    }
+}
+
+pub struct PermissionChecker {
+    vulns: Vec<AuthNVuln>,
+}
+
+impl PermissionChecker {
+    pub fn new() -> Self {
+        Self { vulns: vec![] }
+    }
+
+    pub fn into_vulns(self) -> impl IntoIterator<Item = AuthNVuln> {
+        self.vulns.into_iter()
+    }
+}
+
+impl Default for PermissionChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for PermissionVuln {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Authentication vulnerability")
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
+pub enum PermissionTest {
+    Yes,
+}
+
+impl JoinSemiLattice for PermissionTest {
+    const BOTTOM: Self = Self::Yes;
+
+    #[inline]
+    fn join_changed(&mut self, other: &Self) -> bool {
+        let old = mem::replace(self, max(*other, *self));
+        old == *self
+    }
+
+    #[inline]
+    fn join(&self, other: &Self) -> Self {
+        max(*other, *self)
+    }
+}
+
+impl<'cx> Checker<'cx> for PermissionChecker {
+    type State = PermissionTest;
+    type Dataflow = PermisisionDataflow;
+    type Vuln = PermissionVuln;
+
+    fn visit_intrinsic(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        intrinsic: &'cx Intrinsic,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        match *intrinsic {
+            Intrinsic::Authorize => ControlFlow::Continue(*state),
+            Intrinsic::Fetch | Intrinsic::EnvRead | Intrinsic::StorageRead => {
+                debug!("authenticated");
+                ControlFlow::Continue(PermissionTest::Yes)
+            }
+            Intrinsic::ApiCall if *state == PermissionTest::Yes => {
+                let vuln = PermissionVuln::new();
+                ControlFlow::Break(())
+            }
+            Intrinsic::ApiCall => ControlFlow::Continue(*state),
+            Intrinsic::SafeCall => ControlFlow::Continue(*state),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PermissionVuln {
+    // unused_permissions: HashSet<ForgePermissions>,
+}
+
+impl PermissionVuln {
+    pub fn new(/*unused_permissions: HashSet<ForgePermissions> */) -> PermissionVuln {
+        PermissionVuln { /*unused_permissions*/ }
+    }
+}
+
+impl IntoVuln for PermissionVuln {
+    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+        Vulnerability {
+            check_name: format!("Least-Privilege"),
+            description: format!(
+                "Unused permissions listed in manifest file:.",
+                // self.unused_permissions.into_iter().join(", ")
+            ),
+            // unused_permissions: Some(self.unused_permissions),
+            recommendation: "Remove permissions in manifest file that are not needed.",
+            proof: format!("Unused permissions found in manifest.yml"),
+            severity: Severity::Low,
+            app_key: reporter.app_key().to_string(),
+            app_name: reporter.app_name().to_string(),
+            date: reporter.current_date(),
+        }
+    }
+}

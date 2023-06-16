@@ -191,8 +191,8 @@ impl AppCtx {
             })
         });
         debug!(?input, "transfer in");
-        let next = funcs.blocks[block].stmts.iter_enumerated().fold(
-            (None, false),
+        let next = funcs.blocks[block].stmts.iter_enumerated().fold(        
+           (None, false),
             |(call, curr), (_stmt_id, val)| match val {
                 IrStmt::Call(ref call_id) => {
                     if let Some(meta) = self.func(call_id) {
@@ -235,6 +235,7 @@ impl AppCtx {
 
     #[inline]
     pub(crate) fn func_mut(&mut self, func: &ModItem) -> Option<&mut FunctionMeta> {
+
         self.modctx
             .get_mut(func.mod_id)?
             .functions
