@@ -33,6 +33,7 @@ use crate::ctx::ModId;
 use crate::definitions::DefId;
 use crate::definitions::DefKind;
 use crate::definitions::Environment;
+use crate::definitions::Value;
 
 pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
 
@@ -41,13 +42,13 @@ create_newtype! {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct BranchTargets {
+pub struct BranchTargets {
     compare: SmallVec<[Operand; 1]>,
     branch: SmallVec<[BasicBlockId; 2]>,
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) enum Terminator {
+pub enum Terminator {
     #[default]
     Ret,
     Goto(BasicBlockId),
@@ -95,8 +96,8 @@ pub enum Rvalue {
 
 #[derive(Clone, Debug, Default)]
 pub struct BasicBlock {
-    insts: Vec<Inst>,
-    term: Terminator,
+    pub insts: Vec<Inst>,
+    pub term: Terminator,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -123,10 +124,11 @@ pub(crate) const RETURN_VAR: Variable = Variable {
 #[derive(Clone, Debug)]
 pub struct Body {
     owner: Option<DefId>,
-    blocks: TiVec<BasicBlockId, BasicBlock>,
-    vars: TiVec<VarId, VarKind>,
+    pub blocks: TiVec<BasicBlockId, BasicBlock>,
+    pub vars: TiVec<VarId, VarKind>,
     ident_to_local: FxHashMap<Id, VarId>,
-    def_id_to_vars: FxHashMap<DefId, VarId>,
+    pub var_id_to_value: FxHashMap<VarId, Value>,
+    pub def_id_to_vars: FxHashMap<DefId, VarId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
 }
 
@@ -271,6 +273,7 @@ impl Body {
             blocks: vec![BasicBlock::default()].into(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
+            var_id_to_value: Default::default(),
             predecessors: Default::default(),
         }
     }

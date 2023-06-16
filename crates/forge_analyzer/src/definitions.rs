@@ -54,6 +54,20 @@ create_newtype! {
     pub struct DefId(u32);
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Const {
+    Literal(Operand),
+    Object(Operand)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Value {
+    Uninit,
+    Unknown,
+    Const(Const),
+    Phi(Vec<Const>)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ObjKind {
     Class(ObjId),
@@ -79,9 +93,9 @@ struct SymbolExport {
 }
 
 #[derive(Debug, Clone, Default)]
-struct ResolverTable {
+pub struct ResolverTable {
     defs: TiVec<DefId, DefRes>,
-    names: TiVec<DefId, JsWord>,
+    pub names: TiVec<DefId, JsWord>,
     symbol_to_id: FxHashMap<Symbol, DefId>,
     parent: FxHashMap<DefId, DefId>,
     owning_module: TiVec<DefId, ModId>,
@@ -445,7 +459,8 @@ pub struct Environment {
     exports: TiVec<ModId, Vec<(JsWord, DefId)>>,
     defs: Definitions,
     default_exports: FxHashMap<ModId, DefId>,
-    resolver: ResolverTable,
+    pub resolver: ResolverTable,
+
 }
 
 struct ImportCollector<'cx> {
@@ -688,7 +703,7 @@ struct FunctionAnalyzer<'cx> {
     module: ModId,
     current_def: DefId,
     assigning_to: Option<Variable>,
-    body: Body,
+    pub body: Body,
     block: BasicBlockId,
     operand_stack: Vec<Operand>,
     in_lhs: bool,
@@ -1649,8 +1664,24 @@ impl Visit for FunctionCollector<'_> {
             in_lhs: false,
         };
         if let Some(BlockStmt { stmts, .. }) = &n.body {
+
+            println!("here test 5567");
+
             analyzer.lower_stmts(stmts);
+
+            for block in &analyzer.body.blocks {
+                println!("----------------------",);
+                for inst in &block.insts {
+                    println!("inst-- {}", inst);
+                }
+                println!("block_insts {:#?}", &block.insts);
+                println!("var_ids {:#?}", analyzer.body.vars);
+                println!("block_term {:#?}", &block.term)
+            }
+
             let body = analyzer.body;
+
+
             *self.res.def_mut(owner).expect_body() = body;
         }
     }
