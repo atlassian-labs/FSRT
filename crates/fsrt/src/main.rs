@@ -25,7 +25,7 @@ use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
-    checkers::{AuthZChecker, AuthenticateChecker},
+    checkers::{AuthZChecker, AuthenticateChecker, PermissionChecker},
     ctx::{AppCtx, ModId},
     definitions::{run_resolver, DefId, Environment},
     interp::Interp,
@@ -185,15 +185,19 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     let mut proj = ForgeProject::with_files_and_sourceroot(src_root, paths.clone());
     proj.opts = opts.clone();
     proj.add_funcs(funcrefs);
+
     resolve_calls(&mut proj.ctx);
 
     let mut interp = Interp::new(&proj.env);
     let mut authn_interp = Interp::new(&proj.env);
+    let mut perm_interp = Interp::new(&proj.env);
     let mut reporter = Reporter::new();
     reporter.add_app(opts.appkey.unwrap_or_default(), name.to_owned());
+    
     for func in &proj.funcs {
         match *func {
             FunctionTy::Invokable((ref func, ref path, _, def)) => {
+                
                 let mut checker = AuthZChecker::new();
                 debug!("checking {func} at {path:?}");
                 if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
@@ -201,6 +205,15 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
+
+                let mut checker2 = PermissionChecker::new();
+                if let Err(err) = perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
+                {
+                    warn!("error while scanning {func} in {path:?}: {err}");
+                }
+                reporter.add_vulnerabilities(checker2.into_vulns());
+
+
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
                 let mut checker = AuthenticateChecker::new();
@@ -214,6 +227,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
             }
         }
     }
+
     let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
     debug!("Writing Report");
     match opts.out {

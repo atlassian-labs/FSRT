@@ -14,9 +14,9 @@ use swc_core::ecma::atoms::JsWord;
 use tracing::{debug, info, instrument, warn};
 
 use crate::{
-    definitions::{DefId, Environment},
+    definitions::{DefId, Environment, Value, Const},
     ir::{
-        BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue, Successors,
+        BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue, Successors, Base,
         STARTING_BLOCK,
     },
     worklist::WorkList,
@@ -210,6 +210,17 @@ pub trait Checker<'cx>: Sized {
         let Some((callee, body)) = interp.body().resolve_call(interp.env(), callee) else {
             return ControlFlow::Continue(curr_state.clone());
         };
+        // println!("------ callstack ------");
+        // println!("visiting callee {:#?}", callee);
+        // println!("interp callstack  {:#?}", interp.callstack);
+        // println!("interp names {:#?}", interp.env.resolver.names[callee]);
+        // for i in interp.callstack.borrow().iter() {
+        //     println!("calling function {:#?}", i.calling_function);
+        //     println!("calling function {:#?}", interp.env.resolver.names[i.calling_function]);
+            
+        // }
+        
+        // println!("varids {:#?}", interp.env);
         let func_state = interp.func_state(callee).unwrap_or(Self::State::BOTTOM);
         if func_state < *curr_state || !interp.checker_visit(callee) {
             return ControlFlow::Continue(curr_state.clone());
@@ -310,14 +321,15 @@ pub(crate) struct EntryPoint {
     pub(crate) kind: EntryKind,
 }
 
+#[derive(Debug)]
 pub struct Interp<'cx, C: Checker<'cx>> {
-    env: &'cx Environment,
+    pub env: &'cx Environment,
     // We can probably get rid of these RefCells by refactoring the Interp and Checker into
     // two fields in another struct.
     call_graph: CallGraph,
     entry: EntryPoint,
     func_state: RefCell<FxHashMap<DefId, C::State>>,
-    curr_body: Cell<Option<&'cx Body>>,
+    pub curr_body: Cell<Option<&'cx Body>>,
     states: RefCell<BTreeMap<(DefId, BasicBlockId), C::State>>,
     dataflow_visited: FxHashSet<DefId>,
     checker_visited: RefCell<FxHashSet<DefId>>,
@@ -326,6 +338,7 @@ pub struct Interp<'cx, C: Checker<'cx>> {
     _checker: PhantomData<C>,
 }
 
+#[derive(Debug)]
 struct CallGraph {
     called_from: FxHashMap<DefId, Vec<(DefId, Location)>>,
     // (Caller, Callee) -> Location
