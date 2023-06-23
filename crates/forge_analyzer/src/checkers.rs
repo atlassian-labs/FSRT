@@ -503,6 +503,8 @@ impl PermisisionDataflow {
             _ => {}
         }
     }
+
+    fn add_something() {}
 }
 
 impl<'cx> Dataflow<'cx> for PermisisionDataflow {
@@ -533,66 +535,18 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
                 let second = operands.get(1);
                 if let Some(operand) = second {
                     match operand {
-                        Operand::Lit(lit) => {}
+                        Operand::Lit(lit) => {
+                            println!("lit {:?}", lit);
+                        }
                         Operand::Var(var) => {
                             if let Base::Var(varid) = var.base {
                                 match _interp.curr_body.get().unwrap().vars[varid].clone() {
                                     VarKind::GlobalRef(_def_id) => {
-                                        let smthng = self.variables_from_defid.get(&_def_id);
-                                        if let Some(value) = smthng {
-                                            match value {
-                                                Value::Const(const_var) => match const_var {
-                                                    Const::Literal(_lit) => match _lit {
-                                                        Operand::Var(var) => {
-                                                            if let Base::Var(var_id__) = var.base {
-                                                                let varkind___ = _interp
-                                                                    .curr_body
-                                                                    .get()
-                                                                    .unwrap()
-                                                                    .vars[var_id__]
-                                                                    .clone();
-                                                                match varkind___ {
-                                                                    VarKind::LocalDef(def__) => {
-                                                                        let value = &self
-                                                                            .variables_from_defid
-                                                                            .get(&def__.clone());
-                                                                        let thing = _interp
-                                                                            .env()
-                                                                            .defs
-                                                                            .defs
-                                                                            .get(def__);
-                                                                        if let Some(id) = thing {
-                                                                            if let DefKind::GlobalObj(obj_id) =  id  {
-                                                                                       let class =  _interp.env().defs.classes.get(obj_id.clone());
-                                                                                    }
-                                                                        }
-                                                                    }
-                                                                    VarKind::GlobalRef(def__) => {
-                                                                        let value = &self
-                                                                            .variables_from_defid
-                                                                            .get(&def__.clone());
-                                                                        let thing = _interp
-                                                                            .env()
-                                                                            .defs
-                                                                            .defs
-                                                                            .get(def__);
-                                                                        if let Some(id) = thing {
-                                                                            if let DefKind::GlobalObj(obj_id) =  id  {
-                                                                                       let class =  _interp.env().defs.classes.get(obj_id.clone());
-                                                                                    }
-                                                                        }
-                                                                    }
-                                                                    _ => {}
-                                                                }
-                                                            }
-                                                        }
-                                                        _ => {}
-                                                    },
-                                                    _ => {}
-                                                },
-                                                _ => {}
-                                            }
-                                        }
+                                        self.read_variable_from_variable(_interp, _def_id);
+                                    }
+                                    VarKind::LocalDef(_def_id) => {
+                                        self.read_variable_from_variable(_interp, _def_id);
+                                        println!("parent3 {:?}", _def_id);
                                     }
                                     _ => {}
                                 }
@@ -610,6 +564,51 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
             Intrinsic::SafeCall => initial_state,
             Intrinsic::EnvRead => initial_state,
             Intrinsic::StorageRead => initial_state,
+        }
+    }
+
+    fn read_variable_from_variable<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &Interp<'cx, C>,
+        defid: DefId,
+    ) {
+        if let Some(value) = self.variables_from_defid.get(&defid) {
+            if let Value::Const(const_var) = value {
+                match const_var {
+                    Const::Literal(_lit) => match _lit {
+                        Operand::Var(var) => {
+                            if let Base::Var(var_id__) = var.base {
+                                let varkind =
+                                    _interp.curr_body.get().unwrap().vars[var_id__].clone();
+                                match varkind {
+                                    VarKind::LocalDef(def__) => {
+                                        self.read_variable_from_class(_interp, def__);
+                                    }
+                                    VarKind::GlobalRef(def__) => {
+                                        self.read_variable_from_class(_interp, def__);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn read_variable_from_class<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &Interp<'cx, C>,
+        defid: DefId,
+    ) {
+        let def_kind = _interp.env().defs.defs.get(defid);
+        if let Some(id) = def_kind {
+            if let DefKind::GlobalObj(obj_id) = id {
+                let class = _interp.env().defs.classes.get(obj_id.clone());
+            }
         }
     }
 

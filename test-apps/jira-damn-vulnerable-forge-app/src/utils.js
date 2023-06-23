@@ -4,8 +4,9 @@ export async function fetchIssueSummary(issueIdOrKey) {
 
   const resp = await api
     .asApp()
-    .requestJira(`/rest/api/3/issue/${issueIdOrKey}?fields=summary`, {
+    .requestJira(`/rest/api/3/issue/${issueIdOrKey}?fields=summary`, obj = {
       headers: {
+        method: 'POST',
         Accept: 'application/json',
       },
     });
