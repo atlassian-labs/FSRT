@@ -127,7 +127,6 @@ pub struct Body {
     pub blocks: TiVec<BasicBlockId, BasicBlock>,
     pub vars: TiVec<VarId, VarKind>,
     ident_to_local: FxHashMap<Id, VarId>,
-    pub var_id_to_value: FxHashMap<VarId, Value>,
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
 }
@@ -273,7 +272,6 @@ impl Body {
             blocks: vec![BasicBlock::default()].into(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
-            var_id_to_value: Default::default(),
             predecessors: Default::default(),
         }
     }
@@ -399,6 +397,8 @@ impl Body {
         env: &'cx Environment,
         callee: &Operand,
     ) -> Option<(DefId, &'cx Body)> {
+        /* callee is the name of the function that is being called */
+
         match callee {
             Operand::Var(Variable {
                 base: Base::Var(var),
@@ -437,12 +437,19 @@ impl Body {
         }
     }
 
-    pub(crate) fn coerce_to_lval(&mut self, bb: BasicBlockId, val: Operand) -> Variable {
+    pub(crate) fn coerce_to_lval(
+        &mut self,
+        bb: BasicBlockId,
+        val: Operand,
+        parent_key: Option<DefId>,
+    ) -> Variable {
         match val {
             Operand::Var(var) => var,
             Operand::Lit(_) => Variable {
                 base: Base::Var({
-                    let var = self.vars.push_and_get_key(VarKind::Temp { parent: None });
+                    let var = self
+                        .vars
+                        .push_and_get_key(VarKind::Temp { parent: parent_key });
                     self.push_inst(bb, Inst::Assign(Variable::new(var), Rvalue::Read(val)));
                     var
                 }),

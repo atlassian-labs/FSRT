@@ -10,14 +10,15 @@ use std::{
 };
 
 use forge_utils::{FxHashMap, FxHashSet};
+use smallvec::SmallVec;
 use swc_core::ecma::atoms::JsWord;
 use tracing::{debug, info, instrument, warn};
 
 use crate::{
-    definitions::{DefId, Environment, Value, Const},
+    definitions::{Const, DefId, Environment, Value},
     ir::{
-        BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue, Successors, Base,
-        STARTING_BLOCK,
+        Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue,
+        Successors, STARTING_BLOCK,
     },
     worklist::WorkList,
 };
@@ -61,6 +62,7 @@ pub trait Dataflow<'cx>: Sized {
         block: &'cx BasicBlock,
         intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State;
 
     fn transfer_call<C: Checker<'cx, State = Self::State>>(
@@ -71,6 +73,8 @@ pub trait Dataflow<'cx>: Sized {
         block: &'cx BasicBlock,
         callee: &'cx Operand,
         initial_state: Self::State,
+        // operands: &SmallVec<[Operand; 4]>,
+        oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State;
 
     fn transfer_rvalue<C: Checker<'cx, State = Self::State>>(
@@ -83,12 +87,24 @@ pub trait Dataflow<'cx>: Sized {
         initial_state: Self::State,
     ) -> Self::State {
         match rvalue {
-            Rvalue::Intrinsic(intrinsic, _) => {
-                self.transfer_intrinsic(interp, def, loc, block, intrinsic, initial_state)
-            }
-            Rvalue::Call(callee, _) => {
-                self.transfer_call(interp, def, loc, block, callee, initial_state)
-            }
+            Rvalue::Intrinsic(intrinsic, args) => self.transfer_intrinsic(
+                interp,
+                def,
+                loc,
+                block,
+                intrinsic,
+                initial_state,
+                args.clone(),
+            ),
+            Rvalue::Call(callee, operands) => self.transfer_call(
+                interp,
+                def,
+                loc,
+                block,
+                callee,
+                initial_state,
+                operands.clone(),
+            ),
             Rvalue::Unary(_, _) => initial_state,
             Rvalue::Bin(_, _, _) => initial_state,
             Rvalue::Read(_) => initial_state,
@@ -123,6 +139,7 @@ pub trait Dataflow<'cx>: Sized {
         bb: BasicBlockId,
         block: &'cx BasicBlock,
         initial_state: Self::State,
+        arguments: Option<Vec<DefId>>,
     ) -> Self::State {
         let mut state = initial_state;
         for (stmt, inst) in block.iter().enumerate() {
@@ -163,7 +180,7 @@ pub trait Dataflow<'cx>: Sized {
                     debug!("{name} {def:?} is called from {calls:?}");
                     for &(def, loc) in calls {
                         if worklist.visited(&def) {
-                            worklist.push_back_force(def, loc.block);
+                            worklist.push_back_force(def, loc.block, vec![]);
                         }
                     }
                 }
@@ -171,16 +188,15 @@ pub trait Dataflow<'cx>: Sized {
             Successors::One(succ) => {
                 let mut succ_state = interp.block_state_mut(def, succ);
                 if succ_state.join_changed(&state) {
-                    worklist.push_back(def, succ);
+                    worklist.push_back(def, succ, vec![]);
                 }
             }
             Successors::Two(succ1, succ2) => {
                 if interp.block_state_mut(def, succ1).join_changed(&state) {
-                    worklist.push_back(def, succ1);
+                    worklist.push_back(def, succ1, vec![]);
                 }
-
                 if interp.block_state_mut(def, succ2).join_changed(&state) {
-                    worklist.push_back(def, succ2);
+                    worklist.push_back(def, succ2, vec![]);
                 }
             }
         }
@@ -197,6 +213,7 @@ pub trait Checker<'cx>: Sized {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State>;
 
     fn visit_call(
@@ -210,17 +227,7 @@ pub trait Checker<'cx>: Sized {
         let Some((callee, body)) = interp.body().resolve_call(interp.env(), callee) else {
             return ControlFlow::Continue(curr_state.clone());
         };
-        // println!("------ callstack ------");
-        // println!("visiting callee {:#?}", callee);
-        // println!("interp callstack  {:#?}", interp.callstack);
-        // println!("interp names {:#?}", interp.env.resolver.names[callee]);
-        // for i in interp.callstack.borrow().iter() {
-        //     println!("calling function {:#?}", i.calling_function);
-        //     println!("calling function {:#?}", interp.env.resolver.names[i.calling_function]);
-            
-        // }
-        
-        // println!("varids {:#?}", interp.env);
+
         let func_state = interp.func_state(callee).unwrap_or(Self::State::BOTTOM);
         if func_state < *curr_state || !interp.checker_visit(callee) {
             return ControlFlow::Continue(curr_state.clone());
@@ -258,7 +265,9 @@ pub trait Checker<'cx>: Sized {
     ) -> ControlFlow<(), Self::State> {
         debug!("visiting rvalue {rvalue:?} with {curr_state:?}");
         match rvalue {
-            Rvalue::Intrinsic(intrinsic, _) => self.visit_intrinsic(interp, intrinsic, curr_state),
+            Rvalue::Intrinsic(intrinsic, operands) => {
+                self.visit_intrinsic(interp, intrinsic, curr_state, Some(operands.clone()))
+            }
             Rvalue::Call(callee, args) => self.visit_call(interp, callee, args, id, curr_state),
             Rvalue::Unary(_, _)
             | Rvalue::Bin(_, _, _)
@@ -503,20 +512,23 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         self.dataflow_visited.insert(func_def);
         let mut dataflow = C::Dataflow::with_interp(self);
         let mut worklist = WorkList::new();
-        worklist.push_front_blocks(self.env, func_def);
+        worklist.push_front_blocks(self.env, func_def, vec![]);
         let old_body = self.curr_body.get();
-        while let Some((def, block_id)) = worklist.pop_front() {
+        while let Some((def, block_id, args)) = worklist.pop_front() {
             let name = self.env.def_name(def);
             debug!("Dataflow: {name} - {block_id}");
             self.dataflow_visited.insert(def);
             let func = self.env().def_ref(def).expect_body();
             self.curr_body.set(Some(func));
+            let block = func.block(block_id);
             let mut before_state = self.block_state(def, block_id);
             let block = func.block(block_id);
             for &pred in func.predecessors(block_id) {
+                let block_ = func.block(pred);
                 before_state = before_state.join(&self.block_state(def, pred));
             }
-            let state = dataflow.transfer_block(self, def, block_id, block, before_state);
+            let state =
+                dataflow.transfer_block(self, def, block_id, block, before_state, Some(args));
             dataflow.join_term(self, def, block, state, &mut worklist);
         }
         self.curr_body.set(old_body);

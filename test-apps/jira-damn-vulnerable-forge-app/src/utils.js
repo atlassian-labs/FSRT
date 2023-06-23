@@ -2,26 +2,9 @@ import api, { route } from '@forge/api';
 
 export async function fetchIssueSummary(issueIdOrKey) {
 
-  let url = route`/rest/api/3/issue/${issueIdOrKey}?fields=summary`;
-
-  if (10 > 5) {
-    url = route`/rest/api/3/issue/${issueIdOrKey}?fields=summary`;
-  }
-
-  let test_string1 = "test_string1_value"
-
-  test_function1(test_string1);
-
-  let never_phi = "never_phi1";
-
-  if (true) {
-    never_phi = "not_never_phi";
-  }
-
-  /* const api = await import('@forge/api'); */
   const resp = await api
     .asApp()
-    .requestJira(url, {
+    .requestJira(`/rest/api/3/issue/${issueIdOrKey}?fields=summary`, {
       headers: {
         Accept: 'application/json',
       },
@@ -29,10 +12,6 @@ export async function fetchIssueSummary(issueIdOrKey) {
   const data = await resp.json();
   console.log(JSON.stringify(data));
   return data['fields']['summary'];
-}
-
-function test_function1(value) {
-
 }
 
 export async function writeComment(issueIdOrKey, comment) {

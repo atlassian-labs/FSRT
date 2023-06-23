@@ -10,7 +10,7 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct WorkList<V, W> {
-    worklist: VecDeque<(V, W)>,
+    worklist: VecDeque<(V, W, Vec<V>)>,
     visited: FxHashSet<V>,
 }
 
@@ -27,7 +27,7 @@ where
     }
 
     #[inline]
-    pub fn pop_front(&mut self) -> Option<(V, W)> {
+    pub fn pop_front(&mut self) -> (Option<(V, W, Vec<V>)>) {
         self.worklist.pop_front()
     }
 
@@ -61,21 +61,26 @@ where
     V: Eq + Hash + Copy,
 {
     #[inline]
-    pub fn push_back(&mut self, v: V, w: W) {
+    pub fn push_back(&mut self, v: V, w: W, args: Vec<V>) {
         if self.visited.insert(v) {
-            self.worklist.push_back((v, w));
+            self.worklist.push_back((v, w, args));
         }
     }
 
     #[inline]
-    pub fn push_back_force(&mut self, v: V, w: W) {
-        self.worklist.push_back((v, w));
+    pub fn push_back_force(&mut self, v: V, w: W, args: Vec<V>) {
+        self.worklist.push_back((v, w, args));
     }
 }
 
 impl WorkList<DefId, BasicBlockId> {
     #[inline]
-    pub(crate) fn push_front_blocks(&mut self, env: &Environment, def: DefId) -> bool {
+    pub(crate) fn push_front_blocks(
+        &mut self,
+        env: &Environment,
+        def: DefId,
+        arguments: Vec<DefId>,
+    ) -> bool {
         if self.visited.insert(def) {
             debug!("adding function: {}", env.def_name(def));
             let body = env.def_ref(def).expect_body();
@@ -83,7 +88,8 @@ impl WorkList<DefId, BasicBlockId> {
             self.worklist.reserve(blocks.len());
             for work in blocks {
                 debug!(?work, "push_front_blocks");
-                self.worklist.push_front(work);
+                self.worklist
+                    .push_front((work.0, work.1, arguments.clone()));
             }
             return true;
         }
@@ -91,12 +97,12 @@ impl WorkList<DefId, BasicBlockId> {
     }
 }
 
-impl<V, W> Extend<(V, W)> for WorkList<V, W>
+impl<V, W> Extend<(V, W, Vec<V>)> for WorkList<V, W>
 where
     V: Eq + Hash,
 {
     #[inline]
-    fn extend<T: IntoIterator<Item = (V, W)>>(&mut self, iter: T) {
+    fn extend<T: IntoIterator<Item = (V, W, Vec<V>)>>(&mut self, iter: T) {
         self.worklist.extend(iter);
     }
 }

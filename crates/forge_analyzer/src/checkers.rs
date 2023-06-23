@@ -1,16 +1,19 @@
 use core::fmt;
 use forge_utils::FxHashMap;
 use itertools::Itertools;
+use smallvec::SmallVec;
 use std::{cmp::max, iter, mem, ops::ControlFlow, path::PathBuf};
 
 use tracing::{debug, info, warn};
 
 use crate::{
-    definitions::{DefId, Environment, Value, Const},
+    definitions::{Const, DefId, DefKind, Environment, Value},
     interp::{
         Checker, Dataflow, EntryKind, EntryPoint, Frame, Interp, JoinSemiLattice, WithCallStack,
     },
-    ir::{BasicBlock, BasicBlockId, Intrinsic, Location, VarId, Inst, Base, Rvalue},
+    ir::{
+        Base, BasicBlock, BasicBlockId, Inst, Intrinsic, Location, Operand, Rvalue, VarId, VarKind,
+    },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     worklist::WorkList,
 };
@@ -57,6 +60,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         _block: &'cx BasicBlock,
         intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         match *intrinsic {
             Intrinsic::Authorize => {
@@ -79,6 +83,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
             return initial_state;
@@ -110,7 +115,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def);
+            worklist.push_front_blocks(interp.env(), def, vec![]);
         }
     }
 }
@@ -213,6 +218,7 @@ impl<'cx> Checker<'cx> for AuthZChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         match *intrinsic {
             Intrinsic::Authorize => {
@@ -224,7 +230,7 @@ impl<'cx> Checker<'cx> for AuthZChecker {
                 let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
-                ControlFlow::Break(())
+                ControlFlow::Continue(*state)
             }
             Intrinsic::ApiCall => ControlFlow::Continue(*state),
             Intrinsic::SafeCall => ControlFlow::Continue(*state),
@@ -276,6 +282,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         _block: &'cx BasicBlock,
         intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         match *intrinsic {
             Intrinsic::Authorize => initial_state,
@@ -296,10 +303,11 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
-                                                return initial_state;
-                                                        };
+            return initial_state;
+        };
         match interp.func_state(callee_def) {
             Some(state) => {
                 if state == Authenticated::Yes {
@@ -327,7 +335,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def);
+            worklist.push_front_blocks(interp.env(), def, vec![]);
         }
     }
 }
@@ -362,6 +370,7 @@ impl<'cx> Checker<'cx> for AuthenticateChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         match *intrinsic {
             Intrinsic::Authorize => ControlFlow::Continue(*state),
@@ -373,7 +382,7 @@ impl<'cx> Checker<'cx> for AuthenticateChecker {
                 let vuln = AuthNVuln::new(interp.callstack(), interp.env(), interp.entry());
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
-                ControlFlow::Break(())
+                ControlFlow::Continue(*state)
             }
             Intrinsic::ApiCall => ControlFlow::Continue(*state),
             Intrinsic::SafeCall => ControlFlow::Continue(*state),
@@ -449,12 +458,51 @@ impl WithCallStack for AuthNVuln {
 }
 
 pub struct PermisisionDataflow {
-    needs_call: Vec<DefId>,
-    variables: FxHashMap<VarId, Value>
+    needs_call: Vec<(DefId, Vec<DefId>)>,
+    variables: FxHashMap<DefId, Value>,
+    variables_from_defid: FxHashMap<DefId, Value>,
 }
 
 impl WithCallStack for PermissionVuln {
     fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
+}
+
+impl PermisisionDataflow {
+    fn add_variables(&mut self, rvalue: &Rvalue, defid: &DefId) {
+        match rvalue {
+            Rvalue::Read(operand) => {
+                if self.variables_from_defid.contains_key(&defid)
+                    && self.variables_from_defid.get(&defid).unwrap()
+                        != &Value::Const(Const::Literal(operand.clone()))
+                {
+                    // currently assuming prev value is not phi
+                    let prev_vars = &self.variables_from_defid[&defid];
+                    match prev_vars {
+                        Value::Const(prev_var_const) => {
+                            match operand {
+                                Operand::Lit(_) => {}
+                                Operand::Var(var) => match var.base {
+                                    Base::Var(var_id) => {}
+                                    _ => {}
+                                },
+                            }
+                            let var_vec =
+                                vec![prev_var_const.clone(), Const::Literal(operand.clone())];
+
+                            self.variables_from_defid
+                                .insert(*defid, Value::Phi(Vec::from(var_vec)));
+                        }
+                        _ => {}
+                    }
+                } else {
+                    let value = Value::Const(Const::Literal(operand.clone()));
+                    self.variables_from_defid.insert(*defid, value.clone());
+                }
+            }
+            Rvalue::Template(template) => {}
+            _ => {}
+        }
+    }
 }
 
 impl<'cx> Dataflow<'cx> for PermisisionDataflow {
@@ -463,7 +511,11 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
     fn with_interp<C: crate::interp::Checker<'cx, State = Self::State>>(
         _interp: &Interp<'cx, C>,
     ) -> Self {
-        Self { needs_call: vec![], variables: FxHashMap::default() }
+        Self {
+            needs_call: vec![],
+            variables: FxHashMap::default(),
+            variables_from_defid: FxHashMap::default(),
+        }
     }
 
     fn transfer_intrinsic<C: crate::interp::Checker<'cx, State = Self::State>>(
@@ -474,12 +526,85 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
         _block: &'cx BasicBlock,
         intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         match *intrinsic {
-            Intrinsic::Authorize => {
-                debug!("authorize intrinsic found");
-                PermissionTest::Yes
+            Intrinsic::ApiCall | Intrinsic::SafeCall | Intrinsic::Authorize => {
+                let second = operands.get(1);
+                if let Some(operand) = second {
+                    match operand {
+                        Operand::Lit(lit) => {}
+                        Operand::Var(var) => {
+                            if let Base::Var(varid) = var.base {
+                                match _interp.curr_body.get().unwrap().vars[varid].clone() {
+                                    VarKind::GlobalRef(_def_id) => {
+                                        let smthng = self.variables_from_defid.get(&_def_id);
+                                        if let Some(value) = smthng {
+                                            match value {
+                                                Value::Const(const_var) => match const_var {
+                                                    Const::Literal(_lit) => match _lit {
+                                                        Operand::Var(var) => {
+                                                            if let Base::Var(var_id__) = var.base {
+                                                                let varkind___ = _interp
+                                                                    .curr_body
+                                                                    .get()
+                                                                    .unwrap()
+                                                                    .vars[var_id__]
+                                                                    .clone();
+                                                                match varkind___ {
+                                                                    VarKind::LocalDef(def__) => {
+                                                                        let value = &self
+                                                                            .variables_from_defid
+                                                                            .get(&def__.clone());
+                                                                        let thing = _interp
+                                                                            .env()
+                                                                            .defs
+                                                                            .defs
+                                                                            .get(def__);
+                                                                        if let Some(id) = thing {
+                                                                            if let DefKind::GlobalObj(obj_id) =  id  {
+                                                                                       let class =  _interp.env().defs.classes.get(obj_id.clone());
+                                                                                    }
+                                                                        }
+                                                                    }
+                                                                    VarKind::GlobalRef(def__) => {
+                                                                        let value = &self
+                                                                            .variables_from_defid
+                                                                            .get(&def__.clone());
+                                                                        let thing = _interp
+                                                                            .env()
+                                                                            .defs
+                                                                            .defs
+                                                                            .get(def__);
+                                                                        if let Some(id) = thing {
+                                                                            if let DefKind::GlobalObj(obj_id) =  id  {
+                                                                                       let class =  _interp.env().defs.classes.get(obj_id.clone());
+                                                                                    }
+                                                                        }
+                                                                    }
+                                                                    _ => {}
+                                                                }
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    },
+                                                    _ => {}
+                                                },
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
             }
+            _ => {}
+        }
+        match *intrinsic {
+            Intrinsic::Authorize => initial_state,
             Intrinsic::Fetch => initial_state,
             Intrinsic::ApiCall => initial_state,
             Intrinsic::SafeCall => initial_state,
@@ -496,28 +621,52 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
         _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
-    ) -> Self::State {            
+        operands: SmallVec<[crate::ir::Operand; 4]>,
+    ) -> Self::State {
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
             return initial_state;
         };
 
-        match interp.func_state(callee_def) {
-            Some(state) => {
-                if state == PermissionTest::Yes {
-                    debug!("Found call to authorize at {def:?} {loc:?}");
-                }
-                initial_state.join(&state)
-            }
-            None => {
-                let callee_name = interp.env().def_name(callee_def);
-                let caller_name = interp.env().def_name(def);
-                debug!("Found call to {callee_name} at {def:?} {caller_name}");
-                self.needs_call.push(callee_def);
-                initial_state
+        let mut def_ids_operands = vec![];
+
+        for operand in operands {
+            match operand {
+                Operand::Var(variable) => match variable.base {
+                    Base::Var(varid) => {
+                        let varkind = &interp.curr_body.get().unwrap().vars[varid];
+
+                        match varkind {
+                            VarKind::LocalDef(defid) => {
+                                def_ids_operands.push(defid.clone());
+                            }
+                            VarKind::GlobalRef(defid) => {
+                                if self.variables_from_defid.contains_key(defid) {
+                                    def_ids_operands.push(defid.clone());
+                                } else {
+                                }
+                            }
+                            VarKind::Arg(defid) => {
+                                def_ids_operands.push(defid.clone());
+                            }
+                            VarKind::Temp { parent } => {
+                                if let Some(defid) = parent {
+                                    def_ids_operands.push(defid.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                },
+                Operand::Lit(lit) => {}
             }
         }
 
-    
+        let callee_name = interp.env().def_name(callee_def);
+        let caller_name = interp.env().def_name(def);
+        debug!("Found call to {callee_name} at {def:?} {caller_name}");
+        self.needs_call.push((callee_def, def_ids_operands.clone()));
+        initial_state
     }
 
     fn transfer_block<C: Checker<'cx, State = Self::State>>(
@@ -527,47 +676,190 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
         bb: BasicBlockId,
         block: &'cx BasicBlock,
         initial_state: Self::State,
+        arguments: Option<Vec<DefId>>,
     ) -> Self::State {
-        let mut state = initial_state;
+        let mut state: PermissionTest = initial_state;
 
-        for inst in &block.insts {
-            match inst {
-                Inst::Assign(variable, rvalue) => match variable.base {
-                    Base::Var(varid) => {
-                    match rvalue {
-                    Rvalue::Read(operand) => {
-                        
-                        // case not phi
-                        if self.variables.contains_key(&varid) && self.variables.get(&varid).unwrap() != &Value::Const(Const::Literal(operand.clone())) {
-                            // currently assuming prev value is not phi
-                            let prev_vars = &self.variables[&varid];
-                            match prev_vars {
-                                Value::Const(prev_var_const) => {
-                                    let var_vec = vec![prev_var_const.clone(), Const::Literal(operand.clone())];
-        
-                                    self.variables.insert(varid, Value::Phi(Vec::from(var_vec)));
-                                },
-                                _ => {}
-                            }
-                        } else {
-                            self.variables.insert(varid, Value::Const(Const::Literal(operand.clone())));
-
+        if let Some(args) = arguments {
+            let mut args = args.clone();
+            for var in &interp.curr_body.get().unwrap().vars {
+                match var {
+                    VarKind::Arg(defid_new) => {
+                        let defid_old = args.pop();
+                        if let Some(def_id_old_unwrapped) = defid_old {
+                            self.variables_from_defid.insert(
+                                defid_new.clone(),
+                                self.variables_from_defid[&def_id_old_unwrapped.clone()].clone(),
+                            );
                         }
                     }
                     _ => {}
-                } 
-            }
-                    _ => {}
                 }
-                _ => {}
             }
         }
 
-        // println!("self.variables {:#?}", self.variables);
-
+        /* collecting the variables that were used :) */
         for (stmt, inst) in block.iter().enumerate() {
             let loc = Location::new(bb, stmt as u32);
             state = self.transfer_inst(interp, def, loc, block, inst, state);
+
+            match inst {
+                Inst::Assign(variable, rvalue) => match variable.base {
+                    Base::Var(varid) => {
+                        let var_kind = &interp.curr_body.get().unwrap().vars[varid];
+                        match var_kind {
+                            VarKind::LocalDef(defid) => {
+                                match rvalue {
+                                    Rvalue::Read(operand) => {
+                                        if self.variables_from_defid.contains_key(&defid)
+                                            && self.variables_from_defid.get(&defid).unwrap()
+                                                != &Value::Const(Const::Literal(operand.clone()))
+                                        {
+                                            // currently assuming prev value is not phi
+                                            let prev_vars = &self.variables_from_defid[&defid];
+                                            match prev_vars {
+                                                Value::Const(prev_var_const) => {
+                                                    let var_vec = vec![
+                                                        prev_var_const.clone(),
+                                                        Const::Literal(operand.clone()),
+                                                    ];
+
+                                                    self.variables_from_defid.insert(
+                                                        *defid,
+                                                        Value::Phi(Vec::from(var_vec)),
+                                                    );
+                                                }
+                                                _ => {}
+                                            }
+                                        } else {
+                                            match operand {
+                                                Operand::Lit(lit) => {
+                                                    // let value = Value::Const(Const::Literal(operand.clone()));
+                                                    // self.variables_from_defid.insert(*defid, value.clone());
+                                                }
+                                                Operand::Var(var) => match var.base {
+                                                    Base::Var(var_id) => {
+                                                        let something =
+                                                            &interp.curr_body.get().unwrap().vars
+                                                                [var_id];
+                                                    }
+                                                    _ => {}
+                                                },
+                                            }
+                                            let value =
+                                                Value::Const(Const::Literal(operand.clone()));
+                                            self.variables_from_defid.insert(*defid, value.clone());
+                                        }
+                                    }
+                                    Rvalue::Template(template) => {}
+                                    _ => {}
+                                }
+                            }
+                            VarKind::GlobalRef(defid) => {
+                                match rvalue {
+                                    Rvalue::Read(operand) => {
+                                        if self.variables_from_defid.contains_key(&defid)
+                                            && self.variables_from_defid.get(&defid).unwrap()
+                                                != &Value::Const(Const::Literal(operand.clone()))
+                                        {
+                                            // currently assuming prev value is not phi
+                                            let prev_vars = &self.variables_from_defid[&defid];
+                                            match prev_vars {
+                                                Value::Const(prev_var_const) => {
+                                                    let var_vec = vec![
+                                                        prev_var_const.clone(),
+                                                        Const::Literal(operand.clone()),
+                                                    ];
+
+                                                    self.variables_from_defid.insert(
+                                                        *defid,
+                                                        Value::Phi(Vec::from(var_vec)),
+                                                    );
+                                                }
+                                                _ => {}
+                                            }
+                                        } else {
+                                            match operand {
+                                                Operand::Lit(lit) => {}
+                                                Operand::Var(var) => match var.base {
+                                                    Base::Var(var_id) => {
+                                                        let something =
+                                                            &interp.curr_body.get().unwrap().vars
+                                                                [var_id];
+                                                    }
+                                                    _ => {}
+                                                },
+                                            }
+                                            let value =
+                                                Value::Const(Const::Literal(operand.clone()));
+                                            self.variables_from_defid.insert(*defid, value.clone());
+                                        }
+                                    }
+                                    Rvalue::Template(template) => {}
+                                    _ => {}
+                                }
+                            }
+                            VarKind::Arg(defid) => {
+                                match rvalue {
+                                    Rvalue::Read(operand) => {
+                                        if self.variables_from_defid.contains_key(&defid)
+                                            && self.variables_from_defid.get(&defid).unwrap()
+                                                != &Value::Const(Const::Literal(operand.clone()))
+                                        {
+                                            // currently assuming prev value is not phi
+                                            let prev_vars = &self.variables_from_defid[&defid];
+                                            match prev_vars {
+                                                Value::Const(prev_var_const) => {
+                                                    let var_vec = vec![
+                                                        prev_var_const.clone(),
+                                                        Const::Literal(operand.clone()),
+                                                    ];
+
+                                                    self.variables_from_defid.insert(
+                                                        *defid,
+                                                        Value::Phi(Vec::from(var_vec)),
+                                                    );
+                                                }
+                                                _ => {}
+                                            }
+                                        } else {
+                                            match operand {
+                                                Operand::Lit(lit) => {}
+                                                Operand::Var(var) => match var.base {
+                                                    Base::Var(var_id) => {
+                                                        let something =
+                                                            &interp.curr_body.get().unwrap().vars
+                                                                [var_id];
+                                                    }
+                                                    _ => {}
+                                                },
+                                            }
+                                            let value =
+                                                Value::Const(Const::Literal(operand.clone()));
+                                            self.variables_from_defid.insert(*defid, value.clone());
+                                        }
+                                    }
+                                    Rvalue::Template(template) => {}
+                                    _ => {}
+                                }
+                            }
+                            VarKind::Temp { parent } => {
+                                match rvalue {
+                                    Rvalue::Template(template) => {}
+                                    _ => {}
+                                }
+                                if let Some(defid) = parent {
+                                    self.add_variables(rvalue, defid)
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    _ => {}
+                },
+                _ => {}
+            }
         }
         state
     }
@@ -581,12 +873,11 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
         worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
-        for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def);
+        for (def, arguments) in self.needs_call.drain(..) {
+            worklist.push_front_blocks(interp.env(), def, arguments);
         }
     }
 }
-
 
 pub struct PermissionChecker {
     vulns: Vec<AuthNVuln>,
@@ -616,7 +907,7 @@ impl fmt::Display for PermissionVuln {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 pub enum PermissionTest {
-    Yes
+    Yes,
 }
 
 impl JoinSemiLattice for PermissionTest {
@@ -644,20 +935,9 @@ impl<'cx> Checker<'cx> for PermissionChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        match *intrinsic {
-            Intrinsic::Authorize => ControlFlow::Continue(*state),
-            Intrinsic::Fetch | Intrinsic::EnvRead | Intrinsic::StorageRead => {
-                debug!("authenticated");
-                ControlFlow::Continue(PermissionTest::Yes)
-            }
-            Intrinsic::ApiCall if *state == PermissionTest::Yes => {
-                let vuln = PermissionVuln::new();
-                ControlFlow::Break(())
-            }
-            Intrinsic::ApiCall => ControlFlow::Continue(*state),
-            Intrinsic::SafeCall => ControlFlow::Continue(*state),
-        }
+        ControlFlow::Continue(*state)
     }
 }
 
@@ -667,7 +947,7 @@ pub struct PermissionVuln {
 }
 
 impl PermissionVuln {
-    pub fn new( /*unused_permissions: HashSet<ForgePermissions> */) -> PermissionVuln {
+    pub fn new(/*unused_permissions: HashSet<ForgePermissions> */) -> PermissionVuln {
         PermissionVuln { /*unused_permissions*/ }
     }
 }
