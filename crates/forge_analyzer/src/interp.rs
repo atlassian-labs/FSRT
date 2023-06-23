@@ -208,7 +208,7 @@ pub trait Dataflow<'cx>: Sized {
                     debug!("{name} {def:?} is called from {calls:?}");
                     for &(def, loc) in calls {
                         if worklist.visited(&def) {
-                            worklist.push_back_force(def, loc.block);
+                            worklist.push_back_force(def, loc.block, vec![]);
                         }
                     }
                 }
@@ -216,15 +216,15 @@ pub trait Dataflow<'cx>: Sized {
             Successors::One(succ) => {
                 let mut succ_state = interp.block_state_mut(def, succ);
                 if succ_state.join_changed(&state) {
-                    worklist.push_back(def, succ);
+                    worklist.push_back(def, succ, vec![]);
                 }
             }
             Successors::Two(succ1, succ2) => {
                 if interp.block_state_mut(def, succ1).join_changed(&state) {
-                    worklist.push_back(def, succ1);
+                    worklist.push_back(def, succ1, vec![]);
                 }
                 if interp.block_state_mut(def, succ2).join_changed(&state) {
-                    worklist.push_back(def, succ2);
+                    worklist.push_back(def, succ2, vec![]);
                 }
             }
         }
@@ -785,9 +785,11 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             self.dataflow_visited.insert(def);
             let func = self.env().def_ref(def).expect_body();
             self.curr_body.set(Some(func));
+            let block = func.block(block_id);
             let mut before_state = self.block_state(def, block_id);
             let block = func.block(block_id);
             for &pred in func.predecessors(block_id) {
+                let block_ = func.block(pred);
                 before_state = before_state.join(&self.block_state(def, pred));
             }
             let state =

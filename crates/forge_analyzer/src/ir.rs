@@ -304,7 +304,6 @@ impl Body {
             class_instantiations: Default::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
-            var_id_to_value: Default::default(),
             predecessors: Default::default(),
         }
     }
@@ -431,6 +430,8 @@ impl Body {
         env: &'cx Environment,
         callee: &Operand,
     ) -> Option<(DefId, &'cx Body)> {
+        /* callee is the name of the function that is being called */
+
         match callee {
             Operand::Var(Variable {
                 base: Base::Var(var),

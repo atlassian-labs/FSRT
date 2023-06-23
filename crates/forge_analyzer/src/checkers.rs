@@ -1670,6 +1670,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         _block: &'cx BasicBlock,
         intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         match *intrinsic {
             Intrinsic::Authorize => initial_state,
@@ -1690,6 +1691,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         let Some((callee_def, body)) = self.resolve_call(interp, callee) else {
             return initial_state;
@@ -1721,7 +1723,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def);
+            worklist.push_front_blocks(interp.env(), def, vec![]);
         }
     }
 }
@@ -1756,6 +1758,7 @@ impl<'cx> Checker<'cx> for AuthenticateChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         match *intrinsic {
             Intrinsic::Authorize => ControlFlow::Continue(*state),
@@ -1767,7 +1770,7 @@ impl<'cx> Checker<'cx> for AuthenticateChecker {
                 let vuln = AuthNVuln::new(interp.callstack(), interp.env(), interp.entry());
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
-                ControlFlow::Break(())
+                ControlFlow::Continue(*state)
             }
             Intrinsic::ApiCall => ControlFlow::Continue(*state),
             Intrinsic::SafeCall => ControlFlow::Continue(*state),
@@ -1851,6 +1854,44 @@ impl WithCallStack for PermissionVuln {
     fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
 }
 
+impl PermisisionDataflow {
+    fn add_variables(&mut self, rvalue: &Rvalue, defid: &DefId) {
+        match rvalue {
+            Rvalue::Read(operand) => {
+                if self.variables_from_defid.contains_key(&defid)
+                    && self.variables_from_defid.get(&defid).unwrap()
+                        != &Value::Const(Const::Literal(operand.clone()))
+                {
+                    // currently assuming prev value is not phi
+                    let prev_vars = &self.variables_from_defid[&defid];
+                    match prev_vars {
+                        Value::Const(prev_var_const) => {
+                            match operand {
+                                Operand::Lit(_) => {}
+                                Operand::Var(var) => match var.base {
+                                    Base::Var(var_id) => {}
+                                    _ => {}
+                                },
+                            }
+                            let var_vec =
+                                vec![prev_var_const.clone(), Const::Literal(operand.clone())];
+
+                            self.variables_from_defid
+                                .insert(*defid, Value::Phi(Vec::from(var_vec)));
+                        }
+                        _ => {}
+                    }
+                } else {
+                    let value = Value::Const(Const::Literal(operand.clone()));
+                    self.variables_from_defid.insert(*defid, value.clone());
+                }
+            }
+            Rvalue::Template(template) => {}
+            _ => {}
+        }
+    }
+}
+
 impl<'cx> Dataflow<'cx> for PermisisionDataflow {
     type State = PermissionTest;
 
@@ -1871,12 +1912,85 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
         _block: &'cx BasicBlock,
         intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         match *intrinsic {
-            Intrinsic::Authorize => {
-                debug!("authorize intrinsic found");
-                PermissionTest::Yes
+            Intrinsic::ApiCall | Intrinsic::SafeCall | Intrinsic::Authorize => {
+                let second = operands.get(1);
+                if let Some(operand) = second {
+                    match operand {
+                        Operand::Lit(lit) => {}
+                        Operand::Var(var) => {
+                            if let Base::Var(varid) = var.base {
+                                match _interp.curr_body.get().unwrap().vars[varid].clone() {
+                                    VarKind::GlobalRef(_def_id) => {
+                                        let smthng = self.variables_from_defid.get(&_def_id);
+                                        if let Some(value) = smthng {
+                                            match value {
+                                                Value::Const(const_var) => match const_var {
+                                                    Const::Literal(_lit) => match _lit {
+                                                        Operand::Var(var) => {
+                                                            if let Base::Var(var_id__) = var.base {
+                                                                let varkind___ = _interp
+                                                                    .curr_body
+                                                                    .get()
+                                                                    .unwrap()
+                                                                    .vars[var_id__]
+                                                                    .clone();
+                                                                match varkind___ {
+                                                                    VarKind::LocalDef(def__) => {
+                                                                        let value = &self
+                                                                            .variables_from_defid
+                                                                            .get(&def__.clone());
+                                                                        let thing = _interp
+                                                                            .env()
+                                                                            .defs
+                                                                            .defs
+                                                                            .get(def__);
+                                                                        if let Some(id) = thing {
+                                                                            if let DefKind::GlobalObj(obj_id) =  id  {
+                                                                                       let class =  _interp.env().defs.classes.get(obj_id.clone());
+                                                                                    }
+                                                                        }
+                                                                    }
+                                                                    VarKind::GlobalRef(def__) => {
+                                                                        let value = &self
+                                                                            .variables_from_defid
+                                                                            .get(&def__.clone());
+                                                                        let thing = _interp
+                                                                            .env()
+                                                                            .defs
+                                                                            .defs
+                                                                            .get(def__);
+                                                                        if let Some(id) = thing {
+                                                                            if let DefKind::GlobalObj(obj_id) =  id  {
+                                                                                       let class =  _interp.env().defs.classes.get(obj_id.clone());
+                                                                                    }
+                                                                        }
+                                                                    }
+                                                                    _ => {}
+                                                                }
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    },
+                                                    _ => {}
+                                                },
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
             }
+            _ => {}
+        }
+        match *intrinsic {
+            Intrinsic::Authorize => initial_state,
             Intrinsic::Fetch => initial_state,
             Intrinsic::ApiCall => initial_state,
             Intrinsic::SafeCall => initial_state,
@@ -1931,13 +2045,6 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
                 _ => {}
             }
         }
-
-        // println!("self.variables {:#?}", self.variables);
-
-        for (stmt, inst) in block.iter().enumerate() {
-            let loc = Location::new(bb, stmt as u32);
-            state = self.transfer_inst(interp, def, loc, block, inst, state);
-        }
         state
     }
 
@@ -1950,8 +2057,8 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
         worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
-        for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def);
+        for (def, arguments) in self.needs_call.drain(..) {
+            worklist.push_front_blocks(interp.env(), def, arguments);
         }
     }
 }
@@ -2012,20 +2119,9 @@ impl<'cx> Checker<'cx> for PermissionChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        match *intrinsic {
-            Intrinsic::Authorize => ControlFlow::Continue(*state),
-            Intrinsic::Fetch | Intrinsic::EnvRead | Intrinsic::StorageRead => {
-                debug!("authenticated");
-                ControlFlow::Continue(PermissionTest::Yes)
-            }
-            Intrinsic::ApiCall if *state == PermissionTest::Yes => {
-                let vuln = PermissionVuln::new();
-                ControlFlow::Break(())
-            }
-            Intrinsic::ApiCall => ControlFlow::Continue(*state),
-            Intrinsic::SafeCall => ControlFlow::Continue(*state),
-        }
+        ControlFlow::Continue(*state)
     }
 }
 
