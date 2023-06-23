@@ -3,11 +3,18 @@ import api, { route } from '@forge/api';
 
 const foo = () => {
   const res = api.asApp().requestConfluence(route`/rest/api/3/test`);
+  test_function("hi")
   return res;
 };
 
+let test_function = (word) => {
+  console.log(word);
+  let test_var = "test_var";
+}
+
 const App = () => {
   foo();
+  test_function("test_word");
   return (
     <Fragment>
       <Text>Hello world!</Text>

@@ -57,7 +57,7 @@ create_newtype! {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Const {
     Literal(Operand),
-    Object(Operand)
+    Object(Operand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +65,7 @@ pub enum Value {
     Uninit,
     Unknown,
     Const(Const),
-    Phi(Vec<Const>)
+    Phi(Vec<Const>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -447,20 +447,19 @@ impl Copy for DefRes {}
 impl Copy for DefRef<'_> {}
 
 #[derive(Debug, Clone, Default)]
-struct Definitions {
-    defs: TiVec<DefId, DefKey>,
+pub struct Definitions {
+    pub defs: TiVec<DefId, DefKey>,
     funcs: TiVec<FuncId, Body>,
-    classes: TiVec<ObjId, Class>,
+    pub classes: TiVec<ObjId, Class>,
     foreign: TiVec<ForeignId, ForeignItem>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Environment {
     exports: TiVec<ModId, Vec<(JsWord, DefId)>>,
-    defs: Definitions,
+    pub defs: Definitions,
     default_exports: FxHashMap<ModId, DefId>,
     pub resolver: ResolverTable,
-
 }
 
 struct ImportCollector<'cx> {
@@ -1013,7 +1012,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Pat::Invalid(_) => {}
             Pat::Expr(expr) => {
                 let opnd = self.lower_expr(expr);
-                self.body.coerce_to_lval(self.block, opnd);
+                self.body.coerce_to_lval(self.block, opnd, None);
             }
         }
     }
@@ -1143,9 +1142,24 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                         .push((id.0, new_def));
                                 }
                                 Prop::KeyValue(KeyValueProp { key, value }) => {
+                                    let span = match key {
+                                        PropName::BigInt(bigint) => bigint.span,
+                                        PropName::Computed(computed) => computed.span,
+                                        PropName::Ident(ident) => ident.span,
+                                        PropName::Num(num) => num.span,
+                                        PropName::Str(str) => str.span,
+                                    };
                                     let lowered_value = self.lower_expr(&value);
-                                    let lowered_var =
-                                        self.body.coerce_to_lval(self.block, lowered_value.clone());
+                                    let next_key = self.res.get_or_overwrite_sym(
+                                        (key.as_symbol().unwrap(), span.ctxt),
+                                        self.module,
+                                        DefKind::Arg,
+                                    );
+                                    let lowered_var = self.body.coerce_to_lval(
+                                        self.block,
+                                        lowered_value.clone(),
+                                        Some(next_key),
+                                    );
                                     let rval = Rvalue::Read(lowered_value);
                                     match lowered_var.base {
                                         Base::Var(var_id) => {
@@ -1242,7 +1256,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 match left {
                     PatOrExpr::Expr(expr) => {
                         let opnd = self.lower_expr(expr);
-                        let lval = self.body.coerce_to_lval(self.block, opnd);
+                        let lval = self.body.coerce_to_lval(self.block, opnd, None);
                         self.push_curr_inst(Inst::Assign(lval, Rvalue::Read(rhs.clone())));
                     }
                     PatOrExpr::Pat(pat) => {
@@ -1665,19 +1679,7 @@ impl Visit for FunctionCollector<'_> {
         };
         if let Some(BlockStmt { stmts, .. }) = &n.body {
             analyzer.lower_stmts(stmts);
-
-            // for block in &analyzer.body.blocks {
-            //     println!("----------------------",);
-            //     for inst in &block.insts {
-            //         println!("inst-- {}", inst);
-            //     }
-            //     println!("block_insts {:#?}", &block.insts);
-            //     println!("var_ids {:#?}", analyzer.body.vars);
-            //     println!("block_term {:#?}", &block.term)
-            // }
-
             let body = analyzer.body;
-
 
             *self.res.def_mut(owner).expect_body() = body;
         }

@@ -193,11 +193,10 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     let mut perm_interp = Interp::new(&proj.env);
     let mut reporter = Reporter::new();
     reporter.add_app(opts.appkey.unwrap_or_default(), name.to_owned());
-    
+
     for func in &proj.funcs {
         match *func {
             FunctionTy::Invokable((ref func, ref path, _, def)) => {
-                
                 let mut checker = AuthZChecker::new();
                 debug!("checking {func} at {path:?}");
                 if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
@@ -207,13 +206,12 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 reporter.add_vulnerabilities(checker.into_vulns());
 
                 let mut checker2 = PermissionChecker::new();
-                if let Err(err) = perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
+                if let Err(err) =
+                    perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
                 {
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker2.into_vulns());
-
-
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
                 let mut checker = AuthenticateChecker::new();
