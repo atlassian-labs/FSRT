@@ -201,6 +201,20 @@ pub trait Dataflow<'cx>: Sized {
             }
         }
     }
+
+    fn read_variable_from_class<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &Interp<'cx, C>,
+        defid: DefId,
+    ) {
+    }
+
+    fn read_variable_from_variable<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &Interp<'cx, C>,
+        defid: DefId,
+    ) {
+    }
 }
 
 pub trait Checker<'cx>: Sized {
