@@ -5,16 +5,16 @@ use tracing::debug;
 
 use crate::{
     definitions::{DefId, Environment},
-    ir::BasicBlockId,
+    ir::{BasicBlockId, Operand},
 };
 
 #[derive(Debug, Clone)]
-pub struct WorkList<V, W> {
-    worklist: VecDeque<(V, W, Vec<V>)>,
+pub struct WorkList<V, W, A> {
+    worklist: VecDeque<(V, W, Vec<A>)>,
     visited: FxHashSet<V>,
 }
 
-impl<V, W> WorkList<V, W>
+impl<V, W, A> WorkList<V, W, A>
 where
     V: Eq + Hash,
 {
@@ -27,7 +27,7 @@ where
     }
 
     #[inline]
-    pub fn pop_front(&mut self) -> (Option<(V, W, Vec<V>)>) {
+    pub fn pop_front(&mut self) -> (Option<(V, W, Vec<A>)>) {
         self.worklist.pop_front()
     }
 
@@ -56,30 +56,30 @@ where
     }
 }
 
-impl<V, W> WorkList<V, W>
+impl<V, W, A> WorkList<V, W, A>
 where
     V: Eq + Hash + Copy,
 {
     #[inline]
-    pub fn push_back(&mut self, v: V, w: W, args: Vec<V>) {
+    pub fn push_back(&mut self, v: V, w: W, args: Vec<A>) {
         if self.visited.insert(v) {
             self.worklist.push_back((v, w, args));
         }
     }
 
     #[inline]
-    pub fn push_back_force(&mut self, v: V, w: W, args: Vec<V>) {
+    pub fn push_back_force(&mut self, v: V, w: W, args: Vec<A>) {
         self.worklist.push_back((v, w, args));
     }
 }
 
-impl WorkList<DefId, BasicBlockId> {
+impl WorkList<DefId, BasicBlockId, Operand> {
     #[inline]
     pub(crate) fn push_front_blocks(
         &mut self,
         env: &Environment,
         def: DefId,
-        arguments: Vec<DefId>,
+        arguments: Vec<Operand>,
     ) -> bool {
         if self.visited.insert(def) {
             debug!("adding function: {}", env.def_name(def));
@@ -97,12 +97,12 @@ impl WorkList<DefId, BasicBlockId> {
     }
 }
 
-impl<V, W> Extend<(V, W, Vec<V>)> for WorkList<V, W>
+impl<V, W, A> Extend<(V, W, Vec<A>)> for WorkList<V, W, A>
 where
     V: Eq + Hash,
 {
     #[inline]
-    fn extend<T: IntoIterator<Item = (V, W, Vec<V>)>>(&mut self, iter: T) {
+    fn extend<T: IntoIterator<Item = (V, W, Vec<A>)>>(&mut self, iter: T) {
         self.worklist.extend(iter);
     }
 }

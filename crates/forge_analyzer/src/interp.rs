@@ -139,7 +139,7 @@ pub trait Dataflow<'cx>: Sized {
         bb: BasicBlockId,
         block: &'cx BasicBlock,
         initial_state: Self::State,
-        arguments: Option<Vec<DefId>>,
+        arguments: Option<Vec<Operand>>,
     ) -> Self::State {
         let mut state = initial_state;
         for (stmt, inst) in block.iter().enumerate() {
@@ -172,7 +172,7 @@ pub trait Dataflow<'cx>: Sized {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
     }
@@ -183,7 +183,7 @@ pub trait Dataflow<'cx>: Sized {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
     ) {
         match block.successors() {
             Successors::Return => {

@@ -112,7 +112,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
@@ -332,7 +332,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
@@ -459,7 +459,7 @@ impl WithCallStack for AuthNVuln {
 }
 
 pub struct PermisisionDataflow {
-    needs_call: Vec<(DefId, Vec<DefId>)>,
+    needs_call: Vec<(DefId, Vec<Operand>)>,
     variables: FxHashMap<DefId, Value>,
     variables_from_defid: FxHashMap<DefId, Value>,
 }
@@ -601,45 +601,10 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
             return initial_state;
         };
 
-        let mut def_ids_operands = vec![];
-
-        for operand in operands {
-            match operand {
-                Operand::Var(variable) => match variable.base {
-                    Base::Var(varid) => {
-                        let varkind = &interp.curr_body.get().unwrap().vars[varid];
-
-                        match varkind {
-                            VarKind::LocalDef(defid) => {
-                                def_ids_operands.push(defid.clone());
-                            }
-                            VarKind::GlobalRef(defid) => {
-                                if self.variables_from_defid.contains_key(defid) {
-                                    def_ids_operands.push(defid.clone());
-                                } else {
-                                }
-                            }
-                            VarKind::Arg(defid) => {
-                                def_ids_operands.push(defid.clone());
-                            }
-                            VarKind::Temp { parent } => {
-                                if let Some(defid) = parent {
-                                    def_ids_operands.push(defid.clone());
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    _ => {}
-                },
-                Operand::Lit(lit) => {}
-            }
-        }
-
         let callee_name = interp.env().def_name(callee_def);
         let caller_name = interp.env().def_name(def);
         debug!("Found call to {callee_name} at {def:?} {caller_name}");
-        self.needs_call.push((callee_def, def_ids_operands.clone()));
+        self.needs_call.push((callee_def, operands.into_vec()));
         initial_state
     }
 
@@ -650,53 +615,52 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
         bb: BasicBlockId,
         block: &'cx BasicBlock,
         initial_state: Self::State,
-        arguments: Option<Vec<DefId>>,
+        arguments: Option<Vec<Operand>>,
     ) -> Self::State {
         let mut state: PermissionTest = initial_state;
 
         if let Some(args) = arguments {
             let mut args = args.clone();
             for var in &interp.curr_body.get().unwrap().vars {
-                match var {
-                    VarKind::Arg(defid_new) => {
-                        let defid_old = args.pop();
-                        if let Some(def_id_old_unwrapped) = defid_old {
-                            self.variables_from_defid.insert(
-                                defid_new.clone(),
-                                self.variables_from_defid[&def_id_old_unwrapped.clone()].clone(),
-                            );
+                if let VarKind::Arg(defid_new) = var {
+                    if let Some(operand) = args.pop() {
+                        match operand {
+                            Operand::Var(variable) => match variable.base {
+                                Base::Var(varid) => {
+                                    let varkind = &interp.curr_body.get().unwrap().vars[varid];
+                                    if let Some(defid) = get_varid_from_defid(varkind) {
+                                        if let Some(value) =
+                                            self.variables_from_defid.get(&defid.clone())
+                                        {
+                                            self.variables_from_defid
+                                                .insert(defid_new.clone(), value.clone());
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            },
+                            Operand::Lit(lit) => {
+                                if let Some(lit_value) = convert_lit_to_raw(&lit) {
+                                    let value = Value::Const(Const::Literal(lit_value));
+                                    self.variables_from_defid
+                                        .insert(defid_new.clone(), value.clone());
+                                }
+                            }
                         }
                     }
-                    _ => {}
                 }
             }
         }
 
-        /* collecting the variables that were used :) */
         for (stmt, inst) in block.iter().enumerate() {
             let loc = Location::new(bb, stmt as u32);
             state = self.transfer_inst(interp, def, loc, block, inst, state);
-
             match inst {
                 Inst::Assign(variable, rvalue) => match variable.base {
                     Base::Var(varid) => {
-                        let var_kind = &interp.curr_body.get().unwrap().vars[varid];
-                        match var_kind {
-                            VarKind::LocalDef(defid) => {
-                                self.add_variable(interp, defid, rvalue);
-                            }
-                            VarKind::GlobalRef(defid) => {
-                                self.add_variable(interp, defid, rvalue);
-                            }
-                            VarKind::Arg(defid) => {
-                                self.add_variable(interp, defid, rvalue);
-                            }
-                            VarKind::Temp { parent } => {
-                                if let Some(defid) = parent {
-                                    self.add_variable(interp, defid, rvalue);
-                                }
-                            }
-                            _ => {}
+                        let varkind = &interp.curr_body.get().unwrap().vars[varid];
+                        if let Some(defid) = get_varid_from_defid(varkind) {
+                            self.add_variable(interp, &defid, rvalue);
                         }
                     }
                     _ => {}
@@ -852,7 +816,7 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for (def, arguments) in self.needs_call.drain(..) {
@@ -889,14 +853,18 @@ fn get_varid_from_defid(varkind: &VarKind) -> Option<DefId> {
 
 fn convert_operand_to_raw(operand: &Operand) -> Option<String> {
     if let Operand::Lit(lit) = operand {
-        match lit {
-            Literal::BigInt(bigint) => Some(bigint.to_string()),
-            Literal::Number(num) => Some(num.to_string()),
-            Literal::Str(str) => Some(str.to_string()),
-            _ => None,
-        }
+        convert_lit_to_raw(lit)
     } else {
         None
+    }
+}
+
+fn convert_lit_to_raw(lit: &Literal) -> Option<String> {
+    match lit {
+        Literal::BigInt(bigint) => Some(bigint.to_string()),
+        Literal::Number(num) => Some(num.to_string()),
+        Literal::Str(str) => Some(str.to_string()),
+        _ => None,
     }
 }
 
