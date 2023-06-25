@@ -54,13 +54,13 @@ create_newtype! {
     pub struct DefId(u32);
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum Const {
-    Literal(Operand),
-    Object(Operand),
+    Literal(String),
+    Object(Class),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum Value {
     Uninit,
     Unknown,
@@ -200,7 +200,7 @@ pub fn run_resolver(
 #[derive(Debug, Clone)]
 pub struct Class {
     def: DefId,
-    pub_members: Vec<(JsWord, DefId)>,
+    pub pub_members: Vec<(JsWord, DefId)>,
     constructor: Option<DefId>,
 }
 
@@ -698,7 +698,7 @@ struct FunctionCollector<'cx> {
 }
 
 struct FunctionAnalyzer<'cx> {
-    res: &'cx mut Environment,
+    pub res: &'cx mut Environment,
     module: ModId,
     current_def: DefId,
     assigning_to: Option<Variable>,
@@ -841,7 +841,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn lower_member(&mut self, obj: &Expr, prop: &MemberProp) -> Operand {
-        let obj = self.lower_expr(obj);
+        let obj = self.lower_expr(obj, None);
         let Operand::Var(mut var) = obj else {
             // FIXME: handle literals
             return obj;
@@ -852,7 +852,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 var.projections.push(Projection::Known(id.0));
             }
             MemberProp::Computed(ComputedPropName { expr, .. }) => {
-                let opnd = self.lower_expr(expr);
+                let opnd = self.lower_expr(expr, None);
                 var.projections
                     .push(self.body.resolve_prop(self.block, opnd));
             }
@@ -901,7 +901,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                 self.bind_pats_helper(value, rhs);
                             }
                             PropName::Computed(ComputedPropName { expr, .. }) => {
-                                let opnd = self.lower_expr(expr);
+                                let opnd = self.lower_expr(expr, None);
                                 let proj = self.body.resolve_prop(self.block, opnd);
                                 rhs.projections.push(proj);
                                 self.bind_pats_helper(value, rhs);
@@ -959,7 +959,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                 return Operand::UNDEF;
                             }
                             BlockStmtOrExpr::Expr(expr) => {
-                                return self.lower_expr(&expr);
+                                return self.lower_expr(&expr, None);
                             }
                         },
                         Expr::Fn(FnExpr { ident: _, function }) => {
@@ -973,11 +973,20 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
             }
         }
-        let lowered_args = args.iter().map(|arg| self.lower_expr(&arg.expr)).collect();
+        let lowered_args = args
+            .iter()
+            .enumerate()
+            .map(|(i, arg)| {
+                let defid =
+                    self.res
+                        .add_anonymous(i.to_string() + "test", AnonType::Unknown, self.module);
+                self.lower_expr(&arg.expr, Some(defid))
+            })
+            .collect();
         let callee = match callee {
             CalleeRef::Super => Operand::Var(Variable::SUPER),
             CalleeRef::Import => Operand::UNDEF,
-            CalleeRef::Expr(expr) => self.lower_expr(expr),
+            CalleeRef::Expr(expr) => self.lower_expr(expr, None),
         };
         let first_arg = args.first().map(|expr| &*expr.expr);
         let call = match self.as_intrinsic(&props, first_arg) {
@@ -1011,7 +1020,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }
             Pat::Invalid(_) => {}
             Pat::Expr(expr) => {
-                let opnd = self.lower_expr(expr);
+                let opnd = self.lower_expr(expr, None);
                 self.body.coerce_to_lval(self.block, opnd, None);
             }
         }
@@ -1021,7 +1030,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
         let exprs = n
             .exprs
             .iter()
-            .map(|expr| self.lower_expr(expr))
+            .map(|expr| self.lower_expr(expr, None))
             .collect::<Vec<_>>();
         let quasis = n
             .quasis
@@ -1043,9 +1052,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }
             JSXElementChild::JSXExprContainer(JSXExprContainer { expr, .. }) => match expr {
                 JSXExpr::JSXEmptyExpr(_) => Operand::UNDEF,
-                JSXExpr::Expr(expr) => self.lower_expr(expr),
+                JSXExpr::Expr(expr) => self.lower_expr(expr, None),
             },
-            JSXElementChild::JSXSpreadChild(JSXSpreadChild { expr, .. }) => self.lower_expr(expr),
+            JSXElementChild::JSXSpreadChild(JSXSpreadChild { expr, .. }) => {
+                self.lower_expr(expr, None)
+            }
             JSXElementChild::JSXElement(elem) => self.lower_jsx_elem(elem),
             JSXElementChild::JSXFragment(JSXFragment { children, .. }) => {
                 for child in children {
@@ -1100,7 +1111,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     // TODO: This can probably be made into a trait
-    fn lower_expr(&mut self, n: &Expr) -> Operand {
+    fn lower_expr(&mut self, n: &Expr, parent: Option<DefId>) -> Operand {
         match n {
             Expr::This(_) => Operand::Var(Variable::THIS),
             Expr::Array(ArrayLit { elems, .. }) => {
@@ -1109,7 +1120,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     .map(|e| {
                         e.as_ref()
                             .map_or(Operand::UNDEF, |ExprOrSpread { spread, expr }| {
-                                self.lower_expr(expr)
+                                self.lower_expr(expr, None)
                             })
                     })
                     .collect();
@@ -1149,17 +1160,19 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                         PropName::Num(num) => num.span,
                                         PropName::Str(str) => str.span,
                                     };
-                                    let lowered_value = self.lower_expr(&value);
+                                    let lowered_value = self.lower_expr(&value, None);
                                     let next_key = self.res.get_or_overwrite_sym(
                                         (key.as_symbol().unwrap(), span.ctxt),
                                         self.module,
                                         DefKind::Arg,
                                     );
-                                    let lowered_var = self.body.coerce_to_lval(
+                                    let mut lowered_var = self.body.coerce_to_lval(
                                         self.block,
                                         lowered_value.clone(),
                                         Some(next_key),
                                     );
+                                    if let Base::Var(varid) = lowered_var.base {}
+
                                     let rval = Rvalue::Read(lowered_value);
                                     match lowered_var.base {
                                         Base::Var(var_id) => {
@@ -1195,6 +1208,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                                         key.as_symbol().unwrap(),
                                                         def_id_prop,
                                                     ));
+                                                    // lowered_var.base =cls.def
                                                 }
                                                 _ => {}
                                             }
@@ -1211,7 +1225,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }
             Expr::Fn(_) => Operand::UNDEF,
             Expr::Unary(UnaryExpr { op, arg, .. }) => {
-                let arg = self.lower_expr(arg);
+                let arg = self.lower_expr(arg, None);
                 let tmp = self
                     .body
                     .push_tmp(self.block, Rvalue::Unary(op.into(), arg), None);
@@ -1221,13 +1235,13 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 op, prefix, arg, ..
             }) => {
                 // FIXME: Handle op
-                self.lower_expr(arg)
+                self.lower_expr(arg, None)
             }
             Expr::Bin(BinExpr {
                 op, left, right, ..
             }) => {
-                let left = self.lower_expr(left);
-                let right = self.lower_expr(right);
+                let left = self.lower_expr(left, None);
+                let right = self.lower_expr(right, None);
                 let tmp = self
                     .body
                     .push_tmp(self.block, Rvalue::Bin(op.into(), left, right), None);
@@ -1242,7 +1256,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         super_var.projections.push(Projection::Known(id));
                     }
                     SuperProp::Computed(ComputedPropName { expr, .. }) => {
-                        let opnd = self.lower_expr(expr);
+                        let opnd = self.lower_expr(expr, None);
                         let prop = self.body.resolve_prop(self.block, opnd);
                         super_var.projections.push(prop);
                     }
@@ -1252,10 +1266,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Expr::Assign(AssignExpr {
                 op, left, right, ..
             }) => {
-                let rhs = self.lower_expr(right);
+                let rhs = self.lower_expr(right, None);
                 match left {
                     PatOrExpr::Expr(expr) => {
-                        let opnd = self.lower_expr(expr);
+                        let opnd = self.lower_expr(expr, None);
                         let lval = self.body.coerce_to_lval(self.block, opnd, None);
                         self.push_curr_inst(Inst::Assign(lval, Rvalue::Read(rhs.clone())));
                     }
@@ -1269,7 +1283,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Expr::Cond(CondExpr {
                 test, cons, alt, ..
             }) => {
-                let cond = self.lower_expr(test);
+                let cond = self.lower_expr(test, None);
                 let curr = self.block;
                 let rest = self.body.new_block();
                 let cons_block = self.body.new_block();
@@ -1280,11 +1294,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     alt: alt_block,
                 });
                 self.block = cons_block;
-                let cons = self.lower_expr(cons);
+                let cons = self.lower_expr(cons, None);
                 let cons_phi = self.body.push_tmp(self.block, Rvalue::Read(cons), None);
                 self.set_curr_terminator(Terminator::Goto(rest));
                 self.block = alt_block;
-                let alt = self.lower_expr(alt);
+                let alt = self.lower_expr(alt, None);
                 let alt_phi = self.body.push_tmp(self.block, Rvalue::Read(alt), None);
                 self.set_curr_terminator(Terminator::Goto(rest));
                 self.block = rest;
@@ -1300,10 +1314,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Expr::Seq(SeqExpr { exprs, .. }) => {
                 if let Some((last, rest)) = exprs.split_last() {
                     for expr in rest {
-                        let opnd = self.lower_expr(expr);
+                        let opnd = self.lower_expr(expr, None);
                         self.body.push_expr(self.block, Rvalue::Read(opnd));
                     }
-                    self.lower_expr(last)
+                    self.lower_expr(last, None)
                 } else {
                     Literal::Undef.into()
                 }
@@ -1320,24 +1334,30 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Expr::Lit(lit) => lit.clone().into(),
             Expr::Tpl(tpl) => {
                 let tpl = self.lower_tpl(tpl);
-                Operand::with_var(self.body.push_tmp(self.block, Rvalue::Template(tpl), None))
+                Operand::with_var(
+                    self.body
+                        .push_tmp(self.block, Rvalue::Template(tpl), parent),
+                )
             }
             Expr::TaggedTpl(TaggedTpl { tag, tpl, .. }) => {
-                let tag = Some(self.lower_expr(tag));
+                let tag = Some(self.lower_expr(tag, parent));
                 let tpl = Template {
                     tag,
                     ..self.lower_tpl(tpl)
                 };
-                Operand::with_var(self.body.push_tmp(self.block, Rvalue::Template(tpl), None))
+                Operand::with_var(
+                    self.body
+                        .push_tmp(self.block, Rvalue::Template(tpl), parent),
+                )
             }
             Expr::Arrow(_) => Operand::UNDEF,
             Expr::Class(_) => Operand::UNDEF,
             Expr::Yield(YieldExpr { arg, .. }) => arg
                 .as_deref()
-                .map_or(Operand::UNDEF, |expr| self.lower_expr(expr)),
+                .map_or(Operand::UNDEF, |expr| self.lower_expr(expr, None)),
             Expr::MetaProp(_) => Operand::UNDEF,
-            Expr::Await(AwaitExpr { arg, .. }) => self.lower_expr(arg),
-            Expr::Paren(ParenExpr { expr, .. }) => self.lower_expr(expr),
+            Expr::Await(AwaitExpr { arg, .. }) => self.lower_expr(arg, None),
+            Expr::Paren(ParenExpr { expr, .. }) => self.lower_expr(expr, None),
             Expr::JSXMember(mem) => self.lower_jsx_member(&mem),
             Expr::JSXNamespacedName(JSXNamespacedName { ns, name, .. }) => {
                 let mut ident = self.lower_ident(&ns);
@@ -1364,7 +1384,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             | Expr::TsNonNull(TsNonNullExpr { expr, .. })
             | Expr::TsAs(TsAsExpr { expr, .. })
             | Expr::TsInstantiation(TsInstantiation { expr, .. })
-            | Expr::TsSatisfies(TsSatisfiesExpr { expr, .. }) => self.lower_expr(expr),
+            | Expr::TsSatisfies(TsSatisfiesExpr { expr, .. }) => self.lower_expr(expr, None),
             Expr::PrivateName(PrivateName { id, .. }) => todo!(),
             Expr::OptChain(OptChainExpr { base, .. }) => match base {
                 OptChainBase::Call(OptCall { callee, args, .. }) => {
@@ -1391,13 +1411,13 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Stmt::Empty(_) => {}
             Stmt::Debugger(_) => {}
             Stmt::With(WithStmt { obj, body, .. }) => {
-                let opnd = self.lower_expr(obj);
+                let opnd = self.lower_expr(obj, None);
                 self.body.push_expr(self.block, Rvalue::Read(opnd));
                 self.lower_stmt(body);
             }
             Stmt::Return(ReturnStmt { arg, .. }) => {
                 if let Some(arg) = arg {
-                    let opnd = self.lower_expr(arg);
+                    let opnd = self.lower_expr(arg, None);
                     self.body
                         .push_inst(self.block, Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)));
                 }
@@ -1422,7 +1442,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 } else {
                     cont
                 };
-                let cond = self.lower_expr(test);
+                let cond = self.lower_expr(test, None);
                 self.set_curr_terminator(Terminator::If {
                     cond,
                     cons: cons_block,
@@ -1437,11 +1457,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 cases,
                 ..
             }) => {
-                let opnd = self.lower_expr(discriminant);
+                let opnd = self.lower_expr(discriminant, None);
                 // TODO: lower switch
             }
             Stmt::Throw(ThrowStmt { arg, .. }) => {
-                let opnd = self.lower_expr(arg);
+                let opnd = self.lower_expr(arg, None);
                 self.body.push_expr(self.block, Rvalue::Read(opnd));
                 self.body.set_terminator(self.block, Terminator::Throw);
             }
@@ -1461,7 +1481,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let [check, cont, body_id] = self.body.new_blocks();
                 self.set_curr_terminator(Terminator::Goto(check));
                 self.block = check;
-                let cond = self.lower_expr(test);
+                let cond = self.lower_expr(test, None);
                 self.set_curr_terminator(Terminator::If {
                     cond,
                     cons: body_id,
@@ -1479,7 +1499,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 self.lower_stmt(body);
                 self.set_curr_terminator(Terminator::Goto(check));
                 self.block = check;
-                let cond = self.lower_expr(test);
+                let cond = self.lower_expr(test, None);
                 self.set_curr_terminator(Terminator::If {
                     cond,
                     cons: body_id,
@@ -1499,14 +1519,14 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         self.lower_var_decl(decl);
                     }
                     Some(VarDeclOrExpr::Expr(expr)) => {
-                        self.lower_expr(expr);
+                        self.lower_expr(expr, None);
                     }
                     None => {}
                 }
                 let [check, cont, body_id] = self.body.new_blocks();
                 self.goto_block(check);
                 if let Some(test) = test {
-                    let cond = self.lower_expr(test);
+                    let cond = self.lower_expr(test, None);
                     self.set_curr_terminator(Terminator::If {
                         cond,
                         cons: body_id,
@@ -1518,7 +1538,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 self.block = body_id;
                 self.lower_stmt(body);
                 if let Some(update) = update {
-                    self.lower_expr(update);
+                    self.lower_expr(update, None);
                 }
                 self.set_curr_terminator(Terminator::Goto(check));
                 self.goto_block(cont);
@@ -1541,7 +1561,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 | Decl::TsModule(_) => {}
             },
             Stmt::Expr(ExprStmt { expr, .. }) => {
-                let opnd = self.lower_expr(expr);
+                let opnd = self.lower_expr(expr, None);
                 self.body.push_expr(self.block, Rvalue::Read(opnd));
             }
         }
@@ -1549,7 +1569,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
     fn lower_loop(&mut self, left: &VarDeclOrPat, right: &Expr, body: &Stmt) {
         // FIXME: don't assume loops are infinite
-        let opnd = self.lower_expr(right);
+        let opnd = self.lower_expr(right, None);
         match left {
             VarDeclOrPat::VarDecl(var) => self.lower_var_decl(var),
             VarDeclOrPat::Pat(pat) => self.bind_pats(pat, Rvalue::Read(opnd)),
@@ -1559,11 +1579,21 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
     fn lower_var_decl(&mut self, var: &VarDecl) {
         for decl in &var.decls {
-            let opnd = decl
-                .init
-                .as_deref()
-                .map_or(Operand::UNDEF, |init| self.lower_expr(init));
-            self.bind_pats(&decl.name, Rvalue::Read(opnd));
+            if let Pat::Ident(id) = &decl.name {
+                let id = id.to_id();
+                let def = self.res.get_or_insert_sym(id, self.module);
+                let opnd = decl
+                    .init
+                    .as_deref()
+                    .map_or(Operand::UNDEF, |init| self.lower_expr(init, Some(def)));
+                self.bind_pats(&decl.name, Rvalue::Read(opnd));
+            } else {
+                let opnd = decl
+                    .init
+                    .as_deref()
+                    .map_or(Operand::UNDEF, |init| self.lower_expr(init, None));
+                self.bind_pats(&decl.name, Rvalue::Read(opnd));
+            }
         }
     }
 }
@@ -1730,7 +1760,7 @@ impl Visit for FunctionCollector<'_> {
                 analyzer.lower_stmts(stmts);
             }
             BlockStmtOrExpr::Expr(e) => {
-                let opnd = analyzer.lower_expr(e);
+                let opnd = analyzer.lower_expr(e, None);
                 analyzer
                     .body
                     .push_inst(analyzer.block, Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)));
@@ -1790,7 +1820,7 @@ impl Visit for FunctionCollector<'_> {
                             operand_stack: vec![],
                             in_lhs: false,
                         };
-                        let opnd = analyzer.lower_expr(expr);
+                        let opnd = analyzer.lower_expr(expr, None);
                         analyzer.body.push_inst(
                             analyzer.block,
                             Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)),

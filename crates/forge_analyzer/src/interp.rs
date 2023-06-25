@@ -15,7 +15,7 @@ use swc_core::ecma::atoms::JsWord;
 use tracing::{debug, info, instrument, warn};
 
 use crate::{
-    definitions::{Const, DefId, Environment, Value},
+    definitions::{Class, Const, DefId, Environment, Value},
     ir::{
         Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue,
         Successors, STARTING_BLOCK,
@@ -149,6 +149,23 @@ pub trait Dataflow<'cx>: Sized {
         state
     }
 
+    fn add_variable<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        interp: &Interp<'cx, C>,
+        defid: &DefId,
+        rvalue: &Rvalue,
+    ) {
+    }
+
+    fn insert_value<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        operand: &Operand,
+        defid: &DefId,
+        interp: &Interp<'cx, C>,
+        prev_values: Option<Vec<Const>>,
+    ) {
+    }
+
     fn join_term<C: Checker<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
@@ -202,18 +219,20 @@ pub trait Dataflow<'cx>: Sized {
         }
     }
 
-    fn read_variable_from_class<C: Checker<'cx, State = Self::State>>(
+    fn read_class_from_variable<C: Checker<'cx, State = Self::State>>(
         &mut self,
         _interp: &Interp<'cx, C>,
         defid: DefId,
-    ) {
+    ) -> Option<Class> {
+        None
     }
 
-    fn read_variable_from_variable<C: Checker<'cx, State = Self::State>>(
+    fn read_class_from_object<C: Checker<'cx, State = Self::State>>(
         &mut self,
         _interp: &Interp<'cx, C>,
         defid: DefId,
-    ) {
+    ) -> Option<Class> {
+        None
     }
 }
 
