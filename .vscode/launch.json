@@ -1,120 +1,101 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug unit tests in library 'forge_analyzer'",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--lib",
-                    "--package=forge_analyzer"
-                ],
-                "filter": {
-                    "name": "forge_analyzer",
-                    "kind": "lib"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug unit tests in library 'forge_file_resolver'",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--lib",
-                    "--package=forge_file_resolver"
-                ],
-                "filter": {
-                    "name": "forge_file_resolver",
-                    "kind": "lib"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug unit tests in library 'forge_utils'",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--lib",
-                    "--package=forge_utils"
-                ],
-                "filter": {
-                    "name": "forge_utils",
-                    "kind": "lib"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug unit tests in library 'forge_loader'",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--lib",
-                    "--package=forge_loader"
-                ],
-                "filter": {
-                    "name": "forge_loader",
-                    "kind": "lib"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug executable 'fsrt'",
-            "cargo": {
-                "args": [
-                    "build",
-                    "--bin=fsrt",
-                    "--package=fsrt"
-                ],
-                "filter": {
-                    "name": "fsrt",
-                    "kind": "bin"
-                }
-            },
-            "args": ["./test-apps/jira-damn-vulnerable-forge-app"],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug unit tests in executable 'fsrt'",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--bin=fsrt",
-                    "--package=fsrt"
-                ],
-                "filter": {
-                    "name": "fsrt",
-                    "kind": "bin"
-                }
-            },
-            "cwd": "${workspaceFolder}"
-        }
-    ]
+	// Use IntelliSense to learn about possible attributes.
+	// Hover to view descriptions of existing attributes.
+	// For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in library 'forge_analyzer'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--lib",
+					"--package=forge_analyzer"
+				],
+				"filter": {
+					"name": "forge_analyzer",
+					"kind": "lib"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in library 'forge_file_resolver'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--lib",
+					"--package=forge_file_resolver"
+				],
+				"filter": {
+					"name": "forge_file_resolver",
+					"kind": "lib"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in library 'forge_utils'",
+			"cargo": {
+				"args": ["test", "--no-run", "--lib", "--package=forge_utils"],
+				"filter": {
+					"name": "forge_utils",
+					"kind": "lib"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in library 'forge_loader'",
+			"cargo": {
+				"args": ["test", "--no-run", "--lib", "--package=forge_loader"],
+				"filter": {
+					"name": "forge_loader",
+					"kind": "lib"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug executable 'fsrt'",
+			"cargo": {
+				"args": ["build", "--bin=fsrt", "--package=fsrt"],
+				"filter": {
+					"name": "fsrt",
+					"kind": "bin"
+				}
+			},
+			"args": ["./test-apps/jira-damn-vulnerable-forge-app"],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in executable 'fsrt'",
+			"cargo": {
+				"args": ["test", "--no-run", "--bin=fsrt", "--package=fsrt"],
+				"filter": {
+					"name": "fsrt",
+					"kind": "bin"
+				}
+			},
+			"cwd": "${workspaceFolder}"
+		}
+	]
 }

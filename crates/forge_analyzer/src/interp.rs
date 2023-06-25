@@ -156,6 +156,23 @@ pub trait Dataflow<'cx>: Sized {
         state
     }
 
+    fn add_variable<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        interp: &Interp<'cx, C>,
+        defid: &DefId,
+        rvalue: &Rvalue,
+    ) {
+    }
+
+    fn insert_value<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        operand: &Operand,
+        defid: &DefId,
+        interp: &Interp<'cx, C>,
+        prev_values: Option<Vec<Const>>,
+    ) {
+    }
+
     fn add_variable<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
