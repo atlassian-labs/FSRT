@@ -96,7 +96,7 @@ function SecureGlance() {
     return '';
   }
   const [flagVal] = useState(async () => {
-    const issueData = await fetchIssueSummary("test_value_replicated");
+    const issueData = await fetchIssueSummary(platformContext.issueKey);
     return JSON.stringify(issueData);
   });
 
