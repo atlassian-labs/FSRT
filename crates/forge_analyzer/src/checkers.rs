@@ -7,12 +7,13 @@ use std::{cmp::max, iter, mem, ops::ControlFlow, path::PathBuf};
 use tracing::{debug, info, warn};
 
 use crate::{
-    definitions::{Const, DefId, DefKind, Environment, Value},
+    definitions::{Class, Const, DefId, DefKind, Environment, Value},
     interp::{
         Checker, Dataflow, EntryKind, EntryPoint, Frame, Interp, JoinSemiLattice, WithCallStack,
     },
     ir::{
-        Base, BasicBlock, BasicBlockId, Inst, Intrinsic, Location, Operand, Rvalue, VarId, VarKind,
+        Base, BasicBlock, BasicBlockId, Inst, Intrinsic, Literal, Location, Operand, Rvalue, VarId,
+        VarKind,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     worklist::WorkList,
@@ -467,46 +468,6 @@ impl WithCallStack for PermissionVuln {
     fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
 }
 
-impl PermisisionDataflow {
-    fn add_variables(&mut self, rvalue: &Rvalue, defid: &DefId) {
-        match rvalue {
-            Rvalue::Read(operand) => {
-                if self.variables_from_defid.contains_key(&defid)
-                    && self.variables_from_defid.get(&defid).unwrap()
-                        != &Value::Const(Const::Literal(operand.clone()))
-                {
-                    // currently assuming prev value is not phi
-                    let prev_vars = &self.variables_from_defid[&defid];
-                    match prev_vars {
-                        Value::Const(prev_var_const) => {
-                            match operand {
-                                Operand::Lit(_) => {}
-                                Operand::Var(var) => match var.base {
-                                    Base::Var(var_id) => {}
-                                    _ => {}
-                                },
-                            }
-                            let var_vec =
-                                vec![prev_var_const.clone(), Const::Literal(operand.clone())];
-
-                            self.variables_from_defid
-                                .insert(*defid, Value::Phi(Vec::from(var_vec)));
-                        }
-                        _ => {}
-                    }
-                } else {
-                    let value = Value::Const(Const::Literal(operand.clone()));
-                    self.variables_from_defid.insert(*defid, value.clone());
-                }
-            }
-            Rvalue::Template(template) => {}
-            _ => {}
-        }
-    }
-
-    fn add_something() {}
-}
-
 impl<'cx> Dataflow<'cx> for PermisisionDataflow {
     type State = PermissionTest;
 
@@ -530,9 +491,30 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
         initial_state: Self::State,
         operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
+        println!("operands {operands:?}");
         match *intrinsic {
             Intrinsic::ApiCall | Intrinsic::SafeCall | Intrinsic::Authorize => {
-                let second = operands.get(1);
+                let (first, second) = (operands.get(0), operands.get(1));
+                if let Some(operand) = first {
+                    match operand {
+                        Operand::Lit(lit) => {
+                            println!("lit from first operand {:?}", lit);
+                        }
+                        Operand::Var(var) => match var.base {
+                            Base::Var(varid) => {
+                                let varkind = &_interp.curr_body.get().unwrap().vars[varid];
+                                let defid = get_varid_from_defid(&varkind);
+                                if let Some(defid) = defid {
+                                    println!(
+                                        "actual value {:?}",
+                                        self.variables_from_defid.get(&defid)
+                                    );
+                                }
+                            }
+                            _ => {}
+                        },
+                    }
+                }
                 if let Some(operand) = second {
                     match operand {
                         Operand::Lit(lit) => {
@@ -542,11 +524,32 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
                             if let Base::Var(varid) = var.base {
                                 match _interp.curr_body.get().unwrap().vars[varid].clone() {
                                     VarKind::GlobalRef(_def_id) => {
-                                        self.read_variable_from_variable(_interp, _def_id);
+                                        /* case where it is passed in as a variable */
+                                        match &self.variables_from_defid.get(&_def_id).unwrap() {
+                                            Value::Const(const_var) => {
+                                                if let Const::Object(obj) = const_var {
+                                                    let defid = find_member_of_obj("method", obj);
+                                                    if let Some(defid) = defid {
+                                                        let value =
+                                                            self.variables_from_defid.get(&defid);
+                                                        println!("value of method {value:?}");
+                                                    }
+                                                }
+                                            }
+                                            Value::Phi(phi_var) => {}
+                                            _ => {}
+                                        }
                                     }
                                     VarKind::LocalDef(_def_id) => {
-                                        self.read_variable_from_variable(_interp, _def_id);
-                                        println!("parent3 {:?}", _def_id);
+                                        let class = self.read_class_from_object(_interp, _def_id);
+                                        if let Some(obj) = class {
+                                            let defid = find_member_of_obj("method", &obj);
+                                            if let Some(defid) = defid {
+                                                let value = self.variables_from_defid.get(&defid);
+                                                println!("value of method {value:?}");
+                                            }
+                                        }
+                                        //
                                     }
                                     _ => {}
                                 }
@@ -567,49 +570,21 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
         }
     }
 
-    fn read_variable_from_variable<C: Checker<'cx, State = Self::State>>(
+    fn read_class_from_object<C: Checker<'cx, State = Self::State>>(
         &mut self,
         _interp: &Interp<'cx, C>,
         defid: DefId,
-    ) {
-        if let Some(value) = self.variables_from_defid.get(&defid) {
-            if let Value::Const(const_var) = value {
-                match const_var {
-                    Const::Literal(_lit) => match _lit {
-                        Operand::Var(var) => {
-                            if let Base::Var(var_id__) = var.base {
-                                let varkind =
-                                    _interp.curr_body.get().unwrap().vars[var_id__].clone();
-                                match varkind {
-                                    VarKind::LocalDef(def__) => {
-                                        self.read_variable_from_class(_interp, def__);
-                                    }
-                                    VarKind::GlobalRef(def__) => {
-                                        self.read_variable_from_class(_interp, def__);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn read_variable_from_class<C: Checker<'cx, State = Self::State>>(
-        &mut self,
-        _interp: &Interp<'cx, C>,
-        defid: DefId,
-    ) {
+    ) -> Option<Class> {
         let def_kind = _interp.env().defs.defs.get(defid);
         if let Some(id) = def_kind {
             if let DefKind::GlobalObj(obj_id) = id {
                 let class = _interp.env().defs.classes.get(obj_id.clone());
+                if let Some(class) = class {
+                    return Some(class.clone());
+                }
             }
         }
+        None
     }
 
     fn transfer_call<C: crate::interp::Checker<'cx, State = Self::State>>(
@@ -708,159 +683,167 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
                         let var_kind = &interp.curr_body.get().unwrap().vars[varid];
                         match var_kind {
                             VarKind::LocalDef(defid) => {
-                                match rvalue {
-                                    Rvalue::Read(operand) => {
-                                        if self.variables_from_defid.contains_key(&defid)
-                                            && self.variables_from_defid.get(&defid).unwrap()
-                                                != &Value::Const(Const::Literal(operand.clone()))
-                                        {
-                                            // currently assuming prev value is not phi
-                                            let prev_vars = &self.variables_from_defid[&defid];
-                                            match prev_vars {
-                                                Value::Const(prev_var_const) => {
-                                                    let var_vec = vec![
-                                                        prev_var_const.clone(),
-                                                        Const::Literal(operand.clone()),
-                                                    ];
-
-                                                    self.variables_from_defid.insert(
-                                                        *defid,
-                                                        Value::Phi(Vec::from(var_vec)),
-                                                    );
-                                                }
-                                                _ => {}
-                                            }
-                                        } else {
-                                            match operand {
-                                                Operand::Lit(lit) => {
-                                                    // let value = Value::Const(Const::Literal(operand.clone()));
-                                                    // self.variables_from_defid.insert(*defid, value.clone());
-                                                }
-                                                Operand::Var(var) => match var.base {
-                                                    Base::Var(var_id) => {
-                                                        let something =
-                                                            &interp.curr_body.get().unwrap().vars
-                                                                [var_id];
-                                                    }
-                                                    _ => {}
-                                                },
-                                            }
-                                            let value =
-                                                Value::Const(Const::Literal(operand.clone()));
-                                            self.variables_from_defid.insert(*defid, value.clone());
-                                        }
-                                    }
-                                    Rvalue::Template(template) => {}
-                                    _ => {}
-                                }
+                                self.add_variable(interp, defid, rvalue);
                             }
                             VarKind::GlobalRef(defid) => {
-                                match rvalue {
-                                    Rvalue::Read(operand) => {
-                                        if self.variables_from_defid.contains_key(&defid)
-                                            && self.variables_from_defid.get(&defid).unwrap()
-                                                != &Value::Const(Const::Literal(operand.clone()))
-                                        {
-                                            // currently assuming prev value is not phi
-                                            let prev_vars = &self.variables_from_defid[&defid];
-                                            match prev_vars {
-                                                Value::Const(prev_var_const) => {
-                                                    let var_vec = vec![
-                                                        prev_var_const.clone(),
-                                                        Const::Literal(operand.clone()),
-                                                    ];
-
-                                                    self.variables_from_defid.insert(
-                                                        *defid,
-                                                        Value::Phi(Vec::from(var_vec)),
-                                                    );
-                                                }
-                                                _ => {}
-                                            }
-                                        } else {
-                                            match operand {
-                                                Operand::Lit(lit) => {}
-                                                Operand::Var(var) => match var.base {
-                                                    Base::Var(var_id) => {
-                                                        let something =
-                                                            &interp.curr_body.get().unwrap().vars
-                                                                [var_id];
-                                                    }
-                                                    _ => {}
-                                                },
-                                            }
-                                            let value =
-                                                Value::Const(Const::Literal(operand.clone()));
-                                            self.variables_from_defid.insert(*defid, value.clone());
-                                        }
-                                    }
-                                    Rvalue::Template(template) => {}
-                                    _ => {}
-                                }
+                                self.add_variable(interp, defid, rvalue);
                             }
                             VarKind::Arg(defid) => {
-                                match rvalue {
-                                    Rvalue::Read(operand) => {
-                                        if self.variables_from_defid.contains_key(&defid)
-                                            && self.variables_from_defid.get(&defid).unwrap()
-                                                != &Value::Const(Const::Literal(operand.clone()))
-                                        {
-                                            // currently assuming prev value is not phi
-                                            let prev_vars = &self.variables_from_defid[&defid];
-                                            match prev_vars {
-                                                Value::Const(prev_var_const) => {
-                                                    let var_vec = vec![
-                                                        prev_var_const.clone(),
-                                                        Const::Literal(operand.clone()),
-                                                    ];
-
-                                                    self.variables_from_defid.insert(
-                                                        *defid,
-                                                        Value::Phi(Vec::from(var_vec)),
-                                                    );
-                                                }
-                                                _ => {}
-                                            }
-                                        } else {
-                                            match operand {
-                                                Operand::Lit(lit) => {}
-                                                Operand::Var(var) => match var.base {
-                                                    Base::Var(var_id) => {
-                                                        let something =
-                                                            &interp.curr_body.get().unwrap().vars
-                                                                [var_id];
-                                                    }
-                                                    _ => {}
-                                                },
-                                            }
-                                            let value =
-                                                Value::Const(Const::Literal(operand.clone()));
-                                            self.variables_from_defid.insert(*defid, value.clone());
-                                        }
-                                    }
-                                    Rvalue::Template(template) => {}
-                                    _ => {}
-                                }
+                                self.add_variable(interp, defid, rvalue);
                             }
                             VarKind::Temp { parent } => {
-                                match rvalue {
-                                    Rvalue::Template(template) => {}
-                                    _ => {}
-                                }
                                 if let Some(defid) = parent {
-                                    self.add_variables(rvalue, defid)
+                                    self.add_variable(interp, defid, rvalue);
                                 }
                             }
                             _ => {}
                         }
                     }
-
                     _ => {}
                 },
                 _ => {}
             }
         }
         state
+    }
+
+    fn add_variable<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        interp: &Interp<'cx, C>,
+        defid: &DefId,
+        rvalue: &Rvalue,
+    ) {
+        match rvalue {
+            Rvalue::Read(operand) => {
+                if let Some(values) = self.variables_from_defid.get(&defid) {
+                    match values {
+                        Value::Const(const_value) => {
+                            let prev_value = vec![const_value.clone()];
+                            self.insert_value(operand, defid, interp, Some(prev_value.clone()));
+                        }
+                        Value::Phi(phi_value) => {
+                            self.insert_value(operand, defid, interp, Some(phi_value.clone()));
+                        }
+                        _ => {}
+                    }
+                } else {
+                    self.insert_value(operand, defid, interp, None)
+                }
+            }
+            Rvalue::Template(template) => {
+                // self.insert_value(operand, defid, interp, None);
+
+                let quasis_joined = template.quasis.join("");
+                let mut all_potential_values = vec![quasis_joined];
+                for expr in &template.exprs {
+                    if let Some(varid) = resolve_var_from_operand(&expr) {
+                        if let Some(varkind) = interp.curr_body.get().unwrap().vars.get(varid) {
+                            let defid = get_varid_from_defid(&varkind);
+                            if let Some(defid) = defid {
+                                if let Some(value) = self.variables_from_defid.get(&defid) {
+                                    match value {
+                                        Value::Const(const_value) => {
+                                            let mut new_all_values = vec![];
+                                            if let Const::Literal(literal_string) = const_value {
+                                                for values in &all_potential_values {
+                                                    new_all_values
+                                                        .push(values.clone() + literal_string);
+                                                }
+                                            }
+                                            all_potential_values = new_all_values;
+                                        }
+                                        Value::Phi(phi_value) => {
+                                            let mut new_all_values = vec![];
+                                            for constant in phi_value {
+                                                if let Const::Literal(literal_string) = constant {
+                                                    for values in &all_potential_values {
+                                                        new_all_values
+                                                            .push(values.clone() + literal_string);
+                                                    }
+                                                }
+                                            }
+                                            all_potential_values = new_all_values;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    } else if let Some(literal) = resolve_literal_from_operand(&expr) {
+                        println!("literal {literal:?}");
+                    }
+                }
+
+                if all_potential_values.len() > 1 {
+                    let consts = all_potential_values
+                        .into_iter()
+                        .map(|value| Const::Literal(value.clone()))
+                        .collect::<Vec<_>>();
+                    let value = Value::Phi(consts);
+                    self.variables_from_defid.insert(*defid, value.clone());
+                } else if all_potential_values.len() == 1 {
+                    self.variables_from_defid.insert(
+                        *defid,
+                        Value::Const(Const::Literal(all_potential_values.get(0).unwrap().clone())),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn insert_value<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        operand: &Operand,
+        defid: &DefId,
+        interp: &Interp<'cx, C>,
+        prev_values: Option<Vec<Const>>,
+    ) {
+        match operand {
+            Operand::Lit(_lit) => {
+                if let Some(prev_values) = prev_values {
+                    if let Some(lit_value) = convert_operand_to_raw(operand) {
+                        let const_value = Const::Literal(lit_value);
+                        let mut all_values = prev_values.clone();
+                        all_values.push(const_value);
+                        let value = Value::Phi(all_values);
+                        self.variables_from_defid.insert(*defid, value.clone());
+                    }
+                } else {
+                    if let Some(lit_value) = convert_operand_to_raw(operand) {
+                        let value = Value::Const(Const::Literal(lit_value));
+                        self.variables_from_defid.insert(*defid, value.clone());
+                    }
+                }
+            }
+            Operand::Var(var) => {
+                match var.base {
+                    Base::Var(var_id) => {
+                        let something = &interp.curr_body.get().unwrap().vars[var_id];
+                        if let VarKind::LocalDef(local_defid) = something {
+                            /* add objects to the variables */
+                            if let Some(class) =
+                                self.read_class_from_object(interp, local_defid.clone())
+                            {
+                                if let Some(prev_values) = prev_values {
+                                    let const_value = Const::Object(class.clone());
+                                    let mut all_values = prev_values.clone();
+                                    all_values.push(const_value);
+                                    let value = Value::Phi(all_values);
+                                    self.variables_from_defid.insert(*defid, value.clone());
+                                } else {
+                                    let value = Value::Const(Const::Object(class.clone()));
+                                    self.variables_from_defid.insert(*defid, value.clone());
+                                }
+                            } else if let Some(value) = self.variables_from_defid.get(defid) {
+                                println!("found value {:?}", value)
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     fn join_term<C: crate::interp::Checker<'cx, State = Self::State>>(
@@ -876,6 +859,54 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
             worklist.push_front_blocks(interp.env(), def, arguments);
         }
     }
+}
+
+fn resolve_var_from_operand(operand: &Operand) -> Option<VarId> {
+    if let Operand::Var(var) = operand {
+        if let Base::Var(varid) = var.base {
+            return Some(varid);
+        }
+    }
+    None
+}
+
+fn resolve_literal_from_operand(operand: &Operand) -> Option<Literal> {
+    if let Operand::Lit(lit) = operand {
+        return Some(lit.clone());
+    }
+    None
+}
+
+fn get_varid_from_defid(varkind: &VarKind) -> Option<DefId> {
+    match varkind {
+        VarKind::GlobalRef(defid) => Some(defid.clone()),
+        VarKind::LocalDef(defid) => Some(defid.clone()),
+        VarKind::Arg(defid) => Some(defid.clone()),
+        VarKind::Temp { parent } => parent.clone(),
+        _ => None,
+    }
+}
+
+fn convert_operand_to_raw(operand: &Operand) -> Option<String> {
+    if let Operand::Lit(lit) = operand {
+        match lit {
+            Literal::BigInt(bigint) => Some(bigint.to_string()),
+            Literal::Number(num) => Some(num.to_string()),
+            Literal::Str(str) => Some(str.to_string()),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
+fn find_member_of_obj(member: &str, obj: &Class) -> Option<DefId> {
+    for (mem, memdefid) in &obj.pub_members {
+        if mem == member {
+            return Some(memdefid.clone());
+        }
+    }
+    None
 }
 
 pub struct PermissionChecker {
