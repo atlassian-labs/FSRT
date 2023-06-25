@@ -272,7 +272,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
@@ -1719,7 +1719,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
@@ -2027,7 +2027,7 @@ impl<'cx> Dataflow<'cx> for PermisisionDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for (def, arguments) in self.needs_call.drain(..) {
@@ -2064,14 +2064,18 @@ fn get_varid_from_defid(varkind: &VarKind) -> Option<DefId> {
 
 fn convert_operand_to_raw(operand: &Operand) -> Option<String> {
     if let Operand::Lit(lit) = operand {
-        match lit {
-            Literal::BigInt(bigint) => Some(bigint.to_string()),
-            Literal::Number(num) => Some(num.to_string()),
-            Literal::Str(str) => Some(str.to_string()),
-            _ => None,
-        }
+        convert_lit_to_raw(lit)
     } else {
         None
+    }
+}
+
+fn convert_lit_to_raw(lit: &Literal) -> Option<String> {
+    match lit {
+        Literal::BigInt(bigint) => Some(bigint.to_string()),
+        Literal::Number(num) => Some(num.to_string()),
+        Literal::Str(str) => Some(str.to_string()),
+        _ => None,
     }
 }
 

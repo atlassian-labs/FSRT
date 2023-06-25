@@ -200,7 +200,7 @@ pub trait Dataflow<'cx>: Sized {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
     ) {
         self.super_join_term(interp.borrow_mut(), def, block, state, worklist);
     }
@@ -211,7 +211,7 @@ pub trait Dataflow<'cx>: Sized {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
     ) {
         match block.successors() {
             Successors::Return => {
