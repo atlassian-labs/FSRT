@@ -197,7 +197,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
     let manifest: ForgeManifest = serde_yaml::from_str(&manifest).into_diagnostic()?;
     let name = manifest.app.name.unwrap_or_default();
 
-<<<<<<< HEAD
     let requested_permissions = manifest.permissions;
     let permission_scopes = requested_permissions.scopes;
     let permissions_declared: HashSet<String> =
@@ -211,9 +210,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         } else {
             vec![]
         };
-
-=======
->>>>>>> 32556bb (feat: EAS-1592 mistakingly classifies resolvers exposed from consumers as user reachable)
     let paths = collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>();
 
     let transpiled_async = paths.iter().any(|path| {
