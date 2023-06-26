@@ -9,26 +9,6 @@ export async function fetchIssueSummary(issueIdOrKey) {
     },
   };
 
-  let a = "test_a_value";
-
-  a = "test_a_value_new";
-
-  let b = a;
-
-  // issueIdOrKey = "new_test"
-
-  // let issueIdOrKey = "issueIdOrKey_value";
-  // let issueIdOrKey = "issueIdOrKey_value2";
-
-  let obj2 = {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-    },
-  }
-
-  obj2.method = "GET";
-
   let a_url = route`/rest/api/3/issue/${issueIdOrKey}?fields=summary`;
 
   const resp = await api

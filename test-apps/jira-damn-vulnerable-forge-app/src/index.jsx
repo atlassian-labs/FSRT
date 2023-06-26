@@ -96,10 +96,7 @@ function SecureGlance() {
     return '';
   }
   const [flagVal] = useState(async () => {
-    let test_values = "should not be seen";
     const issueData = await fetchIssueSummary(platformContext.issueKey);
-    test_values = "should not be seen 2";
-    // const issueData2 = await fetchIssueSummary(platformContext.issueKey);
     return JSON.stringify(issueData);
   });
 
