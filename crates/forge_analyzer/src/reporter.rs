@@ -1,4 +1,6 @@
+use forge_loader::forgepermissions::ForgePermissions;
 use serde::Serialize;
+use std::collections::HashSet;
 use time::{Date, OffsetDateTime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -14,6 +16,8 @@ pub enum Severity {
 pub struct Vulnerability {
     pub(crate) check_name: String,
     pub(crate) description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) unused_permissions: Option<HashSet<ForgePermissions>>,
     pub(crate) recommendation: &'static str,
     pub(crate) proof: String,
     pub(crate) severity: Severity,

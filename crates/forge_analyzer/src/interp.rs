@@ -1,4 +1,5 @@
 use std::{
+    borrow::BorrowMut,
     cell::{Cell, RefCell, RefMut},
     collections::BTreeMap,
     fmt::{self, Display},
@@ -9,6 +10,7 @@ use std::{
     path::PathBuf,
 };
 
+use forge_loader::forgepermissions::ForgePermissions;
 use forge_utils::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use swc_core::ecma::atoms::JsWord;
@@ -56,7 +58,7 @@ pub trait Dataflow<'cx>: Sized {
 
     fn transfer_intrinsic<C: Checker<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         loc: Location,
         block: &'cx BasicBlock,
@@ -79,7 +81,7 @@ pub trait Dataflow<'cx>: Sized {
 
     fn transfer_rvalue<C: Checker<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         loc: Location,
         block: &'cx BasicBlock,
@@ -115,7 +117,7 @@ pub trait Dataflow<'cx>: Sized {
 
     fn transfer_inst<C: Checker<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         loc: Location,
         block: &'cx BasicBlock,
@@ -134,7 +136,7 @@ pub trait Dataflow<'cx>: Sized {
 
     fn transfer_block<C: Checker<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         bb: BasicBlockId,
         block: &'cx BasicBlock,
@@ -377,6 +379,7 @@ pub struct Interp<'cx, C: Checker<'cx>> {
     checker_visited: RefCell<FxHashSet<DefId>>,
     callstack: RefCell<Vec<Frame>>,
     vulns: RefCell<Vec<C::Vuln>>,
+    pub permissions: Vec<ForgePermissions>,
     _checker: PhantomData<C>,
 }
 
@@ -448,6 +451,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             checker_visited: RefCell::new(FxHashSet::default()),
             callstack: RefCell::new(Vec::new()),
             vulns: RefCell::new(Vec::new()),
+            permissions: Vec::default(),
             _checker: PhantomData,
         }
     }
@@ -458,12 +462,12 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    fn body(&self) -> &'cx Body {
+    pub fn body(&self) -> &'cx Body {
         self.curr_body.get().unwrap()
     }
 
     #[inline]
-    fn set_body(&self, body: &'cx Body) {
+    pub fn set_body(&self, body: &'cx Body) {
         self.curr_body.set(Some(body));
     }
 
@@ -482,7 +486,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    fn block_state(&self, def: DefId, block: BasicBlockId) -> C::State {
+    pub fn block_state(&self, def: DefId, block: BasicBlockId) -> C::State {
         self.states
             .borrow()
             .get(&(def, block))

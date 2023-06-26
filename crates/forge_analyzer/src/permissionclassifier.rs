@@ -1,82 +1,84 @@
+use crate::checkers::IntrinsicName;
+use core::fmt;
+use forge_loader::forgepermissions::ForgePermissions;
+
 pub(crate) fn check_permission_used(
-    function_name: &str,
+    function_name: IntrinsicName,
     first_arg: &String,
-    second_arg: Option<&Expr>,
+    second_arg: Option<&String>,
 ) -> Vec<ForgePermissions> {
     let mut used_permissions: Vec<ForgePermissions> = Vec::new();
 
-    let joined_args = first_arg;
+    let post_call = second_arg.unwrap_or(&String::from("")).contains("POST");
+    let delete_call = second_arg.unwrap_or(&String::from("")).contains("DELTE");
+    let put_call = second_arg.unwrap_or(&String::from("")).contains("PUT");
 
-    let post_call = joined_args.contains("POST");
-    let delete_call = joined_args.contains("DELTE");
-    let put_call = joined_args.contains("PUT");
-
-    let contains_audit = joined_args.contains("audit");
-    let contains_issue = joined_args.contains("issue");
-    let contains_content = joined_args.contains("content");
-    let contains_user = joined_args.contains("user");
-    let contains_theme = joined_args.contains("theme");
-    let contains_template = joined_args.contains("template");
-    let contains_space = joined_args.contains("space");
-    let contains_analytics = joined_args.contains("analytics");
-    let contains_cql = joined_args.contains("cql");
-    let contains_attachment = joined_args.contains("attachment");
-    let contains_contentbody = joined_args.contains("contentbody");
-    let contians_permissions = joined_args.contains("permissions");
-    let contains_property = joined_args.contains("property");
-    let contains_page_tree = joined_args.contains("pageTree");
-    let contains_group = joined_args.contains("group");
-    let contains_inlinetasks = joined_args.contains("inlinetasks");
-    let contains_relation = joined_args.contains("relation");
-    let contains_settings = joined_args.contains("settings");
-    let contains_permission = joined_args.contains("permission");
-    let contains_download = joined_args.contains("download");
-    let contains_descendants = joined_args.contains("descendants");
-    let contains_comment = joined_args.contains("comment");
-    let contains_label = joined_args.contains("contains_label");
-    let contains_search = joined_args.contains("contains_search");
-    let contains_longtask = joined_args.contains("contains_longtask");
-    let contains_notification = joined_args.contains("notification");
-    let contains_watch = joined_args.contains("watch");
-    let contains_version = joined_args.contains("version");
-    let contains_state = joined_args.contains("contains_state");
-    let contains_available = joined_args.contains("available");
-    let contains_announcement_banner = joined_args.contains("announcementBanner");
-    let contains_avatar = joined_args.contains("avatar");
-    let contains_size = joined_args.contains("size");
-    let contains_dashboard = joined_args.contains("dashboard");
-    let contains_gadget = joined_args.contains("gadget");
-    let contains_filter = joined_args.contains("filter");
-    let contains_tracking = joined_args.contains("tracking");
-    let contains_groupuserpicker = joined_args.contains("groupuserpicker");
-    let contains_workflow = joined_args.contains("workflow");
-    let contains_status = joined_args.contains("status");
-    let contains_task = joined_args.contains("task");
-    let contains_screen = joined_args.contains("screen");
+    let contains_audit = first_arg.contains("audit");
+    let contains_issue = first_arg.contains("issue");
+    let contains_content = first_arg.contains("content");
+    let contains_user = first_arg.contains("user");
+    let contains_theme = first_arg.contains("theme");
+    let contains_template = first_arg.contains("template");
+    let contains_space = first_arg.contains("space");
+    let contains_analytics = first_arg.contains("analytics");
+    let contains_cql = first_arg.contains("cql");
+    let contains_attachment = first_arg.contains("attachment");
+    let contains_contentbody = first_arg.contains("contentbody");
+    let contians_permissions = first_arg.contains("permissions");
+    let contains_property = first_arg.contains("property");
+    let contains_page_tree = first_arg.contains("pageTree");
+    let contains_group = first_arg.contains("group");
+    let contains_inlinetasks = first_arg.contains("inlinetasks");
+    let contains_relation = first_arg.contains("relation");
+    let contains_settings = first_arg.contains("settings");
+    let contains_permission = first_arg.contains("permission");
+    let contains_download = first_arg.contains("download");
+    let contains_descendants = first_arg.contains("descendants");
+    let contains_comment = first_arg.contains("comment");
+    let contains_label = first_arg.contains("contains_label");
+    let contains_search = first_arg.contains("contains_search");
+    let contains_longtask = first_arg.contains("contains_longtask");
+    let contains_notification = first_arg.contains("notification");
+    let contains_watch = first_arg.contains("watch");
+    let contains_version = first_arg.contains("version");
+    let contains_state = first_arg.contains("contains_state");
+    let contains_available = first_arg.contains("available");
+    let contains_announcement_banner = first_arg.contains("announcementBanner");
+    let contains_avatar = first_arg.contains("avatar");
+    let contains_size = first_arg.contains("size");
+    let contains_dashboard = first_arg.contains("dashboard");
+    let contains_gadget = first_arg.contains("gadget");
+    let contains_filter = first_arg.contains("filter");
+    let contains_tracking = first_arg.contains("tracking");
+    let contains_groupuserpicker = first_arg.contains("groupuserpicker");
+    let contains_workflow = first_arg.contains("workflow");
+    let contains_status = first_arg.contains("status");
+    let contains_task = first_arg.contains("task");
+    let contains_screen = first_arg.contains("screen");
     let non_get_call = post_call || delete_call || put_call;
-    let contains_webhook = joined_args.contains("webhook");
-    let contains_project = joined_args.contains("project");
-    let contains_actor = joined_args.contains("actor");
-    let contains_role = joined_args.contains("contains_role");
-    let contains_project_validate = joined_args.contains("projectvalidate");
-    let contains_email = joined_args.contains("email");
-    let contains_notification_scheme = joined_args.contains("notificationscheme");
-    let contains_priority = joined_args.contains("priority");
-    let contains_properties = joined_args.contains("properties");
-    let contains_remote_link = joined_args.contains("remotelink");
-    let contains_resolution = joined_args.contains("resolution");
-    let contains_security_level = joined_args.contains("securitylevel");
-    let contains_issue_security_schemes = joined_args.contains("issuesecurityschemes");
-    let contains_issue_type = joined_args.contains("issuetype");
-    let contains_issue_type_schemes = joined_args.contains("issuetypescheme");
-    let contains_votes = joined_args.contains("contains_votes");
-    let contains_worklog = joined_args.contains("worklog");
-    let contains_expression = joined_args.contains("expression");
-    let contains_configuration = joined_args.contains("configuration");
-    let contains_application_properties = joined_args.contains("application-properties");
+    let contains_webhook = first_arg.contains("webhook");
+    let contains_project = first_arg.contains("project");
+    let contains_actor = first_arg.contains("actor");
+    let contains_role = first_arg.contains("contains_role");
+    let contains_project_validate = first_arg.contains("projectvalidate");
+    let contains_email = first_arg.contains("email");
+    let contains_notification_scheme = first_arg.contains("notificationscheme");
+    let contains_priority = first_arg.contains("priority");
+    let contains_properties = first_arg.contains("properties");
+    let contains_remote_link = first_arg.contains("remotelink");
+    let contains_resolution = first_arg.contains("resolution");
+    let contains_security_level = first_arg.contains("securitylevel");
+    let contains_issue_security_schemes = first_arg.contains("issuesecurityschemes");
+    let contains_issue_type = first_arg.contains("issuetype");
+    let contains_issue_type_schemes = first_arg.contains("issuetypescheme");
+    let contains_votes = first_arg.contains("contains_votes");
+    let contains_worklog = first_arg.contains("worklog");
+    let contains_expression = first_arg.contains("expression");
+    let contains_configuration = first_arg.contains("configuration");
+    let contains_application_properties = first_arg.contains("application-properties");
 
     match function_name {
-        "requestJira" => {
+        IntrinsicName::RequestJira => {
             if (contains_dashboard && non_get_call)
                 || (contains_user && non_get_call)
                 || contains_task
@@ -159,9 +161,7 @@ pub(crate) fn check_permission_used(
                 }
             }
         }
-
-        // bit flags
-        "requestConfluence" => {
+        IntrinsicName::RequestConfluence => {
             if non_get_call {
                 if contains_content {
                     used_permissions.push(ForgePermissions::WriteConfluenceContent);

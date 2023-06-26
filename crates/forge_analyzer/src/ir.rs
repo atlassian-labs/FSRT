@@ -64,12 +64,12 @@ pub enum Terminator {
     },
 }
 
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intrinsic {
-    Authorize,
+    Authorize(String),
     Fetch,
-    ApiCall,
-    SafeCall,
+    ApiCall(String),
+    SafeCall(String),
     EnvRead,
     StorageRead,
 }
@@ -126,6 +126,7 @@ pub struct Body {
     owner: Option<DefId>,
     pub blocks: TiVec<BasicBlockId, BasicBlock>,
     pub vars: TiVec<VarId, VarKind>,
+    pub values: FxHashMap<DefId, Value>,
     ident_to_local: FxHashMap<Id, VarId>,
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
@@ -270,6 +271,7 @@ impl Body {
             vars: local_vars,
             owner: None,
             blocks: vec![BasicBlock::default()].into(),
+            values: FxHashMap::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
             predecessors: Default::default(),
@@ -742,9 +744,9 @@ impl fmt::Display for Intrinsic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Intrinsic::Fetch => write!(f, "fetch"),
-            Intrinsic::Authorize => write!(f, "authorize"),
-            Intrinsic::ApiCall => write!(f, "api call"),
-            Intrinsic::SafeCall => write!(f, "safe api call"),
+            Intrinsic::Authorize(_) => write!(f, "authorize"),
+            Intrinsic::ApiCall(_) => write!(f, "api call"),
+            Intrinsic::SafeCall(_) => write!(f, "safe api call"),
             Intrinsic::EnvRead => write!(f, "env read"),
             Intrinsic::StorageRead => write!(f, "forge storage read"),
         }
