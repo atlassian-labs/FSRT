@@ -1,4 +1,7 @@
 #![allow(clippy::type_complexity)]
+use clap::{Parser, ValueHint};
+use forge_loader::forgepermissions::ForgePermissions;
+use miette::{IntoDiagnostic, Result};
 use std::{
     collections::HashSet,
     convert::TryFrom,
@@ -7,9 +10,6 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-
-use clap::{Parser, ValueHint};
-use miette::{IntoDiagnostic, Result};
 
 use swc_core::{
     common::{Globals, Mark, SourceMap, GLOBALS},
@@ -170,9 +170,15 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         manifest_file.set_extension("yml");
     }
     debug!(?manifest_file);
+
     let manifest = fs::read_to_string(&manifest_file).into_diagnostic()?;
     let manifest: ForgeManifest = serde_yaml::from_str(&manifest).into_diagnostic()?;
     let name = manifest.app.name.unwrap_or_default();
+
+    let requested_permissions = manifest.permissions;
+    let permission_scopes = requested_permissions.scopes;
+    let mut permissions_declared: HashSet<ForgePermissions> =
+        HashSet::from_iter(permission_scopes.iter().cloned());
 
     let paths = collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>();
     let funcrefs = manifest.modules.into_analyzable_functions().flat_map(|f| {
@@ -205,7 +211,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
 
-                let mut checker2 = PermissionChecker::new();
+                let mut checker2 = PermissionChecker::new(permissions_declared.clone());
                 if let Err(err) =
                     perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
                 {

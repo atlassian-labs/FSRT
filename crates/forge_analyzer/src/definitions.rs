@@ -801,13 +801,13 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 match classify_api_call(first_arg) {
                     ApiCallKind::Unknown => {
                         if authn.first() == Some(&PropPath::MemberCall("asApp".into())) {
-                            Some(Intrinsic::ApiCall)
+                            Some(Intrinsic::ApiCall(last.to_string()))
                         } else {
-                            Some(Intrinsic::SafeCall)
+                            Some(Intrinsic::SafeCall(last.to_string()))
                         }
                     }
-                    ApiCallKind::Trivial => Some(Intrinsic::SafeCall),
-                    ApiCallKind::Authorize => Some(Intrinsic::Authorize),
+                    ApiCallKind::Trivial => Some(Intrinsic::SafeCall(last.to_string())),
+                    ApiCallKind::Authorize => Some(Intrinsic::Authorize(last.to_string())),
                 }
             }
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
@@ -820,7 +820,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }
             [PropPath::Def(def), ..] => match self.res.as_foreign_import(def, "@forge/api") {
                 Some(ImportKind::Named(ref name)) if *name == *"authorize" => {
-                    Some(Intrinsic::Authorize)
+                    Some(Intrinsic::Authorize(String::from("")))
                 }
                 _ => None,
             },
