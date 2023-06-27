@@ -497,7 +497,6 @@ impl IntoVuln for AuthNVuln {
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
             date: reporter.current_date(),
-            unused_permissions: None,
         }
     }
 }
@@ -1838,7 +1837,6 @@ impl IntoVuln for AuthNVuln {
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
             date: reporter.current_date(),
-            unused_permissions: None,
         }
     }
 }
@@ -1982,7 +1980,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             _ => {}
         }
 
-        let mut all_permissions_used: Vec<ForgePermissions> = vec![];
+        let mut permissions_within_call: Vec<ForgePermissions> = vec![];
         let function_name = if intrinsic_argument.name.unwrap() == String::from("requestJira") {
             IntrinsicName::RequestJira
         } else {
@@ -2005,13 +2003,15 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     Some(second_arg),
                                 );
                                 println!("permissions {:?}", permissions);
-                                all_permissions_used.extend_from_slice(&permissions);
+                                permissions_within_call.extend_from_slice(&permissions);
                             })
                         })
                     })
             });
 
-        // check_permission_used()
+        _interp
+            .permissions
+            .extend_from_slice(&permissions_within_call);
 
         match *intrinsic {
             Intrinsic::Authorize(_) => initial_state,
@@ -2175,8 +2175,8 @@ fn add_elements_to_intrinsic_struct(value: &Value, args: &mut Option<Vec<String>
 }
 
 pub struct PermissionChecker {
-    vulns: Vec<AuthNVuln>,
-    declared_permissions: HashSet<ForgePermissions>,
+    pub vulns: Vec<PermissionVuln>,
+    pub declared_permissions: HashSet<ForgePermissions>,
 }
 
 impl PermissionChecker {
@@ -2187,7 +2187,7 @@ impl PermissionChecker {
         }
     }
 
-    pub fn into_vulns(self) -> impl IntoIterator<Item = AuthNVuln> {
+    pub fn into_vulns(self) -> impl IntoIterator<Item = PermissionVuln> {
         self.vulns.into_iter()
     }
 }
@@ -2237,18 +2237,21 @@ impl<'cx> Checker<'cx> for PermissionChecker {
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         println!("visitng intrsinsic");
+        for permission in &interp.permissions {
+            self.declared_permissions.remove(permission);
+        }
         ControlFlow::Continue(*state)
     }
 }
 
 #[derive(Debug)]
 pub struct PermissionVuln {
-    // unused_permissions: HashSet<ForgePermissions>,
+    unused_permissions: HashSet<ForgePermissions>,
 }
 
 impl PermissionVuln {
-    pub fn new(/*unused_permissions: HashSet<ForgePermissions> */) -> PermissionVuln {
-        PermissionVuln { /*unused_permissions*/ }
+    pub fn new(unused_permissions: HashSet<ForgePermissions>) -> PermissionVuln {
+        PermissionVuln { unused_permissions }
     }
 }
 
@@ -2260,14 +2263,12 @@ impl IntoVuln for PermissionVuln {
                 "Unused permissions listed in manifest file:.",
                 // self.unused_permissions.into_iter().join(", ")
             ),
-            // unused_permissions: Some(self.unused_permissions),
             recommendation: "Remove permissions in manifest file that are not needed.",
             proof: format!("Unused permissions found in manifest.yml"),
             severity: Severity::Low,
             app_key: reporter.app_key().to_string(),
             app_name: reporter.app_name().to_string(),
             date: reporter.current_date(),
-            unused_permissions: None,
         }
     }
 }

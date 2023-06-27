@@ -806,7 +806,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             let mut before_state = self.block_state(def, block_id);
             let block = func.block(block_id);
             for &pred in func.predecessors(block_id) {
-                let block_ = func.block(pred);
                 before_state = before_state.join(&self.block_state(def, pred));
             }
             let state =
