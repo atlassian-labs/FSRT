@@ -1,6 +1,6 @@
 import api, { route } from '@forge/api';
 
-export async function fetchIssueSummary(issueIdOrKey) {
+export async function fetchIssueSummary(issueIdOrKey, url) {
 
   let obj = {
     method: 'POST',
@@ -13,7 +13,12 @@ export async function fetchIssueSummary(issueIdOrKey) {
 
   const resp = await api
     .asApp()
-    .requestJira(route`/rest/api/3/issue/${issueIdOrKey}?fields=summary`, obj2);
+    .requestJira(url, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+      },
+    });
   const data = await resp.json();
   console.log(JSON.stringify(data));
   return data['fields']['summary'];

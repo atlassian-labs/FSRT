@@ -451,7 +451,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             checker_visited: RefCell::new(FxHashSet::default()),
             callstack: RefCell::new(Vec::new()),
             vulns: RefCell::new(Vec::new()),
-            permissions: Vec::default(),
+            permissions: Vec::new(),
             _checker: PhantomData,
         }
     }
@@ -561,7 +561,6 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             let mut before_state = self.block_state(def, block_id);
             let block = func.block(block_id);
             for &pred in func.predecessors(block_id) {
-                let block_ = func.block(pred);
                 before_state = before_state.join(&self.block_state(def, pred));
             }
             let state =

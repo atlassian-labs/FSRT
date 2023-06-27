@@ -1,11 +1,10 @@
 use crate::checkers::IntrinsicName;
-use core::fmt;
 use forge_loader::forgepermissions::ForgePermissions;
 
 pub(crate) fn check_permission_used(
     function_name: IntrinsicName,
-    first_arg: &String,
-    second_arg: Option<&String>,
+    first_arg: &str,
+    second_arg: Option<&str>,
 ) -> Vec<ForgePermissions> {
     let mut used_permissions: Vec<ForgePermissions> = Vec::new();
 
