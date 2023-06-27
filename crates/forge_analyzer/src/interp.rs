@@ -170,22 +170,22 @@ pub trait Dataflow<'cx>: Sized {
 
     fn join_term<C: Checker<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
-        self.super_join_term(interp, def, block, state, worklist);
+        self.super_join_term(interp.borrow_mut(), def, block, state, worklist);
     }
 
     fn super_join_term<C: Checker<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         match block.successors() {
             Successors::Return => {
@@ -199,7 +199,7 @@ pub trait Dataflow<'cx>: Sized {
                     debug!("{name} {def:?} is called from {calls:?}");
                     for &(def, loc) in calls {
                         if worklist.visited(&def) {
-                            worklist.push_back_force(def, loc.block, vec![]);
+                            worklist.push_back_force(def, loc.block);
                         }
                     }
                 }
@@ -207,15 +207,15 @@ pub trait Dataflow<'cx>: Sized {
             Successors::One(succ) => {
                 let mut succ_state = interp.block_state_mut(def, succ);
                 if succ_state.join_changed(&state) {
-                    worklist.push_back(def, succ, vec![]);
+                    worklist.push_back(def, succ);
                 }
             }
             Successors::Two(succ1, succ2) => {
                 if interp.block_state_mut(def, succ1).join_changed(&state) {
-                    worklist.push_back(def, succ1, vec![]);
+                    worklist.push_back(def, succ1);
                 }
                 if interp.block_state_mut(def, succ2).join_changed(&state) {
-                    worklist.push_back(def, succ2, vec![]);
+                    worklist.push_back(def, succ2);
                 }
             }
         }
@@ -378,6 +378,7 @@ pub struct Interp<'cx, C: Checker<'cx>> {
     dataflow_visited: FxHashSet<DefId>,
     checker_visited: RefCell<FxHashSet<DefId>>,
     callstack: RefCell<Vec<Frame>>,
+    pub callstack_arguments: Vec<Vec<Operand>>,
     vulns: RefCell<Vec<C::Vuln>>,
     pub permissions: Vec<ForgePermissions>,
     _checker: PhantomData<C>,
@@ -449,6 +450,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             states: RefCell::new(BTreeMap::new()),
             dataflow_visited: FxHashSet::default(),
             checker_visited: RefCell::new(FxHashSet::default()),
+            callstack_arguments: Vec::new(),
             callstack: RefCell::new(Vec::new()),
             vulns: RefCell::new(Vec::new()),
             permissions: Vec::new(),
@@ -551,7 +553,8 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         let mut worklist = WorkList::new();
         worklist.push_front_blocks(self.env, func_def, vec![]);
         let old_body = self.curr_body.get();
-        while let Some((def, block_id, args)) = worklist.pop_front() {
+        while let Some((def, block_id)) = worklist.pop_front() {
+            let arguments = self.callstack_arguments.pop();
             let name = self.env.def_name(def);
             debug!("Dataflow: {name} - {block_id}");
             self.dataflow_visited.insert(def);
@@ -564,7 +567,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
                 before_state = before_state.join(&self.block_state(def, pred));
             }
             let state =
-                dataflow.transfer_block(self, def, block_id, block, before_state, Some(args));
+                dataflow.transfer_block(self, def, block_id, block, before_state, arguments);
             dataflow.join_term(self, def, block, state, &mut worklist);
         }
         self.curr_body.set(old_body);

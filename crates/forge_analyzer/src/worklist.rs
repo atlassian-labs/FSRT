@@ -9,12 +9,12 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct WorkList<V, W, A> {
-    worklist: VecDeque<(V, W, Vec<A>)>,
+pub struct WorkList<V, W> {
+    worklist: VecDeque<(V, W)>,
     visited: FxHashSet<V>,
 }
 
-impl<V, W, A> WorkList<V, W, A>
+impl<V, W> WorkList<V, W>
 where
     V: Eq + Hash,
 {
@@ -27,7 +27,7 @@ where
     }
 
     #[inline]
-    pub fn pop_front(&mut self) -> (Option<(V, W, Vec<A>)>) {
+    pub fn pop_front(&mut self) -> (Option<(V, W)>) {
         self.worklist.pop_front()
     }
 
@@ -56,24 +56,24 @@ where
     }
 }
 
-impl<V, W, A> WorkList<V, W, A>
+impl<V, W> WorkList<V, W>
 where
     V: Eq + Hash + Copy,
 {
     #[inline]
-    pub fn push_back(&mut self, v: V, w: W, args: Vec<A>) {
+    pub fn push_back(&mut self, v: V, w: W) {
         if self.visited.insert(v) {
-            self.worklist.push_back((v, w, args));
+            self.worklist.push_back((v, w));
         }
     }
 
     #[inline]
-    pub fn push_back_force(&mut self, v: V, w: W, args: Vec<A>) {
-        self.worklist.push_back((v, w, args));
+    pub fn push_back_force(&mut self, v: V, w: W) {
+        self.worklist.push_back((v, w));
     }
 }
 
-impl WorkList<DefId, BasicBlockId, Operand> {
+impl WorkList<DefId, BasicBlockId> {
     #[inline]
     pub(crate) fn push_front_blocks(
         &mut self,
@@ -89,7 +89,7 @@ impl WorkList<DefId, BasicBlockId, Operand> {
             for work in blocks {
                 debug!(?work, "push_front_blocks");
                 self.worklist
-                    .push_front((work.0, work.1, arguments.clone()));
+                    .push_front((work.0, work.1));
             }
             return true;
         }
@@ -97,12 +97,12 @@ impl WorkList<DefId, BasicBlockId, Operand> {
     }
 }
 
-impl<V, W, A> Extend<(V, W, Vec<A>)> for WorkList<V, W, A>
+impl<V, W> Extend<(V, W)> for WorkList<V, W>
 where
     V: Eq + Hash,
 {
     #[inline]
-    fn extend<T: IntoIterator<Item = (V, W, Vec<A>)>>(&mut self, iter: T) {
+    fn extend<T: IntoIterator<Item = (V, W)>>(&mut self, iter: T) {
         self.worklist.extend(iter);
     }
 }
