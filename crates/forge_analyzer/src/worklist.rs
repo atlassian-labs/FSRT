@@ -27,7 +27,11 @@ where
     }
 
     #[inline]
+<<<<<<< HEAD
     pub fn pop_front(&mut self) -> Option<(V, W)> {
+=======
+    pub fn pop_front(&mut self) -> (Option<(V, W)>) {
+>>>>>>> 19837ff (fix to the worklist)
         self.worklist.pop_front()
     }
 
@@ -88,7 +92,12 @@ impl WorkList<DefId, BasicBlockId> {
             self.worklist.reserve(blocks.len());
             for work in blocks {
                 debug!(?work, "push_front_blocks");
+<<<<<<< HEAD
                 self.worklist.push_front((work.0, work.1));
+=======
+                self.worklist
+                    .push_front((work.0, work.1));
+>>>>>>> 19837ff (fix to the worklist)
             }
             return true;
         }
