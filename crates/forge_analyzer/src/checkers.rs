@@ -110,11 +110,11 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
 
     fn join_term<C: crate::interp::Checker<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
@@ -330,11 +330,11 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
 
     fn join_term<C: crate::interp::Checker<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
@@ -861,15 +861,16 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
 
     fn join_term<C: crate::interp::Checker<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for (def, arguments) in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, arguments);
+            worklist.push_front_blocks(interp.env(), def, arguments.clone());
+            interp.callstack_arguments.push(arguments.clone());
         }
     }
 }
