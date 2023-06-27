@@ -217,6 +217,9 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 {
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
+                if checker2.declared_permissions.len() > 0 {
+                    // checker2.vulns.push(value);
+                }
                 reporter.add_vulnerabilities(checker2.into_vulns());
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {

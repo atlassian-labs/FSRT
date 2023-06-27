@@ -203,7 +203,6 @@ impl IntoVuln for AuthZVuln {
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
             date: reporter.current_date(),
-            unused_permissions: None,
         }
     }
 }
@@ -453,7 +452,6 @@ impl IntoVuln for AuthNVuln {
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
             date: reporter.current_date(),
-            unused_permissions: None,
         }
     }
 }
@@ -597,7 +595,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             _ => {}
         }
 
-        let mut all_permissions_used: Vec<ForgePermissions> = vec![];
+        let mut permissions_within_call: Vec<ForgePermissions> = vec![];
         let function_name = if intrinsic_argument.name.unwrap() == String::from("requestJira") {
             IntrinsicName::RequestJira
         } else {
@@ -620,13 +618,15 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     Some(second_arg),
                                 );
                                 println!("permissions {:?}", permissions);
-                                all_permissions_used.extend_from_slice(&permissions);
+                                permissions_within_call.extend_from_slice(&permissions);
                             })
                         })
                     })
             });
 
-        // check_permission_used()
+        _interp
+            .permissions
+            .extend_from_slice(&permissions_within_call);
 
         match *intrinsic {
             Intrinsic::Authorize(_) => initial_state,
@@ -687,34 +687,16 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
     ) -> Self::State {
         let mut state = initial_state;
 
+        let mut function_var = interp.curr_body.get().unwrap().vars.clone();
+        function_var.pop();
+
         if let Some(args) = arguments {
             let mut args = args.clone();
-            for var in &interp.curr_body.get().unwrap().vars {
+            args.reverse();
+            for var in function_var {
                 if let VarKind::Arg(defid_new) = var {
                     if let Some(operand) = args.pop() {
-                        match operand {
-                            Operand::Var(variable) => match variable.base {
-                                Base::Var(varid) => {
-                                    let varkind = &interp.curr_body.get().unwrap().vars[varid];
-                                    if let Some(defid) = get_varid_from_defid(varkind) {
-                                        if let Some(value) =
-                                            self.variables_from_defid.get(&defid.clone())
-                                        {
-                                            self.variables_from_defid
-                                                .insert(defid_new.clone(), value.clone());
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            },
-                            Operand::Lit(lit) => {
-                                if let Some(lit_value) = convert_lit_to_raw(&lit) {
-                                    let value = Value::Const(Const::Literal(lit_value));
-                                    self.variables_from_defid
-                                        .insert(defid_new.clone(), value.clone());
-                                }
-                            }
-                        }
+                        self.insert_value(&operand, &defid_new, interp, None);
                     }
                 }
             }
@@ -851,9 +833,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             Operand::Var(var) => {
                 match var.base {
                     Base::Var(var_id) => {
-                        let something = &interp.curr_body.get().unwrap().vars[var_id];
-                        if let VarKind::LocalDef(local_defid) = something {
-                            /* add objects to the variables */
+                        let varkind = &interp.curr_body.get().unwrap().vars[var_id];
+                        if let VarKind::LocalDef(local_defid) = varkind {
                             if let Some(class) =
                                 self.read_class_from_object(interp, local_defid.clone())
                             {
@@ -964,8 +945,8 @@ fn add_elements_to_intrinsic_struct(value: &Value, args: &mut Option<Vec<String>
 }
 
 pub struct PermissionChecker {
-    vulns: Vec<AuthNVuln>,
-    declared_permissions: HashSet<ForgePermissions>,
+    pub vulns: Vec<PermissionVuln>,
+    pub declared_permissions: HashSet<ForgePermissions>,
 }
 
 impl PermissionChecker {
@@ -976,7 +957,7 @@ impl PermissionChecker {
         }
     }
 
-    pub fn into_vulns(self) -> impl IntoIterator<Item = AuthNVuln> {
+    pub fn into_vulns(self) -> impl IntoIterator<Item = PermissionVuln> {
         self.vulns.into_iter()
     }
 }
@@ -1026,18 +1007,21 @@ impl<'cx> Checker<'cx> for PermissionChecker {
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         println!("visitng intrsinsic");
+        for permission in &interp.permissions {
+            self.declared_permissions.remove(permission);
+        }
         ControlFlow::Continue(*state)
     }
 }
 
 #[derive(Debug)]
 pub struct PermissionVuln {
-    // unused_permissions: HashSet<ForgePermissions>,
+    unused_permissions: HashSet<ForgePermissions>,
 }
 
 impl PermissionVuln {
-    pub fn new(/*unused_permissions: HashSet<ForgePermissions> */) -> PermissionVuln {
-        PermissionVuln { /*unused_permissions*/ }
+    pub fn new(unused_permissions: HashSet<ForgePermissions>) -> PermissionVuln {
+        PermissionVuln { unused_permissions }
     }
 }
 
@@ -1049,14 +1033,12 @@ impl IntoVuln for PermissionVuln {
                 "Unused permissions listed in manifest file:.",
                 // self.unused_permissions.into_iter().join(", ")
             ),
-            // unused_permissions: Some(self.unused_permissions),
             recommendation: "Remove permissions in manifest file that are not needed.",
             proof: format!("Unused permissions found in manifest.yml"),
             severity: Severity::Low,
             app_key: reporter.app_key().to_string(),
             app_name: reporter.app_name().to_string(),
             date: reporter.current_date(),
-            unused_permissions: None,
         }
     }
 }
