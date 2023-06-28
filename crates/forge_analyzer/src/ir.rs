@@ -77,7 +77,7 @@ pub enum Intrinsic {
 
 struct IntrinsicDetails {
     name: String,
-    location: Location
+    location: Location,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -385,17 +385,15 @@ impl<'cx> Checker<'cx> for AuthenticateChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-
         /*
-            _interp: &mut Interp<'cx, C>,
-            _def: DefId,
-            _loc: Location,
-            _block: &'cx BasicBlock,
-            intrinsic: &'cx Intrinsic,
-            initial_state: Self::State,
-            operands: SmallVec<[crate::ir::Operand; 4]>,
-         */
-
+           _interp: &mut Interp<'cx, C>,
+           _def: DefId,
+           _loc: Location,
+           _block: &'cx BasicBlock,
+           intrinsic: &'cx Intrinsic,
+           initial_state: Self::State,
+           operands: SmallVec<[crate::ir::Operand; 4]>,
+        */
 
         match *intrinsic {
             Intrinsic::Authorize(_) => ControlFlow::Continue(*state),

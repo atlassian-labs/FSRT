@@ -219,7 +219,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
-                
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
                 let mut checker = AuthenticateChecker::new();

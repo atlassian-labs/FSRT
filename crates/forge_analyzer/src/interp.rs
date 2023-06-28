@@ -477,7 +477,10 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    pub(crate) fn pop_intrinsic_state(&mut self, block: BasicBlockId) -> Option<IntrinsicArguments> {
+    pub(crate) fn pop_intrinsic_state(
+        &mut self,
+        block: BasicBlockId,
+    ) -> Option<IntrinsicArguments> {
         if let Some(args) = self.intrinsic_states.get_mut(&block) {
             return args.pop_front();
         }

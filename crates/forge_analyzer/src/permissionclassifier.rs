@@ -281,16 +281,14 @@ pub(crate) fn check_permission_used(
 
 pub(crate) fn check_intrinsic_permission(first_args: Vec<String>) -> bool {
     let endpoints_without_permissions = vec!["server/info"];
-    
+
     return first_args
         .into_iter()
         .map(|arg| {
             if endpoints_without_permissions
                 .clone()
                 .into_iter()
-                .map(|endpoint| {
-                    endpoint.contains(&arg)
-                })
+                .map(|endpoint| endpoint.contains(&arg))
                 .all(|f| f)
             {
                 return true;
