@@ -246,15 +246,16 @@ pub trait Checker<'cx>: Sized {
 
     fn visit_intrinsic(
         &mut self,
-        interp: &Interp<'cx, Self>,
+        interp: &mut Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
+        id: BasicBlockId,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State>;
 
     fn visit_call(
         &mut self,
-        interp: &Interp<'cx, Self>,
+        interp: &mut Interp<'cx, Self>,
         callee: &'cx Operand,
         _args: &'cx [Operand],
         block: BasicBlockId,
@@ -277,7 +278,7 @@ pub trait Checker<'cx>: Sized {
 
     fn visit_body(
         &mut self,
-        interp: &Interp<'cx, Self>,
+        interp: &mut Interp<'cx, Self>,
         def: DefId,
         body: &'cx Body,
         curr_state: &Self::State,
@@ -294,7 +295,7 @@ pub trait Checker<'cx>: Sized {
 
     fn visit_rvalue(
         &mut self,
-        interp: &Interp<'cx, Self>,
+        interp: &mut Interp<'cx, Self>,
         rvalue: &'cx Rvalue,
         id: BasicBlockId,
         curr_state: &Self::State,
@@ -302,7 +303,7 @@ pub trait Checker<'cx>: Sized {
         debug!("visiting rvalue {rvalue:?} with {curr_state:?}");
         match rvalue {
             Rvalue::Intrinsic(intrinsic, operands) => {
-                self.visit_intrinsic(interp, intrinsic, curr_state, Some(operands.clone()))
+                self.visit_intrinsic(interp, intrinsic, id, curr_state, Some(operands.clone()))
             }
             Rvalue::Call(callee, args) => self.visit_call(interp, callee, args, id, curr_state),
             Rvalue::Unary(_, _)
@@ -316,7 +317,7 @@ pub trait Checker<'cx>: Sized {
     #[instrument(skip(self, interp, block))]
     fn visit_block(
         &mut self,
-        interp: &Interp<'cx, Self>,
+        interp: &mut Interp<'cx, Self>,
         def: DefId,
         id: BasicBlockId,
         block: &'cx BasicBlock,
@@ -382,7 +383,7 @@ pub struct Interp<'cx, C: Checker<'cx>> {
     pub callstack_arguments: Vec<Vec<Operand>>,
     vulns: RefCell<Vec<C::Vuln>>,
     pub permissions: Vec<ForgePermissions>,
-    intrinsic_states: HashMap<Location, VecDeque<IntrinsicArguments>>,
+    intrinsic_states: HashMap<BasicBlockId, VecDeque<IntrinsicArguments>>,
     _checker: PhantomData<C>,
 }
 
@@ -464,32 +465,32 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
     #[inline]
     pub(crate) fn push_intrinsic_state(
         &mut self,
-        location: Location,
+        block: BasicBlockId,
         arguments: &IntrinsicArguments,
     ) {
-        if let Some(args) = self.intrinsic_states.get_mut(&location) {
+        if let Some(args) = self.intrinsic_states.get_mut(&block) {
             args.push_back(arguments.clone());
         } else {
             self.intrinsic_states
-                .insert(location, VecDeque::from([arguments.clone()]));
+                .insert(block, VecDeque::from([arguments.clone()]));
         }
     }
 
     #[inline]
-    pub(crate) fn pop_intrinsic_state(&mut self, location: Location) -> Option<IntrinsicArguments> {
-        if let Some(args) = self.intrinsic_states.get_mut(&location) {
+    pub(crate) fn pop_intrinsic_state(&mut self, block: BasicBlockId) -> Option<IntrinsicArguments> {
+        if let Some(args) = self.intrinsic_states.get_mut(&block) {
             return args.pop_front();
         }
         None
     }
 
-    pub fn intrinsic_states(&self) -> HashMap<Location, VecDeque<IntrinsicArguments>> {
+    pub fn intrinsic_states(&self) -> HashMap<BasicBlockId, VecDeque<IntrinsicArguments>> {
         self.intrinsic_states.clone()
     }
 
     pub fn set_intrinsic_states(
         &mut self,
-        intrinsic_states: HashMap<Location, VecDeque<IntrinsicArguments>>,
+        intrinsic_states: HashMap<BasicBlockId, VecDeque<IntrinsicArguments>>,
     ) {
         self.intrinsic_states = intrinsic_states;
     }

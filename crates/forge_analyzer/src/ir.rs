@@ -18,6 +18,7 @@ use once_cell::unsync::OnceCell;
 use smallvec::smallvec;
 use smallvec::smallvec_inline;
 use smallvec::SmallVec;
+use swc_core::common::Loc;
 use swc_core::ecma::ast;
 use swc_core::ecma::ast::BinaryOp;
 use swc_core::ecma::ast::JSXText;
@@ -72,6 +73,11 @@ pub enum Intrinsic {
     SafeCall(String),
     EnvRead,
     StorageRead,
+}
+
+struct IntrinsicDetails {
+    name: String,
+    location: Location
 }
 
 #[derive(Clone, Debug, Default)]

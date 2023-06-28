@@ -65,16 +65,6 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         initial_state: Self::State,
         operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
-        if let Some(intrinsic_state) = _interp.pop_intrinsic_state(_loc) {
-            if let Some(first_args) = intrinsic_state.first_arg {
-                if check_intrinsic_permission(first_args.clone()) {
-                    println!("here {first_args:?}");
-                    return AuthorizeState::Yes;
-                }
-            }
-        }
-        return AuthorizeState::Yes;
-
         match *intrinsic {
             Intrinsic::Authorize(_) => {
                 debug!("authorize intrinsic found");
@@ -101,7 +91,6 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
             return initial_state;
         };
-        return AuthorizeState::Yes;
         match interp.func_state(callee_def) {
             Some(state) => {
                 if state == AuthorizeState::Yes {
@@ -229,8 +218,9 @@ impl<'cx> Checker<'cx> for AuthZChecker {
 
     fn visit_intrinsic(
         &mut self,
-        interp: &Interp<'cx, Self>,
+        interp: &mut Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
+        id: BasicBlockId,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -241,6 +231,14 @@ impl<'cx> Checker<'cx> for AuthZChecker {
             }
             Intrinsic::Fetch => ControlFlow::Continue(*state),
             Intrinsic::ApiCall(_) if *state == AuthorizeState::No => {
+                if let Some(intrinsic_state) = interp.pop_intrinsic_state(id) {
+                    if let Some(first_args) = intrinsic_state.first_arg {
+                        if check_intrinsic_permission(first_args.clone()) {
+                            return ControlFlow::Continue(*state);
+                        }
+                    }
+                }
+                interp.pop_intrinsic_state(id);
                 let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
@@ -381,11 +379,24 @@ impl<'cx> Checker<'cx> for AuthenticateChecker {
 
     fn visit_intrinsic(
         &mut self,
-        interp: &Interp<'cx, Self>,
+        interp: &mut Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
+        id: BasicBlockId,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
+
+        /*
+            _interp: &mut Interp<'cx, C>,
+            _def: DefId,
+            _loc: Location,
+            _block: &'cx BasicBlock,
+            intrinsic: &'cx Intrinsic,
+            initial_state: Self::State,
+            operands: SmallVec<[crate::ir::Operand; 4]>,
+         */
+
+
         match *intrinsic {
             Intrinsic::Authorize(_) => ControlFlow::Continue(*state),
             Intrinsic::Fetch | Intrinsic::EnvRead | Intrinsic::StorageRead => {
@@ -636,7 +647,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             }
             _ => {}
         }
-        _interp.push_intrinsic_state(_loc, &intrinsic_argument);
+        _interp.push_intrinsic_state(_loc.block, &intrinsic_argument);
         initial_state
     }
 
@@ -1012,8 +1023,9 @@ impl<'cx> Checker<'cx> for PermissionChecker {
 
     fn visit_intrinsic(
         &mut self,
-        interp: &Interp<'cx, Self>,
+        interp: &mut Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
+        id: BasicBlockId,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {

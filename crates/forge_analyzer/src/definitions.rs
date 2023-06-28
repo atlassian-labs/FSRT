@@ -990,6 +990,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             CalleeRef::Import => Operand::UNDEF,
             CalleeRef::Expr(expr) => self.lower_expr(expr, None),
         };
+        
         let first_arg = args.first().map(|expr| &*expr.expr);
         let call = match self.as_intrinsic(&props, first_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
