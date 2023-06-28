@@ -16,7 +16,7 @@ use crate::{
         Base, BasicBlock, BasicBlockId, Inst, Intrinsic, Literal, Location, Operand, Rvalue,
         Successors, VarId, VarKind,
     },
-    permissionclassifier::check_permission_used,
+    permissionclassifier::{check_intrinsic_permission, check_permission_used},
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     worklist::WorkList,
 };
@@ -65,6 +65,16 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         initial_state: Self::State,
         operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
+        if let Some(intrinsic_state) = _interp.pop_intrinsic_state(_loc) {
+            if let Some(first_args) = intrinsic_state.first_arg {
+                if check_intrinsic_permission(first_args.clone()) {
+                    println!("here {first_args:?}");
+                    return AuthorizeState::Yes;
+                }
+            }
+        }
+        return AuthorizeState::Yes;
+
         match *intrinsic {
             Intrinsic::Authorize(_) => {
                 debug!("authorize intrinsic found");
@@ -91,6 +101,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
             return initial_state;
         };
+        return AuthorizeState::Yes;
         match interp.func_state(callee_def) {
             Some(state) => {
                 if state == AuthorizeState::Yes {
@@ -470,7 +481,7 @@ impl WithCallStack for PermissionVuln {
 }
 
 #[derive(Debug, Default, Clone)]
-struct IntrinsicArguments {
+pub struct IntrinsicArguments {
     name: Option<String>,
     first_arg: Option<Vec<String>>,
     second_arg: Option<Vec<String>>,
@@ -591,13 +602,14 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
 
                 let mut permissions_within_call: Vec<ForgePermissions> = vec![];
                 let function_name =
-                    if intrinsic_argument.name.unwrap() == String::from("requestJira") {
+                    if intrinsic_argument.clone().name.unwrap() == String::from("requestJira") {
                         IntrinsicName::RequestJira
                     } else {
                         IntrinsicName::RequestConfluence
                     };
 
                 intrinsic_argument
+                    .clone()
                     .first_arg
                     .iter()
                     .for_each(|first_arg_vec| {
@@ -624,15 +636,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             }
             _ => {}
         }
-
-        match *intrinsic {
-            Intrinsic::Authorize(_) => initial_state,
-            Intrinsic::Fetch => initial_state,
-            Intrinsic::ApiCall(_) => initial_state,
-            Intrinsic::SafeCall(_) => initial_state,
-            Intrinsic::EnvRead => initial_state,
-            Intrinsic::StorageRead => initial_state,
-        }
+        _interp.push_intrinsic_state(_loc, &intrinsic_argument);
+        initial_state
     }
 
     fn read_class_from_object<C: Checker<'cx, State = Self::State>>(
@@ -799,9 +804,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     );
                 }
             }
-            Rvalue::Bin(binop, op1, op2) => {
-                /* add bin op functionality */
-            }
+            Rvalue::Bin(binop, op1, op2) => { /* add bin op functionality */ }
             _ => {}
         }
     }

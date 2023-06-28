@@ -278,3 +278,26 @@ pub(crate) fn check_permission_used(
     }
     used_permissions
 }
+
+pub(crate) fn check_intrinsic_permission(first_args: Vec<String>) -> bool {
+    println!("here {first_args:?}");
+    let endpoints_without_permissions = vec!["server/info"];
+    return first_args
+        .into_iter()
+        .map(|arg| {
+            if endpoints_without_permissions
+                .clone()
+                .into_iter()
+                .map(|endpoint| {
+                    println!(" {endpoint} wihtin {arg}");
+                    endpoint.contains(&arg)
+                })
+                .any(|f| f)
+            {
+                println!("here");
+                return true;
+            }
+            return true;
+        })
+        .all(|arg| arg);
+}

@@ -1,12 +1,12 @@
 use std::{
     borrow::BorrowMut,
     cell::{Cell, RefCell, RefMut},
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, VecDeque},
     fmt::{self, Display},
     io::{self, Write},
     iter,
     marker::PhantomData,
-    ops::ControlFlow,
+    ops::{ControlFlow, Deref},
     path::PathBuf,
 };
 
@@ -17,6 +17,7 @@ use swc_core::ecma::atoms::JsWord;
 use tracing::{debug, info, instrument, warn};
 
 use crate::{
+    checkers::IntrinsicArguments,
     definitions::{Class, Const, DefId, Environment, Value},
     ir::{
         Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue,
@@ -381,6 +382,7 @@ pub struct Interp<'cx, C: Checker<'cx>> {
     pub callstack_arguments: Vec<Vec<Operand>>,
     vulns: RefCell<Vec<C::Vuln>>,
     pub permissions: Vec<ForgePermissions>,
+    intrinsic_states: HashMap<Location, VecDeque<IntrinsicArguments>>,
     _checker: PhantomData<C>,
 }
 
@@ -454,8 +456,42 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             callstack: RefCell::new(Vec::new()),
             vulns: RefCell::new(Vec::new()),
             permissions: Vec::new(),
+            intrinsic_states: HashMap::default(),
             _checker: PhantomData,
         }
+    }
+
+    #[inline]
+    pub(crate) fn push_intrinsic_state(
+        &mut self,
+        location: Location,
+        arguments: &IntrinsicArguments,
+    ) {
+        if let Some(args) = self.intrinsic_states.get_mut(&location) {
+            args.push_back(arguments.clone());
+        } else {
+            self.intrinsic_states
+                .insert(location, VecDeque::from([arguments.clone()]));
+        }
+    }
+
+    #[inline]
+    pub(crate) fn pop_intrinsic_state(&mut self, location: Location) -> Option<IntrinsicArguments> {
+        if let Some(args) = self.intrinsic_states.get_mut(&location) {
+            return args.pop_front();
+        }
+        None
+    }
+
+    pub fn intrinsic_states(&self) -> HashMap<Location, VecDeque<IntrinsicArguments>> {
+        self.intrinsic_states.clone()
+    }
+
+    pub fn set_intrinsic_states(
+        &mut self,
+        intrinsic_states: HashMap<Location, VecDeque<IntrinsicArguments>>,
+    ) {
+        self.intrinsic_states = intrinsic_states;
     }
 
     #[inline]
