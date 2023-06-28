@@ -25,7 +25,7 @@ use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
-    checkers::{AuthZChecker, AuthenticateChecker, PermissionChecker},
+    checkers::{AuthZChecker, AuthenticateChecker, PermissionChecker, PermissionVuln},
     ctx::{AppCtx, ModId},
     definitions::{run_resolver, DefId, Environment},
     interp::Interp,
@@ -199,6 +199,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     let mut perm_interp = Interp::new(&proj.env);
     let mut reporter = Reporter::new();
     reporter.add_app(opts.appkey.unwrap_or_default(), name.to_owned());
+    let mut all_used_permissions = HashSet::default();
 
     for func in &proj.funcs {
         match *func {
@@ -210,17 +211,13 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
-
                 let mut checker2 = PermissionChecker::new(permissions_declared.clone());
                 if let Err(err) =
                     perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
                 {
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
-                if checker2.declared_permissions.len() > 0 {
-                    // checker2.vulns.push(value);
-                }
-                reporter.add_vulnerabilities(checker2.into_vulns());
+                all_used_permissions.extend(checker2.used_permissions);
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
                 let mut checker = AuthenticateChecker::new();
@@ -231,9 +228,23 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
+                let mut checker2 = PermissionChecker::new(permissions_declared.clone());
+                if let Err(err) =
+                    perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
+                {
+                    warn!("error while scanning {func} in {path:?}: {err}");
+                }
+                all_used_permissions.extend(checker2.used_permissions);
             }
         }
     }
+    let unused_permissions = permissions_declared.difference(&all_used_permissions);
+    reporter.add_vulnerabilities(
+        vec![PermissionVuln::new(HashSet::<ForgePermissions>::from_iter(
+            unused_permissions.cloned().into_iter(),
+        ))]
+        .into_iter(),
+    );
 
     let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
     debug!("Writing Report");

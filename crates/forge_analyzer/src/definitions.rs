@@ -977,9 +977,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
             .iter()
             .enumerate()
             .map(|(i, arg)| {
-                let defid =
-                    self.res
-                        .add_anonymous(i.to_string() + "test", AnonType::Unknown, self.module);
+                let defid = self.res.add_anonymous(
+                    i.to_string() + "argument",
+                    AnonType::Unknown,
+                    self.module,
+                );
                 self.lower_expr(&arg.expr, Some(defid))
             })
             .collect();
@@ -993,6 +995,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
         };
+
         let res = self.body.push_tmp(self.block, call, None);
         Operand::with_var(res)
     }
@@ -1242,9 +1245,15 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }) => {
                 let left = self.lower_expr(left, None);
                 let right = self.lower_expr(right, None);
-                let tmp = self
-                    .body
-                    .push_tmp(self.block, Rvalue::Bin(op.into(), left, right), None);
+                let defid = self
+                    .res
+                    .add_anonymous("replace_this", AnonType::Unknown, self.module);
+
+                let tmp = self.body.push_tmp(
+                    self.block,
+                    Rvalue::Bin(op.into(), left, right),
+                    Some(defid),
+                );
                 Operand::with_var(tmp)
             }
 

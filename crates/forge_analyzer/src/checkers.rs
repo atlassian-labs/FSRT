@@ -551,7 +551,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                                         if let Some(value) =
                                                             self.variables_from_defid.get(&defid)
                                                         {
-                                                            println!("value of method {value:?}");
                                                             intrinsic_argument.second_arg =
                                                                 Some(vec![]);
                                                             add_elements_to_intrinsic_struct(
@@ -580,10 +579,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                                         &mut intrinsic_argument.second_arg,
                                                     );
                                                 }
-                                                // println!("value of method {value:?}");
                                             }
                                         }
-                                        //
                                     }
                                     _ => {}
                                 }
@@ -591,42 +588,42 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         }
                     }
                 }
+
+                let mut permissions_within_call: Vec<ForgePermissions> = vec![];
+                let function_name =
+                    if intrinsic_argument.name.unwrap() == String::from("requestJira") {
+                        IntrinsicName::RequestJira
+                    } else {
+                        IntrinsicName::RequestConfluence
+                    };
+
+                intrinsic_argument
+                    .first_arg
+                    .iter()
+                    .for_each(|first_arg_vec| {
+                        intrinsic_argument
+                            .second_arg
+                            .iter()
+                            .for_each(|second_arg_vec| {
+                                first_arg_vec.iter().for_each(|first_arg| {
+                                    second_arg_vec.iter().for_each(|second_arg| {
+                                        let permissions = check_permission_used(
+                                            function_name,
+                                            first_arg,
+                                            Some(second_arg),
+                                        );
+                                        permissions_within_call.extend_from_slice(&permissions);
+                                    })
+                                })
+                            })
+                    });
+
+                _interp
+                    .permissions
+                    .extend_from_slice(&permissions_within_call);
             }
             _ => {}
         }
-
-        let mut permissions_within_call: Vec<ForgePermissions> = vec![];
-        let function_name = if intrinsic_argument.name.unwrap() == String::from("requestJira") {
-            IntrinsicName::RequestJira
-        } else {
-            IntrinsicName::RequestConfluence
-        };
-
-        intrinsic_argument
-            .first_arg
-            .iter()
-            .for_each(|first_arg_vec| {
-                intrinsic_argument
-                    .second_arg
-                    .iter()
-                    .for_each(|second_arg_vec| {
-                        first_arg_vec.iter().for_each(|first_arg| {
-                            second_arg_vec.iter().for_each(|second_arg| {
-                                let permissions = check_permission_used(
-                                    function_name,
-                                    first_arg,
-                                    Some(second_arg),
-                                );
-                                println!("permissions {:?}", permissions);
-                                permissions_within_call.extend_from_slice(&permissions);
-                            })
-                        })
-                    })
-            });
-
-        _interp
-            .permissions
-            .extend_from_slice(&permissions_within_call);
 
         match *intrinsic {
             Intrinsic::Authorize(_) => initial_state,
@@ -784,7 +781,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                             }
                         }
                     } else if let Some(literal) = resolve_literal_from_operand(&expr) {
-                        println!("literal {literal:?}");
+                        /* add literal functionality */
                     }
                 }
 
@@ -801,6 +798,9 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         Value::Const(Const::Literal(all_potential_values.get(0).unwrap().clone())),
                     );
                 }
+            }
+            Rvalue::Bin(binop, op1, op2) => {
+                /* add bin op functionality */
             }
             _ => {}
         }
@@ -830,32 +830,30 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     }
                 }
             }
-            Operand::Var(var) => {
-                match var.base {
-                    Base::Var(var_id) => {
-                        let varkind = &interp.curr_body.get().unwrap().vars[var_id];
-                        if let VarKind::LocalDef(local_defid) = varkind {
-                            if let Some(class) =
-                                self.read_class_from_object(interp, local_defid.clone())
-                            {
-                                if let Some(prev_values) = prev_values {
-                                    let const_value = Const::Object(class.clone());
-                                    let mut all_values = prev_values.clone();
-                                    all_values.push(const_value);
-                                    let value = Value::Phi(all_values);
-                                    self.variables_from_defid.insert(*defid, value.clone());
-                                } else {
-                                    let value = Value::Const(Const::Object(class.clone()));
-                                    self.variables_from_defid.insert(*defid, value.clone());
-                                }
-                            } else if let Some(value) = self.variables_from_defid.get(defid) {
-                                println!("found value {:?}", value)
+            Operand::Var(var) => match var.base {
+                Base::Var(var_id) => {
+                    let varkind = &interp.curr_body.get().unwrap().vars[var_id];
+                    if let VarKind::LocalDef(local_defid) = varkind {
+                        if let Some(class) =
+                            self.read_class_from_object(interp, local_defid.clone())
+                        {
+                            if let Some(prev_values) = prev_values {
+                                let const_value = Const::Object(class.clone());
+                                let mut all_values = prev_values.clone();
+                                all_values.push(const_value);
+                                let value = Value::Phi(all_values);
+                                self.variables_from_defid.insert(*defid, value.clone());
+                            } else {
+                                let value = Value::Const(Const::Object(class.clone()));
+                                self.variables_from_defid.insert(*defid, value.clone());
                             }
+                        } else if let Some(value) = self.variables_from_defid.get(defid) {
+                            /* add value from defid */
                         }
                     }
-                    _ => {}
                 }
-            }
+                _ => {}
+            },
         }
     }
 
@@ -896,6 +894,7 @@ fn get_varid_from_defid(varkind: &VarKind) -> Option<DefId> {
         VarKind::GlobalRef(defid) => Some(defid.clone()),
         VarKind::LocalDef(defid) => Some(defid.clone()),
         VarKind::Arg(defid) => Some(defid.clone()),
+        VarKind::AnonClosure(defid) => Some(defid.clone()),
         VarKind::Temp { parent } => parent.clone(),
         _ => None,
     }
@@ -948,6 +947,7 @@ fn add_elements_to_intrinsic_struct(value: &Value, args: &mut Option<Vec<String>
 pub struct PermissionChecker {
     pub vulns: Vec<PermissionVuln>,
     pub declared_permissions: HashSet<ForgePermissions>,
+    pub used_permissions: HashSet<ForgePermissions>,
 }
 
 impl PermissionChecker {
@@ -955,10 +955,17 @@ impl PermissionChecker {
         Self {
             vulns: vec![],
             declared_permissions,
+            used_permissions: HashSet::default(),
         }
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = PermissionVuln> {
+        if self.declared_permissions.len() > 0 {
+            return Vec::from([PermissionVuln {
+                unused_permissions: self.declared_permissions.clone(),
+            }])
+            .into_iter();
+        }
         self.vulns.into_iter()
     }
 }
@@ -1007,9 +1014,9 @@ impl<'cx> Checker<'cx> for PermissionChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        println!("visitng intrsinsic");
         for permission in &interp.permissions {
             self.declared_permissions.remove(permission);
+            self.used_permissions.insert(permission.clone());
         }
         ControlFlow::Continue(*state)
     }
@@ -1031,11 +1038,14 @@ impl IntoVuln for PermissionVuln {
         Vulnerability {
             check_name: format!("Least-Privilege"),
             description: format!(
-                "Unused permissions listed in manifest file:.",
-                // self.unused_permissions.into_iter().join(", ")
+                "Unused permissions listed in manifest file: {:?}",
+                self.unused_permissions
             ),
             recommendation: "Remove permissions in manifest file that are not needed.",
-            proof: format!("Unused permissions found in manifest.yml"),
+            proof: format!(
+                "Unused permissions found in manifest.yml: {:?}",
+                self.unused_permissions
+            ),
             severity: Severity::Low,
             app_key: reporter.app_key().to_string(),
             app_name: reporter.app_name().to_string(),

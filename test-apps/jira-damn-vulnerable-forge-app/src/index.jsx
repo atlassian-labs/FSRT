@@ -97,8 +97,11 @@ function SecureGlance() {
   }
   const [flagVal] = useState(async () => {
     const issueData = await fetchIssueSummary(platformContext.issueKey, "/rest/api/3/issue/${issueIdOrKey}?fields=summary");
+    const issueData2 = await writeComment(issueId, 'Overwrite')
     return JSON.stringify(issueData);
   });
+
+  
 
   return (
     <Fragment>

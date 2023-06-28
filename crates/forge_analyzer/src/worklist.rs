@@ -88,8 +88,7 @@ impl WorkList<DefId, BasicBlockId> {
             self.worklist.reserve(blocks.len());
             for work in blocks {
                 debug!(?work, "push_front_blocks");
-                self.worklist
-                    .push_front((work.0, work.1));
+                self.worklist.push_front((work.0, work.1));
             }
             return true;
         }
