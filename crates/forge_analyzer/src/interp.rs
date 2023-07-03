@@ -164,7 +164,6 @@ pub trait Dataflow<'cx>: Sized {
         rvalue: &Rvalue,
     ) {
     }
-
     fn insert_value2<C: Checker<'cx, State = Self::State>>(
         &mut self,
         operand: &Operand,
@@ -633,6 +632,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             dataflow_visited: FxHashSet::default(),
             checker_visited: RefCell::new(FxHashSet::default()),
             callstack_arguments: Vec::new(),
+            expecting_value: VecDeque::default(),
             callstack: RefCell::new(Vec::new()),
             // vulns: RefCell::new(Vec::new()),
             value_manager: ValueManager {

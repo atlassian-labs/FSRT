@@ -1983,6 +1983,42 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
     }
 
     fn try_read_mem_from_object<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        const_var: Const,
+    ) -> Option<&Value> {
+        if let Const::Object(obj) = const_var {
+            return self.read_mem_from_object(_interp, _def, obj);
+        }
+        None
+    }
+
+    fn read_mem_from_object<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        obj: Class,
+    ) -> Option<&Value> {
+        let defid_method = obj
+            .pub_members
+            .iter()
+            .filter(|(mem, _)| mem == "method")
+            .map(|(_, defid)| defid)
+            .collect_vec();
+        if let Some(_alt_defid) = defid_method.get(0) {
+            for (varid_new, varkind) in _interp.body().vars.clone().into_iter_enumerated() {
+                if let Some(defid) = get_varid_from_defid(&varkind) {
+                    if &&defid == _alt_defid {
+                        return self.varid_to_value.get(&(_def, varid_new));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn try_read_mem_from_object<C: Checker<'cx, State = Self::State>>(
         &self,
         _interp: &Interp<'cx, C>,
         _def: DefId,
