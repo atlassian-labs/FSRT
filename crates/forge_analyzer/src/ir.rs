@@ -33,6 +33,7 @@ use crate::ctx::ModId;
 use crate::definitions::DefId;
 use crate::definitions::DefKind;
 use crate::definitions::Environment;
+use crate::definitions::IntrinsicName;
 use crate::definitions::Value;
 
 pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
@@ -66,10 +67,10 @@ pub enum Terminator {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intrinsic {
-    Authorize(String),
+    Authorize(IntrinsicName),
     Fetch,
-    ApiCall(String),
-    SafeCall(String),
+    ApiCall(IntrinsicName),
+    SafeCall(IntrinsicName),
     EnvRead,
     StorageRead,
 }

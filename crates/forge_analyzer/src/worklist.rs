@@ -27,7 +27,7 @@ where
     }
 
     #[inline]
-    pub fn pop_front(&mut self) -> (Option<(V, W)>) {
+    pub fn pop_front(&mut self) -> Option<(V, W)> {
         self.worklist.pop_front()
     }
 
@@ -75,12 +75,7 @@ where
 
 impl WorkList<DefId, BasicBlockId> {
     #[inline]
-    pub(crate) fn push_front_blocks(
-        &mut self,
-        env: &Environment,
-        def: DefId,
-        arguments: Vec<Operand>,
-    ) -> bool {
+    pub(crate) fn push_front_blocks(&mut self, env: &Environment, def: DefId) -> bool {
         if self.visited.insert(def) {
             debug!("adding function: {}", env.def_name(def));
             let body = env.def_ref(def).expect_body();
@@ -88,8 +83,7 @@ impl WorkList<DefId, BasicBlockId> {
             self.worklist.reserve(blocks.len());
             for work in blocks {
                 debug!(?work, "push_front_blocks");
-                self.worklist
-                    .push_front((work.0, work.1));
+                self.worklist.push_front((work.0, work.1));
             }
             return true;
         }
