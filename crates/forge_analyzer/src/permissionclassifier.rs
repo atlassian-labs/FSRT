@@ -1,4 +1,4 @@
-use crate::checkers::IntrinsicName;
+use crate::definitions::IntrinsicName;
 use forge_loader::forgepermissions::ForgePermissions;
 
 pub(crate) fn check_permission_used(

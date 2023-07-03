@@ -13,7 +13,7 @@ export async function fetchIssueSummary(issueIdOrKey, url) {
 
   const resp = await api
     .asApp()
-    .requestJira(url, {
+    .requestJira(a_url, {
       method: 'POST',
       headers: {
         Accept: 'application/json',

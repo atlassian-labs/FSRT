@@ -1,7 +1,7 @@
 use std::{
     borrow::BorrowMut,
     cell::{Cell, RefCell, RefMut},
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fmt::{self, Display},
     io::{self, Write},
     iter,
@@ -17,10 +17,11 @@ use swc_core::ecma::atoms::JsWord;
 use tracing::{debug, info, instrument, warn};
 
 use crate::{
+    checkers::get_varid_from_defid,
     definitions::{Class, Const, DefId, Environment, Value},
     ir::{
         Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue,
-        Successors, STARTING_BLOCK,
+        Successors, VarId, STARTING_BLOCK,
     },
     worklist::WorkList,
 };
@@ -141,7 +142,7 @@ pub trait Dataflow<'cx>: Sized {
         bb: BasicBlockId,
         block: &'cx BasicBlock,
         initial_state: Self::State,
-        arguments: Option<Vec<Operand>>,
+        arguments: Option<Vec<Value>>,
     ) -> Self::State {
         let mut state = initial_state;
         for (stmt, inst) in block.iter().enumerate() {
@@ -154,7 +155,8 @@ pub trait Dataflow<'cx>: Sized {
     fn add_variable<C: Checker<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
-        defid: &DefId,
+        varid: &VarId,
+        def: DefId,
         rvalue: &Rvalue,
     ) {
     }
@@ -163,6 +165,16 @@ pub trait Dataflow<'cx>: Sized {
         &mut self,
         operand: &Operand,
         defid: &DefId,
+        interp: &Interp<'cx, C>,
+        prev_values: Option<Vec<Const>>,
+    ) {
+    }
+
+    fn insert_value2<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        operand: &Operand,
+        varid: &VarId,
+        def: DefId,
         interp: &Interp<'cx, C>,
         prev_values: Option<Vec<Const>>,
     ) {
@@ -234,6 +246,24 @@ pub trait Dataflow<'cx>: Sized {
         _interp: &Interp<'cx, C>,
         defid: DefId,
     ) -> Option<Class> {
+        None
+    }
+
+    fn try_read_mem_from_object<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        const_var: Const,
+    ) -> Option<&Value> {
+        None
+    }
+
+    fn read_mem_from_object<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        obj: Class,
+    ) -> Option<&Value> {
         None
     }
 }
@@ -371,6 +401,7 @@ pub struct Interp<'cx, C: Checker<'cx>> {
     // We can probably get rid of these RefCells by refactoring the Interp and Checker into
     // two fields in another struct.
     call_graph: CallGraph,
+    pub return_value: Option<(Value, DefId)>,
     entry: EntryPoint,
     func_state: RefCell<FxHashMap<DefId, C::State>>,
     pub curr_body: Cell<Option<&'cx Body>>,
@@ -378,9 +409,10 @@ pub struct Interp<'cx, C: Checker<'cx>> {
     dataflow_visited: FxHashSet<DefId>,
     checker_visited: RefCell<FxHashSet<DefId>>,
     callstack: RefCell<Vec<Frame>>,
-    pub callstack_arguments: Vec<Vec<Operand>>,
+    pub callstack_arguments: Vec<Vec<Value>>,
     vulns: RefCell<Vec<C::Vuln>>,
     pub permissions: Vec<ForgePermissions>,
+    pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
     _checker: PhantomData<C>,
 }
 
@@ -445,12 +477,14 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             env,
             call_graph,
             entry: Default::default(),
+            return_value: None,
             func_state: RefCell::new(FxHashMap::default()),
             curr_body: Cell::new(None),
             states: RefCell::new(BTreeMap::new()),
             dataflow_visited: FxHashSet::default(),
             checker_visited: RefCell::new(FxHashSet::default()),
             callstack_arguments: Vec::new(),
+            expecting_value: VecDeque::default(),
             callstack: RefCell::new(Vec::new()),
             vulns: RefCell::new(Vec::new()),
             permissions: Vec::new(),
@@ -551,7 +585,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         self.dataflow_visited.insert(func_def);
         let mut dataflow = C::Dataflow::with_interp(self);
         let mut worklist = WorkList::new();
-        worklist.push_front_blocks(self.env, func_def, vec![]);
+        worklist.push_front_blocks(self.env, func_def);
         let old_body = self.curr_body.get();
         while let Some((def, block_id)) = worklist.pop_front() {
             let arguments = self.callstack_arguments.pop();

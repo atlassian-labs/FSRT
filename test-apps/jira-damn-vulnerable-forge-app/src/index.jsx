@@ -96,7 +96,8 @@ function SecureGlance() {
     return '';
   }
   const [flagVal] = useState(async () => {
-    const issueData = await fetchIssueSummary(platformContext.issueKey, "/rest/api/3/issue/${issueIdOrKey}?fields=summary");
+    const issueData = await fetchIssueSummary(platformContext.issueKey, value);
+    const test = await writeComment("test", "test");
     return JSON.stringify(issueData);
   });
 
@@ -112,7 +113,7 @@ function SecureGlance() {
 
 export const glance = render(
   <IssueGlance>
-    <SecureGlance />
+    <SecureGlance/>
   </IssueGlance>
 );
 
