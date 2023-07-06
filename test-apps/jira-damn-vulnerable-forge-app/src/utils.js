@@ -3,25 +3,31 @@ import api, { route } from '@forge/api';
 export async function fetchIssueSummary(issueIdOrKey, url) {
 
   let obj = {
-    method: 'POST',
+    method: 'GET',
     headers: {
       Accept: 'application/json',
     },
   };
 
+  let val = "grapefruit";
+
+  val = "peach";
+
+  let pre_url = "/rest/api/3/issue/" + val;
+
   let a_url = route`/rest/api/3/issue/${issueIdOrKey}?fields=summary`;
 
   const resp = await api
     .asApp()
-    .requestJira(url, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-      },
-    });
+    .requestJira( "/rest/api/3/issue/" + val, obj);
   const data = await resp.json();
   console.log(JSON.stringify(data));
   return data['fields']['summary'];
+}
+
+function get_route(url) {
+  //return a_url = route`/rest/api/3/issue/${issueIdOrKey}?fields=summary`;
+  return url;
 }
 
 export async function writeComment(issueIdOrKey, comment) {

@@ -1,4 +1,4 @@
-use crate::checkers::IntrinsicName;
+use crate::definitions::IntrinsicName;
 use forge_loader::forgepermissions::ForgePermissions;
 
 pub(crate) fn check_permission_used(
@@ -8,9 +8,9 @@ pub(crate) fn check_permission_used(
 ) -> Vec<ForgePermissions> {
     let mut used_permissions: Vec<ForgePermissions> = Vec::new();
 
-    let post_call = second_arg.unwrap_or(&String::from("")).contains("POST");
-    let delete_call = second_arg.unwrap_or(&String::from("")).contains("DELTE");
-    let put_call = second_arg.unwrap_or(&String::from("")).contains("PUT");
+    let post_call = second_arg.unwrap_or("").contains("POST");
+    let delete_call = second_arg.unwrap_or("").contains("DELTE");
+    let put_call = second_arg.unwrap_or("").contains("PUT");
 
     let contains_audit = first_arg.contains("audit");
     let contains_issue = first_arg.contains("issue");

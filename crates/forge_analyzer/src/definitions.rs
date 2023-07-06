@@ -484,6 +484,13 @@ enum LowerStage {
     Create,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntrinsicName {
+    RequestConfluence,
+    RequestJira,
+    Other,
+}
+
 struct Lowerer<'cx> {
     res: &'cx mut Environment,
     curr_mod: ModId,
@@ -797,17 +804,22 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         && Some(&ImportKind::Default)
                             == self.res.as_foreign_import(def, "@forge/api") =>
             {
+                let function_name = if *last == String::from("requestJira") {
+                    IntrinsicName::RequestJira
+                } else {
+                    IntrinsicName::RequestConfluence
+                };
                 let first_arg = first_arg?;
                 match classify_api_call(first_arg) {
                     ApiCallKind::Unknown => {
                         if authn.first() == Some(&PropPath::MemberCall("asApp".into())) {
-                            Some(Intrinsic::ApiCall(last.to_string()))
+                            Some(Intrinsic::ApiCall(function_name))
                         } else {
-                            Some(Intrinsic::SafeCall(last.to_string()))
+                            Some(Intrinsic::SafeCall(function_name))
                         }
                     }
-                    ApiCallKind::Trivial => Some(Intrinsic::SafeCall(last.to_string())),
-                    ApiCallKind::Authorize => Some(Intrinsic::Authorize(last.to_string())),
+                    ApiCallKind::Trivial => Some(Intrinsic::SafeCall(function_name)),
+                    ApiCallKind::Authorize => Some(Intrinsic::Authorize(function_name)),
                 }
             }
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
@@ -820,7 +832,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }
             [PropPath::Def(def), ..] => match self.res.as_foreign_import(def, "@forge/api") {
                 Some(ImportKind::Named(ref name)) if *name == *"authorize" => {
-                    Some(Intrinsic::Authorize(String::from("")))
+                    Some(Intrinsic::Authorize(IntrinsicName::Other))
                 }
                 _ => None,
             },
@@ -977,9 +989,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
             .iter()
             .enumerate()
             .map(|(i, arg)| {
-                let defid =
-                    self.res
-                        .add_anonymous(i.to_string() + "test", AnonType::Unknown, self.module);
+                let defid = self.res.add_anonymous(
+                    i.to_string() + "argument",
+                    AnonType::Unknown,
+                    self.module,
+                );
                 self.lower_expr(&arg.expr, Some(defid))
             })
             .collect();
@@ -993,6 +1007,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
         };
+
         let res = self.body.push_tmp(self.block, call, None);
         Operand::with_var(res)
     }
@@ -1242,6 +1257,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }) => {
                 let left = self.lower_expr(left, None);
                 let right = self.lower_expr(right, None);
+
                 let tmp = self
                     .body
                     .push_tmp(self.block, Rvalue::Bin(op.into(), left, right), None);

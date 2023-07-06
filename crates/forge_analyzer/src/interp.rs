@@ -1,7 +1,7 @@
 use std::{
     borrow::BorrowMut,
     cell::{Cell, RefCell, RefMut},
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fmt::{self, Display},
     io::{self, Write},
     iter,
@@ -17,10 +17,11 @@ use swc_core::ecma::atoms::JsWord;
 use tracing::{debug, info, instrument, warn};
 
 use crate::{
+    checkers::{get_defid_from_varkind, resolve_var_from_operand, IntrinsicArguments},
     definitions::{Class, Const, DefId, Environment, Value},
     ir::{
         Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue,
-        Successors, STARTING_BLOCK,
+        Successors, VarId, STARTING_BLOCK,
     },
     worklist::WorkList,
 };
@@ -141,7 +142,7 @@ pub trait Dataflow<'cx>: Sized {
         bb: BasicBlockId,
         block: &'cx BasicBlock,
         initial_state: Self::State,
-        arguments: Option<Vec<Operand>>,
+        arguments: Option<Vec<Value>>,
     ) -> Self::State {
         let mut state = initial_state;
         for (stmt, inst) in block.iter().enumerate() {
@@ -154,15 +155,17 @@ pub trait Dataflow<'cx>: Sized {
     fn add_variable<C: Checker<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
-        defid: &DefId,
+        varid: &VarId,
+        def: DefId,
         rvalue: &Rvalue,
     ) {
     }
 
-    fn insert_value<C: Checker<'cx, State = Self::State>>(
+    fn insert_value2<C: Checker<'cx, State = Self::State>>(
         &mut self,
         operand: &Operand,
-        defid: &DefId,
+        varid: &VarId,
+        def: DefId,
         interp: &Interp<'cx, C>,
         prev_values: Option<Vec<Const>>,
     ) {
@@ -170,22 +173,22 @@ pub trait Dataflow<'cx>: Sized {
 
     fn join_term<C: Checker<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
-        self.super_join_term(interp, def, block, state, worklist);
+        self.super_join_term(interp.borrow_mut(), def, block, state, worklist);
     }
 
     fn super_join_term<C: Checker<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         match block.successors() {
             Successors::Return => {
@@ -199,7 +202,7 @@ pub trait Dataflow<'cx>: Sized {
                     debug!("{name} {def:?} is called from {calls:?}");
                     for &(def, loc) in calls {
                         if worklist.visited(&def) {
-                            worklist.push_back_force(def, loc.block, vec![]);
+                            worklist.push_back_force(def, loc.block);
                         }
                     }
                 }
@@ -207,15 +210,15 @@ pub trait Dataflow<'cx>: Sized {
             Successors::One(succ) => {
                 let mut succ_state = interp.block_state_mut(def, succ);
                 if succ_state.join_changed(&state) {
-                    worklist.push_back(def, succ, vec![]);
+                    worklist.push_back(def, succ);
                 }
             }
             Successors::Two(succ1, succ2) => {
                 if interp.block_state_mut(def, succ1).join_changed(&state) {
-                    worklist.push_back(def, succ1, vec![]);
+                    worklist.push_back(def, succ1);
                 }
                 if interp.block_state_mut(def, succ2).join_changed(&state) {
-                    worklist.push_back(def, succ2, vec![]);
+                    worklist.push_back(def, succ2);
                 }
             }
         }
@@ -235,6 +238,85 @@ pub trait Dataflow<'cx>: Sized {
         defid: DefId,
     ) -> Option<Class> {
         None
+    }
+
+    fn try_read_mem_from_object<C: Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        const_var: Const,
+    ) -> Option<&Value> {
+        None
+    }
+
+    fn get_defid_from_operand<C: Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        operand: &Operand,
+    ) -> Option<(DefId, VarId)> {
+        if let Some(varid) = resolve_var_from_operand(operand) {
+            if let Some(varkind) = _interp.body().vars.get(varid) {
+                if let Some(defid) = get_defid_from_varkind(varkind) {
+                    return Some((defid, varid));
+                }
+            }
+        }
+        None
+    }
+
+    fn insert_with_existing_value<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        operand: &Operand,
+        value: &Value,
+        varid: &VarId,
+        def: DefId,
+        interp: &Interp<'cx, C>,
+    ) {
+    }
+
+    fn read_mem_from_object<C: Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        obj: Class,
+    ) -> Option<&Value> {
+        None
+    }
+
+    fn def_to_class_property<C: Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        defid: DefId,
+    ) -> Option<&Value> {
+        None
+    }
+
+    fn get_values_from_operand<C: Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        operand: &Operand,
+    ) -> Option<&Value> {
+        None
+    }
+
+    fn try_insert<C: crate::interp::Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        const_var: Const,
+        intrinsic_argument: &mut IntrinsicArguments,
+    ) {
+    }
+
+    fn handle_second_arg<C: crate::interp::Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        operand: &Operand,
+        _def: DefId,
+        intrinsic_argument: &mut IntrinsicArguments,
+    ) {
     }
 }
 
@@ -371,6 +453,7 @@ pub struct Interp<'cx, C: Checker<'cx>> {
     // We can probably get rid of these RefCells by refactoring the Interp and Checker into
     // two fields in another struct.
     call_graph: CallGraph,
+    pub return_value: Option<(Value, DefId)>,
     entry: EntryPoint,
     func_state: RefCell<FxHashMap<DefId, C::State>>,
     pub curr_body: Cell<Option<&'cx Body>>,
@@ -378,8 +461,10 @@ pub struct Interp<'cx, C: Checker<'cx>> {
     dataflow_visited: FxHashSet<DefId>,
     checker_visited: RefCell<FxHashSet<DefId>>,
     callstack: RefCell<Vec<Frame>>,
+    pub callstack_arguments: Vec<Vec<Value>>,
     vulns: RefCell<Vec<C::Vuln>>,
     pub permissions: Vec<ForgePermissions>,
+    pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
     _checker: PhantomData<C>,
 }
 
@@ -444,11 +529,14 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             env,
             call_graph,
             entry: Default::default(),
+            return_value: None,
             func_state: RefCell::new(FxHashMap::default()),
             curr_body: Cell::new(None),
             states: RefCell::new(BTreeMap::new()),
             dataflow_visited: FxHashSet::default(),
             checker_visited: RefCell::new(FxHashSet::default()),
+            callstack_arguments: Vec::new(),
+            expecting_value: VecDeque::default(),
             callstack: RefCell::new(Vec::new()),
             vulns: RefCell::new(Vec::new()),
             permissions: Vec::new(),
@@ -549,9 +637,10 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         self.dataflow_visited.insert(func_def);
         let mut dataflow = C::Dataflow::with_interp(self);
         let mut worklist = WorkList::new();
-        worklist.push_front_blocks(self.env, func_def, vec![]);
+        worklist.push_front_blocks(self.env, func_def);
         let old_body = self.curr_body.get();
-        while let Some((def, block_id, args)) = worklist.pop_front() {
+        while let Some((def, block_id)) = worklist.pop_front() {
+            let arguments = self.callstack_arguments.pop();
             let name = self.env.def_name(def);
             debug!("Dataflow: {name} - {block_id}");
             self.dataflow_visited.insert(def);
@@ -564,7 +653,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
                 before_state = before_state.join(&self.block_state(def, pred));
             }
             let state =
-                dataflow.transfer_block(self, def, block_id, block, before_state, Some(args));
+                dataflow.transfer_block(self, def, block_id, block, before_state, arguments);
             dataflow.join_term(self, def, block, state, &mut worklist);
         }
         self.curr_body.set(old_body);
