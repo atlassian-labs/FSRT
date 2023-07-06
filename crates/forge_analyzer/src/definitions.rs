@@ -1278,6 +1278,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
         };
+
         let res = self.body.push_tmp(self.block, call, None);
         Operand::with_var(res)
     }

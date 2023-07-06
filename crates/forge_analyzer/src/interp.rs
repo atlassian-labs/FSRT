@@ -159,15 +159,17 @@ pub trait Dataflow<'cx>: Sized {
     fn add_variable<C: Checker<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
-        defid: &DefId,
+        varid: &VarId,
+        def: DefId,
         rvalue: &Rvalue,
     ) {
     }
 
-    fn insert_value<C: Checker<'cx, State = Self::State>>(
+    fn insert_value2<C: Checker<'cx, State = Self::State>>(
         &mut self,
         operand: &Operand,
-        defid: &DefId,
+        varid: &VarId,
+        def: DefId,
         interp: &Interp<'cx, C>,
         prev_values: Option<Vec<Const>>,
     ) {
@@ -200,7 +202,7 @@ pub trait Dataflow<'cx>: Sized {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         self.super_join_term(interp.borrow_mut(), def, block, state, worklist);
     }
@@ -211,7 +213,7 @@ pub trait Dataflow<'cx>: Sized {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId, Operand>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         match block.successors() {
             Successors::Return => {
@@ -225,7 +227,7 @@ pub trait Dataflow<'cx>: Sized {
                     debug!("{name} {def:?} is called from {calls:?}");
                     for &(def, loc) in calls {
                         if worklist.visited(&def) {
-                            worklist.push_back_force(def, loc.block, vec![]);
+                            worklist.push_back_force(def, loc.block);
                         }
                     }
                 }
@@ -233,15 +235,15 @@ pub trait Dataflow<'cx>: Sized {
             Successors::One(succ) => {
                 let mut succ_state = interp.block_state_mut(def, succ);
                 if succ_state.join_changed(&state) {
-                    worklist.push_back(def, succ, vec![]);
+                    worklist.push_back(def, succ);
                 }
             }
             Successors::Two(succ1, succ2) => {
                 if interp.block_state_mut(def, succ1).join_changed(&state) {
-                    worklist.push_back(def, succ1, vec![]);
+                    worklist.push_back(def, succ1);
                 }
                 if interp.block_state_mut(def, succ2).join_changed(&state) {
-                    worklist.push_back(def, succ2, vec![]);
+                    worklist.push_back(def, succ2);
                 }
             }
         }

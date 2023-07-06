@@ -33,6 +33,12 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
     },
   };
 
+  let val = 'grapefruit';
+
+  val = 'peach';
+
+  let pre_url = '/rest/api/3/issue/' + val;
+
   module_exports_func();
   func_from_exports();
   another_export();
