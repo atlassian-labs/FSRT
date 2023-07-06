@@ -999,7 +999,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         }
                     }
                 }
-            }
+            },
         }
     }
 
