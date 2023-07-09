@@ -904,6 +904,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
 
+        //println!("as intrinsic ");
+
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
@@ -916,6 +918,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 } else {
                     IntrinsicName::RequestConfluence
                 };
+                //println!("here within the intrinsic");
                 let first_arg = first_arg?;
                 let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
                 match classify_api_call(first_arg) {

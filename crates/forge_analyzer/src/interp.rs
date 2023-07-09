@@ -93,6 +93,7 @@ pub trait Dataflow<'cx>: Sized {
         rvalue: &'cx Rvalue,
         initial_state: Self::State,
     ) -> Self::State {
+        // println!("transfer rvalue {:?}", rvalue);
         match rvalue {
             Rvalue::Intrinsic(intrinsic, args) => self.transfer_intrinsic(
                 interp,
@@ -150,6 +151,7 @@ pub trait Dataflow<'cx>: Sized {
     ) -> Self::State {
         let mut state = initial_state;
         for (stmt, inst) in block.iter().enumerate() {
+            // println!("inst -- {inst}");
             let loc = Location::new(bb, stmt as u32);
             state = self.transfer_inst(interp, def, loc, block, inst, state);
         }
