@@ -17,7 +17,7 @@ import ForgeUI, {
 import api, { webTrigger, route, storage, properties } from '@forge/api';
 import { createHash } from 'crypto';
 import jwt from 'jsonwebtoken';
-import { fetchIssueSummary } from './utils';
+import { fetchIssueSummary, writeComment } from './utils';
 
 function SharedSecretForm() {
   const [hashedSecret, setHashedSecret] = useState(null);
@@ -97,8 +97,8 @@ function SecureGlance() {
   }
   const [flagVal] = useState(async () => {
     const issueData = await fetchIssueSummary(platformContext.issueKey, value);
-    const test = await writeComment("test", "test");
-    return JSON.stringify(issueData);
+    const test = writeComment("test", "test");
+    return JSON.stringify(issueData + test);
   });
 
   return (

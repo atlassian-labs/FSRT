@@ -3,8 +3,9 @@ import api, { route } from '@forge/api';
 export async function fetchIssueSummary(issueIdOrKey, url) {
 
   let obj = {
-    method: 'GET',
-    headers: {
+    method: 'PTACH',
+    bananas: 'apple',
+    headers: { //
       Accept: 'application/json',
     },
   };
@@ -19,16 +20,13 @@ export async function fetchIssueSummary(issueIdOrKey, url) {
 
   const resp = await api
     .asApp()
-<<<<<<< HEAD
-    .requestJira( "/rest/api/3/issue/" + val, obj);
-=======
-    .requestJira(a_url, {
-      method: 'POST',
+    .requestJira( "/rest/api/3/issue/" + val, {
+      method: 'PUT',
+      raspberries: true,
       headers: {
         Accept: 'application/json',
       },
     });
->>>>>>> 2fc49f1b4b00e3ae4e97b2340279f3aa3c7acdef
   const data = await resp.json();
   console.log(JSON.stringify(data));
   return data['fields']['summary'];
