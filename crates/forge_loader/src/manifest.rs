@@ -220,6 +220,8 @@ impl<'a> ForgeModules<'a> {
             )
             .collect();
 
+        println!("ignored_functions {:?}", ignored_functions);
+
         let mut alternate_functions: Vec<&str> = Vec::new();
         for module in self.extra.into_values().flatten() {
             alternate_functions.extend(module.function);

@@ -119,6 +119,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
+        //println!("worklist - adding function {}", interp.env().def_name(def));
         for def in self.needs_call.drain(..) {
             worklist.push_front_blocks(interp.env(), def);
         }
@@ -225,6 +226,9 @@ impl<'cx> Checker<'cx> for AuthZChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
+
+        // println!("visitng intrinsic");
+
         match *intrinsic {
             Intrinsic::Authorize(_) => {
                 debug!("authorize intrinsic found");
@@ -541,12 +545,26 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         _def: DefId,
         intrinsic_argument: &mut IntrinsicArguments,
     ) {
+        println!("operand {:?}", operand);
+
+        println!();
+        println!("all vars {:?}", self.varid_to_value);
+        println!();
+            
         if let Some((defid, varid)) = self.get_defid_from_operand(_interp, operand) {
-            if let Some(val) = self.def_to_class_property(_interp, _def, defid) {
-                intrinsic_argument.second_arg = Some(vec![]);
-                add_elements_to_intrinsic_struct(val, &mut intrinsic_argument.second_arg);
-            }
+
+            // getting number 29 here 
+
+            println!("defid -varid {defid:?}. {varid:?}");
+
+            println!("varid ~~~ values {:?}", _interp.body().vars.get(varid));
+
+
+
             if let Some(val) = self.get_value(_def, varid) {
+
+                println!("this is the value {val:?}");
+
                 match val {
                     Value::Const(const_var) => {
                         self.try_insert(_interp, _def, const_var.clone(), &mut *intrinsic_argument);
@@ -563,7 +581,15 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     }
                     _ => {}
                 }
-            }
+            } else if let Some(val) = self.def_to_class_property(_interp, _def, defid) {
+                /* looks like a misclassification here */
+                println!("within class to property {val:?} ");
+
+                println!("this is the value {val:?}");
+                intrinsic_argument.second_arg = Some(vec![]);
+                add_elements_to_intrinsic_struct(val, &mut intrinsic_argument.second_arg);
+                println!("{:?} intrinsic arg second", intrinsic_argument.second_arg);
+            } 
         } else {
             // println!("found other arg {var:?}")
         }
@@ -579,8 +605,9 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         initial_state: Self::State,
         operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
+
         let mut intrinsic_argument = IntrinsicArguments::default();
-        println!("transferring intrinsic");
+        println!("transferring intrinsic {:?}", _interp.env().def_name(_def) );
         if let Intrinsic::ApiCall(name) | Intrinsic::SafeCall(name) | Intrinsic::Authorize(name) =
             intrinsic
         {
@@ -671,10 +698,25 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             .filter(|(mem, _)| mem == "method")
             .map(|(_, defid)| defid)
             .collect_vec();
+
+        // println!("deifd methods {defid_method:?} {:?}", obj.pub_members);
+        // /* everything here is correct */
+
+
+        println!("defid to varid {:?}", _interp.body().def_id_to_vars);
+        println!();
+        println!("deifd to varid {:?}", _interp.body().vars);
+        println!();
+        println!("projections");
+        println!();
+
+
         if let Some(_alt_defid) = defid_method.get(0) {
             for (varid_new, varkind) in _interp.body().vars.clone().into_iter_enumerated() {
+                // println!("varid {varid_new} : varkind {varkind:?}");
                 if let Some(defid) = get_defid_from_varkind(&varkind) {
                     if &&defid == _alt_defid {
+                        println!("incorrect value - misinterpreting here {_alt_defid:?} {defid:?} {:?}", self.get_value(_def, varid_new));
                         return self.get_value(_def, varid_new);
                     }
                 }
@@ -690,7 +732,11 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         defid: DefId,
     ) -> Option<&Value> {
         if let Some(DefKind::GlobalObj(objid)) = _interp.env().defs.defs.get(defid) {
+            println!("");
             if let Some(class) = _interp.env().defs.classes.get(objid.clone()) {
+
+                println!("class~~ {class:?}");
+
                 return self.read_mem_from_object(_interp, _def, class.clone());
             }
         }
@@ -1127,7 +1173,7 @@ fn get_prev_value(value: Option<&Value>) -> Option<Vec<Const>> {
 }
 
 fn return_value_from_string(values: Vec<String>) -> Value {
-    assert!(values.len() > 0);
+    // assert!(values.len() > 0);
     if values.len() == 1 {
         return Value::Const(Const::Literal(values.get(0).unwrap().clone()));
     } else {
@@ -1210,6 +1256,7 @@ impl<'cx> Checker<'cx> for PermissionChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
+        //println!("visiting _intrinsic");
         for permission in &interp.permissions {
             self.declared_permissions.remove(permission);
             self.used_permissions.insert(permission.clone());

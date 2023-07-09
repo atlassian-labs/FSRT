@@ -796,6 +796,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
 
+        //println!("as intrinsic ");
+
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
@@ -809,6 +811,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 } else {
                     IntrinsicName::RequestConfluence
                 };
+                //println!("here within the intrinsic");
                 let first_arg = first_arg?;
                 match classify_api_call(first_arg) {
                     ApiCallKind::Unknown => {
@@ -956,6 +959,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
+        //println!("lower call");
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first() {
             if self.res.as_foreign_import(id, "@forge/ui").map_or(
@@ -1002,6 +1006,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             CalleeRef::Import => Operand::UNDEF,
             CalleeRef::Expr(expr) => self.lower_expr(expr, None),
         };
+        //println!("callee {callee}");
         let first_arg = args.first().map(|expr| &*expr.expr);
         let call = match self.as_intrinsic(&props, first_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
