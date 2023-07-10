@@ -2046,7 +2046,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
 
         // println!("deifd methods {defid_method:?} {:?}", obj.pub_members);
         // /* everything here is correct */
-
         println!("defid to varid {:?}", _interp.body().def_id_to_vars);
         println!();
         println!("deifd to varid {:?}", _interp.body().vars);
