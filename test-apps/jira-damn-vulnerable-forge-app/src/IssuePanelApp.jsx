@@ -12,19 +12,22 @@ export const IssuePanelApp = () => {
   writeComment();
 
   const writeCommentFunction = () => {
-    writeComment(issueId, 'Overwrite')
-  }
+    writeComment(issueId, 'Overwrite');
+  };
 
   return (
-    <IssuePanel
-      actions={[
-        <IssuePanelAction
-          text="Issues"
-          onClick={writeCommentFunction}
-        />,
-      ]}
-    >
-      <Text>Overwrite vuln</Text>
-    </IssuePanel>
+    <Bananas>
+      <IssuePanel
+        actions={[
+          <IssuePanelAction text="Issues" onClick={writeCommentFunction} />,
+        ]}
+      >
+        <Text>Overwrite vuln</Text>
+      </IssuePanel>
+    </Bananas>
   );
 };
+
+function Bananas() {
+  return <></>;
+}

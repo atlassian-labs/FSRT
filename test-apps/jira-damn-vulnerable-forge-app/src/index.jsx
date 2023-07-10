@@ -18,6 +18,7 @@ import api, { webTrigger, route, storage, properties } from '@forge/api';
 import { createHash } from 'crypto';
 import jwt from 'jsonwebtoken';
 import { fetchIssueSummary } from './utils';
+import {IssuePanelApp} from './IssuePanelApp';
 
 function SharedSecretForm() {
   const [hashedSecret, setHashedSecret] = useState(null);
