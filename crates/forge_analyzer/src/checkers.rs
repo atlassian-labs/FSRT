@@ -1128,7 +1128,7 @@ fn convert_lit_to_raw(lit: &Literal) -> Option<String> {
 fn find_member_of_obj(member: &str, obj: &Class) -> Option<DefId> {
     for (mem, memdefid) in &obj.pub_members {
         if mem == member {
-            return Some(memdefid.clone());
+            return Some(memdefid);
         }
     }
     None
