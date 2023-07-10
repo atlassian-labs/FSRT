@@ -5,6 +5,7 @@ use std::{borrow::Borrow, fmt, mem};
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
 
+use smallvec::SmallVec;
 use swc_core::{
     common::SyntaxContext,
     ecma::{
@@ -15,8 +16,9 @@ use swc_core::{
             DefaultDecl, DoWhileStmt, ExportAll, ExportDecl, ExportDefaultDecl, ExportDefaultExpr,
             ExportNamedSpecifier, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForInStmt,
             ForOfStmt, ForStmt, Function, Id, Ident, IfStmt, Import, ImportDecl,
-            ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, JSXElement,
-            JSXElementChild, JSXElementName, JSXExpr, JSXExprContainer, JSXFragment, JSXMemberExpr,
+            ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, JSXAttr,
+            JSXAttrName, JSXAttrOrSpread, JSXAttrValue, JSXElement, JSXElementChild,
+            JSXElementName, JSXExpr, JSXExprContainer, JSXFragment, JSXMemberExpr,
             JSXNamespacedName, JSXObject, JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp,
             LabeledStmt, Lit, MemberExpr, MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl,
             ModuleExportName, ModuleItem, NewExpr, Number, ObjectLit, ObjectPat, ObjectPatProp,
@@ -965,6 +967,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             CalleeRef::Import => Operand::UNDEF,
             CalleeRef::Expr(expr) => self.lower_expr(expr),
         };
+
         let first_arg = args.first().map(|expr| &*expr.expr);
         let call = match self.as_intrinsic(&props, first_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
@@ -1021,6 +1024,49 @@ impl<'cx> FunctionAnalyzer<'cx> {
         }
     }
 
+    fn lower_jsx_attr(&mut self, n: JSXElement) {
+        n.opening.attrs.iter().for_each(|attr| match attr {
+            JSXAttrOrSpread::JSXAttr(jsx_attr) => {
+                if let JSXAttrName::Ident(ident_value) = &jsx_attr.name {
+                    if let Some(value) = &jsx_attr.value {
+                        if let JSXAttrValue::JSXExprContainer(jsx_expr) = value {
+                            self.lower_jsx_handler(jsx_expr, ident_value);
+                        }
+                    }
+                }
+            }
+            JSXAttrOrSpread::SpreadElement(_) => {}
+        });
+    }
+
+    fn lower_jsx_handler(&mut self, n: &JSXExprContainer, ident_value: &Ident) {
+        if let JSXExpr::Expr(expr) = &n.expr {
+            self.lower_expr(&expr);
+            if ident_value.sym.contains("on") {
+                match &**expr {
+                    Expr::Arrow(arrow_expr) => {
+                        if let BlockStmtOrExpr::Expr(expr) = &arrow_expr.body {
+                            self.lower_expr(&**expr);
+                        }
+                    }
+                    Expr::Ident(ident) => {
+                        let defid = self.res.sym_to_id(ident.to_id(), self.module);
+                        let varid = self.body.get_or_insert_global(defid.unwrap());
+                        self.body.push_tmp(
+                            self.block,
+                            Rvalue::Call(
+                                Operand::Var(self.body.create_variable(varid)),
+                                SmallVec::default(),
+                            ),
+                            None,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     fn lower_jsx_child(&mut self, n: &JSXElementChild) -> Operand {
         match n {
             JSXElementChild::JSXText(JSXText { value, .. }) => {
@@ -1032,7 +1078,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 JSXExpr::Expr(expr) => self.lower_expr(expr),
             },
             JSXElementChild::JSXSpreadChild(JSXSpreadChild { expr, .. }) => self.lower_expr(expr),
-            JSXElementChild::JSXElement(elem) => self.lower_jsx_elem(elem),
+            JSXElementChild::JSXElement(elem) => {
+                self.lower_jsx_attr(*elem.clone());
+                self.lower_jsx_elem(elem)
+            }
             JSXElementChild::JSXFragment(JSXFragment { children, .. }) => {
                 for child in children {
                     self.lower_jsx_child(child);
@@ -1058,6 +1107,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
             .iter()
             .map(|child| self.lower_jsx_child(child))
             .collect();
+
+        self.lower_jsx_attr(n.clone());
+
         let callee = match &n.opening.name {
             JSXElementName::Ident(ident) => {
                 let id = ident.to_id();
@@ -1068,7 +1120,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let var = self.body.get_or_insert_global(def);
                 Operand::with_var(var)
             }
-            JSXElementName::JSXMemberExpr(mem) => self.lower_jsx_member(&mem),
+            JSXElementName::JSXMemberExpr(mem) => {
+                self.lower_jsx_member(&mem)
+            }
             JSXElementName::JSXNamespacedName(JSXNamespacedName { ns, name }) => {
                 let ns = ns.to_id();
                 let Some(def) = self.res.sym_to_id(ns.clone(), self.module) else {
@@ -1266,7 +1320,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 );
                 Operand::with_var(phi)
             }
-            Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
+            Expr::Call(CallExpr { callee, args, .. }) => {                self.lower_call(callee.into(), args)
+            }
             Expr::New(NewExpr { callee, args, .. }) => Operand::UNDEF,
             Expr::Seq(SeqExpr { exprs, .. }) => {
                 if let Some((last, rest)) = exprs.split_last() {
@@ -1318,7 +1373,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 ident
             }
             Expr::JSXEmpty(_) => Operand::UNDEF,
-            Expr::JSXElement(elem) => self.lower_jsx_elem(&elem),
+            Expr::JSXElement(elem) => {
+                self.lower_jsx_elem(&elem)
+            }
             Expr::JSXFragment(JSXFragment {
                 opening,
                 children,
