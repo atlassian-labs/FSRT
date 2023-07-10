@@ -1120,9 +1120,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let var = self.body.get_or_insert_global(def);
                 Operand::with_var(var)
             }
-            JSXElementName::JSXMemberExpr(mem) => {
-                self.lower_jsx_member(&mem)
-            }
+            JSXElementName::JSXMemberExpr(mem) => self.lower_jsx_member(&mem),
             JSXElementName::JSXNamespacedName(JSXNamespacedName { ns, name }) => {
                 let ns = ns.to_id();
                 let Some(def) = self.res.sym_to_id(ns.clone(), self.module) else {
@@ -1320,8 +1318,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 );
                 Operand::with_var(phi)
             }
-            Expr::Call(CallExpr { callee, args, .. }) => {                self.lower_call(callee.into(), args)
-            }
+            Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
             Expr::New(NewExpr { callee, args, .. }) => Operand::UNDEF,
             Expr::Seq(SeqExpr { exprs, .. }) => {
                 if let Some((last, rest)) = exprs.split_last() {
@@ -1373,9 +1370,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 ident
             }
             Expr::JSXEmpty(_) => Operand::UNDEF,
-            Expr::JSXElement(elem) => {
-                self.lower_jsx_elem(&elem)
-            }
+            Expr::JSXElement(elem) => self.lower_jsx_elem(&elem),
             Expr::JSXFragment(JSXFragment {
                 opening,
                 children,
