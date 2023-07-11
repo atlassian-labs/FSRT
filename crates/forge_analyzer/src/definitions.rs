@@ -1028,7 +1028,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
         n.opening.attrs.iter().for_each(|attr| match attr {
             JSXAttrOrSpread::JSXAttr(jsx_attr) => {
                 if let JSXAttrName::Ident(ident_value) = &jsx_attr.name {
-                    if let Some(value) = &jsx_attr.value {
+                    if let Some(JSXAttrValue::JSXExprContainer(jsx_expr)) = &jsx_attr.value {
                         if let JSXAttrValue::JSXExprContainer(jsx_expr) = value {
                             self.lower_jsx_handler(jsx_expr, ident_value);
                         }
