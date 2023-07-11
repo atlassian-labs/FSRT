@@ -1039,6 +1039,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
     fn lower_jsx_handler(&mut self, n: &JSXExprContainer, ident_value: &Ident) {
         if let JSXExpr::Expr(expr) = &n.expr {
+            // FIXME: Add entry point for the functions that are called as part of the handlers
             self.lower_expr(&expr);
             if let Some(second_char) = ident_value.sym.chars().nth(2) {
                 if ident_value.sym.starts_with("on") && second_char.is_uppercase() {
