@@ -26,12 +26,5 @@ export const IssuePanelApp = () => {
     >
       <Text>Overwrite vuln</Text>
     </IssuePanel>
-    </Bananas>
   );
 };
-
-
-function Bananas() {
-  return (<>
-  </>)
-}
