@@ -16,7 +16,7 @@ export async function fetchIssueSummary(issueIdOrKey, url) {
 
   let pre_url = "/rest/api/3/issue/" + val;
 
-  let a_url = route`/rest/api/3/issue/${issueIdOrKey}?fields=summary`;
+  let a_url = route`/rest/api/3/issue/${issueIdOrKey}?fields=summary/${val}`;
 
   const resp = await api
     .asApp()
