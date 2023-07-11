@@ -495,7 +495,6 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         while let Some((def, block_id)) = worklist.pop_front() {
             let name = self.env.def_name(def);
             debug!("Dataflow: {name} - {block_id}");
-            println!("Dataflow: {name} - {block_id}");
             self.dataflow_visited.insert(def);
             let func = self.env().def_ref(def).expect_body();
             self.curr_body.set(Some(func));
