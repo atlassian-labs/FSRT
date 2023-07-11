@@ -4,9 +4,16 @@ use std::{cmp::max, mem, ops::ControlFlow};
 use tracing::{debug, info, warn};
 
 use crate::{
-    definitions::DefId,
-    interp::{Checker, Dataflow, Frame, Interp, JoinSemiLattice, WithCallStack},
-    ir::{BasicBlock, BasicBlockId, Intrinsic, Location},
+    definitions::{Class, Const, DefId, DefKind, Environment, IntrinsicName, Value},
+    interp::{
+        Checker, Dataflow, EntryKind, EntryPoint, Frame, Interp, JoinSemiLattice, WithCallStack,
+    },
+    ir::{
+        Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand, Rvalue,
+        Successors, VarId, VarKind,
+    },
+    permissionclassifier::check_permission_used,
+    reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     worklist::WorkList,
 };
 
@@ -697,935 +704,25 @@ impl<'cx> Runner<'cx> for SecretChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        if let Intrinsic::SecretFunction(package_data) = intrinsic {
-            if let Some(operand) = operands
-                .unwrap_or_default()
-                .get((package_data.secret_position - 1) as usize)
-            {
-                match operand {
-                    Operand::Lit(lit) => {
-                        let vuln =
-                            SecretVuln::new(interp.callstack(), interp.env(), interp.entry());
-                        if let Literal::Str(_) = lit {
-                            info!("Found a vuln!");
-                            self.vulns.push(vuln);
-                        }
-                    }
-                    Operand::Var(var) => {
-                        if let Base::Var(varid) = var.base {
-                            if let Some(value) =
-                                interp.get_value(def, varid, var.projections.get(0).cloned())
-                            {
-                                match value {
-                                    Value::Const(_) | Value::Phi(_) => {
-                                        let vuln = SecretVuln::new(
-                                            interp.callstack(),
-                                            interp.env(),
-                                            interp.entry(),
-                                        );
-                                        info!("Found a vuln!");
-                                        self.vulns.push(vuln);
-                                    }
-                                    _ => {}
-                                }
-                            } else if let Some(value) = interp.body().vars.get(varid) {
-                                if let VarKind::GlobalRef(def) = value {
-                                    if let Some(value) =
-                                        interp.value_manager.defid_to_value.get(def)
-                                    {
-                                        println!("value [] {value:?}");
-                                        match value {
-                                            Value::Const(_) | Value::Phi(_) => {
-                                                let vuln = SecretVuln::new(
-                                                    interp.callstack(),
-                                                    interp.env(),
-                                                    interp.entry(),
-                                                );
-                                                info!("Found a vuln!");
-                                                self.vulns.push(vuln);
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        // println!("visitng intrinsic");
+
+        match *intrinsic {
+            Intrinsic::Authorize(_) => {
+                debug!("authorize intrinsic found");
+                ControlFlow::Continue(AuthorizeState::Yes)
             }
-        }
-        ControlFlow::Continue(*state)
-    }
-}
-
-impl<'cx> Checker<'cx> for SecretChecker {
-    type Vuln = SecretVuln;
-}
-
-pub struct PermissionDataflow {
-    needs_call: Vec<(DefId, Vec<Operand>)>,
-    pub varid_to_value: FxHashMap<(DefId, VarId, Option<Projection>), Value>,
-    pub defid_to_value: FxHashMap<DefId, Value>,
-}
-
-impl PermissionDataflow {
-    fn handle_second_arg(&self, value: &Value, intrinsic_argument: &mut IntrinsicArguments) {
-        match value {
-            Value::Const(Const::Literal(lit)) => {
-                intrinsic_argument.second_arg = Some(vec![lit.to_string()]);
+            Intrinsic::Fetch => ControlFlow::Continue(*state),
+            Intrinsic::ApiCall(_) if *state == AuthorizeState::No => {
+                let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
+                info!("Found a vuln!");
+                self.vulns.push(vuln);
+                ControlFlow::Continue(*state)
             }
-            Value::Phi(phi_val) => {
-                intrinsic_argument.second_arg = Some(
-                    phi_val
-                        .iter()
-                        .map(|data| {
-                            if let Const::Literal(lit) = data {
-                                return Some(lit.to_string());
-                            } else {
-                                None
-                            }
-                        })
-                        .filter(|const_val| const_val != &None)
-                        .map(|f| f.unwrap())
-                        .collect_vec(),
-                )
-            }
-            _ => {}
+            Intrinsic::ApiCall(_) => ControlFlow::Continue(*state),
+            Intrinsic::SafeCall(_) => ControlFlow::Continue(*state),
+            Intrinsic::EnvRead => ControlFlow::Continue(*state),
+            Intrinsic::StorageRead => ControlFlow::Continue(*state),
         }
-    }
-}
-
-impl WithCallStack for PermissionVuln {
-    fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct IntrinsicArguments {
-    name: Option<IntrinsicName>,
-    first_arg: Option<Vec<String>>,
-    second_arg: Option<Vec<String>>,
-}
-
-impl<'cx> Dataflow<'cx> for PermissionDataflow {
-    type State = PermissionTest;
-
-    fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
-        _interp: &Interp<'cx, C>,
-    ) -> Self {
-        Self {
-            needs_call: vec![],
-            varid_to_value: FxHashMap::default(),
-            defid_to_value: FxHashMap::default(),
-        }
-    }
-
-    fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
-        &mut self,
-        _interp: &mut Interp<'cx, C>,
-        _def: DefId,
-        _loc: Location,
-        _block: &'cx BasicBlock,
-        intrinsic: &'cx Intrinsic,
-        initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
-    ) -> Self::State {
-        let mut intrinsic_argument = IntrinsicArguments::default();
-        if let Intrinsic::ApiCall(name) | Intrinsic::SafeCall(name) | Intrinsic::Authorize(name) =
-            intrinsic
-        {
-            intrinsic_argument.name = Some(name.clone());
-            let (first, second) = (operands.get(0), operands.get(1));
-            if let Some(operand) = first {
-                match operand {
-                    Operand::Lit(lit) => {
-                        if &Literal::Undef != lit {
-                            intrinsic_argument.first_arg = Some(vec![lit.to_string()]);
-                        }
-                    }
-                    Operand::Var(var) => {
-                        if let Base::Var(varid) = var.base {
-                            if let Some(value) = _interp.get_value(_def, varid, None) {
-                                intrinsic_argument.first_arg = Some(vec![]);
-                                add_elements_to_intrinsic_struct(
-                                    value,
-                                    &mut intrinsic_argument.first_arg,
-                                );
-                            } else if let Some(value) = _interp.body().vars.get(varid) {
-                                if let VarKind::GlobalRef(def) = value {
-                                    if let Some(Value::Const(value)) =
-                                        _interp.value_manager.defid_to_value.get(def)
-                                    {
-                                        intrinsic_argument.first_arg = Some(vec![]);
-                                        add_elements_to_intrinsic_struct(
-                                            &Value::Const(value.clone()),
-                                            &mut intrinsic_argument.first_arg,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if let Some(Operand::Var(variable)) = second {
-                if let Base::Var(varid) = variable.base {
-                    if let Some(value) =
-                        _interp.get_value(_def, varid, Some(Projection::Known("method".into())))
-                    {
-                        self.handle_second_arg(value, &mut intrinsic_argument);
-                    }
-                }
-            }
-
-            let mut permissions_within_call: Vec<String> = vec![];
-            let intrinsic_func_type = intrinsic_argument.name.unwrap();
-
-            if intrinsic_argument.first_arg == None {
-                _interp.permissions.drain(..);
-            } else {
-                intrinsic_argument
-                    .first_arg
-                    .iter()
-                    .for_each(|first_arg_vec| {
-                        if let Some(second_arg_vec) = intrinsic_argument.second_arg.clone() {
-                            first_arg_vec.iter().for_each(|first_arg| {
-                                let first_arg = first_arg.replace(&['\"'][..], "");
-                                second_arg_vec.iter().for_each(|second_arg| {
-                                    if intrinsic_func_type == IntrinsicName::RequestConfluence {
-                                        let permissions = check_url_for_permissions(
-                                            &_interp.confluence_permission_resolver,
-                                            &_interp.confluence_regex_map,
-                                            translate_request_type(Some(second_arg)),
-                                            &first_arg,
-                                        );
-                                        permissions_within_call.extend_from_slice(&permissions)
-                                    } else if intrinsic_func_type == IntrinsicName::RequestJira {
-                                        let permissions = check_url_for_permissions(
-                                            &_interp.jira_permission_resolver,
-                                            &_interp.jira_regex_map,
-                                            translate_request_type(Some(second_arg)),
-                                            &first_arg,
-                                        );
-                                        permissions_within_call.extend_from_slice(&permissions)
-                                    }
-                                })
-                            })
-                        } else {
-                            first_arg_vec.iter().for_each(|first_arg| {
-                                let first_arg = first_arg.replace(&['\"'][..], "");
-                                if intrinsic_func_type == IntrinsicName::RequestConfluence {
-                                    let permissions = check_url_for_permissions(
-                                        &_interp.confluence_permission_resolver,
-                                        &_interp.confluence_regex_map,
-                                        RequestType::Get,
-                                        &first_arg,
-                                    );
-                                    permissions_within_call.extend_from_slice(&permissions)
-                                } else if intrinsic_func_type == IntrinsicName::RequestJira {
-                                    let permissions = check_url_for_permissions(
-                                        &_interp.jira_permission_resolver,
-                                        &_interp.jira_regex_map,
-                                        RequestType::Get,
-                                        &first_arg,
-                                    );
-                                    permissions_within_call.extend_from_slice(&permissions)
-                                }
-                            })
-                        }
-                    });
-
-                //println!("permissions within call {permissions_within_call:?}");
-
-                _interp.permissions = _interp
-                    .permissions
-                    .iter()
-                    .cloned()
-                    .filter(|permissions| !permissions_within_call.contains(permissions))
-                    .collect_vec();
-            }
-
-            // remvove all permissions that it finds
-        }
-        initial_state
-    }
-
-    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &Interp<'cx, C>,
-        def: DefId,
-        loc: Location,
-        _block: &'cx BasicBlock,
-        callee: &'cx crate::ir::Operand,
-        initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
-    ) -> Self::State {
-        let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
-            return initial_state;
-        };
-
-        let callee_name = interp.env().def_name(callee_def);
-        let caller_name = interp.env().def_name(def);
-        debug!("Found call to {callee_name} at {def:?} {caller_name}");
-        self.needs_call.push((callee_def, operands.into_vec()));
-        initial_state
-    }
-
-    fn transfer_block<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        bb: BasicBlockId,
-        block: &'cx BasicBlock,
-        initial_state: Self::State,
-        arguments: Option<Vec<Value>>,
-    ) -> Self::State {
-        let mut state = initial_state;
-
-        for (stmt, inst) in block.iter().enumerate() {
-            let loc = Location::new(bb, stmt as u32);
-            state = self.transfer_inst(interp, def, loc, block, inst, state);
-        }
-        state
-    }
-
-    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        block: &'cx BasicBlock,
-        state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
-    ) {
-        self.super_join_term(interp, def, block, state, worklist);
-        for (def, arguments) in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, interp.call_all);
-        }
-    }
-}
-
-pub struct PermissionChecker {
-    pub visit: bool,
-    pub vulns: Vec<PermissionVuln>,
-}
-
-impl PermissionChecker {
-    pub fn new() -> Self {
-        Self {
-            visit: false,
-            vulns: vec![],
-        }
-    }
-
-    pub fn into_vulns(self, permissions: Vec<String>) -> impl IntoIterator<Item = PermissionVuln> {
-        if permissions.len() > 0 {
-            return Vec::from([PermissionVuln {
-                unused_permissions: permissions.clone(),
-            }])
-            .into_iter();
-        }
-        self.vulns.into_iter()
-    }
-}
-
-impl Default for PermissionChecker {
-    fn default() -> Self {
-        PermissionChecker::new()
-    }
-}
-
-impl fmt::Display for PermissionVuln {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Authentication vulnerability")
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Default)]
-pub enum PermissionTest {
-    #[default]
-    Yes,
-    No,
-}
-
-impl JoinSemiLattice for PermissionTest {
-    const BOTTOM: Self = Self::Yes;
-
-    #[inline]
-    fn join_changed(&mut self, other: &Self) -> bool {
-        let old = mem::replace(self, self.join(other));
-        old != *self
-    }
-
-    #[inline]
-    fn join(&self, other: &Self) -> Self {
-        max(*other, *self)
-    }
-}
-
-#[derive(Debug)]
-pub struct PermissionVuln {
-    unused_permissions: Vec<String>,
-}
-
-impl PermissionVuln {
-    pub fn new(unused_permissions: Vec<String>) -> PermissionVuln {
-        PermissionVuln { unused_permissions }
-    }
-}
-
-pub struct DefintionAnalysisRunner {
-    pub needs_call: Vec<(DefId, Vec<Operand>, Vec<Value>)>,
-}
-
-impl<'cx> Runner<'cx> for PermissionChecker {
-    type State = PermissionTest;
-    type Dataflow = PermissionDataflow;
-
-    fn visit_intrinsic(
-        &mut self,
-        interp: &Interp<'cx, Self>,
-        intrinsic: &'cx Intrinsic,
-        def: DefId,
-        state: &Self::State,
-        operands: Option<SmallVec<[Operand; 4]>>,
-    ) -> ControlFlow<(), Self::State> {
-        ControlFlow::Continue(*state)
-    }
-}
-
-impl<'cx> Checker<'cx> for PermissionChecker {
-    type Vuln = PermissionVuln;
-}
-
-impl IntoVuln for PermissionVuln {
-    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
-        Vulnerability {
-            check_name: format!("Least-Privilege"),
-            description: format!(
-                "Unused permissions listed in manifest file: {:?}",
-                self.unused_permissions
-            ),
-            recommendation: "Remove permissions in manifest file that are not needed.",
-            proof: format!(
-                "Unused permissions found in manifest.yml: {:?}",
-                self.unused_permissions
-            ),
-            severity: Severity::Low,
-            app_key: reporter.app_key().to_string(),
-            app_name: reporter.app_name().to_string(),
-            date: reporter.current_date(),
-        }
-    }
-}
-
-impl<'cx> Runner<'cx> for DefintionAnalysisRunner {
-    type State = PermissionTest;
-    type Dataflow = DefintionAnalysisRunner;
-    const NAME: &'static str = "DefinitionAnalysis";
-
-    fn visit_intrinsic(
-        &mut self,
-        interp: &Interp<'cx, Self>,
-        intrinsic: &'cx Intrinsic,
-        def: DefId,
-        state: &Self::State,
-        operands: Option<SmallVec<[Operand; 4]>>,
-    ) -> ControlFlow<(), Self::State> {
-        ControlFlow::Break(())
-    }
-}
-
-impl DefintionAnalysisRunner {
-    pub fn new() -> Self {
-        Self {
-            needs_call: Vec::default(),
-        }
-    }
-}
-
-impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
-    type State = PermissionTest;
-
-    fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
-        _interp: &Interp<'cx, C>,
-    ) -> Self {
-        Self { needs_call: vec![] }
-    }
-
-    fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
-        &mut self,
-        _interp: &mut Interp<'cx, C>,
-        _def: DefId,
-        _loc: Location,
-        _block: &'cx BasicBlock,
-        intrinsic: &'cx Intrinsic,
-        initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
-    ) -> Self::State {
-        initial_state
-    }
-
-    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &Interp<'cx, C>,
-        def: DefId,
-        loc: Location,
-        _block: &'cx BasicBlock,
-        callee: &'cx crate::ir::Operand,
-        initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
-    ) -> Self::State {
-        let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
-            return initial_state;
-        };
-
-        let callee_name = interp.env().def_name(callee_def);
-        let caller_name = interp.env().def_name(def);
-        debug!("Found call to {callee_name} at {def:?} {caller_name}");
-
-        let mut all_values_to_be_pushed = vec![];
-
-        for operand in &operands {
-            match operand.clone() {
-                Operand::Lit(_) => {
-                    if let Some(lit_value) = convert_operand_to_raw(&operand.clone()) {
-                        all_values_to_be_pushed.push(Value::Const(Const::Literal(lit_value)));
-                    } else {
-                        all_values_to_be_pushed.push(Value::Unknown)
-                    }
-                }
-                Operand::Var(var) => match var.base {
-                    Base::Var(varid) => {
-                        if let Some(value) =
-                            interp.get_value(def, varid, var.projections.get(0).cloned())
-                        {
-                            all_values_to_be_pushed.push(value.clone());
-                        } else {
-                            all_values_to_be_pushed.push(Value::Unknown)
-                        }
-                    }
-                    _ => all_values_to_be_pushed.push(Value::Unknown),
-                },
-            }
-        }
-        self.needs_call
-            .push((callee_def, operands.into_vec(), all_values_to_be_pushed));
-        initial_state
-    }
-
-    fn transfer_inst<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        loc: Location,
-        block: &'cx BasicBlock,
-        inst: &'cx Inst,
-        initial_state: Self::State,
-    ) -> Self::State {
-        match inst {
-            Inst::Expr(rvalue) => {
-                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
-            }
-            Inst::Assign(var, rvalue) => {
-                match var.base {
-                    Base::Var(varid) => match rvalue {
-                        Rvalue::Call(operand, _) => {
-                            if let Operand::Var(variable) = operand {
-                                if let Base::Var(varid) = variable.base {
-                                    if let Some(VarKind::GlobalRef(defid)) =
-                                        interp.body().vars.get(varid)
-                                    {
-                                        if let Base::Var(varid_to_assign) = var.base {
-                                            interp
-                                                .value_manager
-                                                .expected_return_values
-                                                .insert(*defid, (def, varid_to_assign));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Rvalue::Read(operand) => {
-                            if let Rvalue::Read(read) = rvalue {
-                                match read {
-                                    Operand::Lit(lit) => {
-                                        if let Literal::Str(str) = lit {
-                                            if let Base::Var(varid) = var.base {
-                                                if let Some(VarKind::GlobalRef(def)) =
-                                                    interp.body().vars.get(varid)
-                                                {
-                                                    interp.value_manager.defid_to_value.insert(
-                                                        *def,
-                                                        Value::Const(Const::Literal(
-                                                            str.to_string(),
-                                                        )),
-                                                    );
-                                                } else if let Some(VarKind::LocalDef(def)) =
-                                                    interp.body().vars.get(varid)
-                                                {
-                                                    interp.value_manager.defid_to_value.insert(
-                                                        *def,
-                                                        Value::Const(Const::Literal(
-                                                            str.to_string(),
-                                                        )),
-                                                    );
-                                                } else if let Some(VarKind::Temp { parent }) =
-                                                    interp.body().vars.get(varid)
-                                                {
-                                                    if let Some(defid_parent) = parent {
-                                                        interp.value_manager.defid_to_value.insert(
-                                                            *defid_parent,
-                                                            Value::Const(Const::Literal(
-                                                                str.to_string(),
-                                                            )),
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Operand::Var(var) => {
-                                        // println!("{var}");
-                                        if let Base::Var(varid) = var.base {
-                                            let values = interp
-                                                .value_manager
-                                                .varid_to_value
-                                                .get(&(def, varid, None));
-                                            // println!("values: {values:?}")
-                                        }
-                                    }
-                                }
-                            }
-                            /* should be expanded to include all of the cases ... */
-
-                            self.add_variable(interp, var, &varid, def, rvalue);
-                        }
-                        Rvalue::Template(_) => {
-                            self.add_variable(interp, var, &varid, def, rvalue);
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                }
-                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
-            }
-        }
-    }
-
-    fn transfer_block<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        bb: BasicBlockId,
-        block: &'cx BasicBlock,
-        initial_state: Self::State,
-        arguments: Option<Vec<Value>>,
-    ) -> Self::State {
-        let mut state = initial_state;
-        let mut function_var = interp.curr_body.get().unwrap().vars.clone();
-        function_var.pop();
-        if let Some(args) = arguments {
-            let mut args = args.clone();
-            args.reverse();
-            for (varid, varkind) in function_var.iter_enumerated() {
-                if let VarKind::Arg(_) = varkind {
-                    if let Some(operand) = args.pop() {
-                        interp.add_value(def, varid, operand.clone(), None);
-                        interp
-                            .body()
-                            .vars
-                            .iter_enumerated()
-                            .for_each(|(varid_alt, varkind_alt)| {
-                                if let (Some(defid_alt), Some(defid)) = (
-                                    get_defid_from_varkind(varkind_alt),
-                                    get_defid_from_varkind(varkind),
-                                ) {
-                                    if defid == defid_alt && varid_alt != varid {
-                                        interp
-                                            .value_manager
-                                            .varid_to_value
-                                            .insert((def, varid_alt, None), operand.clone());
-                                    }
-                                }
-                            })
-                    }
-                }
-            }
-        }
-
-        for (stmt, inst) in block.iter().enumerate() {
-            let loc = Location::new(bb, stmt as u32);
-            state = self.transfer_inst(interp, def, loc, block, inst, state);
-        }
-
-        for (varid, varkind) in interp.body().vars.clone().iter_enumerated() {
-            if &VarKind::Ret == varkind {
-                if let Some((defid_calling_func, varid_calling_func)) =
-                    interp.value_manager.expected_return_values.get(&def)
-                {
-                    if let Some(value) = interp.get_value(def, varid, None) {
-                        interp.add_value(
-                            *defid_calling_func,
-                            *varid_calling_func,
-                            value.clone(),
-                            None,
-                        );
-                    }
-                }
-            }
-        }
-
-        state
-    }
-
-    fn add_variable<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        lval: &Variable,
-        varid: &VarId,
-        def: DefId,
-        rvalue: &Rvalue,
-    ) {
-        match rvalue {
-            Rvalue::Read(operand) => {
-                // transfer all of the variables
-                if let Operand::Var(variable) = operand {
-                    if let Base::Var(varid_rval) = variable.base {
-                        interp.value_manager.varid_to_value.clone().iter().for_each(
-                            |((defid, varid_rval_potential, projection), value)| {
-                                if varid_rval_potential == &varid_rval {
-                                    interp.add_value(def, *varid, value.clone(), projection.clone())
-                                }
-                            },
-                        );
-                    }
-                } else {
-                    if let Some(value) = get_prev_value(interp.get_value(
-                        def,
-                        *varid,
-                        lval.projections.get(0).cloned(),
-                    )) {
-                        self.insert_value(interp, operand, lval, varid, def, Some(value));
-                    } else {
-                        self.insert_value(interp, operand, lval, varid, def, None);
-                    }
-                }
-            }
-            Rvalue::Template(template) => {
-                let quasis_joined: String =
-                    template.quasis.iter().map(ToString::to_string).collect();
-                let mut all_potential_values = vec![String::from("")];
-                if template.exprs.len() == 0 {
-                    all_potential_values.push(quasis_joined.clone());
-                } else if template.exprs.len() <= 3 {
-                    let mut all_values = vec![String::from("")];
-
-                    for (i, expr) in template.exprs.iter().enumerate() {
-                        if let Some(quasis) = template.quasis.get(i) {
-                            all_values = all_values
-                                .iter()
-                                .map(|value| format!("{value}{quasis}"))
-                                .collect();
-                        }
-                        let mut new_values = vec![];
-
-                        let values = self.get_str_from_expr(interp, expr, def);
-                        if values.len() > 0 {
-                            for str_value in values {
-                                for value in &all_values {
-                                    if let Some(str) = &str_value {
-                                        new_values.push(value.clone() + &**str)
-                                    } else {
-                                        new_values.push(value.clone())
-                                    }
-                                }
-                            }
-                            all_values = new_values
-                        }
-                    }
-
-                    if template.quasis.len() > template.exprs.len() {
-                        let last_elem = template.quasis.last().unwrap();
-                        all_values = all_values
-                            .iter()
-                            .map(|value| format!("{value}{last_elem}"))
-                            .collect();
-                    }
-
-                    all_potential_values = all_values;
-                }
-                if all_potential_values.len() > 1 {
-                    let consts = all_potential_values
-                        .clone()
-                        .into_iter()
-                        .map(|value| Const::Literal(value.clone()))
-                        .collect::<Vec<_>>();
-                    let value = Value::Phi(consts);
-                    interp.add_value(def, *varid, value.clone(), None);
-                } else if all_potential_values.len() == 1 {
-                    interp.add_value(
-                        def,
-                        *varid,
-                        Value::Const(Const::Literal(all_potential_values.get(0).unwrap().clone())),
-                        None,
-                    );
-                }
-            }
-            Rvalue::Bin(binop, op1, op2) => {
-                if binop == &BinOp::Add {
-                    let val1 = if let Some(val) = get_str_from_operand(op1) {
-                        Some(Value::Const(Const::Literal(val)))
-                    } else {
-                        self.get_values_from_operand(interp, def, op2)
-                    };
-                    let val2 = if let Some(val) = get_str_from_operand(op2) {
-                        Some(Value::Const(Const::Literal(val)))
-                    } else {
-                        self.get_values_from_operand(interp, def, op2)
-                    };
-                    let mut new_vals = vec![];
-                    if let (Some(val1), Some(val2)) = (val1.clone(), val2.clone()) {
-                        match val1 {
-                            Value::Const(const_val) => {
-                                add_const_to_val_vec(&val2, &const_val, &mut new_vals)
-                            }
-                            Value::Phi(phi_val) => phi_val
-                                .iter()
-                                .for_each(|val1| add_const_to_val_vec(&val2, &val1, &mut new_vals)),
-                            _ => {}
-                        }
-                        interp
-                            .value_manager
-                            .varid_to_value
-                            .insert((def, *varid, None), return_value_from_string(new_vals));
-                    } else if let Some(val1) = val1 {
-                        interp.add_value(def, *varid, val1, None);
-                    } else if let Some(val2) = val2 {
-                        interp.add_value(def, *varid, val2, None);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn insert_value<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        operand: &Operand,
-        lval: &Variable,
-        varid: &VarId,
-        def: DefId,
-        prev_values: Option<Vec<Const>>,
-    ) {
-        match operand {
-            Operand::Lit(lit) => {
-                if &Literal::Undef != lit {
-                    if let Some(prev_values) = prev_values {
-                        if let Some(lit_value) = convert_operand_to_raw(operand) {
-                            let const_value = Const::Literal(lit_value);
-                            let mut all_values = prev_values.clone();
-                            all_values.push(const_value);
-                            let value = Value::Phi(all_values);
-                            interp.add_value(def, *varid, value, lval.projections.get(0).cloned());
-                        }
-                    } else {
-                        if let Some(lit_value) = convert_operand_to_raw(operand) {
-                            let value = Value::Const(Const::Literal(lit_value));
-                            interp.add_value(def, *varid, value, lval.projections.get(0).cloned());
-                        }
-                    }
-                }
-            }
-            Operand::Var(var) => {
-                if let Base::Var(prev_varid) = var.base {
-                    let potential_varkind = &interp.curr_body.get().unwrap().vars.get(prev_varid);
-                    if let Some(VarKind::LocalDef(local_defid)) = potential_varkind {
-                        if let Some(class) =
-                            self.read_class_from_object(interp, local_defid.clone())
-                        {
-                            if let Some(prev_values) = prev_values {
-                                let const_value = Const::Object(class.clone());
-                                let mut all_values = prev_values.clone();
-                                all_values.push(const_value);
-                                let value = Value::Phi(all_values);
-                                interp.add_value(
-                                    def,
-                                    *varid,
-                                    value,
-                                    lval.projections.get(0).cloned(),
-                                );
-                            } else {
-                                let value = Value::Const(Const::Object(class));
-                                interp.add_value(
-                                    def,
-                                    *varid,
-                                    value,
-                                    lval.projections.get(0).cloned(),
-                                );
-                            }
-                        }
-                    } else {
-                        if let Some(potential_value) = interp.get_value(def, prev_varid, None) {
-                            interp.value_manager.varid_to_value.insert(
-                                (def, *varid, var.projections.get(0).cloned()),
-                                potential_value.clone(),
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        block: &'cx BasicBlock,
-        state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
-    ) {
-        self.super_join_term(interp, def, block, state, worklist);
-        for (def, _arguments, values) in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, interp.call_all);
-            interp.callstack_arguments.push(values.clone());
-        }
-    }
-
-    fn get_str_from_expr<C: crate::interp::Runner<'cx, State = Self::State>>(
-        &self,
-        _interp: &Interp<'cx, C>,
-        expr: &Operand,
-        def: DefId,
-    ) -> Vec<Option<String>> {
-        if let Some(str) = get_str_from_operand(expr) {
-            return vec![Some(str)];
-        } else if let Operand::Var(var) = expr {
-            if let Base::Var(varid) = var.base {
-                let value = _interp.get_value(def, varid, None);
-                if let Some(value) = value {
-                    match value {
-                        Value::Const(Const::Literal(str)) => {
-                            return vec![Some(str.clone())];
-                        }
-                        Value::Phi(phi_val) => {
-                            return phi_val
-                                .iter()
-                                .map(|const_val| {
-                                    if let Const::Literal(str) = const_val {
-                                        Some(str.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect_vec();
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        vec![None]
     }
 }
 
@@ -1891,6 +988,39 @@ impl PermissionDataflow {
     fn get_value(&self, defid_block: DefId, varid: VarId) -> Option<&Value> {
         self.varid_to_value.get(&(defid_block, varid))
     }
+
+    fn get_str_from_expr(&self, expr: &Operand, def: DefId) -> Vec<Option<String>> {
+        if let Some(str) = get_str_from_operand(expr) {
+            return vec![Some(str)];
+        } else if let Operand::Var(var) = expr {
+            if let Base::Var(varid) = var.base {
+                let value = self.get_value(def, varid);
+                if let Some(value) = value {
+                    match value {
+                        Value::Const(const_val) => {
+                            if let Const::Literal(str) = const_val {
+                                return vec![Some(str.clone())];
+                            }
+                        }
+                        Value::Phi(phi_val) => {
+                            return phi_val
+                                .iter()
+                                .map(|const_val| {
+                                    if let Const::Literal(str) = const_val {
+                                        Some(str.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect_vec();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        vec![None]
+    }
 }
 
 impl<'cx> Dataflow<'cx> for PermissionDataflow {
@@ -1901,7 +1031,73 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
     ) -> Self {
         Self {
             needs_call: vec![],
-            variables: FxHashMap::default(),
+            varid_to_value: FxHashMap::default(),
+        }
+    }
+
+    fn try_insert<C: crate::interp::Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        const_var: Const,
+        intrinsic_argument: &mut IntrinsicArguments,
+    ) {
+        if let Some(val) = self.try_read_mem_from_object(_interp, _def.clone(), const_var.clone()) {
+            intrinsic_argument.second_arg = Some(vec![]);
+            add_elements_to_intrinsic_struct(val, &mut intrinsic_argument.second_arg);
+        }
+    }
+
+    fn handle_second_arg<C: crate::interp::Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        operand: &Operand,
+        _def: DefId,
+        intrinsic_argument: &mut IntrinsicArguments,
+    ) {
+        println!("operand {:?}", operand);
+
+        println!();
+        println!("all vars {:?}", self.varid_to_value);
+        println!();
+
+        if let Some((defid, varid)) = self.get_defid_from_operand(_interp, operand) {
+            // getting number 29 here
+
+            println!("defid -varid {defid:?}. {varid:?}");
+
+            println!("varid ~~~ values {:?}", _interp.body().vars.get(varid));
+
+            if let Some(val) = self.get_value(_def, varid) {
+                println!("this is the value {val:?}");
+
+                match val {
+                    Value::Const(const_var) => {
+                        self.try_insert(_interp, _def, const_var.clone(), &mut *intrinsic_argument);
+                    }
+                    Value::Phi(phi_var) => {
+                        phi_var.iter().for_each(|const_val| {
+                            self.try_insert(
+                                _interp,
+                                _def,
+                                const_val.clone(),
+                                &mut *intrinsic_argument,
+                            );
+                        });
+                    }
+                    _ => {}
+                }
+            } else if let Some(val) = self.def_to_class_property(_interp, _def, defid) {
+                /* looks like a misclassification here */
+                println!("within class to property {val:?} ");
+
+                println!("this is the value {val:?}");
+                intrinsic_argument.second_arg = Some(vec![]);
+                add_elements_to_intrinsic_struct(val, &mut intrinsic_argument.second_arg);
+                println!("{:?} intrinsic arg second", intrinsic_argument.second_arg);
+            }
+        } else {
+            // println!("found other arg {var:?}")
         }
     }
 
@@ -1953,11 +1149,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         })
                     }
                 });
-
-            println!("intrinisc arg: {:?}", intrinsic_argument);
-
-            println!("all permissions so far {permissions_within_call:?}");
-
             _interp
                 .permissions
                 .extend_from_slice(&permissions_within_call);
@@ -2046,6 +1237,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
 
         // println!("deifd methods {defid_method:?} {:?}", obj.pub_members);
         // /* everything here is correct */
+
         println!("defid to varid {:?}", _interp.body().def_id_to_vars);
         println!();
         println!("deifd to varid {:?}", _interp.body().vars);
@@ -2055,7 +1247,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
 
         if let Some(_alt_defid) = defid_method.get(0) {
             for (varid_new, varkind) in _interp.body().vars.clone().into_iter_enumerated() {
-                // println!("varid {varid_new} : varkind {varkind:?}");
                 if let Some(defid) = get_defid_from_varkind(&varkind) {
                     if &&defid == _alt_defid {
                         println!(
@@ -2077,7 +1268,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         defid: DefId,
     ) -> Option<&Value> {
         if let Some(DefKind::GlobalObj(objid)) = _interp.env().defs.defs.get(defid) {
-            println!("");
             if let Some(class) = _interp.env().defs.classes.get(objid.clone()) {
                 println!("class~~ {class:?}");
 
@@ -2113,39 +1303,203 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 Inst::Assign(variable, rvalue) => match variable.base {
                     Base::Var(varid) => {
                         match rvalue {
-                            Rvalue::Read(operand) => {
-                                // case not phi
-                                if self.variables.contains_key(&varid) {
-                                    // currently assuming prev value is not phi
-                                    let prev_vars = &self.variables[&varid];
-                                    match prev_vars {
-                                        Value::Const(prev_var_const) => {
-                                            let var_vec = vec![
-                                                prev_var_const.clone(),
-                                                Const::Literal(operand.clone()),
-                                            ];
-
-                                            self.variables
-                                                .insert(varid, Value::Phi(Vec::from(var_vec)));
-                                        }
-                                        _ => {}
-                                    }
-                                } else {
-                                    self.variables.insert(
-                                        varid,
-                                        Value::Const(Const::Literal(operand.clone())),
-                                    );
+                            /* this puts any return value back in the thing */
+                            Rvalue::Call(operand, _) => {
+                                if let Some((defid, varid)) =
+                                    self.get_defid_from_operand(interp, operand)
+                                {
+                                    interp.expecting_value.push_back((defid, (varid, defid)));
                                 }
+                                if let Some((value, defid)) = interp.return_value.clone() {
+                                    if defid != def || true {
+                                        self.add_value(def, varid, value);
+                                    }
+                                }
+                            }
+                            Rvalue::Read(_) => {
+                                self.add_variable(interp, &varid, def, rvalue);
+                            }
+                            _ => {}
+                        }
+
+                        self.add_variable(interp, &varid, def, rvalue);
+                    }
+                    _ => {}
+                },
+            }
+        }
+
+        for (varid, varkind) in interp.body().vars.iter_enumerated() {
+            match varkind {
+                VarKind::Ret => {
+                    for (defid, (varid_value, defid_value)) in &interp.expecting_value {
+                        if def == defid.clone() {
+                            if let Some(value) = self.get_value(def, varid) {
+                                self.add_value(def, varid, value.clone());
+                            }
+                        }
+                    }
+                    if let Some(value) = self.get_value(def, varid) {
+                        interp.return_value = Some((value.clone(), def));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        state
+    }
+
+    fn add_variable<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        interp: &Interp<'cx, C>,
+        varid: &VarId,
+        def: DefId,
+        rvalue: &Rvalue,
+    ) {
+        match rvalue {
+            Rvalue::Read(operand) => {
+                if let Some(value) = get_prev_value(self.get_value(def, *varid)) {
+                    self.insert_value2(operand, varid, def, interp, Some(value));
+                } else {
+                    self.insert_value2(operand, varid, def, interp, None);
+                }
+            }
+            Rvalue::Template(template) => {
+                let quasis_joined = template.quasis.join("");
+                let mut all_potential_values = vec![quasis_joined];
+                for expr in &template.exprs {
+                    if let Some(value) = self.get_value(def, *varid) {
+                        match value {
+                            // TODO: get values from all of the operands and add them if they do have a value
+                            Value::Const(const_value) => {
+                                let mut new_all_values = vec![];
+                                if let Const::Literal(literal_string) = const_value {
+                                    for values in &all_potential_values {
+                                        new_all_values.push(values.clone() + literal_string);
+                                    }
+                                }
+                                all_potential_values = new_all_values;
+                            }
+                            Value::Phi(phi_value) => {
+                                let mut new_all_values = vec![];
+                                for constant in phi_value {
+                                    if let Const::Literal(literal_string) = constant {
+                                        for values in &all_potential_values {
+                                            new_all_values.push(values.clone() + literal_string);
+                                        }
+                                    }
+                                }
+                                all_potential_values = new_all_values;
                             }
                             _ => {}
                         }
                     }
-                    _ => {}
-                },
-                _ => {}
+                }
+
+                if all_potential_values.len() > 1 {
+                    let consts = all_potential_values
+                        .into_iter()
+                        .map(|value| Const::Literal(value.clone()))
+                        .collect::<Vec<_>>();
+                    let value = Value::Phi(consts);
+                    self.add_value(def, *varid, value.clone());
+                } else if all_potential_values.len() == 1 {
+                    self.add_value(
+                        def,
+                        *varid,
+                        Value::Const(Const::Literal(all_potential_values.get(0).unwrap().clone())),
+                    );
+                }
+            }
+            Rvalue::Bin(binop, op1, op2) => {
+                if binop == &BinOp::Add {
+                    let val1 = if let Some(val) = get_str_from_operand(op1) {
+                        Some(Value::Const(Const::Literal(val)))
+                    } else {
+                        self.get_values_from_operand(interp, def, op1).cloned()
+                    };
+                    let val2 = if let Some(val) = get_str_from_operand(op2) {
+                        Some(Value::Const(Const::Literal(val)))
+                    } else {
+                        self.get_values_from_operand(interp, def, op2).cloned()
+                    };
+                    let mut new_vals = vec![];
+                    if let (Some(val1), Some(val2)) = (val1.clone(), val2.clone()) {
+                        match val1 {
+                            Value::Const(const_val) => {
+                                add_const_to_val_vec(&val2, &const_val, &mut new_vals)
+                            }
+                            Value::Phi(phi_val) => phi_val
+                                .iter()
+                                .for_each(|val1| add_const_to_val_vec(&val2, &val1, &mut new_vals)),
+                            _ => {}
+                        }
+                        self.varid_to_value
+                            .insert((def, *varid), return_value_from_string(new_vals));
+                    } else if let Some(val1) = val1 {
+                        self.add_value(def, *varid, val1);
+                    } else if let Some(val2) = val2 {
+                        self.add_value(def, *varid, val2);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn insert_value2<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        operand: &Operand,
+        varid: &VarId,
+        def: DefId,
+        interp: &Interp<'cx, C>,
+        prev_values: Option<Vec<Const>>,
+    ) {
+        match operand {
+            Operand::Lit(_lit) => {
+                if let Some(prev_values) = prev_values {
+                    if let Some(lit_value) = convert_operand_to_raw(operand) {
+                        let const_value = Const::Literal(lit_value);
+                        let mut all_values = prev_values.clone();
+                        all_values.push(const_value);
+                        let value = Value::Phi(all_values);
+                        self.add_value(def, *varid, value);
+                    }
+                } else {
+                    if let Some(lit_value) = convert_operand_to_raw(operand) {
+                        let value = Value::Const(Const::Literal(lit_value));
+                        self.add_value(def, *varid, value);
+                    }
+                }
+            }
+            Operand::Var(var) => {
+                if let Base::Var(prev_varid) = var.base {
+                    let potential_varkind = &interp.curr_body.get().unwrap().vars.get(prev_varid);
+                    if let Some(VarKind::LocalDef(local_defid)) = potential_varkind {
+                        if let Some(class) =
+                            self.read_class_from_object(interp, local_defid.clone())
+                        {
+                            if let Some(prev_values) = prev_values {
+                                let const_value = Const::Object(class.clone());
+                                let mut all_values = prev_values.clone();
+                                all_values.push(const_value);
+                                let value = Value::Phi(all_values);
+                                self.add_value(def, *varid, value);
+                            } else {
+                                let value = Value::Const(Const::Object(class));
+                                self.add_value(def, *varid, value);
+                            }
+                        }
+                    } else {
+                        if let Some(potential_value) = self.get_value(def, prev_varid) {
+                            self.varid_to_value
+                                .insert((def, *varid), potential_value.clone());
+                        }
+                    }
+                }
             }
         }
-        state
     }
 
     fn join_term<C: crate::interp::Checker<'cx, State = Self::State>>(
@@ -2222,15 +1576,6 @@ fn convert_lit_to_raw(lit: &Literal) -> Option<String> {
         Literal::Str(str) => Some(str.to_string()),
         _ => None,
     }
-}
-
-fn find_member_of_obj(member: &str, obj: &Class) -> Option<DefId> {
-    for (mem, memdefid) in &obj.pub_members {
-        if mem == member {
-            return Some(*memdefid);
-        }
-    }
-    None
 }
 
 fn get_str_from_operand(operand: &Operand) -> Option<String> {
