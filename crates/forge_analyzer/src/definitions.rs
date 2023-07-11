@@ -1108,7 +1108,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             .map(|child| self.lower_jsx_child(child))
             .collect();
 
-        self.lower_jsx_attr(n.clone());
+        self.lower_jsx_attr(n);
 
         let callee = match &n.opening.name {
             JSXElementName::Ident(ident) => {
