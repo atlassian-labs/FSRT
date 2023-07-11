@@ -1079,7 +1079,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             },
             JSXElementChild::JSXSpreadChild(JSXSpreadChild { expr, .. }) => self.lower_expr(expr),
             JSXElementChild::JSXElement(elem) => {
-                self.lower_jsx_attr(*elem.clone());
+                self.lower_jsx_attr(elem);
                 self.lower_jsx_elem(elem)
             }
             JSXElementChild::JSXFragment(JSXFragment { children, .. }) => {
