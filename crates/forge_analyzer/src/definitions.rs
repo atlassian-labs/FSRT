@@ -1024,7 +1024,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
         }
     }
 
-    fn lower_jsx_attr(&mut self, n: JSXElement) {
+    fn lower_jsx_attr(&mut self, n: &JSXElement) {
         n.opening.attrs.iter().for_each(|attr| match attr {
             JSXAttrOrSpread::JSXAttr(jsx_attr) => {
                 if let JSXAttrName::Ident(ident_value) = &jsx_attr.name {
