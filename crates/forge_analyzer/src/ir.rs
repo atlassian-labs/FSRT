@@ -490,13 +490,6 @@ impl Body {
         }
     }
 
-    pub(crate) fn create_variable(&self, varid: VarId) -> Variable {
-        Variable {
-            base: Base::Var(varid),
-            projections: Default::default(),
-        }
-    }
-
     pub(crate) fn push_tmp(
         &mut self,
         bb: BasicBlockId,
