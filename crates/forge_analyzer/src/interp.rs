@@ -303,6 +303,13 @@ pub trait Dataflow<'cx>: Sized {
         None
     }
 
+    fn get_str_from_expr<C: Checker<'cx, State = Self::State>>(
+        &self,
+        expr: &Operand,
+        def: DefId,
+    ) -> Option<String> {
+        None
+    }
     fn try_insert<C: crate::interp::Checker<'cx, State = Self::State>>(
         &self,
         _interp: &Interp<'cx, C>,

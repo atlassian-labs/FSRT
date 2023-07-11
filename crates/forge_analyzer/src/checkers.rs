@@ -16,7 +16,7 @@ use crate::{
     },
     ir::{
         Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand, Rvalue,
-        Successors, VarId, VarKind,
+        Successors, VarId, VarKind, Variable,
     },
     permissionclassifier::check_permission_used,
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
@@ -226,7 +226,6 @@ impl<'cx> Checker<'cx> for AuthZChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-
         // println!("visitng intrinsic");
 
         match *intrinsic {
@@ -511,6 +510,39 @@ impl PermissionDataflow {
     fn get_value(&self, defid_block: DefId, varid: VarId) -> Option<&Value> {
         self.varid_to_value.get(&(defid_block, varid))
     }
+
+    fn get_str_from_expr(&self, expr: &Operand, def: DefId) -> Vec<Option<String>> {
+        if let Some(str) = get_str_from_operand(expr) {
+            return vec![Some(str)];
+        } else if let Operand::Var(var) = expr {
+            if let Base::Var(varid) = var.base {
+                let value = self.get_value(def, varid);
+                if let Some(value) = value {
+                    match value {
+                        Value::Const(const_val) => {
+                            if let Const::Literal(str) = const_val {
+                                return vec![Some(str.clone())];
+                            }
+                        }
+                        Value::Phi(phi_val) => {
+                            return phi_val
+                                .iter()
+                                .map(|const_val| {
+                                    if let Const::Literal(str) = const_val {
+                                        Some(str.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect_vec();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        vec![None]
+    }
 }
 
 impl<'cx> Dataflow<'cx> for PermissionDataflow {
@@ -545,26 +577,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         _def: DefId,
         intrinsic_argument: &mut IntrinsicArguments,
     ) {
-        println!("operand {:?}", operand);
-
-        println!();
-        println!("all vars {:?}", self.varid_to_value);
-        println!();
-            
         if let Some((defid, varid)) = self.get_defid_from_operand(_interp, operand) {
-
-            // getting number 29 here 
-
-            println!("defid -varid {defid:?}. {varid:?}");
-
-            println!("varid ~~~ values {:?}", _interp.body().vars.get(varid));
-
-
-
             if let Some(val) = self.get_value(_def, varid) {
-
-                println!("this is the value {val:?}");
-
                 match val {
                     Value::Const(const_var) => {
                         self.try_insert(_interp, _def, const_var.clone(), &mut *intrinsic_argument);
@@ -582,14 +596,9 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     _ => {}
                 }
             } else if let Some(val) = self.def_to_class_property(_interp, _def, defid) {
-                /* looks like a misclassification here */
-                println!("within class to property {val:?} ");
-
-                println!("this is the value {val:?}");
                 intrinsic_argument.second_arg = Some(vec![]);
                 add_elements_to_intrinsic_struct(val, &mut intrinsic_argument.second_arg);
-                println!("{:?} intrinsic arg second", intrinsic_argument.second_arg);
-            } 
+            }
         } else {
             // println!("found other arg {var:?}")
         }
@@ -605,9 +614,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         initial_state: Self::State,
         operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
-
         let mut intrinsic_argument = IntrinsicArguments::default();
-        println!("transferring intrinsic {:?}", _interp.env().def_name(_def) );
+        println!("transferring intrinsic {:?}", _interp.env().def_name(_def));
         if let Intrinsic::ApiCall(name) | Intrinsic::SafeCall(name) | Intrinsic::Authorize(name) =
             intrinsic
         {
@@ -644,11 +652,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         })
                     }
                 });
-
-            println!("intrinisc arg: {:?}", intrinsic_argument);
-
-            println!("all permissions so far {permissions_within_call:?}");
-
             _interp
                 .permissions
                 .extend_from_slice(&permissions_within_call);
@@ -698,25 +701,10 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             .filter(|(mem, _)| mem == "method")
             .map(|(_, defid)| defid)
             .collect_vec();
-
-        // println!("deifd methods {defid_method:?} {:?}", obj.pub_members);
-        // /* everything here is correct */
-
-
-        println!("defid to varid {:?}", _interp.body().def_id_to_vars);
-        println!();
-        println!("deifd to varid {:?}", _interp.body().vars);
-        println!();
-        println!("projections");
-        println!();
-
-
         if let Some(_alt_defid) = defid_method.get(0) {
             for (varid_new, varkind) in _interp.body().vars.clone().into_iter_enumerated() {
-                // println!("varid {varid_new} : varkind {varkind:?}");
                 if let Some(defid) = get_defid_from_varkind(&varkind) {
                     if &&defid == _alt_defid {
-                        println!("incorrect value - misinterpreting here {_alt_defid:?} {defid:?} {:?}", self.get_value(_def, varid_new));
                         return self.get_value(_def, varid_new);
                     }
                 }
@@ -732,11 +720,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         defid: DefId,
     ) -> Option<&Value> {
         if let Some(DefKind::GlobalObj(objid)) = _interp.env().defs.defs.get(defid) {
-            println!("");
             if let Some(class) = _interp.env().defs.classes.get(objid.clone()) {
-
-                println!("class~~ {class:?}");
-
                 return self.read_mem_from_object(_interp, _def, class.clone());
             }
         }
@@ -915,34 +899,23 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             Rvalue::Template(template) => {
                 let quasis_joined = template.quasis.join("");
                 let mut all_potential_values = vec![quasis_joined];
-                for expr in &template.exprs {
-                    if let Some(value) = self.get_value(def, *varid) {
-                        match value {
-                            // TODO: get values from all of the operands and add them if they do have a value
-                            Value::Const(const_value) => {
-                                let mut new_all_values = vec![];
-                                if let Const::Literal(literal_string) = const_value {
-                                    for values in &all_potential_values {
-                                        new_all_values.push(values.clone() + literal_string);
-                                    }
+                if template.exprs.len() <= 3 {
+                    for expr in &template.exprs {
+                        let value = self.get_str_from_expr(expr, def);
+                        println!("value == {value:?}");
+                        value.iter().for_each(|str| {
+                            let mut new_all_values = vec![];
+                            if let Some(str) = str {
+                                for values in &all_potential_values {
+                                    new_all_values.push(values.clone() + str);
                                 }
-                                all_potential_values = new_all_values;
+                                all_potential_values.extend_from_slice(&new_all_values);
                             }
-                            Value::Phi(phi_value) => {
-                                let mut new_all_values = vec![];
-                                for constant in phi_value {
-                                    if let Const::Literal(literal_string) = constant {
-                                        for values in &all_potential_values {
-                                            new_all_values.push(values.clone() + literal_string);
-                                        }
-                                    }
-                                }
-                                all_potential_values = new_all_values;
-                            }
-                            _ => {}
-                        }
+                        });
                     }
                 }
+
+                println!("all potential values {:?}", all_potential_values);
 
                 if all_potential_values.len() > 1 {
                     let consts = all_potential_values
@@ -1045,7 +1018,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         }
                     }
                 }
-            },
+            }
         }
     }
 
@@ -1123,15 +1096,6 @@ fn convert_lit_to_raw(lit: &Literal) -> Option<String> {
         Literal::Str(str) => Some(str.to_string()),
         _ => None,
     }
-}
-
-fn find_member_of_obj(member: &str, obj: &Class) -> Option<DefId> {
-    for (mem, memdefid) in &obj.pub_members {
-        if mem == member {
-            return Some(*memdefid);
-        }
-    }
-    None
 }
 
 fn get_str_from_operand(operand: &Operand) -> Option<String> {

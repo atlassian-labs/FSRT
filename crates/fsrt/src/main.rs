@@ -206,7 +206,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     let mut all_used_permissions = HashSet::default();
 
     for func in &proj.funcs {
-        println!("func~~ {func:?}");
         match *func {
             FunctionTy::Invokable((ref func, ref path, _, def)) => {
                 println!("func name: {:?}", interp.env.def_name(def));
