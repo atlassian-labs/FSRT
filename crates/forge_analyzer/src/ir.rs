@@ -225,6 +225,15 @@ pub struct Variable {
     pub(crate) projections: SmallVec<[Projection; 1]>,
 }
 
+impl From<VarId> for Variable {
+    fn from(varid: VarId) -> Variable {
+        Variable {
+            base: Base::Var(varid),
+            projections: SmallVec::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Projection {
     Known(JsWord),
@@ -445,13 +454,6 @@ impl Body {
                 }),
                 projections: Default::default(),
             },
-        }
-    }
-
-    pub(crate) fn create_variable(&self, varid: VarId) -> Variable {
-        Variable {
-            base: Base::Var(varid),
-            projections: Default::default(),
         }
     }
 

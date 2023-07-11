@@ -1029,9 +1029,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             JSXAttrOrSpread::JSXAttr(jsx_attr) => {
                 if let JSXAttrName::Ident(ident_value) = &jsx_attr.name {
                     if let Some(JSXAttrValue::JSXExprContainer(jsx_expr)) = &jsx_attr.value {
-                        if let JSXAttrValue::JSXExprContainer(jsx_expr) = value {
-                            self.lower_jsx_handler(jsx_expr, ident_value);
-                        }
+                        self.lower_jsx_handler(&jsx_expr, ident_value);
                     }
                 }
             }
@@ -1042,26 +1040,28 @@ impl<'cx> FunctionAnalyzer<'cx> {
     fn lower_jsx_handler(&mut self, n: &JSXExprContainer, ident_value: &Ident) {
         if let JSXExpr::Expr(expr) = &n.expr {
             self.lower_expr(&expr);
-            if ident_value.sym.contains("on") {
-                match &**expr {
-                    Expr::Arrow(arrow_expr) => {
-                        if let BlockStmtOrExpr::Expr(expr) = &arrow_expr.body {
-                            self.lower_expr(&**expr);
+            if let Some(second_char) = ident_value.sym.chars().nth(2) {
+                if ident_value.sym.starts_with("on") && second_char.is_uppercase() {
+                    match &**expr {
+                        Expr::Arrow(arrow_expr) => {
+                            if let BlockStmtOrExpr::Expr(expr) = &arrow_expr.body {
+                                self.lower_expr(&**expr);
+                            }
                         }
+                        Expr::Ident(ident) => {
+                            let defid = self.res.sym_to_id(ident.to_id(), self.module);
+                            let varid = self.body.get_or_insert_global(defid.unwrap());
+                            self.body.push_tmp(
+                                self.block,
+                                Rvalue::Call(
+                                    Operand::Var(Variable::from(varid)),
+                                    SmallVec::default(),
+                                ),
+                                None,
+                            );
+                        }
+                        _ => {}
                     }
-                    Expr::Ident(ident) => {
-                        let defid = self.res.sym_to_id(ident.to_id(), self.module);
-                        let varid = self.body.get_or_insert_global(defid.unwrap());
-                        self.body.push_tmp(
-                            self.block,
-                            Rvalue::Call(
-                                Operand::Var(self.body.create_variable(varid)),
-                                SmallVec::default(),
-                            ),
-                            None,
-                        );
-                    }
-                    _ => {}
                 }
             }
         }
