@@ -20,13 +20,7 @@ export async function fetchIssueSummary(issueIdOrKey, url) {
 
   const resp = await api
     .asApp()
-    .requestJira( "/rest/api/3/issue/" + val, {
-      method: 'PUT',
-      raspberries: true,
-      headers: {
-        Accept: 'application/json',
-      },
-    });
+    .requestJira(route`/blackberries/`, obj);
   const data = await resp.json();
   console.log(JSON.stringify(data));
   return data['fields']['summary'];

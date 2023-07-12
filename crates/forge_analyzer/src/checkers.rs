@@ -493,9 +493,11 @@ impl PermissionDataflow {
                 intrinsic_argument.first_arg = Some(vec![lit.to_string()]);
             }
             Operand::Var(var) => {
+                // println!("varid_to_value {:?}", self.varid_to_value);
                 if let Base::Var(varid) = var.base {
                     if let Some(value) = self.get_value(_def, varid) {
                         intrinsic_argument.first_arg = Some(vec![]);
+                        // println!("value {value:?}");
                         add_elements_to_intrinsic_struct(value, &mut intrinsic_argument.first_arg);
                     }
                 }
@@ -577,6 +579,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         _def: DefId,
         intrinsic_argument: &mut IntrinsicArguments,
     ) {
+        
         if let Some((defid, varid)) = self.get_defid_from_operand(_interp, operand) {
             if let Some(val) = self.get_value(_def, varid) {
                 match val {
@@ -615,16 +618,19 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         let mut intrinsic_argument = IntrinsicArguments::default();
-        println!("transferring intrinsic {:?}", _interp.env().def_name(_def));
+        // println!("transferring intrinsic {:?}", _interp.env().def_name(_def));
         if let Intrinsic::ApiCall(name) | Intrinsic::SafeCall(name) | Intrinsic::Authorize(name) =
             intrinsic
         {
             intrinsic_argument.name = Some(name.clone());
             let (first, second) = (operands.get(0), operands.get(1));
             if let Some(operand) = first {
+                // println!("operand fro intrinsic {operand:?}");
+
                 self.handle_first_arg(operand, _def, &mut intrinsic_argument);
             }
             if let Some(operand) = second {
+                println!("operand: {operand:?}");
                 self.handle_second_arg(_interp, operand, _def, &mut intrinsic_argument);
             }
             let mut permissions_within_call: Vec<ForgePermissions> = vec![];
@@ -652,10 +658,14 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         })
                     }
                 });
+
+            println!("intrinsic args {:?}", intrinsic_argument);
             _interp
                 .permissions
                 .extend_from_slice(&permissions_within_call);
         }
+
+        println!("all permissions: {:?}", _interp.permissions);
 
         initial_state
     }
@@ -830,6 +840,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         for (stmt, inst) in block.iter().enumerate() {
             let loc = Location::new(bb, stmt as u32);
             state = self.transfer_inst(interp, def, loc, block, inst, state);
+            // println!("inst -- {inst:?}");
             if let Inst::Assign(variable, rvalue) = inst {
                 match variable.base {
                     Base::Var(varid) => {
@@ -847,7 +858,10 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     }
                                 }
                             }
-                            Rvalue::Read(_) => {
+                            Rvalue::Read(read_value) => {
+                                self.add_variable(interp, &varid, def, rvalue);
+                            }
+                            Rvalue::Template(tpl) => {
                                 self.add_variable(interp, &varid, def, rvalue);
                             }
                             _ => {}
@@ -898,25 +912,30 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             }
             Rvalue::Template(template) => {
                 let quasis_joined = template.quasis.join("");
-                let mut all_potential_values = vec![quasis_joined];
-                if template.exprs.len() <= 3 {
+                let (mut original_consts, mut all_potential_values) = (vec![quasis_joined.clone()], vec![]);
+                if template.exprs.len() == 0 {
+                    all_potential_values.push(quasis_joined.clone());
+                } else if template.exprs.len() <= 3 {
                     for expr in &template.exprs {
                         let value = self.get_str_from_expr(expr, def);
-                        println!("value == {value:?}");
-                        value.iter().for_each(|str| {
-                            let mut new_all_values = vec![];
-                            if let Some(str) = str {
-                                for values in &all_potential_values {
-                                    new_all_values.push(values.clone() + str);
+                        if value.len() > 0 {
+                            value.iter().for_each(|str| {
+                                let mut new_all_values = vec![];
+                                if let Some(str) = str {
+                                    for values in &original_consts {
+                                        new_all_values.push(values.clone() + str);
+                                    }
+                                    all_potential_values.extend_from_slice(&new_all_values);
+                                } else {
+                                    for values in &original_consts {
+                                        new_all_values.push(values.clone());
+                                    }
+                                    all_potential_values.extend_from_slice(&new_all_values);
                                 }
-                                all_potential_values.extend_from_slice(&new_all_values);
-                            }
-                        });
+                            });
+                        }
                     }
                 }
-
-                println!("all potential values {:?}", all_potential_values);
-
                 if all_potential_values.len() > 1 {
                     let consts = all_potential_values
                         .into_iter()
