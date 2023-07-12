@@ -1496,7 +1496,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                     let lowered_var = self.body.coerce_to_lval(
                                         self.block,
                                         lowered_value.clone(),
-                                        None,
+                                        Some(next_key),
                                     );
 
                                     let rval = Rvalue::Read(lowered_value);
