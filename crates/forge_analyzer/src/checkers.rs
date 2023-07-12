@@ -971,9 +971,11 @@ impl PermissionDataflow {
                 intrinsic_argument.first_arg = Some(vec![lit.to_string()]);
             }
             Operand::Var(var) => {
+                // println!("varid_to_value {:?}", self.varid_to_value);
                 if let Base::Var(varid) = var.base {
                     if let Some(value) = self.get_value(_def, varid) {
                         intrinsic_argument.first_arg = Some(vec![]);
+                        // println!("value {value:?}");
                         add_elements_to_intrinsic_struct(value, &mut intrinsic_argument.first_arg);
                     }
                 }
@@ -1112,16 +1114,19 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         let mut intrinsic_argument = IntrinsicArguments::default();
-        println!("transferring intrinsic {:?}", _interp.env().def_name(_def));
+        // println!("transferring intrinsic {:?}", _interp.env().def_name(_def));
         if let Intrinsic::ApiCall(name) | Intrinsic::SafeCall(name) | Intrinsic::Authorize(name) =
             intrinsic
         {
             intrinsic_argument.name = Some(name.clone());
             let (first, second) = (operands.get(0), operands.get(1));
             if let Some(operand) = first {
+                // println!("operand fro intrinsic {operand:?}");
+
                 self.handle_first_arg(operand, _def, &mut intrinsic_argument);
             }
             if let Some(operand) = second {
+                println!("operand: {operand:?}");
                 self.handle_second_arg(_interp, operand, _def, &mut intrinsic_argument);
             }
             let mut permissions_within_call: Vec<ForgePermissions> = vec![];
@@ -1149,10 +1154,14 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         })
                     }
                 });
+
+            println!("intrinsic args {:?}", intrinsic_argument);
             _interp
                 .permissions
                 .extend_from_slice(&permissions_within_call);
         }
+
+        println!("all permissions: {:?}", _interp.permissions);
 
         initial_state
     }
@@ -1234,17 +1243,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             .filter(|(mem, _)| mem == "method")
             .map(|(_, defid)| defid)
             .collect_vec();
-
-        // println!("deifd methods {defid_method:?} {:?}", obj.pub_members);
-        // /* everything here is correct */
-
-        println!("defid to varid {:?}", _interp.body().def_id_to_vars);
-        println!();
-        println!("deifd to varid {:?}", _interp.body().vars);
-        println!();
-        println!("projections");
-        println!();
-
         if let Some(_alt_defid) = defid_method.get(0) {
             for (varid_new, varkind) in _interp.body().vars.clone().into_iter_enumerated() {
                 if let Some(defid) = get_defid_from_varkind(&varkind) {
@@ -1316,7 +1314,10 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     }
                                 }
                             }
-                            Rvalue::Read(_) => {
+                            Rvalue::Read(read_value) => {
+                                self.add_variable(interp, &varid, def, rvalue);
+                            }
+                            Rvalue::Template(tpl) => {
                                 self.add_variable(interp, &varid, def, rvalue);
                             }
                             _ => {}
