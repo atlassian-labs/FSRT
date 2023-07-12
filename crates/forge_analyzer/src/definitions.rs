@@ -1181,15 +1181,15 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                         PropName::Str(str) => str.span,
                                     };
                                     let lowered_value = self.lower_expr(&value, None);
-                                    // let next_key = self.res.get_or_overwrite_sym(
-                                    //     (key.as_symbol().unwrap(), span.ctxt),
-                                    //     self.module,
-                                    //     DefKind::Arg,
-                                    // );
+                                    let next_key = self.res.get_or_overwrite_sym(
+                                        (key.as_symbol().unwrap(), span.ctxt),
+                                        self.module,
+                                        DefKind::Arg,
+                                    );
                                     let mut lowered_var = self.body.coerce_to_lval(
                                         self.block,
                                         lowered_value.clone(),
-                                        None,
+                                        Some(next_key),
                                     );
                                     if let Base::Var(varid) = lowered_var.base {}
 
