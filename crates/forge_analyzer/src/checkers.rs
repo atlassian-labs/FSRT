@@ -1272,7 +1272,7 @@ impl<'cx> Checker<'cx> for PermissionChecker {
     type Vuln = PermissionVuln;
 
     fn visit(&mut self) -> bool {
-        false
+        self.visit
     }
 
     fn visit_intrinsic(
