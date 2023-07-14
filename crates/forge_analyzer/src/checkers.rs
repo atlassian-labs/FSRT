@@ -127,12 +127,13 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
 }
 
 pub struct AuthZChecker {
+    visit: bool,
     vulns: Vec<AuthZVuln>,
 }
 
 impl AuthZChecker {
     pub fn new() -> Self {
-        Self { vulns: vec![] }
+        Self { visit: true, vulns: vec![] }
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthZVuln> {
@@ -238,7 +239,7 @@ impl<'cx> Checker<'cx> for AuthZChecker {
                 let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
-                ControlFlow::Continue(*state)
+                ControlFlow::Break(())
             }
             Intrinsic::ApiCall(_) => ControlFlow::Continue(*state),
             Intrinsic::SafeCall(_) => ControlFlow::Continue(*state),
@@ -349,12 +350,13 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
 }
 
 pub struct AuthenticateChecker {
+    visit: bool,
     vulns: Vec<AuthNVuln>,
 }
 
 impl AuthenticateChecker {
     pub fn new() -> Self {
-        Self { vulns: vec![] }
+        Self { visit: false, vulns: vec![] }
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthNVuln> {
@@ -390,7 +392,7 @@ impl<'cx> Checker<'cx> for AuthenticateChecker {
                 let vuln = AuthNVuln::new(interp.callstack(), interp.env(), interp.entry());
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
-                ControlFlow::Continue(*state)
+                ControlFlow::Break(())
             }
             Intrinsic::ApiCall(_) => ControlFlow::Continue(*state),
             Intrinsic::SafeCall(_) => ControlFlow::Continue(*state),
@@ -1204,14 +1206,17 @@ fn return_value_from_string(values: Vec<String>) -> Value {
 }
 
 pub struct PermissionChecker {
+    pub visit: bool,
     pub vulns: Vec<PermissionVuln>,
     pub declared_permissions: HashSet<ForgePermissions>,
     pub used_permissions: HashSet<ForgePermissions>,
 }
 
 impl PermissionChecker {
+
     pub fn new(declared_permissions: HashSet<ForgePermissions>) -> Self {
         Self {
+            visit: false,
             vulns: vec![],
             declared_permissions,
             used_permissions: HashSet::default(),
@@ -1266,6 +1271,10 @@ impl<'cx> Checker<'cx> for PermissionChecker {
     type Dataflow = PermissionDataflow;
     type Vuln = PermissionVuln;
 
+    fn visit(&mut self) -> bool {
+        false
+    }
+
     fn visit_intrinsic(
         &mut self,
         interp: &Interp<'cx, Self>,
@@ -1273,7 +1282,7 @@ impl<'cx> Checker<'cx> for PermissionChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        //println!("visiting _intrinsic");
+        println!("visiting _intrinsic");
         for permission in &interp.permissions {
             self.declared_permissions.remove(permission);
             self.used_permissions.insert(permission.clone());
