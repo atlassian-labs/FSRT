@@ -1,7 +1,7 @@
 use std::{
     borrow::BorrowMut,
     cell::{Cell, RefCell, RefMut},
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, VecDeque, HashMap},
     fmt::{self, Display},
     io::{self, Write},
     iter,
@@ -463,6 +463,7 @@ pub struct Interp<'cx, C: Checker<'cx>> {
     // two fields in another struct.
     call_graph: CallGraph,
     pub return_value: Option<(Value, DefId)>,
+    pub return_value_alt: HashMap<DefId, Value>,
     entry: EntryPoint,
     func_state: RefCell<FxHashMap<DefId, C::State>>,
     pub curr_body: Cell<Option<&'cx Body>>,
@@ -539,6 +540,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             call_graph,
             entry: Default::default(),
             return_value: None,
+            return_value_alt: HashMap::default(),
             func_state: RefCell::new(FxHashMap::default()),
             curr_body: Cell::new(None),
             states: RefCell::new(BTreeMap::new()),

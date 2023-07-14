@@ -20,15 +20,15 @@ export async function fetchIssueSummary(issueIdOrKey, url) {
 
   const resp = await api
     .asApp()
-    .requestJira(route`/blackberries/`, obj);
+    .requestJira(get_route(), obj);
   const data = await resp.json();
   console.log(JSON.stringify(data));
   return data['fields']['summary'];
 }
 
-function get_route(url) {
+function get_route() {
   //return a_url = route`/rest/api/3/issue/${issueIdOrKey}?fields=summary`;
-  return url;
+  return route`/bananas/${issueIdOrKey}?fields=summary`;
 }
 
 export async function writeComment(issueIdOrKey, comment) {
