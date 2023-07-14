@@ -334,6 +334,10 @@ pub trait Checker<'cx>: Sized {
     type Vuln: Display + WithCallStack;
     type Dataflow: Dataflow<'cx, State = Self::State>;
 
+    fn visit(&mut self) -> bool {
+        true
+    }
+
     fn visit_intrinsic(
         &mut self,
         interp: &Interp<'cx, Self>,
@@ -419,6 +423,7 @@ pub trait Checker<'cx>: Sized {
                 Inst::Assign(_, r) => curr_state = self.visit_rvalue(interp, r, id, &curr_state)?,
             }
         }
+        println!("{:?}", interp.env().def_name(def));
         match block.successors() {
             Successors::Return => ControlFlow::Continue(curr_state),
             Successors::One(succ) => {
@@ -682,7 +687,9 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             .ok_or_else(|| Error::NotAFunction(name.to_owned()))?;
         self.set_body(body);
         self.run(resolved_def);
-        checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
+        if checker.visit() {
+            checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
+        }
         Ok(())
     }
 
