@@ -457,10 +457,8 @@ pub trait Runner<'cx>: Sized {
         let mut curr_state = interp.block_state(def, id).join(curr_state);
         for stmt in block {
             match stmt {
-                Inst::Expr(r) => curr_state = self.visit_rvalue(interp, r, def, id, &curr_state)?,
-                Inst::Assign(_, r) => {
-                    curr_state = self.visit_rvalue(interp, r, def, id, &curr_state)?
-                }
+                Inst::Expr(r) => curr_state = self.visit_rvalue(interp, r, id, &curr_state)?,
+                Inst::Assign(_, r) => curr_state = self.visit_rvalue(interp, r, id, &curr_state)?,
             }
         }
         match block.successors() {
@@ -864,7 +862,9 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         })?;
         self.set_body(body);
         self.run(resolved_def);
-        checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
+        if checker.visit() {
+            checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
+        }
         Ok(())
     }
 
