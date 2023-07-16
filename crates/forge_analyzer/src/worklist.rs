@@ -76,7 +76,7 @@ where
 impl WorkList<DefId, BasicBlockId> {
     #[inline]
     pub(crate) fn push_front_blocks(&mut self, env: &Environment, def: DefId) -> bool {
-        if self.visited.insert(def) {
+        if self.visited.insert(def) || true {
             debug!("adding function: {}", env.def_name(def));
             let body = env.def_ref(def).expect_body();
             let blocks = body.iter_block_keys().map(|bb| (def, bb)).rev();

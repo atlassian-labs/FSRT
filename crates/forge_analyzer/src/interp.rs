@@ -1,7 +1,7 @@
 use std::{
     borrow::BorrowMut,
     cell::{Cell, RefCell, RefMut},
-    collections::{BTreeMap, VecDeque, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     fmt::{self, Display},
     io::{self, Write},
     iter,
@@ -423,7 +423,6 @@ pub trait Checker<'cx>: Sized {
                 Inst::Assign(_, r) => curr_state = self.visit_rvalue(interp, r, id, &curr_state)?,
             }
         }
-        println!("{:?}", interp.env().def_name(def));
         match block.successors() {
             Successors::Return => ControlFlow::Continue(curr_state),
             Successors::One(succ) => {
