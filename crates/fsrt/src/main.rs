@@ -136,7 +136,6 @@ impl ForgeProject {
     fn add_funcs<'a, I: IntoIterator<Item = FunctionTy<(&'a str, PathBuf)>>>(&mut self, iter: I) {
         self.funcs.extend(iter.into_iter().flat_map(|ftype| {
             ftype.sequence(|(func_name, path)| {
-                // println!("adding functions {func_name}");
                 let modid = self.ctx.modid_from_path(&path)?;
                 let func = self.env.module_export(modid, func_name)?;
                 Some((func_name.to_owned(), path, modid, func))
@@ -191,11 +190,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     let src_root = dir.join("src");
     let mut proj = ForgeProject::with_files_and_sourceroot(src_root.clone(), paths.clone());
     proj.opts = opts.clone();
-
-    //println!("source route: {:?}", &src_root);
-
     proj.add_funcs(funcrefs);
-
     resolve_calls(&mut proj.ctx);
 
     let mut interp = Interp::new(&proj.env);
@@ -208,12 +203,10 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     for func in &proj.funcs {
         match *func {
             FunctionTy::Invokable((ref func, ref path, _, def)) => {
-                println!("func name: {:?}", interp.env.def_name(def));
                 let mut checker = AuthZChecker::new();
                 debug!("checking {func} at {path:?}");
                 if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
                 {
-                    println!("error while scanning");
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());

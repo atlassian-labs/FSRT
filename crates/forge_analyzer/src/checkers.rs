@@ -119,7 +119,6 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
-        println!("worklist - adding function {}", interp.env().def_name(def));
         for def in self.needs_call.drain(..) {
             worklist.push_front_blocks(interp.env(), def);
         }
@@ -133,7 +132,10 @@ pub struct AuthZChecker {
 
 impl AuthZChecker {
     pub fn new() -> Self {
-        Self { visit: true, vulns: vec![] }
+        Self {
+            visit: true,
+            vulns: vec![],
+        }
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthZVuln> {
@@ -227,8 +229,6 @@ impl<'cx> Checker<'cx> for AuthZChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        // println!("visitng intrinsic");
-
         match *intrinsic {
             Intrinsic::Authorize(_) => {
                 debug!("authorize intrinsic found");
@@ -356,7 +356,10 @@ pub struct AuthenticateChecker {
 
 impl AuthenticateChecker {
     pub fn new() -> Self {
-        Self { visit: false, vulns: vec![] }
+        Self {
+            visit: false,
+            vulns: vec![],
+        }
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthNVuln> {
@@ -495,11 +498,9 @@ impl PermissionDataflow {
                 intrinsic_argument.first_arg = Some(vec![lit.to_string()]);
             }
             Operand::Var(var) => {
-                // println!("varid_to_value {:?}", self.varid_to_value);
                 if let Base::Var(varid) = var.base {
                     if let Some(value) = self.get_value(_def, varid) {
                         intrinsic_argument.first_arg = Some(vec![]);
-                        println!("value guava {value:?} {varid:?}");
                         add_elements_to_intrinsic_struct(value, &mut intrinsic_argument.first_arg);
                     }
                 }
@@ -508,10 +509,7 @@ impl PermissionDataflow {
     }
 
     fn add_value(&mut self, defid_block: DefId, varid: VarId, value: Value) {
-        print!("defid_block {:?}", defid_block);
-        println!("{:?}", self.varid_to_value);
         self.varid_to_value.insert(varid, value);
-        println!("{:?}", self.varid_to_value);
     }
 
     fn get_value(&self, defid_block: DefId, varid: VarId) -> Option<&Value> {
@@ -584,7 +582,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         _def: DefId,
         intrinsic_argument: &mut IntrinsicArguments,
     ) {
-        
         if let Some((defid, varid)) = self.get_defid_from_operand(_interp, operand) {
             if let Some(val) = self.get_value(_def, varid) {
                 match val {
@@ -622,24 +619,16 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         initial_state: Self::State,
         operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
-
-        println!("varid to value {:?}", self.varid_to_value);
-
         let mut intrinsic_argument = IntrinsicArguments::default();
-        // println!("transferring intrinsic {:?}", _interp.env().def_name(_def));
         if let Intrinsic::ApiCall(name) | Intrinsic::SafeCall(name) | Intrinsic::Authorize(name) =
             intrinsic
         {
-            
             intrinsic_argument.name = Some(name.clone());
             let (first, second) = (operands.get(0), operands.get(1));
             if let Some(operand) = first {
-                // println!("operand fro intrinsic {operand:?}");
-
                 self.handle_first_arg(operand, _def, &mut intrinsic_argument);
             }
             if let Some(operand) = second {
-                println!("operand: {operand:?}");
                 self.handle_second_arg(_interp, operand, _def, &mut intrinsic_argument);
             }
             let mut permissions_within_call: Vec<ForgePermissions> = vec![];
@@ -807,6 +796,49 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         initial_state
     }
 
+    fn transfer_inst<C: Checker<'cx, State = Self::State>>(
+        &mut self,
+        interp: &mut Interp<'cx, C>,
+        def: DefId,
+        loc: Location,
+        block: &'cx BasicBlock,
+        inst: &'cx Inst,
+        initial_state: Self::State,
+    ) -> Self::State {
+        match inst {
+            Inst::Expr(rvalue) => {
+                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
+            }
+            Inst::Assign(variable, rvalue) => {
+                match variable.base {
+                    Base::Var(varid) => match rvalue {
+                        Rvalue::Call(operand, _) => {
+                            if let Some((defid, varid)) =
+                                self.get_defid_from_operand(interp, operand)
+                            {
+                                interp.expecting_value.push_back((defid, (varid, defid)));
+                            }
+                            if let Some((defid, _)) = self.get_defid_from_operand(interp, operand) {
+                                if let Some(return_value) = interp.return_value_alt.get(&defid) {
+                                    self.add_value(def, varid, return_value.clone());
+                                }
+                            }
+                        }
+                        Rvalue::Read(_) => {
+                            self.add_variable(interp, &varid, def, rvalue);
+                        }
+                        Rvalue::Template(_) => {
+                            self.add_variable(interp, &varid, def, rvalue);
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
+            }
+        }
+    }
+
     fn transfer_block<C: Checker<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
@@ -817,25 +849,14 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         arguments: Option<Vec<Value>>,
     ) -> Self::State {
         let mut state = initial_state;
-
-        println!("argumtns ===> {arguments:?}");
-
         let mut function_var = interp.curr_body.get().unwrap().vars.clone();
         function_var.pop();
-
-        println!("funct vars = {function_var:?}");
-
         if let Some(args) = arguments {
             let mut args = args.clone();
             args.reverse();
             for (varid, varkind) in function_var.iter_enumerated() {
-                
                 if let VarKind::Arg(_) = varkind {
                     if let Some(operand) = args.pop() {
-
-                        println!("arguments {args:?}");
-
-                        println!("operand mango {operand:?}");
                         self.add_value(def, varid, operand.clone());
                         interp
                             .body()
@@ -847,8 +868,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     get_defid_from_varkind(varkind),
                                 ) {
                                     if defid == defid_alt && varid_alt != varid {
-                                        self.varid_to_value
-                                            .insert(varid_alt, operand.clone());
+                                        self.varid_to_value.insert(varid_alt, operand.clone());
                                     }
                                 }
                             })
@@ -860,52 +880,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         for (stmt, inst) in block.iter().enumerate() {
             let loc = Location::new(bb, stmt as u32);
             state = self.transfer_inst(interp, def, loc, block, inst, state);
-            println!("inst -- {inst}");
-            if let Inst::Assign(variable, rvalue) = inst {
-                match variable.base {
-                    Base::Var(varid) => {
-                        match rvalue {
-                            /* this puts any return value back in the thing */
-                            Rvalue::Call(operand, _) => {
-                                println!("Expecting return from call {varid:?}"); /* Issue here where the variable is not beign assigned correctly to the proper variable */
-                                if let Some((defid, varid)) =
-                                    self.get_defid_from_operand(interp, operand)
-                                {
-                                    interp.expecting_value.push_back((defid, (varid, defid)));
-                                }
-                                // if let Some((value, defid)) = interp.return_value.clone() {
-                                    
-                                //     //println!("expecitng val {:?}", interp.expecting_value);
-
-                                //     if defid != def {
-                                //         //println!("return value being returned {def:?}, {varid:?}, {value:?}");
-                                //         //self.add_value(def, varid, value);
-                                //     }
-                                // }
-                                if let Some((defid, _)) =
-                                    self.get_defid_from_operand(interp, operand)
-                                {
-                                    if let Some(return_value) = interp.return_value_alt.get(&defid) {
-                                        println!("kiwi return value {return_value:?} {varid:?}");
-                                        self.add_value(def, varid, return_value.clone());
-                                    }
-                                }
-                                
-                            }
-                            Rvalue::Read(_) => {
-                                self.add_variable(interp, &varid, def, rvalue);
-                            }
-                            Rvalue::Template(_) => {
-                                self.add_variable(interp, &varid, def, rvalue);
-                            }
-                            _ => {}
-                        }
-
-                        //self.add_variable(interp, &varid, def, rvalue);
-                    }
-                    _ => {}
-                }
-            }
         }
 
         for (varid, varkind) in interp.body().vars.iter_enumerated() {
@@ -919,7 +893,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         }
                     }
                     if let Some(value) = self.get_value(def, varid) {
-                        println!("return value {value:?}");
                         interp.return_value = Some((value.clone(), def));
                         interp.return_value_alt.insert(def, value.clone());
                     }
@@ -948,7 +921,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             }
             Rvalue::Template(template) => {
                 let quasis_joined = template.quasis.join("");
-                let (mut original_consts, mut all_potential_values) = (vec![quasis_joined.clone()], vec![]);
+                let (mut original_consts, mut all_potential_values) =
+                    (vec![quasis_joined.clone()], vec![]);
                 if template.exprs.len() == 0 {
                     all_potential_values.push(quasis_joined.clone());
                 } else if template.exprs.len() <= 3 {
@@ -1068,8 +1042,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         }
                     } else {
                         if let Some(potential_value) = self.get_value(def, prev_varid) {
-                            self.varid_to_value
-                                .insert(*varid, potential_value.clone());
+                            self.varid_to_value.insert(*varid, potential_value.clone());
                         }
                     }
                 }
@@ -1213,7 +1186,6 @@ pub struct PermissionChecker {
 }
 
 impl PermissionChecker {
-
     pub fn new(declared_permissions: HashSet<ForgePermissions>) -> Self {
         Self {
             visit: false,
@@ -1282,7 +1254,6 @@ impl<'cx> Checker<'cx> for PermissionChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        println!("visiting _intrinsic");
         for permission in &interp.permissions {
             self.declared_permissions.remove(permission);
             self.used_permissions.insert(permission.clone());
