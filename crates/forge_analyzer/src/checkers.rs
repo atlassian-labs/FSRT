@@ -282,7 +282,6 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
-        println!("worklist - adding function {}", interp.env().def_name(def));
         for def in self.needs_call.drain(..) {
             worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
@@ -704,8 +703,6 @@ impl<'cx> Runner<'cx> for SecretChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        // println!("visitng intrinsic");
-
         match *intrinsic {
             Intrinsic::Authorize(_) => {
                 debug!("authorize intrinsic found");
@@ -975,11 +972,9 @@ impl PermissionDataflow {
                 intrinsic_argument.first_arg = Some(vec![lit.to_string()]);
             }
             Operand::Var(var) => {
-                // println!("varid_to_value {:?}", self.varid_to_value);
                 if let Base::Var(varid) = var.base {
                     if let Some(value) = self.get_value(_def, varid) {
                         intrinsic_argument.first_arg = Some(vec![]);
-                        println!("value guava {value:?} {varid:?}");
                         add_elements_to_intrinsic_struct(value, &mut intrinsic_argument.first_arg);
                     }
                 }
@@ -988,10 +983,7 @@ impl PermissionDataflow {
     }
 
     fn add_value(&mut self, defid_block: DefId, varid: VarId, value: Value) {
-        print!("defid_block {:?}", defid_block);
-        println!("{:?}", self.varid_to_value);
         self.varid_to_value.insert(varid, value);
-        println!("{:?}", self.varid_to_value);
     }
 
     fn get_value(&self, defid_block: DefId, varid: VarId) -> Option<&Value> {
@@ -1064,12 +1056,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         _def: DefId,
         intrinsic_argument: &mut IntrinsicArguments,
     ) {
-        println!("operand {:?}", operand);
-
-        println!();
-        println!("all vars {:?}", self.varid_to_value);
-        println!();
-
         if let Some((defid, varid)) = self.get_defid_from_operand(_interp, operand) {
             // getting number 29 here
 
@@ -1120,22 +1106,16 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         initial_state: Self::State,
         operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
-        println!("varid to value {:?}", self.varid_to_value);
-
         let mut intrinsic_argument = IntrinsicArguments::default();
-        // println!("transferring intrinsic {:?}", _interp.env().def_name(_def));
         if let Intrinsic::ApiCall(name) | Intrinsic::SafeCall(name) | Intrinsic::Authorize(name) =
             intrinsic
         {
             intrinsic_argument.name = Some(name.clone());
             let (first, second) = (operands.get(0), operands.get(1));
             if let Some(operand) = first {
-                // println!("operand fro intrinsic {operand:?}");
-
                 self.handle_first_arg(operand, _def, &mut intrinsic_argument);
             }
             if let Some(operand) = second {
-                println!("operand: {operand:?}");
                 self.handle_second_arg(_interp, operand, _def, &mut intrinsic_argument);
             }
             let mut permissions_within_call: Vec<ForgePermissions> = vec![];
@@ -1364,7 +1344,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         }
                     }
                     if let Some(value) = self.get_value(def, varid) {
-                        println!("return value {value:?}");
                         interp.return_value = Some((value.clone(), def));
                         interp.return_value_alt.insert(def, value.clone());
                     }
@@ -1731,7 +1710,6 @@ impl<'cx> Checker<'cx> for PermissionChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        println!("visiting _intrinsic");
         for permission in &interp.permissions {
             self.declared_permissions.remove(permission);
             self.used_permissions.insert(permission.clone());

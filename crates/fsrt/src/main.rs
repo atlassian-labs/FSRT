@@ -242,7 +242,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         return Ok(());
     }
     proj.add_funcs(funcrefs);
-
     resolve_calls(&mut proj.ctx);
     if let Some(func) = opts.dump_ir.as_ref() {
         let mut lock = std::io::stdout().lock();
