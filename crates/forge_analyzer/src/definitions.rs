@@ -34,6 +34,30 @@ use swc_core::{
 use tracing::{debug, info, instrument, warn};
 use typed_index_collections::{TiSlice, TiVec};
 
+/**
+ * ident`, `block`, `stmt`, `expr`, `pat`, `ty`, `lifetime`, `literal`, `path`, `meta`, `tt`, `item` and `vis
+ */
+macro_rules! unwrap_or {
+    ($c:vis, $e:expr, $or_do_what:expr) => {
+        if let c(d) = $e {
+            d
+        } else {
+            $or_do_what
+        }
+    };
+}
+
+macro_rules! add {
+    // macth like arm for macro
+    ($a:expr,$b:expr) => {
+        // macro expand to this code
+        {
+            // $a and $b will be templated using the value/variable provided to macro
+            $a + $b
+        }
+    };
+}
+
 use crate::{
     ctx::ModId,
     ir::{
@@ -129,6 +153,8 @@ pub fn run_resolver(
             exports: vec![],
             default: None,
         };
+        println!();
+        //println!("module ---> {:#?}", module.body);
         module.visit_children_with(&mut export_collector);
         let mod_id = environment
             .exports
@@ -2301,6 +2327,7 @@ impl Visit for ImportCollector<'_> {
 impl Visit for ExportCollector<'_> {
     noop_visit_type!();
     fn visit_export_decl(&mut self, n: &ExportDecl) {
+        //println!("visit export decl {n:#?}");
         match &n.decl {
             Decl::Class(ClassDecl { ident, .. }) => {
                 let ident = ident.to_id();
@@ -2308,6 +2335,7 @@ impl Visit for ExportCollector<'_> {
             }
             Decl::Fn(FnDecl { ident, .. }) => {
                 let ident = ident.to_id();
+                //println!("FNDECL = {ident:?}");
                 self.add_export(DefRes::Function(()), ident);
             }
             Decl::Var(vardecls) => {
@@ -2319,6 +2347,50 @@ impl Visit for ExportCollector<'_> {
             Decl::TsEnum(_) => {}
             Decl::TsModule(_) => {}
         };
+        n.visit_children_with(self);
+    }
+
+    fn visit_assign_expr(&mut self, n: &AssignExpr) {
+        println!();
+        //println!("assing expr {n:?}");
+        println!();
+        //println!("visitng assign expr");
+        //let pat = unwrap_or!(PatOrExpr::Pat, n, return); to make cleaner consider using macro here
+
+        if let PatOrExpr::Pat(pat) = &n.left {
+            if let Pat::Expr(expr) = &**pat {
+                if let Expr::Member(mem_expr) = &**expr {
+                    if let Expr::Ident(ident) = &*mem_expr.obj {
+                        println!("here found moudle.exports");
+                        if ident.sym.to_string() == "module" {
+                            if let MemberProp::Ident(ident_property) = &mem_expr.prop {
+                                if ident_property.sym.to_string() == "exports" {
+                                    println!("here found moudle.exports 2");
+                                    match &*n.right {
+                                        Expr::Fn(FnExpr { ident, function }) => {
+                                            
+                                            println!("ident {ident:?}");
+                                            self.add_default(
+                                            DefRes::Function(()),
+                                            ident.as_ref().map(Ident::to_id),
+                                        )},
+                                        Expr::Class(ClassExpr { ident, class }) => self
+                                            .add_default(
+                                                DefRes::Class(()),
+                                                ident.as_ref().map(Ident::to_id),
+                                            ),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /** We need to get the exports here */
+        n.visit_children_with(self);
     }
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
@@ -2327,6 +2399,7 @@ impl Visit for ExportCollector<'_> {
             let id = id.to_id();
             self.add_export(DefRes::Undefined, id);
         }
+        n.visit_children_with(self);
     }
 
     fn visit_module_item(&mut self, n: &ModuleItem) {
@@ -2345,6 +2418,7 @@ impl Visit for ExportCollector<'_> {
             }
             _ => {}
         }
+        n.visit_children_with(self);
     }
 
     fn visit_export_all(&mut self, _: &ExportAll) {}
@@ -2359,19 +2433,24 @@ impl Visit for ExportCollector<'_> {
             }
             DefaultDecl::TsInterfaceDecl(_) => {}
         }
+        n.decl.visit_children_with(self);
     }
 
     fn visit_export_named_specifier(&mut self, n: &ExportNamedSpecifier) {
+        //println!("export named specifier {n:?}");
+
         let orig_id = n.orig.as_id();
         let orig = self.add_export(DefRes::default(), orig_id);
         if let Some(id) = &n.exported {
             let exported_id = id.as_id();
             self.add_export(DefRes::ExportAlias(orig), exported_id);
         }
+        n.visit_children_with(self)
     }
 
-    fn visit_export_default_expr(&mut self, _: &ExportDefaultExpr) {
+    fn visit_export_default_expr(&mut self, n: &ExportDefaultExpr) {
         self.add_default(DefRes::Undefined, None);
+        n.visit_children_with(self)
     }
 }
 

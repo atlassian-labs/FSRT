@@ -219,7 +219,7 @@ impl<'a> ForgeModules<'a> {
                     .map(|trigger| trigger.raw.function),
             )
             .collect();
-        
+
         let mut alternate_functions: Vec<&str> = Vec::new();
         for module in self.extra.into_values().flatten() {
             alternate_functions.extend(module.function);
