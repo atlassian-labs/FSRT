@@ -241,12 +241,14 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         }
     }
     let unused_permissions = permissions_declared.difference(&all_used_permissions);
-    reporter.add_vulnerabilities(
-        vec![PermissionVuln::new(HashSet::<ForgePermissions>::from_iter(
-            unused_permissions.cloned().into_iter(),
-        ))]
-        .into_iter(),
-    );
+    if unused_permissions.clone().count() > 0 {
+        reporter.add_vulnerabilities(
+            vec![PermissionVuln::new(HashSet::<ForgePermissions>::from_iter(
+                unused_permissions.cloned().into_iter(),
+            ))]
+            .into_iter(),
+        );
+    }
 
     let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
     debug!("Writing Report");

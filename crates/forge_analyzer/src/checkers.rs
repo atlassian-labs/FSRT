@@ -662,9 +662,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 .permissions
                 .extend_from_slice(&permissions_within_call);
         }
-
         println!("all permissions: {:?}", _interp.permissions);
-
         initial_state
     }
 
@@ -789,8 +787,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             }
         }
 
-        println!("all_values_to_be_pushed {all_values_to_be_pushed:?}");
-
         self.needs_call
             .push((callee_def, operands.into_vec(), all_values_to_be_pushed));
         initial_state
@@ -805,6 +801,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
+        println!("inst -- {inst}");
         match inst {
             Inst::Expr(rvalue) => {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
@@ -1197,6 +1194,7 @@ impl PermissionChecker {
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = PermissionVuln> {
         if self.declared_permissions.len() > 0 {
+            println!("here in wrong case");
             return Vec::from([PermissionVuln {
                 unused_permissions: self.declared_permissions.clone(),
             }])
