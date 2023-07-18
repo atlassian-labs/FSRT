@@ -40,6 +40,30 @@ use swc_core::{
 use tracing::{debug, field::debug, info, instrument, warn};
 use typed_index_collections::{TiSlice, TiVec};
 
+/**
+ * ident`, `block`, `stmt`, `expr`, `pat`, `ty`, `lifetime`, `literal`, `path`, `meta`, `tt`, `item` and `vis
+ */
+macro_rules! unwrap_or {
+    ($c:vis, $e:expr, $or_do_what:expr) => {
+        if let c(d) = $e {
+            d
+        } else {
+            $or_do_what
+        }
+    };
+}
+
+macro_rules! add {
+    // macth like arm for macro
+    ($a:expr,$b:expr) => {
+        // macro expand to this code
+        {
+            // $a and $b will be templated using the value/variable provided to macro
+            $a + $b
+        }
+    };
+}
+
 use crate::{
     ctx::ModId,
     ir::{
@@ -142,6 +166,8 @@ pub fn run_resolver(
             exports: vec![],
             default: None,
         };
+        println!();
+        //println!("module ---> {:#?}", module.body);
         module.visit_children_with(&mut export_collector);
         let mod_id = environment
             .exports
@@ -3087,6 +3113,7 @@ impl Visit for GlobalCollector<'_> {
 impl Visit for ExportCollector<'_> {
     noop_visit_type!();
     fn visit_export_decl(&mut self, n: &ExportDecl) {
+        //println!("visit export decl {n:#?}");
         match &n.decl {
             Decl::Class(ClassDecl { ident, .. }) => {
                 let ident = ident.to_id();
@@ -3094,6 +3121,7 @@ impl Visit for ExportCollector<'_> {
             }
             Decl::Fn(FnDecl { ident, .. }) => {
                 let ident = ident.to_id();
+                //println!("FNDECL = {ident:?}");
                 self.add_export(DefRes::Function(()), ident);
             }
             Decl::Var(vardecls) => {

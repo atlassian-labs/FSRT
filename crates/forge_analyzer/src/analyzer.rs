@@ -6,8 +6,8 @@ use std::{fmt, mem};
 use crate::ctx::{BasicBlockId, FunctionMeta, IrStmt, ModuleCtx, TerminatorKind, STARTING_BLOCK};
 use crate::lattice::MeetSemiLattice;
 use swc_core::ecma::ast::{
-    ArrowExpr, BindingIdent, CallExpr, Callee, Expr, ExprOrSpread, FnDecl, FnExpr, Id, IfStmt,
-    JSXElementName, JSXOpeningElement, MemberExpr, MemberProp, Pat, Stmt, Str, ThrowStmt,
+    ArrowExpr, BindingIdent, CallExpr, Callee, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, Id,
+    IfStmt, JSXElementName, JSXOpeningElement, MemberExpr, MemberProp, Pat, Stmt, Str, ThrowStmt,
     TplElement, VarDeclarator,
 };
 use swc_core::ecma::visit::{noop_visit_type, Visit, VisitWith};
@@ -283,6 +283,10 @@ impl Visit for FunctionCollector<'_> {
         let id = n.ident.to_id();
         self.add_func_meta(id, &n.function);
         n.function.visit_children_with(self);
+    }
+
+    fn visit_expr_stmt(&mut self, n: &ExprStmt) {
+        println!("visitng expr sttm 2");
     }
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
