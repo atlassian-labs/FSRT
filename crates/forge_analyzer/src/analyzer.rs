@@ -285,9 +285,7 @@ impl Visit for FunctionCollector<'_> {
         n.function.visit_children_with(self);
     }
 
-    fn visit_expr_stmt(&mut self, n: &ExprStmt) {
-        println!("visitng expr sttm 2");
-    }
+    // fn visit_asign_expr()
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
         if let VarDeclarator {

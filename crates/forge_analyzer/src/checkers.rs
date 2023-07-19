@@ -120,6 +120,8 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
+            // we can try and resolve the cll back to the original one here, but that seems more difficult
+
             worklist.push_front_blocks(interp.env(), def);
         }
     }
@@ -657,12 +659,10 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     }
                 });
 
-            println!("intrinsic args {:?}", intrinsic_argument);
             _interp
                 .permissions
                 .extend_from_slice(&permissions_within_call);
         }
-        println!("all permissions: {:?}", _interp.permissions);
         initial_state
     }
 
@@ -801,7 +801,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
-        println!("inst -- {inst}");
         match inst {
             Inst::Expr(rvalue) => {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
@@ -1194,7 +1193,6 @@ impl PermissionChecker {
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = PermissionVuln> {
         if self.declared_permissions.len() > 0 {
-            println!("here in wrong case");
             return Vec::from([PermissionVuln {
                 unused_permissions: self.declared_permissions.clone(),
             }])

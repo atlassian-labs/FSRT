@@ -89,7 +89,6 @@ pub trait Dataflow<'cx>: Sized {
         rvalue: &'cx Rvalue,
         initial_state: Self::State,
     ) -> Self::State {
-        // println!("transfer rvalue {:?}", rvalue);
         match rvalue {
             Rvalue::Intrinsic(intrinsic, args) => self.transfer_intrinsic(
                 interp,
@@ -147,7 +146,6 @@ pub trait Dataflow<'cx>: Sized {
     ) -> Self::State {
         let mut state = initial_state;
         for (stmt, inst) in block.iter().enumerate() {
-            // println!("inst -- {inst}");
             let loc = Location::new(bb, stmt as u32);
             state = self.transfer_inst(interp, def, loc, block, inst, state);
         }
@@ -678,7 +676,6 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         let resolved_def = self.env.resolve_alias(def);
         let name = self.env.def_name(resolved_def);
         info!("Checking function: {name}");
-        // println!("Checking function: {name}");
         let body = *self
             .env
             .def_ref(resolved_def)
@@ -712,7 +709,6 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             return Err(error);
         }
         info!("Found potential resolver");
-        //println!("found resolver");
         for (name, prop) in resolver {
             debug!("Checking resolver prop: {name}");
             self.entry.kind = match std::mem::take(&mut self.entry.kind) {

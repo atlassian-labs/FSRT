@@ -1,4 +1,5 @@
 import api, { route } from '@forge/api';
+import {testFunctionFromTestFile} from './testfile';
 
 export async function fetchIssueSummary(issueIdOrKey, url) {
 
@@ -33,6 +34,10 @@ function get_route() {
 
 export async function writeComment(issueIdOrKey, comment) {
   /* const api = require('@forge/api'); */
+
+
+  testFunctionFromTestFile("test_value_param")
+
   const resp = await api
     .asApp()
     .requestJira(route`/rest/api/3/issue/${issueIdOrKey}/comment`, {

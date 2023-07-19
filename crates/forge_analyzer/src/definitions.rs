@@ -153,8 +153,6 @@ pub fn run_resolver(
             exports: vec![],
             default: None,
         };
-        println!();
-        //println!("module ---> {:#?}", module.body);
         module.visit_children_with(&mut export_collector);
         let mod_id = environment
             .exports
@@ -683,6 +681,11 @@ impl ResolverTable {
             .unwrap_or_else(|| self.reserve_symbol(id, module))
     }
 
+    #[inline]
+    fn get_sym(&mut self, id: Id, module: ModId) -> Option<DefId> {
+        self.sym_id(id.clone(), module)
+    }
+
     fn reserve_def(&mut self, name: JsWord, module: ModId) -> DefId {
         self.defs.push_and_get_key(DefRes::default());
         self.names.push_and_get_key(name);
@@ -821,9 +824,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
         fn is_storage_read(prop: &JsWord) -> bool {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
-
-        //println!("as intrinsic ");
-
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
@@ -837,7 +837,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 } else {
                     IntrinsicName::RequestConfluence
                 };
-                //println!("here within the intrinsic");
                 let first_arg = first_arg?;
                 match classify_api_call(first_arg) {
                     ApiCallKind::Unknown => {
@@ -985,7 +984,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
-        //println!("lower call");
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first() {
             if self.res.as_foreign_import(id, "@forge/ui").map_or(
@@ -1032,7 +1030,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
             CalleeRef::Import => Operand::UNDEF,
             CalleeRef::Expr(expr) => self.lower_expr(expr, None),
         };
-        //println!("callee {callee}");
         let first_arg = args.first().map(|expr| &*expr.expr);
         let call = match self.as_intrinsic(&props, first_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
@@ -1047,8 +1044,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
         match n {
             Pat::Ident(BindingIdent { id, .. }) => {
                 let id = id.to_id();
-                let def = self.res.get_or_insert_sym(id, self.module);
+                let def = self.res.get_or_insert_sym(id.clone(), self.module);
                 let var = self.body.get_or_insert_global(def);
+
+                // issue is here, where it may be getting the wrong def
+
                 self.push_curr_inst(Inst::Assign(Variable::new(var), val));
             }
             Pat::Array(ArrayPat { elems, .. }) => {
@@ -1721,10 +1721,15 @@ impl Visit for LocalDefiner<'_> {
     fn visit_fn_decl(&mut self, _: &FnDecl) {}
 }
 
-impl Visit for FunctionCollector<'_> {
-    fn visit_function(&mut self, n: &Function) {
-        n.visit_children_with(self);
+impl FunctionCollector<'_> {
+    fn handle_function(&mut self, n: &Function, owner: Option<DefId>) {
         let owner = self.parent.unwrap_or_else(|| {
+            if let Some(defid) = owner {
+                return defid;
+            }
+            if let Some(defid) = self.res.default_export(self.module) {
+                return defid;
+            }
             self.res
                 .add_anonymous("__UNKNOWN", AnonType::Closure, self.module)
         });
@@ -1744,6 +1749,7 @@ impl Visit for FunctionCollector<'_> {
         };
         n.body.visit_children_with(&mut localdef);
         let body = localdef.body;
+        // wrong defid passed in as the current def within the funciton analyzer
         let mut analyzer = FunctionAnalyzer {
             res: self.res,
             module: self.module,
@@ -1760,6 +1766,41 @@ impl Visit for FunctionCollector<'_> {
 
             *self.res.def_mut(owner).expect_body() = body;
         }
+    }
+}
+
+impl Visit for FunctionCollector<'_> {
+    fn visit_assign_expr(&mut self, n: &AssignExpr) {
+        if let PatOrExpr::Pat(pat) = &n.left {
+            if let Pat::Expr(expr) = &**pat {
+                if let Expr::Member(mem_expr) = &**expr {
+                    if let Expr::Ident(ident) = &*mem_expr.obj {
+                        if ident.sym.to_string() == "exports" {
+                            if let MemberProp::Ident(ident_property) = &mem_expr.prop {
+                                match &*n.right {
+                                    Expr::Fn(FnExpr { ident, function }) => {
+                                        if let Some(defid) =
+                                            self.res.get_sym(ident_property.to_id(), self.module)
+                                        {
+                                            self.handle_function(&**function, Some(defid));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        n.visit_children_with(self)
+    }
+
+    fn visit_function(&mut self, n: &Function) {
+        // likley an issue where we are adding anon instead of using the actual value
+        n.visit_children_with(self);
+        self.handle_function(n, None);
     }
 
     fn visit_arrow_expr(
@@ -2192,8 +2233,16 @@ impl ExportCollector<'_> {
         defid
     }
 
+    // some issue here --------
+
+    /**
+     *
+     * the body that we are getting is not getting the insts :(
+     * We think it may be an issue with the way we are adding the default
+     */
     fn add_default(&mut self, def: DefRes, id: Option<Id>) {
         let defid = match id {
+            // ehck here, this may be hte issue
             Some(id) => self.res_table.add_sym(def, id, self.curr_mod),
             None => {
                 self.res_table.names.push("default".into());
@@ -2327,7 +2376,6 @@ impl Visit for ImportCollector<'_> {
 impl Visit for ExportCollector<'_> {
     noop_visit_type!();
     fn visit_export_decl(&mut self, n: &ExportDecl) {
-        //println!("visit export decl {n:#?}");
         match &n.decl {
             Decl::Class(ClassDecl { ident, .. }) => {
                 let ident = ident.to_id();
@@ -2335,12 +2383,11 @@ impl Visit for ExportCollector<'_> {
             }
             Decl::Fn(FnDecl { ident, .. }) => {
                 let ident = ident.to_id();
-                //println!("FNDECL = {ident:?}");
                 self.add_export(DefRes::Function(()), ident);
             }
             Decl::Var(vardecls) => {
                 let VarDecl { decls, .. } = &**vardecls;
-                decls.iter().for_each(|var| self.visit_var_declarator(var));
+                //decls.iter().for_each(|var| self.visit_var_declarator(var));
             }
             Decl::TsInterface(_) => {}
             Decl::TsTypeAlias(_) => {}
@@ -2351,40 +2398,44 @@ impl Visit for ExportCollector<'_> {
     }
 
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
-        println!();
-        //println!("assing expr {n:?}");
-        println!();
-        //println!("visitng assign expr");
-        //let pat = unwrap_or!(PatOrExpr::Pat, n, return); to make cleaner consider using macro here
+        if let Some(ident) = ident_from_assign_expr(n) {
+            if ident.sym.to_string() == "module" {
+                if let Some(mem_expr) = mem_expr_from_assign(n.clone()) {
+                    if let MemberProp::Ident(ident_property) = &mem_expr.prop {
+                        if ident_property.sym.to_string() == "exports" {
+                            match &*n.right {
+                                Expr::Fn(FnExpr { ident, function }) => self.add_default(
+                                    DefRes::Function(()),
+                                    ident.as_ref().map(Ident::to_id),
+                                ),
+                                Expr::Class(ClassExpr { ident, class }) => self.add_default(
+                                    DefRes::Class(()),
+                                    ident.as_ref().map(Ident::to_id),
+                                ),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            } else if ident.sym.to_string() == "exports" {
+                if let Some(mem_expr) = mem_expr_from_assign(n.clone()) {
+                    if let MemberProp::Ident(ident_property) = &mem_expr.prop {
+                        //self.add_export(DefRes::Undefined, ident_property.to_id());
+                        match &*n.right {
+                            Expr::Fn(FnExpr { ident, function }) => {
+                                self.add_export(DefRes::Function(()), ident_property.to_id());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
 
         if let PatOrExpr::Pat(pat) = &n.left {
             if let Pat::Expr(expr) = &**pat {
                 if let Expr::Member(mem_expr) = &**expr {
-                    if let Expr::Ident(ident) = &*mem_expr.obj {
-                        println!("here found moudle.exports");
-                        if ident.sym.to_string() == "module" {
-                            if let MemberProp::Ident(ident_property) = &mem_expr.prop {
-                                if ident_property.sym.to_string() == "exports" {
-                                    println!("here found moudle.exports 2");
-                                    match &*n.right {
-                                        Expr::Fn(FnExpr { ident, function }) => {
-                                            
-                                            println!("ident {ident:?}");
-                                            self.add_default(
-                                            DefRes::Function(()),
-                                            ident.as_ref().map(Ident::to_id),
-                                        )},
-                                        Expr::Class(ClassExpr { ident, class }) => self
-                                            .add_default(
-                                                DefRes::Class(()),
-                                                ident.as_ref().map(Ident::to_id),
-                                            ),
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    if let Expr::Ident(ident) = &*mem_expr.obj {}
                 }
             }
         }
@@ -2414,7 +2465,7 @@ impl Visit for ExportCollector<'_> {
                         | ModuleDecl::ExportNamed(_)
                 ) =>
             {
-                decl.visit_children_with(self)
+                //decl.visit_children_with(self)
             }
             _ => {}
         }
@@ -2437,8 +2488,6 @@ impl Visit for ExportCollector<'_> {
     }
 
     fn visit_export_named_specifier(&mut self, n: &ExportNamedSpecifier) {
-        //println!("export named specifier {n:?}");
-
         let orig_id = n.orig.as_id();
         let orig = self.add_export(DefRes::default(), orig_id);
         if let Some(id) = &n.exported {
@@ -2452,6 +2501,26 @@ impl Visit for ExportCollector<'_> {
         self.add_default(DefRes::Undefined, None);
         n.visit_children_with(self)
     }
+}
+
+fn ident_from_assign_expr(n: &AssignExpr) -> Option<Ident> {
+    if let Some(mem_expr) = mem_expr_from_assign(n.clone()) {
+        if let Expr::Ident(ident) = &*mem_expr.obj {
+            return Some(ident.clone());
+        }
+    }
+    None
+}
+
+fn mem_expr_from_assign(n: AssignExpr) -> Option<MemberExpr> {
+    if let PatOrExpr::Pat(pat) = &n.left {
+        if let Pat::Expr(expr) = &**pat {
+            if let Expr::Member(mem_expr) = &**expr {
+                return Some(mem_expr.clone());
+            }
+        }
+    }
+    None
 }
 
 impl Environment {
@@ -2494,6 +2563,10 @@ impl Environment {
         );
         debug_assert_eq!(def_id, def_id2);
         def_id
+    }
+
+    fn get_sym(&mut self, id: Id, module: ModId) -> Option<DefId> {
+        self.resolver.get_sym(id, module)
     }
 
     fn new_key_from_res(&mut self, id: DefId, res: DefRes) -> DefKey {

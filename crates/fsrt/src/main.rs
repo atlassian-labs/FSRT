@@ -219,7 +219,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 all_used_permissions.extend(checker2.used_permissions);
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
-                println!("func name: -- webtrigger {:?}", interp.env.def_name(def));
                 let mut checker = AuthenticateChecker::new();
                 debug!("checking webtrigger {func} at {path:?}");
                 if let Err(err) =
