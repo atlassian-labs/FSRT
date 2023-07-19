@@ -120,8 +120,6 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
-            // we can try and resolve the cll back to the original one here, but that seems more difficult
-
             worklist.push_front_blocks(interp.env(), def);
         }
     }

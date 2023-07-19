@@ -1046,9 +1046,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let id = id.to_id();
                 let def = self.res.get_or_insert_sym(id.clone(), self.module);
                 let var = self.body.get_or_insert_global(def);
-
-                // issue is here, where it may be getting the wrong def
-
                 self.push_curr_inst(Inst::Assign(Variable::new(var), val));
             }
             Pat::Array(ArrayPat { elems, .. }) => {
@@ -1749,7 +1746,6 @@ impl FunctionCollector<'_> {
         };
         n.body.visit_children_with(&mut localdef);
         let body = localdef.body;
-        // wrong defid passed in as the current def within the funciton analyzer
         let mut analyzer = FunctionAnalyzer {
             res: self.res,
             module: self.module,
@@ -2233,16 +2229,8 @@ impl ExportCollector<'_> {
         defid
     }
 
-    // some issue here --------
-
-    /**
-     *
-     * the body that we are getting is not getting the insts :(
-     * We think it may be an issue with the way we are adding the default
-     */
     fn add_default(&mut self, def: DefRes, id: Option<Id>) {
         let defid = match id {
-            // ehck here, this may be hte issue
             Some(id) => self.res_table.add_sym(def, id, self.curr_mod),
             None => {
                 self.res_table.names.push("default".into());
