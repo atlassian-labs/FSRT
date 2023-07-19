@@ -166,8 +166,6 @@ pub fn run_resolver(
             exports: vec![],
             default: None,
         };
-        println!();
-        //println!("module ---> {:#?}", module.body);
         module.visit_children_with(&mut export_collector);
         let mod_id = environment
             .exports
@@ -929,9 +927,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
         fn is_storage_read(prop: &JsWord) -> bool {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
-
-        //println!("as intrinsic ");
-
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
@@ -944,7 +939,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 } else {
                     IntrinsicName::RequestConfluence
                 };
-                //println!("here within the intrinsic");
                 let first_arg = first_arg?;
                 let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
                 match classify_api_call(first_arg) {
@@ -1316,8 +1310,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
         match n {
             Pat::Ident(BindingIdent { id, .. }) => {
                 let id = id.to_id();
-                let def = self.res.get_or_insert_sym(id, self.module);
+                let def = self.res.get_or_insert_sym(id.clone(), self.module);
                 let var = self.body.get_or_insert_global(def);
+
+                // issue is here, where it may be getting the wrong def
+
                 self.push_curr_inst(Inst::Assign(Variable::new(var), val));
             }
             Pat::Array(ArrayPat { elems, .. }) => {
@@ -2300,6 +2297,41 @@ impl Visit for FunctionCollector<'_> {
             }
         }
     }
+}
+
+impl Visit for FunctionCollector<'_> {
+    fn visit_assign_expr(&mut self, n: &AssignExpr) {
+        if let PatOrExpr::Pat(pat) = &n.left {
+            if let Pat::Expr(expr) = &**pat {
+                if let Expr::Member(mem_expr) = &**expr {
+                    if let Expr::Ident(ident) = &*mem_expr.obj {
+                        if ident.sym.to_string() == "exports" {
+                            if let MemberProp::Ident(ident_property) = &mem_expr.prop {
+                                match &*n.right {
+                                    Expr::Fn(FnExpr { ident, function }) => {
+                                        if let Some(defid) =
+                                            self.res.get_sym(ident_property.to_id(), self.module)
+                                        {
+                                            self.handle_function(&**function, Some(defid));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        n.visit_children_with(self)
+    }
+
+    fn visit_function(&mut self, n: &Function) {
+        // likley an issue where we are adding anon instead of using the actual value
+        n.visit_children_with(self);
+        self.handle_function(n, None);
+    }
 
     fn visit_arrow_expr(
         &mut self,
@@ -2930,6 +2962,7 @@ impl ExportCollector<'_> {
 
     fn add_default(&mut self, def: DefRes, id: Option<Id>) -> DefId {
         let defid = match id {
+            // ehck here, this may be hte issue
             Some(id) => self.res_table.add_sym(def, id, self.curr_mod),
             None => {
                 self.res_table.names.push("default".into());
@@ -3113,7 +3146,6 @@ impl Visit for GlobalCollector<'_> {
 impl Visit for ExportCollector<'_> {
     noop_visit_type!();
     fn visit_export_decl(&mut self, n: &ExportDecl) {
-        //println!("visit export decl {n:#?}");
         match &n.decl {
             Decl::Class(ClassDecl { ident, .. }) => {
                 let ident = ident.to_id();
@@ -3121,7 +3153,6 @@ impl Visit for ExportCollector<'_> {
             }
             Decl::Fn(FnDecl { ident, .. }) => {
                 let ident = ident.to_id();
-                //println!("FNDECL = {ident:?}");
                 self.add_export(DefRes::Function(()), ident);
             }
             Decl::Var(vardecls) => {
@@ -3279,7 +3310,7 @@ impl Visit for ExportCollector<'_> {
 }
 
 fn ident_from_assign_expr(n: &AssignExpr) -> Option<Ident> {
-    if let Some(mem_expr) = mem_expr_from_assign(n) {
+    if let Some(mem_expr) = mem_expr_from_assign(n.clone()) {
         if let Expr::Ident(ident) = &*mem_expr.obj {
             return Some(ident.clone());
         }
@@ -3287,9 +3318,13 @@ fn ident_from_assign_expr(n: &AssignExpr) -> Option<Ident> {
     None
 }
 
-fn mem_expr_from_assign(n: &AssignExpr) -> Option<&MemberExpr> {
-    if let Some(Expr::Member(mem_expr)) = n.left.as_expr() {
-        return Some(mem_expr);
+fn mem_expr_from_assign(n: AssignExpr) -> Option<MemberExpr> {
+    if let PatOrExpr::Pat(pat) = &n.left {
+        if let Pat::Expr(expr) = &**pat {
+            if let Expr::Member(mem_expr) = &**expr {
+                return Some(mem_expr.clone());
+            }
+        }
     }
     None
 }

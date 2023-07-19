@@ -355,6 +355,73 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
     }
 }
 
+pub struct PrototypePollutionChecker;
+
+#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Default)]
+enum PrototypePollutionState {
+    Yes,
+    #[default]
+    No,
+}
+
+impl JoinSemiLattice for PrototypePollutionState {
+    const BOTTOM: Self = Self::No;
+    fn join(&self, other: &Self) -> Self {
+        match (self, other) {
+            (Self::Yes, _) | (_, Self::Yes) => Self::Yes,
+            _ => Self::No,
+        }
+    }
+
+    fn join_changed(&mut self, other: &Self) -> bool {
+        let old = mem::replace(self, self.join(other));
+        old != *self
+    }
+}
+
+impl<'cx> Runner<'cx> for PrototypePollutionChecker {
+    type State = Vec<Taint>;
+
+    type Dataflow = TaintDataflow;
+
+    const NAME: &'static str = "PrototypePollution";
+
+    fn visit_intrinsic(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        intrinsic: &'cx Intrinsic,
+        def: DefId,
+        state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
+    ) -> ControlFlow<(), Self::State> {
+        ControlFlow::Continue(state.clone())
+    }
+    fn visit_block(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        id: BasicBlockId,
+        block: &'cx BasicBlock,
+        curr_state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        for inst in &block.insts {
+            if let Inst::Assign(l, r) = inst {
+                if let [Projection::Computed(Base::Var(fst)), Projection::Computed(Base::Var(snd)), ..] =
+                    *l.projections
+                {
+                    if curr_state.get(fst.0 as usize).copied() == Some(Taint::Yes)
+                        && curr_state.get(snd.0 as usize).copied() == Some(Taint::Yes)
+                    {
+                        info!("Prototype pollution vuln detected");
+                        return ControlFlow::Break(());
+                    }
+                }
+            }
+        }
+        ControlFlow::Continue(curr_state.clone())
+    }
+}
+
 pub struct AuthZChecker {
     visit: bool,
     vulns: Vec<AuthZVuln>,
@@ -1144,12 +1211,10 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     }
                 });
 
-            println!("intrinsic args {:?}", intrinsic_argument);
             _interp
                 .permissions
                 .extend_from_slice(&permissions_within_call);
         }
-        println!("all permissions: {:?}", _interp.permissions);
         initial_state
     }
 
@@ -1651,7 +1716,6 @@ impl PermissionChecker {
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = PermissionVuln> {
         if self.declared_permissions.len() > 0 {
-            println!("here in wrong case");
             return Vec::from([PermissionVuln {
                 unused_permissions: self.declared_permissions.clone(),
             }])
