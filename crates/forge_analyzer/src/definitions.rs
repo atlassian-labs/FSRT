@@ -770,7 +770,7 @@ impl ResolverTable {
 
     #[inline]
     fn get_sym(&mut self, id: Id, module: ModId) -> Option<DefId> {
-        self.sym_id(id.clone(), module)
+        self.sym_id(id.clone(), module);
     }
 
     fn reserve_def(&mut self, name: JsWord, module: ModId) -> DefId {
@@ -2292,6 +2292,41 @@ impl Visit for FunctionCollector<'_> {
                 }
             }
         }
+    }
+}
+
+impl Visit for FunctionCollector<'_> {
+    fn visit_assign_expr(&mut self, n: &AssignExpr) {
+        if let PatOrExpr::Pat(pat) = &n.left {
+            if let Pat::Expr(expr) = &**pat {
+                if let Expr::Member(mem_expr) = &**expr {
+                    if let Expr::Ident(ident) = &*mem_expr.obj {
+                        if ident.sym.to_string() == "exports" {
+                            if let MemberProp::Ident(ident_property) = &mem_expr.prop {
+                                match &*n.right {
+                                    Expr::Fn(FnExpr { ident, function }) => {
+                                        if let Some(defid) =
+                                            self.res.get_sym(ident_property.to_id(), self.module)
+                                        {
+                                            self.handle_function(&**function, Some(defid));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        n.visit_children_with(self)
+    }
+
+    fn visit_function(&mut self, n: &Function) {
+        // likley an issue where we are adding anon instead of using the actual value
+        n.visit_children_with(self);
+        self.handle_function(n, None);
     }
 }
 
