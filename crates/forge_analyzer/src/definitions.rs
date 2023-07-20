@@ -934,7 +934,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
         if let Some(&PropPath::Def(id)) = props.first() {
             if self.res.as_foreign_import(id, "@forge/ui").map_or(
                 false,
-                |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState"),
+                |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect"),
             ) {
                 if let [ExprOrSpread { expr, .. }] = args {
                     debug!("found useState");
@@ -1834,6 +1834,8 @@ impl Visit for Lowerer<'_> {
                         class.pub_members.push((fname, new_def));
                     }
                 }
+            } else if let Expr::Ident(ident) = &**expr {
+                //ident.sym
             }
         }
     }
@@ -2027,6 +2029,8 @@ impl Visit for ImportCollector<'_> {
     noop_visit_type!();
 
     fn visit_import_decl(&mut self, n: &ImportDecl) {
+        println!("visitng import decl {n:?}");
+
         let Str { value, .. } = &*n.src;
         let old_import = mem::replace(&mut self.current_import, value.clone());
         n.visit_children_with(self);
