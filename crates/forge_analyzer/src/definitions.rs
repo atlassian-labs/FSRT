@@ -2209,7 +2209,6 @@ impl Visit for ExportCollector<'_> {
         };
     }
 
-
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
         if let Some(ident) = ident_from_assign_expr(n) {
             if ident.sym.to_string() == "module" {
