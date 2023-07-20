@@ -2209,6 +2209,44 @@ impl Visit for ExportCollector<'_> {
         };
     }
 
+
+    fn visit_assign_expr(&mut self, n: &AssignExpr) {
+        if let Some(ident) = ident_from_assign_expr(n) {
+            if ident.sym.to_string() == "module" {
+                if let Some(mem_expr) = mem_expr_from_assign(n.clone()) {
+                    if let MemberProp::Ident(ident_property) = &mem_expr.prop {
+                        if ident_property.sym.to_string() == "exports" {
+                            match &*n.right {
+                                Expr::Fn(FnExpr { ident, function }) => self.add_default(
+                                    DefRes::Function(()),
+                                    ident.as_ref().map(Ident::to_id),
+                                ),
+                                Expr::Class(ClassExpr { ident, class }) => self.add_default(
+                                    DefRes::Class(()),
+                                    ident.as_ref().map(Ident::to_id),
+                                ),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            } else if ident.sym.to_string() == "exports" {
+                if let Some(mem_expr) = mem_expr_from_assign(n.clone()) {
+                    if let MemberProp::Ident(ident_property) = &mem_expr.prop {
+                        //self.add_export(DefRes::Undefined, ident_property.to_id());
+                        match &*n.right {
+                            Expr::Fn(FnExpr { ident, function }) => {
+                                self.add_export(DefRes::Function(()), ident_property.to_id());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        n.visit_children_with(self);
+    }
+
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
         // TODO: handle other kinds of destructuring patterns
         if let Pat::Ident(BindingIdent { id, .. }) = &n.name {
