@@ -1626,7 +1626,6 @@ impl Visit for FunctionCollector<'_> {
         self.handle_function(n, None);
     }
 
-
     fn visit_arrow_expr(
         &mut self,
         ArrowExpr {
