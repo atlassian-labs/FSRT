@@ -1573,7 +1573,6 @@ impl FunctionCollector<'_> {
         };
         n.body.visit_children_with(&mut localdef);
         let body = localdef.body;
-        // wrong defid passed in as the current def within the funciton analyzer
         let mut analyzer = FunctionAnalyzer {
             res: self.res,
             module: self.module,
@@ -1621,7 +1620,6 @@ impl Visit for FunctionCollector<'_> {
     }
 
     fn visit_function(&mut self, n: &Function) {
-        // likley an issue where we are adding anon instead of using the actual value
         n.visit_children_with(self);
         self.handle_function(n, None);
     }
