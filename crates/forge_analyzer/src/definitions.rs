@@ -2359,7 +2359,6 @@ impl Visit for FunctionCollector<'_> {
     }
 
     fn visit_function(&mut self, n: &Function) {
-        // likley an issue where we are adding anon instead of using the actual value
         n.visit_children_with(self);
         self.handle_function(n, None);
     }
