@@ -3254,7 +3254,6 @@ impl Visit for ExportCollector<'_> {
         n.visit_children_with(self);
     }
 
-
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
         if let Some(ident) = ident_from_assign_expr(n) {
             if ident.sym.to_string() == "module" {
