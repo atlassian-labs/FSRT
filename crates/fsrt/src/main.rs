@@ -9,6 +9,7 @@ use miette::{IntoDiagnostic, Result};
 use std::{
     collections::HashSet,
     fs,
+    io::{self, BufReader},
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -235,12 +236,8 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         });
 
     let src_root = dir.join("src");
-    let mut proj =
-        ForgeProject::with_files_and_sourceroot(src_root, paths.clone(), secret_packages);
-    if transpiled_async {
-        warn!("Unable to scan due to transpiled async");
-        return Ok(());
-    }
+    let mut proj = ForgeProject::with_files_and_sourceroot(src_root, paths.clone());
+    proj.opts = opts.clone();
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
     if let Some(func) = opts.dump_ir.as_ref() {
