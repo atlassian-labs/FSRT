@@ -2121,6 +2121,27 @@ impl Visit for LocalDefiner<'_> {
     fn visit_fn_decl(&mut self, _: &FnDecl) {}
 }
 
+impl Visit for FunctionAnalyzer<'_> {
+    fn visit_call_expr(&mut self, n: &CallExpr) {
+        if call_func_with_name(n, "then")
+            || call_func_with_name(n, "map")
+            || call_func_with_name(n, "foreach")
+            || call_func_with_name(n, "filter")
+        {
+            if let Some(lambda_function) = n.args.get(0) {
+                if let Expr::Arrow(arrow) = &*lambda_function.expr {
+                    if let BlockStmtOrExpr::BlockStmt(block_stmt) = &arrow.body {
+                        block_stmt
+                            .stmts
+                            .iter()
+                            .for_each(|stmt| self.lower_stmt(stmt));
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl Visit for FunctionCollector<'_> {
     fn visit_export_default_decl(&mut self, n: &ExportDefaultDecl) {
         if let Some(defid) = self.res.default_export(self.module) {
