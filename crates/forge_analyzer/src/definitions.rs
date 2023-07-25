@@ -2336,7 +2336,7 @@ impl Visit for FunctionCollector<'_> {
             if let Pat::Expr(expr) = &**pat {
                 if let Expr::Member(mem_expr) = &**expr {
                     if let Expr::Ident(ident) = &*mem_expr.obj {
-                        if ident.sym.to_string() == "exports" {
+                        if &ident.sym == "exports" {
                             if let MemberProp::Ident(ident_property) = &mem_expr.prop {
                                 match &*n.right {
                                     Expr::Fn(FnExpr { ident, function }) => {
@@ -3256,8 +3256,8 @@ impl Visit for ExportCollector<'_> {
 
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
         if let Some(ident) = ident_from_assign_expr(n) {
-            if ident.sym.to_string() == "module" {
-                if let Some(mem_expr) = mem_expr_from_assign(n.clone()) {
+            if &ident.sym == "module" {
+                if let Some(mem_expr) = mem_expr_from_assign(n) {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
                         if ident_property.sym.to_string() == "exports" {
                             match &*n.right {
@@ -3274,10 +3274,11 @@ impl Visit for ExportCollector<'_> {
                         }
                     }
                 }
-            } else if ident.sym.to_string() == "exports" {
-                if let Some(mem_expr) = mem_expr_from_assign(n.clone()) {
+            } else if &ident.sym == "exports" {
+                if let Some(mem_expr) = mem_expr_from_assign(n) {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
                         //self.add_export(DefRes::Undefined, ident_property.to_id());
+                        // TODO: handling aliases
                         match &*n.right {
                             Expr::Fn(FnExpr { ident, function }) => {
                                 self.add_export(DefRes::Function(()), ident_property.to_id());
@@ -3376,7 +3377,7 @@ impl Visit for ExportCollector<'_> {
 }
 
 fn ident_from_assign_expr(n: &AssignExpr) -> Option<Ident> {
-    if let Some(mem_expr) = mem_expr_from_assign(n.clone()) {
+    if let Some(mem_expr) = mem_expr_from_assign(n) {
         if let Expr::Ident(ident) = &*mem_expr.obj {
             return Some(ident.clone());
         }
@@ -3384,11 +3385,11 @@ fn ident_from_assign_expr(n: &AssignExpr) -> Option<Ident> {
     None
 }
 
-fn mem_expr_from_assign(n: AssignExpr) -> Option<MemberExpr> {
+fn mem_expr_from_assign(n: &AssignExpr) -> Option<&MemberExpr> {
     if let PatOrExpr::Pat(pat) = &n.left {
         if let Pat::Expr(expr) = &**pat {
             if let Expr::Member(mem_expr) = &**expr {
-                return Some(mem_expr.clone());
+                return Some(mem_expr);
             }
         }
     }
