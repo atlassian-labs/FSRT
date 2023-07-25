@@ -934,7 +934,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
         if let Some(&PropPath::Def(id)) = props.first() {
             if self.res.as_foreign_import(id, "@forge/ui").map_or(
                 false,
-                |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState"),
+                |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect"),
             ) {
                 if let [ExprOrSpread { expr, .. }] = args {
                     debug!("found useState");
