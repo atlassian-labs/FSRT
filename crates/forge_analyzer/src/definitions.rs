@@ -2306,12 +2306,8 @@ fn ident_from_assign_expr(n: &AssignExpr) -> Option<Ident> {
 }
 
 fn mem_expr_from_assign(n: &AssignExpr) -> Option<&MemberExpr> {
-    if let PatOrExpr::Pat(pat) = &n.left {
-        if let Pat::Expr(expr) = &**pat {
-            if let Expr::Member(mem_expr) = &**expr {
-                return Some(mem_expr);
-            }
-        }
+    if let Some(Expr::Member(mem_expr)) = n.left.as_expr() {
+        return Some(mem_expr);
     }
     None
 }
