@@ -3259,7 +3259,7 @@ impl Visit for ExportCollector<'_> {
             if &ident.sym == "module" {
                 if let Some(mem_expr) = mem_expr_from_assign(n) {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
-                        if ident_property.sym.to_string() == "exports" {
+                        if &ident_property.sym == "exports" {
                             match &*n.right {
                                 Expr::Fn(FnExpr { ident, function }) => self.add_default(
                                     DefRes::Function(()),
