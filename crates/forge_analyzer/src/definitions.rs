@@ -2301,7 +2301,7 @@ impl Visit for ExportCollector<'_> {
 }
 
 fn ident_from_assign_expr(n: &AssignExpr) -> Option<Ident> {
-    if let Some(mem_expr) = mem_expr_from_assign(n.clone()) {
+    mem_expr_from_assign(n).map(Expr::as_ident).cloned()
         if let Expr::Ident(ident) = &*mem_expr.obj {
             return Some(ident.clone());
         }
