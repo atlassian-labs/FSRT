@@ -696,7 +696,7 @@ struct FunctionAnalyzer<'cx> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CalleeRef<'a> {
+pub enum CalleeRef<'a> {
     Expr(&'a Expr),
     Import,
     Super,
@@ -960,6 +960,25 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
             }
         }
+
+        if call_func_with_name(&callee, "then")
+            || call_func_with_name(&callee, "map")
+            || call_func_with_name(&callee, "foreach")
+            || call_func_with_name(&callee, "filter")
+        {
+            if let Some(lambda_function) = args.get(0) {
+                if let Expr::Arrow(arrow) = &*lambda_function.expr {
+                    if let BlockStmtOrExpr::BlockStmt(block_stmt) = &arrow.body {
+                        block_stmt
+                            .stmts
+                            .iter()
+                            .for_each(|stmt| self.lower_stmt(stmt));
+                        return Operand::UNDEF;
+                    }
+                }
+            }
+        }
+
         let lowered_args = args.iter().map(|arg| self.lower_expr(&arg.expr)).collect();
         let callee = match callee {
             CalleeRef::Super => Operand::Var(Variable::SUPER),
@@ -1541,27 +1560,6 @@ impl Visit for LocalDefiner<'_> {
     fn visit_fn_decl(&mut self, _: &FnDecl) {}
 }
 
-impl Visit for FunctionAnalyzer<'_> {
-    fn visit_call_expr(&mut self, n: &CallExpr) {
-        if call_func_with_name(n, "then")
-            || call_func_with_name(n, "map")
-            || call_func_with_name(n, "foreach")
-            || call_func_with_name(n, "filter")
-        {
-            if let Some(lambda_function) = n.args.get(0) {
-                if let Expr::Arrow(arrow) = &*lambda_function.expr {
-                    if let BlockStmtOrExpr::BlockStmt(block_stmt) = &arrow.body {
-                        block_stmt
-                            .stmts
-                            .iter()
-                            .for_each(|stmt| self.lower_stmt(stmt));
-                    }
-                }
-            }
-        }
-    }
-}
-
 impl Visit for FunctionCollector<'_> {
     fn visit_function(&mut self, n: &Function) {
         n.visit_children_with(self);
@@ -1595,7 +1593,6 @@ impl Visit for FunctionCollector<'_> {
             operand_stack: vec![],
             in_lhs: false,
         };
-        n.body.visit_children_with(&mut analyzer);
         if let Some(BlockStmt { stmts, .. }) = &n.body {
             analyzer.lower_stmts(stmts);
             let body = analyzer.body;
