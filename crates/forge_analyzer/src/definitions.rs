@@ -2,7 +2,7 @@
 
 use std::{borrow::Borrow, fmt, mem};
 
-use crate::utils::call_func_with_name;
+use crate::utils::calls_method;
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
 
@@ -936,9 +936,13 @@ impl<'cx> FunctionAnalyzer<'cx> {
             if self.res.as_foreign_import(id, "@forge/ui").map_or(
                 false,
                 |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState"),
-            ) {
+            ) || calls_method(callee, "then")
+                || calls_method(callee, "map")
+                || calls_method(callee, "foreach")
+                || calls_method(callee, "filter")
+            {
                 if let [ExprOrSpread { expr, .. }] = args {
-                    debug!("found useState");
+                    debug!("found useState/then/map/foreach/filter");
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, .. }) => match body {
                             BlockStmtOrExpr::BlockStmt(stmt) => {
@@ -956,24 +960,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                             }
                         }
                         _ => {}
-                    }
-                }
-            }
-        }
-
-        if call_func_with_name(&callee, "then")
-            || call_func_with_name(&callee, "map")
-            || call_func_with_name(&callee, "foreach")
-            || call_func_with_name(&callee, "filter")
-        {
-            if let Some(lambda_function) = args.get(0) {
-                if let Expr::Arrow(arrow) = &*lambda_function.expr {
-                    if let BlockStmtOrExpr::BlockStmt(block_stmt) = &arrow.body {
-                        block_stmt
-                            .stmts
-                            .iter()
-                            .for_each(|stmt| self.lower_stmt(stmt));
-                        return Operand::UNDEF;
                     }
                 }
             }
