@@ -181,7 +181,9 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         .iter()
         .map(|path| {
             if let Ok(data) = fs::read_to_string(path) {
-                return data.contains("use strict");
+                if let Some(line) = data.lines().nth(0) {
+                    return line.contains("\"use strict\";");
+                }
             }
             false
         })
