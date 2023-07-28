@@ -2,6 +2,7 @@
 
 use std::{borrow::Borrow, fmt, mem};
 
+use crate::utils::calls_method;
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
 
@@ -695,7 +696,7 @@ struct FunctionAnalyzer<'cx> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CalleeRef<'a> {
+pub enum CalleeRef<'a> {
     Expr(&'a Expr),
     Import,
     Super,
@@ -935,9 +936,13 @@ impl<'cx> FunctionAnalyzer<'cx> {
             if self.res.as_foreign_import(id, "@forge/ui").map_or(
                 false,
                 |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect"),
-            ) {
+            ) || calls_method(callee, "then")
+                || calls_method(callee, "map")
+                || calls_method(callee, "foreach")
+                || calls_method(callee, "filter")
+            {
                 if let [ExprOrSpread { expr, .. }] = args {
-                    debug!("found useState");
+                    debug!("found useState/then/map/foreach/filter");
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, .. }) => match body {
                             BlockStmtOrExpr::BlockStmt(stmt) => {
@@ -959,6 +964,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
             }
         }
+
         let lowered_args = args.iter().map(|arg| self.lower_expr(&arg.expr)).collect();
         let callee = match callee {
             CalleeRef::Super => Operand::Var(Variable::SUPER),
