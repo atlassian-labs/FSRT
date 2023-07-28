@@ -177,17 +177,15 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 
     let paths = collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>();
 
-    let transpiled_async = paths
-        .iter()
-        .map(|path| {
-            if let Ok(data) = fs::read_to_string(path) {
-                if let Some(line) = data.lines().nth(0) {
-                    return line.contains("\"use strict\";");
-                }
-            }
-            false
-        })
-        .any(|path| path);
+    let transpiled_async = paths.iter().any(|path| {
+        if let Ok(data) = fs::read_to_string(path) {
+            return data
+                .lines()
+                .next()
+                .is_some_and(|data| data == "\"use strict\";" || data == "'use strict';");
+        }
+        false
+    });
 
     let funcrefs = manifest.modules.into_analyzable_functions().flat_map(|f| {
         f.sequence(|fmod| {
