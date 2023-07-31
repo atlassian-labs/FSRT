@@ -11,21 +11,22 @@ use swc_core::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
             AssignProp, AwaitExpr, BinExpr, BindingIdent, BlockStmt, BlockStmtOrExpr, BreakStmt,
-            CallExpr, Callee, ClassDecl, ClassExpr, ComputedPropName, CondExpr, ContinueStmt, Decl,
-            DefaultDecl, DoWhileStmt, ExportAll, ExportDecl, ExportDefaultDecl, ExportDefaultExpr,
-            ExportNamedSpecifier, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForInStmt,
-            ForOfStmt, ForStmt, Function, Id, Ident, IfStmt, Import, ImportDecl,
-            ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, JSXElement,
-            JSXElementChild, JSXElementName, JSXExpr, JSXExprContainer, JSXFragment, JSXMemberExpr,
-            JSXNamespacedName, JSXObject, JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp,
-            LabeledStmt, Lit, MemberExpr, MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl,
-            ModuleExportName, ModuleItem, NewExpr, Number, ObjectLit, ObjectPat, ObjectPatProp,
-            OptCall, OptChainBase, OptChainExpr, ParenExpr, Pat, PatOrExpr, PrivateName, Prop,
-            PropName, PropOrSpread, RestPat, ReturnStmt, SeqExpr, Stmt, Str, Super, SuperProp,
-            SuperPropExpr, SwitchStmt, TaggedTpl, ThisExpr, ThrowStmt, Tpl, TplElement, TryStmt,
-            TsAsExpr, TsConstAssertion, TsInstantiation, TsNonNullExpr, TsSatisfiesExpr,
-            TsTypeAssertion, UnaryExpr, UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclOrPat,
-            VarDeclarator, WhileStmt, WithStmt, YieldExpr,
+            CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName, CondExpr,
+            Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll, ExportDecl,
+            ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier, Expr, ExprOrSpread,
+            ExprStmt, FnDecl, FnExpr, ForInStmt, ForOfStmt, ForStmt, Function, Id, Ident, IfStmt,
+            Import, ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier,
+            ImportStarAsSpecifier, JSXElement, JSXElementChild, JSXElementName, JSXExpr,
+            JSXExprContainer, JSXFragment, JSXMemberExpr, JSXNamespacedName, JSXObject,
+            JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp, LabeledStmt, Lit, MemberExpr,
+            MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl, ModuleExportName, ModuleItem,
+            NewExpr, Number, ObjectLit, ObjectPat, ObjectPatProp, OptCall, OptChainBase,
+            OptChainExpr, ParenExpr, Pat, PatOrExpr, PrivateName, Prop, PropName, PropOrSpread,
+            RestPat, ReturnStmt, SeqExpr, Stmt, Str, Super, SuperProp, SuperPropExpr, SwitchStmt,
+            TaggedTpl, ThisExpr, ThrowStmt, Tpl, TplElement, TryStmt, TsAsExpr, TsConstAssertion,
+            TsInstantiation, TsNonNullExpr, TsSatisfiesExpr, TsTypeAssertion, UnaryExpr,
+            UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclOrPat, VarDeclarator, WhileStmt, WithStmt,
+            YieldExpr,
         },
         atoms::{Atom, JsWord},
         visit::{noop_visit_type, Visit, VisitWith},
@@ -152,6 +153,7 @@ pub fn run_resolver(
         let mut lowerer = Lowerer {
             res: &mut environment,
             curr_mod,
+            curr_class: None,
             parents: vec![],
             curr_def: None,
         };
@@ -161,6 +163,7 @@ pub fn run_resolver(
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut collector = FunctionCollector {
             res: &mut environment,
+            curr_class: None,
             module: curr_mod,
             parent: None,
         };
@@ -473,6 +476,7 @@ enum LowerStage {
 struct Lowerer<'cx> {
     res: &'cx mut Environment,
     curr_mod: ModId,
+    curr_class: Option<DefId>,
     parents: Vec<DefId>,
     curr_def: Option<DefId>,
 }
@@ -680,6 +684,7 @@ impl ResolverTable {
 struct FunctionCollector<'cx> {
     res: &'cx mut Environment,
     module: ModId,
+    curr_class: Option<DefId>,
     parent: Option<DefId>,
 }
 
@@ -929,6 +934,63 @@ impl<'cx> FunctionAnalyzer<'cx> {
         var
     }
 
+    fn resolve_class_prop(&self, obj: &Expr) -> Option<&Class> {
+        if let Expr::Ident(ident) = &*obj {
+            if let Some(defid) = self.res.sym_to_id(ident.to_id(), self.module) {
+                if let Some(potential_class) = self.body.class_instantiations.get(&defid) {
+                    if let Some(DefKind::Class(class_id)) =
+                        self.res.defs.defs.get(potential_class.clone())
+                    {
+                        return self.res.defs.classes.get(class_id.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn get_operand_for_call(&mut self, expr: &Expr) -> Operand {
+        if let Expr::Ident(ident) = expr {
+            if let Some(DefKind::Class(class)) = self.res.sym_to_def(ident.to_id(), self.module) {
+                let id = ident.to_id();
+                let Some(def) = self.res.sym_to_id(id.clone(), self.module) else {
+                    return Literal::Undef.into();
+                };
+                if let Some((_, def_constructor)) =
+                    class.pub_members.iter().find(|(name, defid)| {
+                        if name == "constructor" {
+                            return true;
+                        } else {
+                            false
+                        }
+                    })
+                {
+                    let var = self.body.get_or_insert_global(def_constructor.clone());
+                    return Operand::with_var(var);
+                }
+            }
+        }
+        if let Expr::Member(MemberExpr { obj, prop, .. }) = expr {
+            if let Some(class) = self.resolve_class_prop(obj) {
+                if let MemberProp::Ident(ident) = prop {
+                    if let Some((_, def_constructor)) =
+                        class.pub_members.iter().find(|(name, defid)| {
+                            if name == &ident.sym {
+                                return true;
+                            } else {
+                                false
+                            }
+                        })
+                    {
+                        let var = self.body.get_or_insert_global(def_constructor.clone());
+                        return Operand::with_var(var);
+                    }
+                }
+            }
+        }
+        self.lower_expr(expr)
+    }
+
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first() {
@@ -959,11 +1021,12 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
             }
         }
+
         let lowered_args = args.iter().map(|arg| self.lower_expr(&arg.expr)).collect();
         let callee = match callee {
             CalleeRef::Super => Operand::Var(Variable::SUPER),
             CalleeRef::Import => Operand::UNDEF,
-            CalleeRef::Expr(expr) => self.lower_expr(expr),
+            CalleeRef::Expr(expr) => self.get_operand_for_call(expr),
         };
         let first_arg = args.first().map(|expr| &*expr.expr);
         let call = match self.as_intrinsic(&props, first_arg) {
@@ -1267,7 +1330,18 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 Operand::with_var(phi)
             }
             Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
-            Expr::New(NewExpr { callee, args, .. }) => Operand::UNDEF,
+            Expr::New(NewExpr { callee, args, .. }) => {
+                if let Expr::Ident(ident) = &**callee {
+                    let someething = self.res.sym_to_def(ident.to_id(), self.module);
+                    // remove the clone
+                    return self.lower_call(
+                        CalleeRef::Expr(callee),
+                        args.clone().unwrap_or_default().as_slice(),
+                    );
+                }
+
+                Operand::UNDEF
+            }
             Expr::Seq(SeqExpr { exprs, .. }) => {
                 if let Some((last, rest)) = exprs.split_last() {
                     for expr in rest {
@@ -1598,6 +1672,27 @@ impl Visit for LocalDefiner<'_> {
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
         n.name.visit_with(self);
+        if let Some(init) = &n.init {
+            if let Expr::New(new_expr) = &**init {
+                if let Pat::Ident(ident) = &n.name {
+                    if let Some(defid_variable) = self.res.sym_to_id(ident.to_id(), self.module) {
+                        if let Expr::Ident(ident) = &*new_expr.callee {
+                            if let Some(DefKind::Class(class)) =
+                                self.res.sym_to_def(ident.to_id(), self.module)
+                            {
+                                if let Some(defid_class) =
+                                    self.res.sym_to_id(ident.to_id(), self.module)
+                                {
+                                    self.body
+                                        .class_instantiations
+                                        .insert(defid_variable, defid_class);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn visit_decl(&mut self, n: &Decl) {
@@ -1616,6 +1711,108 @@ impl Visit for LocalDefiner<'_> {
 }
 
 impl Visit for FunctionCollector<'_> {
+    fn visit_class_decl(&mut self, n: &ClassDecl) {
+        if let Some(DefKind::Class(class)) = self.res.sym_to_def(n.ident.to_id(), self.module) {
+            self.curr_class = Some(class.def); // sets the current class so that mehtods are assigned to the proper class
+        }
+        n.visit_children_with(self);
+    }
+
+    fn visit_constructor(&mut self, n: &Constructor) {
+        n.visit_children_with(self);
+        if let Some(class_def) = self.curr_class {
+            if let DefKind::Class(class) = self.res.clone().def_ref(class_def) {
+                if let Some((_, owner)) = &class.pub_members.iter().find(|(name, defid)| {
+                    if name == "constructor" {
+                        return true;
+                    } else {
+                        false
+                    }
+                }) {
+                    let mut argdef = ArgDefiner {
+                        res: self.res,
+                        module: self.module,
+                        func: owner.clone(),
+                        body: Body::with_owner(owner.clone()),
+                    };
+                    n.params.visit_children_with(&mut argdef);
+                    let body = argdef.body;
+                    let mut localdef = LocalDefiner {
+                        res: self.res,
+                        module: self.module,
+                        func: owner.clone(),
+                        body,
+                    };
+                    n.body.visit_children_with(&mut localdef);
+                    let body = localdef.body;
+                    let mut analyzer = FunctionAnalyzer {
+                        res: self.res,
+                        module: self.module,
+                        current_def: owner.clone(),
+                        assigning_to: None,
+                        body,
+                        block: BasicBlockId::default(),
+                        operand_stack: vec![],
+                        in_lhs: false,
+                    };
+                    if let Some(BlockStmt { stmts, .. }) = &n.body {
+                        analyzer.lower_stmts(stmts);
+                        let body = analyzer.body;
+                        *self.res.def_mut(owner.clone()).expect_body() = body;
+                    }
+                }
+            }
+        }
+    }
+
+    fn visit_class_method(&mut self, n: &ClassMethod) {
+        n.visit_children_with(self);
+        if let Some(class_def) = self.curr_class {
+            if let DefKind::Class(class) = self.res.clone().def_ref(class_def) {
+                if let Some((_, owner)) = &class.pub_members.iter().find(|(name, defid)| {
+                    if let PropName::Ident(ident) = &n.key {
+                        if name == &ident.sym {
+                            return true;
+                        }
+                    }
+                    false
+                }) {
+                    let mut argdef = ArgDefiner {
+                        res: self.res,
+                        module: self.module,
+                        func: owner.clone(),
+                        body: Body::with_owner(owner.clone()),
+                    };
+                    n.function.params.visit_children_with(&mut argdef);
+                    let body = argdef.body;
+                    let mut localdef = LocalDefiner {
+                        res: self.res,
+                        module: self.module,
+                        func: owner.clone(),
+                        body,
+                    };
+                    n.function.body.visit_children_with(&mut localdef);
+                    let body = localdef.body;
+                    let mut analyzer = FunctionAnalyzer {
+                        res: self.res,
+                        module: self.module,
+                        current_def: owner.clone(),
+                        assigning_to: None,
+                        body,
+                        block: BasicBlockId::default(),
+                        operand_stack: vec![],
+                        in_lhs: false,
+                    };
+                    if let Some(BlockStmt { stmts, .. }) = &n.function.body {
+                        analyzer.lower_stmts(stmts);
+                        let body = analyzer.body;
+                        *self.res.def_mut(owner.clone()).expect_body() = body;
+                    }
+                }
+            }
+        }
+    }
+
     fn visit_function(&mut self, n: &Function) {
         n.visit_children_with(self);
         let owner = self.parent.unwrap_or_else(|| {
@@ -1894,6 +2091,43 @@ fn as_resolver_def<'a>(
 
 impl Visit for Lowerer<'_> {
     noop_visit_type!();
+
+    fn visit_class_decl(&mut self, n: &ClassDecl) {
+        if let Some(DefKind::Class(class)) = self.res.sym_to_def(n.ident.to_id(), self.curr_mod) {
+            self.curr_class = Some(class.def); // sets the curr class so that mehtods are assigned to the proper class
+        }
+        n.visit_children_with(self);
+    }
+
+    fn visit_constructor(&mut self, n: &Constructor) {
+        n.visit_children_with(self);
+        if let Some(class_def) = self.curr_class {
+            if let DefKind::Class(class) = self.res.def_mut(class_def) {
+                if let PropName::Ident(ident) = &n.key {
+                    let owner =
+                        self.res
+                            .add_anonymous("__CONSTRUCTOR", AnonType::Closure, self.curr_mod);
+                    self.res
+                        .add_class_mehtod(&ident.sym, n.key.clone(), class_def, owner);
+                }
+            }
+        }
+    }
+
+    fn visit_class_method(&mut self, n: &ClassMethod) {
+        n.visit_children_with(self);
+        if let Some(class_def) = self.curr_class {
+            if let DefKind::Class(class) = self.res.def_mut(class_def) {
+                if let PropName::Ident(ident) = &n.key {
+                    let owner =
+                        self.res
+                            .add_anonymous("__CLASSMETHOD", AnonType::Closure, self.curr_mod);
+                    self.res
+                        .add_class_mehtod(&ident.sym, n.key.clone(), class_def, owner);
+                }
+            }
+        }
+    }
 
     fn visit_call_expr(&mut self, n: &CallExpr) {
         if let Some(expr) = n.callee.as_expr() {
@@ -2365,6 +2599,20 @@ impl Environment {
             DefKind::ResolverDef(i) => DefKind::ResolverDef(i),
             DefKind::ModuleNs(i) => DefKind::ModuleNs(i),
             DefKind::Undefined => DefKind::Undefined,
+        }
+    }
+
+    fn add_class_mehtod(
+        &mut self,
+        name: impl Into<JsWord>,
+        n: PropName,
+        class_def: DefId,
+        owner: DefId,
+    ) {
+        if let DefKind::Class(class) = self.def_mut(class_def) {
+            if let PropName::Ident(ident) = &n {
+                class.pub_members.push((ident.sym.to_owned(), owner));
+            }
         }
     }
 
