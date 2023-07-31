@@ -6,6 +6,7 @@
 use core::fmt;
 use std::array;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::hash;
 use std::hash::Hash;
 use std::mem;
@@ -30,6 +31,7 @@ use swc_core::ecma::{ast::Id, atoms::Atom};
 use typed_index_collections::TiVec;
 
 use crate::ctx::ModId;
+use crate::definitions::Class;
 use crate::definitions::DefId;
 use crate::definitions::DefKind;
 use crate::definitions::Environment;
@@ -126,6 +128,7 @@ pub struct Body {
     blocks: TiVec<BasicBlockId, BasicBlock>,
     vars: TiVec<VarId, VarKind>,
     ident_to_local: FxHashMap<Id, VarId>,
+    pub class_instantiations: HashMap<DefId, DefId>, // maps defids of variables to defids of classes
     def_id_to_vars: FxHashMap<DefId, VarId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
 }
@@ -269,6 +272,7 @@ impl Body {
             vars: local_vars,
             owner: None,
             blocks: vec![BasicBlock::default()].into(),
+            class_instantiations: Default::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
             predecessors: Default::default(),
