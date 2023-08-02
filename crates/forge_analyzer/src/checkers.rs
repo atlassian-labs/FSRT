@@ -183,8 +183,12 @@ impl IntoVuln for AuthZVuln {
         use std::hash::{Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
-        self.file.hash(&mut hasher);
+        self.file
+            .iter()
+            .skip_while(|comp| *comp != "src")
+            .for_each(|comp| comp.hash(&mut hasher));
         self.entry_func.hash(&mut hasher);
+        self.stack.hash(&mut hasher);
         Vulnerability {
             check_name: format!("Custom-Check-Authorization-{}", hasher.finish()),
             description: format!("Authorization bypass detected through {} in {:?}.", self.entry_func, self.file),
@@ -428,8 +432,12 @@ impl IntoVuln for AuthNVuln {
         use std::hash::{Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
-        self.file.hash(&mut hasher);
+        self.file
+            .iter()
+            .skip_while(|comp| *comp != "src")
+            .for_each(|comp| comp.hash(&mut hasher));
         self.entry_func.hash(&mut hasher);
+        self.stack.hash(&mut hasher);
         Vulnerability {
             check_name: format!("Custom-Check-Authentication-{}", hasher.finish()),
             description: format!("Insufficient Authentication through webhook {} in {:?}.", self.entry_func, self.file),
