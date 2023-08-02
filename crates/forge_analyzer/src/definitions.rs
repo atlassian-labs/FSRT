@@ -2,6 +2,7 @@
 
 use std::{borrow::Borrow, fmt, mem};
 
+use crate::utils::calls_method;
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
 
@@ -697,7 +698,7 @@ struct FunctionAnalyzer<'cx> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CalleeRef<'a> {
+pub enum CalleeRef<'a> {
     Expr(&'a Expr),
     Import,
     Super,
@@ -936,10 +937,14 @@ impl<'cx> FunctionAnalyzer<'cx> {
         if let Some(&PropPath::Def(id)) = props.first() {
             if self.res.as_foreign_import(id, "@forge/ui").map_or(
                 false,
-                |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState"),
-            ) {
+                |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect"),
+            ) || calls_method(callee, "then")
+                || calls_method(callee, "map")
+                || calls_method(callee, "foreach")
+                || calls_method(callee, "filter")
+            {
                 if let [ExprOrSpread { expr, .. }] = args {
-                    debug!("found useState");
+                    debug!("found useState/then/map/foreach/filter");
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, .. }) => match body {
                             BlockStmtOrExpr::BlockStmt(stmt) => {
@@ -961,6 +966,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
             }
         }
+
         let lowered_args = args.iter().map(|arg| self.lower_expr(&arg.expr)).collect();
         let callee = match callee {
             CalleeRef::Super => Operand::Var(Variable::SUPER),
@@ -1668,10 +1674,15 @@ impl Visit for LocalDefiner<'_> {
     fn visit_fn_decl(&mut self, _: &FnDecl) {}
 }
 
-impl Visit for FunctionCollector<'_> {
-    fn visit_function(&mut self, n: &Function) {
-        n.visit_children_with(self);
+impl FunctionCollector<'_> {
+    fn handle_function(&mut self, n: &Function, owner: Option<DefId>) {
         let owner = self.parent.unwrap_or_else(|| {
+            if let Some(defid) = owner {
+                return defid;
+            }
+            if let Some(defid) = self.res.default_export(self.module) {
+                return defid;
+            }
             self.res
                 .add_anonymous("__UNKNOWN", AnonType::Closure, self.module)
         });
@@ -1706,6 +1717,40 @@ impl Visit for FunctionCollector<'_> {
             let body = analyzer.body;
             *self.res.def_mut(owner).expect_body() = body;
         }
+    }
+}
+
+impl Visit for FunctionCollector<'_> {
+    fn visit_assign_expr(&mut self, n: &AssignExpr) {
+        if let PatOrExpr::Pat(pat) = &n.left {
+            if let Pat::Expr(expr) = &**pat {
+                if let Expr::Member(mem_expr) = &**expr {
+                    if let Expr::Ident(ident) = &*mem_expr.obj {
+                        if &ident.sym == "exports" {
+                            if let MemberProp::Ident(ident_property) = &mem_expr.prop {
+                                match &*n.right {
+                                    Expr::Fn(FnExpr { ident, function }) => {
+                                        if let Some(defid) =
+                                            self.res.get_sym(ident_property.to_id(), self.module)
+                                        {
+                                            self.handle_function(&**function, Some(defid));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        n.visit_children_with(self)
+    }
+
+    fn visit_function(&mut self, n: &Function) {
+        n.visit_children_with(self);
+        self.handle_function(n, None);
     }
 
     fn visit_arrow_expr(
@@ -2293,6 +2338,44 @@ impl Visit for ExportCollector<'_> {
         };
     }
 
+    fn visit_assign_expr(&mut self, n: &AssignExpr) {
+        if let Some(ident) = ident_from_assign_expr(n) {
+            if &ident.sym == "module" {
+                if let Some(mem_expr) = mem_expr_from_assign(n) {
+                    if let MemberProp::Ident(ident_property) = &mem_expr.prop {
+                        if &ident_property.sym == "exports" {
+                            match &*n.right {
+                                Expr::Fn(FnExpr { ident, function }) => self.add_default(
+                                    DefRes::Function(()),
+                                    ident.as_ref().map(Ident::to_id),
+                                ),
+                                Expr::Class(ClassExpr { ident, class }) => self.add_default(
+                                    DefRes::Class(()),
+                                    ident.as_ref().map(Ident::to_id),
+                                ),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            } else if &ident.sym == "exports" {
+                if let Some(mem_expr) = mem_expr_from_assign(n) {
+                    if let MemberProp::Ident(ident_property) = &mem_expr.prop {
+                        //self.add_export(DefRes::Undefined, ident_property.to_id());
+                        // TODO: handling aliases
+                        match &*n.right {
+                            Expr::Fn(FnExpr { ident, function }) => {
+                                self.add_export(DefRes::Function(()), ident_property.to_id());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        n.visit_children_with(self);
+    }
+
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
         // TODO: handle other kinds of destructuring patterns
         if let Pat::Ident(BindingIdent { id, .. }) = &n.name {
@@ -2347,6 +2430,22 @@ impl Visit for ExportCollector<'_> {
     }
 }
 
+fn ident_from_assign_expr(n: &AssignExpr) -> Option<Ident> {
+    if let Some(mem_expr) = mem_expr_from_assign(n) {
+        if let Expr::Ident(ident) = &*mem_expr.obj {
+            return Some(ident.clone());
+        }
+    }
+    None
+}
+
+fn mem_expr_from_assign(n: &AssignExpr) -> Option<&MemberExpr> {
+    if let Some(Expr::Member(mem_expr)) = n.left.as_expr() {
+        return Some(mem_expr);
+    }
+    None
+}
+
 impl Environment {
     #[inline]
     fn new() -> Self {
@@ -2387,6 +2486,11 @@ impl Environment {
         );
         debug_assert_eq!(def_id, def_id2);
         def_id
+    }
+
+    #[inline]
+    fn get_sym(&self, id: Id, module: ModId) -> Option<DefId> {
+        self.resolver.sym_id(id, module)
     }
 
     fn new_key_from_res(&mut self, id: DefId, res: DefRes) -> DefKey {
