@@ -2419,16 +2419,6 @@ impl Visit for ExportCollector<'_> {
                 }
             }
         }
-
-        if let PatOrExpr::Pat(pat) = &n.left {
-            if let Pat::Expr(expr) = &**pat {
-                if let Expr::Member(mem_expr) = &**expr {
-                    if let Expr::Ident(ident) = &*mem_expr.obj {}
-                }
-            }
-        }
-
-        /** We need to get the exports here */
         n.visit_children_with(self);
     }
 
