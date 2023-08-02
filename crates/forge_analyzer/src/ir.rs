@@ -124,7 +124,7 @@ pub(crate) const RETURN_VAR: Variable = Variable {
 pub struct Body {
     owner: Option<DefId>,
     blocks: TiVec<BasicBlockId, BasicBlock>,
-    vars: TiVec<VarId, VarKind>,
+    pub vars: TiVec<VarId, VarKind>,
     ident_to_local: FxHashMap<Id, VarId>,
     def_id_to_vars: FxHashMap<DefId, VarId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
@@ -223,6 +223,15 @@ create_newtype! {
 pub struct Variable {
     pub(crate) base: Base,
     pub(crate) projections: SmallVec<[Projection; 1]>,
+}
+
+impl From<VarId> for Variable {
+    fn from(varid: VarId) -> Variable {
+        Variable {
+            base: Base::Var(varid),
+            projections: SmallVec::default(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
