@@ -6,6 +6,7 @@ use crate::utils::calls_method;
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
 
+use smallvec::SmallVec;
 use swc_core::{
     common::SyntaxContext,
     ecma::{
@@ -16,8 +17,9 @@ use swc_core::{
             DefaultDecl, DoWhileStmt, ExportAll, ExportDecl, ExportDefaultDecl, ExportDefaultExpr,
             ExportNamedSpecifier, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForInStmt,
             ForOfStmt, ForStmt, Function, Id, Ident, IfStmt, Import, ImportDecl,
-            ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, JSXElement,
-            JSXElementChild, JSXElementName, JSXExpr, JSXExprContainer, JSXFragment, JSXMemberExpr,
+            ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, JSXAttr,
+            JSXAttrName, JSXAttrOrSpread, JSXAttrValue, JSXElement, JSXElementChild,
+            JSXElementName, JSXExpr, JSXExprContainer, JSXFragment, JSXMemberExpr,
             JSXNamespacedName, JSXObject, JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp,
             LabeledStmt, Lit, MemberExpr, MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl,
             ModuleExportName, ModuleItem, NewExpr, Number, ObjectLit, ObjectPat, ObjectPatProp,
@@ -971,6 +973,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             CalleeRef::Import => Operand::UNDEF,
             CalleeRef::Expr(expr) => self.lower_expr(expr),
         };
+
         let first_arg = args.first().map(|expr| &*expr.expr);
         let call = match self.as_intrinsic(&props, first_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
@@ -1027,6 +1030,50 @@ impl<'cx> FunctionAnalyzer<'cx> {
         }
     }
 
+    fn lower_jsx_attr(&mut self, n: &JSXElement) {
+        n.opening.attrs.iter().for_each(|attr| match attr {
+            JSXAttrOrSpread::JSXAttr(jsx_attr) => {
+                if let JSXAttrName::Ident(ident_value) = &jsx_attr.name {
+                    if let Some(JSXAttrValue::JSXExprContainer(jsx_expr)) = &jsx_attr.value {
+                        self.lower_jsx_handler(&jsx_expr, ident_value);
+                    }
+                }
+            }
+            JSXAttrOrSpread::SpreadElement(_) => {}
+        });
+    }
+
+    fn lower_jsx_handler(&mut self, n: &JSXExprContainer, ident_value: &Ident) {
+        if let JSXExpr::Expr(expr) = &n.expr {
+            // FIXME: Add entry point for the functions that are called as part of the handlers
+            self.lower_expr(&expr);
+            if let Some(second_char) = ident_value.sym.chars().nth(2) {
+                if ident_value.sym.starts_with("on") && second_char.is_uppercase() {
+                    match &**expr {
+                        Expr::Arrow(arrow_expr) => {
+                            if let BlockStmtOrExpr::Expr(expr) = &arrow_expr.body {
+                                self.lower_expr(&**expr);
+                            }
+                        }
+                        Expr::Ident(ident) => {
+                            let defid = self.res.sym_to_id(ident.to_id(), self.module);
+                            let varid = self.body.get_or_insert_global(defid.unwrap());
+                            self.body.push_tmp(
+                                self.block,
+                                Rvalue::Call(
+                                    Operand::Var(Variable::from(varid)),
+                                    SmallVec::default(),
+                                ),
+                                None,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
     fn lower_jsx_child(&mut self, n: &JSXElementChild) -> Operand {
         match n {
             JSXElementChild::JSXText(JSXText { value, .. }) => {
@@ -1038,7 +1085,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 JSXExpr::Expr(expr) => self.lower_expr(expr),
             },
             JSXElementChild::JSXSpreadChild(JSXSpreadChild { expr, .. }) => self.lower_expr(expr),
-            JSXElementChild::JSXElement(elem) => self.lower_jsx_elem(elem),
+            JSXElementChild::JSXElement(elem) => {
+                self.lower_jsx_attr(elem);
+                self.lower_jsx_elem(elem)
+            }
             JSXElementChild::JSXFragment(JSXFragment { children, .. }) => {
                 for child in children {
                     self.lower_jsx_child(child);
@@ -1064,6 +1114,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
             .iter()
             .map(|child| self.lower_jsx_child(child))
             .collect();
+
+        self.lower_jsx_attr(n);
+
         let callee = match &n.opening.name {
             JSXElementName::Ident(ident) => {
                 let id = ident.to_id();
