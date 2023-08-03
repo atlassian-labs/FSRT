@@ -1672,21 +1672,19 @@ impl Visit for LocalDefiner<'_> {
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
         n.name.visit_with(self);
-        if let Some(init) = &n.init {
-            if let Expr::New(new_expr) = &**init {
-                if let Pat::Ident(ident) = &n.name {
-                    if let Some(defid_variable) = self.res.sym_to_id(ident.to_id(), self.module) {
-                        if let Expr::Ident(ident) = &*new_expr.callee {
-                            if let Some(DefKind::Class(class)) =
-                                self.res.sym_to_def(ident.to_id(), self.module)
+        if let Some(Expr::New(new_expr)) = n.init.as_deref() {
+            if let Pat::Ident(ident) = &n.name {
+                if let Some(defid_variable) = self.res.sym_to_id(ident.to_id(), self.module) {
+                    if let Expr::Ident(ident) = &*new_expr.callee {
+                        if let Some(DefKind::Class(class)) =
+                            self.res.sym_to_def(ident.to_id(), self.module)
+                        {
+                            if let Some(defid_class) =
+                                self.res.sym_to_id(ident.to_id(), self.module)
                             {
-                                if let Some(defid_class) =
-                                    self.res.sym_to_id(ident.to_id(), self.module)
-                                {
-                                    self.body
-                                        .class_instantiations
-                                        .insert(defid_variable, defid_class);
-                                }
+                                self.body
+                                    .class_instantiations
+                                    .insert(defid_variable, defid_class);
                             }
                         }
                     }
@@ -1723,24 +1721,20 @@ impl Visit for FunctionCollector<'_> {
         if let Some(class_def) = self.curr_class {
             if let DefKind::Class(class) = self.res.clone().def_ref(class_def) {
                 if let Some((_, owner)) = &class.pub_members.iter().find(|(name, defid)| {
-                    if name == "constructor" {
-                        return true;
-                    } else {
-                        false
-                    }
+                    name == "constructor"
                 }) {
                     let mut argdef = ArgDefiner {
                         res: self.res,
                         module: self.module,
-                        func: owner.clone(),
-                        body: Body::with_owner(owner.clone()),
+                        func: *owner,
+                        body: Body::with_owner(*owner),
                     };
                     n.params.visit_children_with(&mut argdef);
                     let body = argdef.body;
                     let mut localdef = LocalDefiner {
                         res: self.res,
                         module: self.module,
-                        func: owner.clone(),
+                        func: *owner,
                         body,
                     };
                     n.body.visit_children_with(&mut localdef);
@@ -1748,7 +1742,7 @@ impl Visit for FunctionCollector<'_> {
                     let mut analyzer = FunctionAnalyzer {
                         res: self.res,
                         module: self.module,
-                        current_def: owner.clone(),
+                        current_def: *owner,
                         assigning_to: None,
                         body,
                         block: BasicBlockId::default(),
@@ -1758,7 +1752,7 @@ impl Visit for FunctionCollector<'_> {
                     if let Some(BlockStmt { stmts, .. }) = &n.body {
                         analyzer.lower_stmts(stmts);
                         let body = analyzer.body;
-                        *self.res.def_mut(owner.clone()).expect_body() = body;
+                        *self.res.def_mut(*owner).expect_body() = body;
                     }
                 }
             }
@@ -1780,15 +1774,15 @@ impl Visit for FunctionCollector<'_> {
                     let mut argdef = ArgDefiner {
                         res: self.res,
                         module: self.module,
-                        func: owner.clone(),
-                        body: Body::with_owner(owner.clone()),
+                        func: *owner,
+                        body: Body::with_owner(*owner),
                     };
                     n.function.params.visit_children_with(&mut argdef);
                     let body = argdef.body;
                     let mut localdef = LocalDefiner {
                         res: self.res,
                         module: self.module,
-                        func: owner.clone(),
+                        func: *owner,
                         body,
                     };
                     n.function.body.visit_children_with(&mut localdef);
@@ -1796,7 +1790,7 @@ impl Visit for FunctionCollector<'_> {
                     let mut analyzer = FunctionAnalyzer {
                         res: self.res,
                         module: self.module,
-                        current_def: owner.clone(),
+                        current_def: *owner,
                         assigning_to: None,
                         body,
                         block: BasicBlockId::default(),
@@ -1806,7 +1800,7 @@ impl Visit for FunctionCollector<'_> {
                     if let Some(BlockStmt { stmts, .. }) = &n.function.body {
                         analyzer.lower_stmts(stmts);
                         let body = analyzer.body;
-                        *self.res.def_mut(owner.clone()).expect_body() = body;
+                        *self.res.def_mut(*owner).expect_body() = body;
                     }
                 }
             }
@@ -2108,7 +2102,7 @@ impl Visit for Lowerer<'_> {
                         self.res
                             .add_anonymous("__CONSTRUCTOR", AnonType::Closure, self.curr_mod);
                     self.res
-                        .add_class_mehtod(&ident.sym, n.key.clone(), class_def, owner);
+                        .add_class_method(&ident.sym, n.key.clone(), class_def, owner);
                 }
             }
         }
@@ -2123,7 +2117,7 @@ impl Visit for Lowerer<'_> {
                         self.res
                             .add_anonymous("__CLASSMETHOD", AnonType::Closure, self.curr_mod);
                     self.res
-                        .add_class_mehtod(&ident.sym, n.key.clone(), class_def, owner);
+                        .add_class_method(&ident.sym, n.key.clone(), class_def, owner);
                 }
             }
         }
@@ -2602,7 +2596,7 @@ impl Environment {
         }
     }
 
-    fn add_class_mehtod(
+    fn add_class_method(
         &mut self,
         name: impl Into<JsWord>,
         n: PropName,
