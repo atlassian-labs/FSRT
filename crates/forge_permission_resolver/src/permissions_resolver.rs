@@ -267,3 +267,13 @@ mod test {
         assert_eq!(result, expected_permission);
     }
 }
+
+fn get_scopes(endpoint_data: &RequestDetails) -> Vec<String> {
+    return endpoint_data
+        .permission
+        .clone()
+        .into_iter()
+        .map(|data| data.scopes)
+        .flatten()
+        .collect();
+}
