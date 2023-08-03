@@ -158,67 +158,39 @@ fn get_request_type(
         all_methods.push((
             key.to_string(),
             RequestType::Delete,
-            endpoint_data
-                .permission
-                .clone()
-                .into_iter()
-                .map(|data| data.scopes)
-                .flatten()
-                .collect(),
+            get_scopes(endpoint_data),
         ));
     }
     if let Some(endpoint_data) = &endpoint_data.patch {
         all_methods.push((
             key.to_string(),
             RequestType::Patch,
-            endpoint_data
-                .permission
-                .clone()
-                .into_iter()
-                .map(|data| data.scopes)
-                .flatten()
-                .collect(),
+            get_scopes(endpoint_data),
         ));
     }
     if let Some(endpoint_data) = &endpoint_data.post {
         all_methods.push((
             key.to_string(),
             RequestType::Post,
-            endpoint_data
-                .permission
-                .clone()
-                .into_iter()
-                .map(|data| data.scopes)
-                .flatten()
-                .collect(),
+            get_scopes(endpoint_data),
         ));
     }
     if let Some(endpoint_data) = &endpoint_data.put {
-        all_methods.push((
-            key.to_string(),
-            RequestType::Put,
-            endpoint_data
-                .permission
-                .clone()
-                .into_iter()
-                .map(|data| data.scopes)
-                .flatten()
-                .collect(),
-        ));
+        all_methods.push((key.to_string(), RequestType::Put, get_scopes(endpoint_data)));
     }
     if let Some(endpoint_data) = &endpoint_data.get {
-        all_methods.push((
-            key.to_string(),
-            RequestType::Get,
-            endpoint_data
-                .permission
-                .clone()
-                .into_iter()
-                .map(|data| data.scopes)
-                .flatten()
-                .collect(),
-        ));
+        all_methods.push((key.to_string(), RequestType::Get, get_scopes(endpoint_data)));
     }
 
     return all_methods;
+}
+
+fn get_scopes(endpoint_data: &RequestDetails) -> Vec<String> {
+    return endpoint_data
+        .permission
+        .clone()
+        .into_iter()
+        .map(|data| data.scopes)
+        .flatten()
+        .collect();
 }
