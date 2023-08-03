@@ -355,7 +355,6 @@ impl<'cx> Checker<'cx> for AuthenticateChecker {
     type State = Authenticated;
     type Dataflow = AuthenticateDataflow;
     type Vuln = AuthNVuln;
-
     fn visit_intrinsic(
         &mut self,
         interp: &Interp<'cx, Self>,

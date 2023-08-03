@@ -35,3 +35,4 @@ forge_loader = { path = "crates/forge_loader" }
 forge_analyzer = { path = "crates/forge_analyzer" }
 forge_file_resolver = { path = "crates/forge_file_resolver" }
 forge_utils = { path = "crates/forge_utils" }
+forge_permission_resolver = { path = "crates/forge_permission_resolver" }
