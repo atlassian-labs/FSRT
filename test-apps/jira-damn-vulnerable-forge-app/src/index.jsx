@@ -18,10 +18,11 @@ import api, { webTrigger, route, storage, properties } from '@forge/api';
 import { createHash } from 'crypto';
 import jwt from 'jsonwebtoken';
 import { fetchIssueSummary } from './utils';
+import {IssuePanelApp} from './IssuePanelApp';
 
 function SharedSecretForm() {
   const [hashedSecret, setHashedSecret] = useState(null);
-  const onSubmit = async ({ sharedSecret }) => {
+  const onSubmitFunction = async ({ sharedSecret }) => {
     storage.setSecret('sharedSecret', sharedSecret);
     const hash = createHash('sha256');
     hash.update(sharedSecret);
@@ -32,7 +33,7 @@ function SharedSecretForm() {
   });
   return (
     <Fragment>
-      <Form onSubmit={onSubmit}>
+      <Form onSubmit={onSubmitFunction}>
         <TextField name="sharedSecret" label="Set Shared Secret" />
       </Form>
       {hashedSecret && <Text>{hashedSecret}</Text>}
@@ -84,6 +85,7 @@ const App = () => {
       <Table>
         <ChallengeHeader />
         <FirstChallenge />
+        <IssuePanelApp />
       </Table>
       <SharedSecretForm />
     </Fragment>
