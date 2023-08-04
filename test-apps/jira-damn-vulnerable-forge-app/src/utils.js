@@ -33,6 +33,7 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
     },
   };
 
+  testFunctionFromTestFile();
   let val = 'grapefruit';
 
   val = 'peach';

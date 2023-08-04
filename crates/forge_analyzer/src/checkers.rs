@@ -1197,6 +1197,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 .for_each(|first_arg_vec| {
                     if let Some(second_arg_vec) = intrinsic_argument.second_arg.clone() {
                         first_arg_vec.iter().for_each(|first_arg| {
+                            println!("first arg ===> {first_arg:?}");
                             second_arg_vec.iter().for_each(|second_arg| {
                                 let permissions = check_permission_used(
                                     intrinsic_func_type,
@@ -1208,12 +1209,15 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         })
                     } else {
                         first_arg_vec.iter().for_each(|first_arg| {
+                            println!("first arg ===> {first_arg:?}");
                             let permissions =
                                 check_permission_used(intrinsic_func_type, first_arg, None);
                             permissions_within_call.extend_from_slice(&permissions);
                         })
                     }
                 });
+
+            println!("permissions within call {permissions_within_call:?}");
 
             _interp
                 .permissions
