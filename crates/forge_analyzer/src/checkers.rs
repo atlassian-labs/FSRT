@@ -799,7 +799,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
-
         println!("inst {inst}");
         match inst {
             Inst::Expr(rvalue) => {

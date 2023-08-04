@@ -1,6 +1,5 @@
 use forge_loader::forgepermissions::ForgePermissions;
 use serde::Serialize;
-use std::collections::HashSet;
 use time::{Date, OffsetDateTime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
