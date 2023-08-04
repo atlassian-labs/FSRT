@@ -6,6 +6,7 @@
 use core::fmt;
 use std::array;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::hash;
 use std::hash::Hash;
 use std::mem;
@@ -30,6 +31,7 @@ use swc_core::ecma::{ast::Id, atoms::Atom};
 use typed_index_collections::TiVec;
 
 use crate::ctx::ModId;
+use crate::definitions::Class;
 use crate::definitions::DefId;
 use crate::definitions::DefKind;
 use crate::definitions::Environment;
@@ -130,6 +132,7 @@ pub struct Body {
     pub values: FxHashMap<DefId, Value>,
     ident_to_local: FxHashMap<Id, VarId>,
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
+    pub class_instantiations: HashMap<DefId, DefId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
 }
 
@@ -228,6 +231,15 @@ pub struct Variable {
     pub(crate) projections: SmallVec<[Projection; 1]>,
 }
 
+impl From<VarId> for Variable {
+    fn from(varid: VarId) -> Variable {
+        Variable {
+            base: Base::Var(varid),
+            projections: SmallVec::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Projection {
     Known(JsWord),
@@ -273,6 +285,7 @@ impl Body {
             owner: None,
             blocks: vec![BasicBlock::default()].into(),
             values: FxHashMap::default(),
+            class_instantiations: Default::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
             predecessors: Default::default(),

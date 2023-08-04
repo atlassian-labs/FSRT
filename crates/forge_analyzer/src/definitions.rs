@@ -2,20 +2,23 @@
 
 use std::{borrow::Borrow, fmt, mem};
 
+use crate::utils::calls_method;
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
 
+use smallvec::SmallVec;
 use swc_core::{
     common::SyntaxContext,
     ecma::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
             AssignProp, AwaitExpr, BinExpr, BindingIdent, BlockStmt, BlockStmtOrExpr, BreakStmt,
-            CallExpr, Callee, ClassDecl, ClassExpr, ComputedPropName, CondExpr, ContinueStmt, Decl,
-            DefaultDecl, DoWhileStmt, ExportAll, ExportDecl, ExportDefaultDecl, ExportDefaultExpr,
-            ExportNamedSpecifier, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForInStmt,
-            ForOfStmt, ForStmt, Function, Id, Ident, IfStmt, Import, ImportDecl,
-            ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, JSXElement,
+            CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName, CondExpr,
+            Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll, ExportDecl,
+            ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier, Expr, ExprOrSpread,
+            ExprStmt, FnDecl, FnExpr, ForInStmt, ForOfStmt, ForStmt, Function, Id, Ident, IfStmt,
+            Import, ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier,
+            ImportStarAsSpecifier, JSXAttrName, JSXAttrOrSpread, JSXAttrValue, JSXElement,
             JSXElementChild, JSXElementName, JSXExpr, JSXExprContainer, JSXFragment, JSXMemberExpr,
             JSXNamespacedName, JSXObject, JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp,
             LabeledStmt, Lit, MemberExpr, MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl,
@@ -190,6 +193,7 @@ pub fn run_resolver(
         let mut lowerer = Lowerer {
             res: &mut environment,
             curr_mod,
+            curr_class: None,
             parents: vec![],
             curr_def: None,
         };
@@ -199,6 +203,7 @@ pub fn run_resolver(
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut collector = FunctionCollector {
             res: &mut environment,
+            curr_class: None,
             module: curr_mod,
             parent: None,
         };
@@ -518,6 +523,7 @@ pub enum IntrinsicName {
 struct Lowerer<'cx> {
     res: &'cx mut Environment,
     curr_mod: ModId,
+    curr_class: Option<DefId>,
     parents: Vec<DefId>,
     curr_def: Option<DefId>,
 }
@@ -730,6 +736,7 @@ impl ResolverTable {
 struct FunctionCollector<'cx> {
     res: &'cx mut Environment,
     module: ModId,
+    curr_class: Option<DefId>,
     parent: Option<DefId>,
 }
 
@@ -745,7 +752,7 @@ struct FunctionAnalyzer<'cx> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CalleeRef<'a> {
+pub enum CalleeRef<'a> {
     Expr(&'a Expr),
     Import,
     Super,
@@ -983,15 +990,76 @@ impl<'cx> FunctionAnalyzer<'cx> {
         var
     }
 
+    fn resolve_class_prop(&self, obj: &Expr) -> Option<&Class> {
+        if let Expr::Ident(ident) = &*obj {
+            if let Some(defid) = self.res.sym_to_id(ident.to_id(), self.module) {
+                if let Some(potential_class) = self.body.class_instantiations.get(&defid) {
+                    if let Some(DefKind::Class(class_id)) =
+                        self.res.defs.defs.get(potential_class.clone())
+                    {
+                        return self.res.defs.classes.get(class_id.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn get_operand_for_call(&mut self, expr: &Expr) -> Operand {
+        if let Expr::Ident(ident) = expr {
+            if let Some(DefKind::Class(class)) = self.res.sym_to_def(ident.to_id(), self.module) {
+                let id = ident.to_id();
+                let Some(def) = self.res.sym_to_id(id.clone(), self.module) else {
+                    return Literal::Undef.into();
+                };
+                if let Some((_, def_constructor)) =
+                    class.pub_members.iter().find(|(name, defid)| {
+                        if name == "constructor" {
+                            return true;
+                        } else {
+                            false
+                        }
+                    })
+                {
+                    let var = self.body.get_or_insert_global(def_constructor.clone());
+                    return Operand::with_var(var);
+                }
+            }
+        }
+        if let Expr::Member(MemberExpr { obj, prop, .. }) = expr {
+            if let Some(class) = self.resolve_class_prop(obj) {
+                if let MemberProp::Ident(ident) = prop {
+                    if let Some((_, def_constructor)) =
+                        class.pub_members.iter().find(|(name, defid)| {
+                            if name == &ident.sym {
+                                return true;
+                            } else {
+                                false
+                            }
+                        })
+                    {
+                        let var = self.body.get_or_insert_global(def_constructor.clone());
+                        return Operand::with_var(var);
+                    }
+                }
+            }
+        }
+        self.lower_expr(expr, None)
+    }
+
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first() {
             if self.res.as_foreign_import(id, "@forge/ui").map_or(
                 false,
-                |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState"),
-            ) {
+                |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect"),
+            ) || calls_method(callee, "then")
+                || calls_method(callee, "map")
+                || calls_method(callee, "foreach")
+                || calls_method(callee, "filter")
+            {
                 if let [ExprOrSpread { expr, .. }] = args {
-                    debug!("found useState");
+                    debug!("found useState/then/map/foreach/filter");
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, .. }) => match body {
                             BlockStmtOrExpr::BlockStmt(stmt) => {
@@ -1030,6 +1098,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             CalleeRef::Import => Operand::UNDEF,
             CalleeRef::Expr(expr) => self.lower_expr(expr, None),
         };
+
         let first_arg = args.first().map(|expr| &*expr.expr);
         let call = match self.as_intrinsic(&props, first_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
@@ -1087,6 +1156,50 @@ impl<'cx> FunctionAnalyzer<'cx> {
         }
     }
 
+    fn lower_jsx_attr(&mut self, n: &JSXElement) {
+        n.opening.attrs.iter().for_each(|attr| match attr {
+            JSXAttrOrSpread::JSXAttr(jsx_attr) => {
+                if let JSXAttrName::Ident(ident_value) = &jsx_attr.name {
+                    if let Some(JSXAttrValue::JSXExprContainer(jsx_expr)) = &jsx_attr.value {
+                        self.lower_jsx_handler(&jsx_expr, ident_value);
+                    }
+                }
+            }
+            JSXAttrOrSpread::SpreadElement(_) => {}
+        });
+    }
+
+    fn lower_jsx_handler(&mut self, n: &JSXExprContainer, ident_value: &Ident) {
+        if let JSXExpr::Expr(expr) = &n.expr {
+            // FIXME: Add entry point for the functions that are called as part of the handlers
+            self.lower_expr(&expr, None);
+            if let Some(second_char) = ident_value.sym.chars().nth(2) {
+                if ident_value.sym.starts_with("on") && second_char.is_uppercase() {
+                    match &**expr {
+                        Expr::Arrow(arrow_expr) => {
+                            if let BlockStmtOrExpr::Expr(expr) = &arrow_expr.body {
+                                self.lower_expr(&**expr, None);
+                            }
+                        }
+                        Expr::Ident(ident) => {
+                            let defid = self.res.sym_to_id(ident.to_id(), self.module);
+                            let varid = self.body.get_or_insert_global(defid.unwrap());
+                            self.body.push_tmp(
+                                self.block,
+                                Rvalue::Call(
+                                    Operand::Var(Variable::from(varid)),
+                                    SmallVec::default(),
+                                ),
+                                None,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
     fn lower_jsx_child(&mut self, n: &JSXElementChild) -> Operand {
         match n {
             JSXElementChild::JSXText(JSXText { value, .. }) => {
@@ -1097,10 +1210,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 JSXExpr::JSXEmptyExpr(_) => Operand::UNDEF,
                 JSXExpr::Expr(expr) => self.lower_expr(expr, None),
             },
-            JSXElementChild::JSXSpreadChild(JSXSpreadChild { expr, .. }) => {
-                self.lower_expr(expr, None)
+            JSXElementChild::JSXSpreadChild(JSXSpreadChild { expr, .. }) => self.lower_expr(expr, None),
+            JSXElementChild::JSXElement(elem) => {
+                self.lower_jsx_attr(elem);
+                self.lower_jsx_elem(elem)
             }
-            JSXElementChild::JSXElement(elem) => self.lower_jsx_elem(elem),
             JSXElementChild::JSXFragment(JSXFragment { children, .. }) => {
                 for child in children {
                     self.lower_jsx_child(child);
@@ -1126,6 +1240,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
             .iter()
             .map(|child| self.lower_jsx_child(child))
             .collect();
+
+        self.lower_jsx_attr(n);
+
         let callee = match &n.opening.name {
             JSXElementName::Ident(ident) => {
                 let id = ident.to_id();
@@ -1174,26 +1291,26 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     .res
                     .add_anonymous("__UNKNOWN", AnonType::Obj, self.module);
                 let class_var_id = self.body.add_var(VarKind::LocalDef((def_id)));
-                let mut var = Variable::new(class_var_id);
                 if let DefKind::GlobalObj(class_id) = self.res.defs.defs[def_id] {
-                    props
-                        .iter()
-                        .for_each(|prop_or_spread| match prop_or_spread {
+                    props.iter().for_each(|prop_or_spread| {
+                        let mut var = Variable::new(class_var_id);
+                        match prop_or_spread {
                             PropOrSpread::Prop(prop) => match &**prop {
-                                Prop::Shorthand(id) => {
-                                    let id = id.to_id();
+                                Prop::Shorthand(ident) => {
+                                    let id = ident.to_id();
                                     let new_def =
                                         self.res.get_or_insert_sym(id.clone(), self.module);
-                                    let var_def_id = self.res.sym_to_id(id.clone(), self.module);
-                                    let var_id =
-                                        self.body.get_or_insert_global(var_def_id.unwrap());
-                                    var.projections
-                                        .push(Projection::Computed(Base::Var((var_id))));
+                                    let var_id = self.body.get_or_insert_global(new_def);
+                                    var.projections.push(Projection::Known(ident.sym.clone()));
                                     self.res
                                         .def_mut(def_id)
                                         .expect_class()
                                         .pub_members
                                         .push((id.0, new_def));
+                                    self.body.push_inst(
+                                        self.block,
+                                        Inst::Assign(var, Rvalue::Read(Operand::with_var(var_id))),
+                                    );
                                 }
                                 Prop::KeyValue(KeyValueProp { key, value }) => {
                                     let span = match key {
@@ -1219,13 +1336,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                     let rval = Rvalue::Read(lowered_value);
                                     match lowered_var.base {
                                         Base::Var(var_id) => {
-                                            var.projections
-                                                .push(Projection::Computed(Base::Var((var_id))));
-                                            self.body.push_inst(
-                                                self.block,
-                                                Inst::Assign(Variable::new(var_id), rval),
-                                            );
-
                                             match key {
                                                 PropName::Str(str) => {
                                                     let def_id_prop = self.res.add_anonymous(
@@ -1239,6 +1349,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                                         key.as_symbol().unwrap(),
                                                         def_id_prop,
                                                     ));
+                                                    var.projections
+                                                        .push(Projection::Known(str.value.clone()));
                                                 }
                                                 PropName::Ident(ident) => {
                                                     let def_id_prop = self.res.get_or_insert_sym(
@@ -1251,10 +1363,13 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                                         key.as_symbol().unwrap(),
                                                         def_id_prop,
                                                     ));
-                                                    // lowered_var.base =cls.def
+                                                    var.projections
+                                                        .push(Projection::Known(ident.sym.clone()));
                                                 }
                                                 _ => {}
                                             }
+                                            self.body
+                                                .push_inst(self.block, Inst::Assign(var, rval));
                                         }
                                         _ => {}
                                     }
@@ -1262,7 +1377,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                 _ => {}
                             },
                             PropOrSpread::Spread(spread) => {}
-                        })
+                        }
+                    })
                 }
                 Operand::Var(Variable::new(class_var_id))
             }
@@ -1354,7 +1470,18 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 Operand::with_var(phi)
             }
             Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
-            Expr::New(NewExpr { callee, args, .. }) => Operand::UNDEF,
+            Expr::New(NewExpr { callee, args, .. }) => {
+                if let Expr::Ident(ident) = &**callee {
+                    let someething = self.res.sym_to_def(ident.to_id(), self.module);
+                    // remove the clone
+                    return self.lower_call(
+                        CalleeRef::Expr(callee),
+                        args.clone().unwrap_or_default().as_slice(),
+                    );
+                }
+
+                Operand::UNDEF
+            }
             Expr::Seq(SeqExpr { exprs, .. }) => {
                 if let Some((last, rest)) = exprs.split_last() {
                     for expr in rest {
@@ -1701,6 +1828,25 @@ impl Visit for LocalDefiner<'_> {
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
         n.name.visit_with(self);
+        if let Some(Expr::New(new_expr)) = n.init.as_deref() {
+            if let Pat::Ident(ident) = &n.name {
+                if let Some(defid_variable) = self.res.sym_to_id(ident.to_id(), self.module) {
+                    if let Expr::Ident(ident) = &*new_expr.callee {
+                        if let Some(DefKind::Class(class)) =
+                            self.res.sym_to_def(ident.to_id(), self.module)
+                        {
+                            if let Some(defid_class) =
+                                self.res.sym_to_id(ident.to_id(), self.module)
+                            {
+                                self.body
+                                    .class_instantiations
+                                    .insert(defid_variable, defid_class);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn visit_decl(&mut self, n: &Decl) {
@@ -1718,71 +1864,122 @@ impl Visit for LocalDefiner<'_> {
     fn visit_fn_decl(&mut self, _: &FnDecl) {}
 }
 
-impl FunctionCollector<'_> {
-    fn handle_function(&mut self, n: &Function, owner: Option<DefId>) {
-        let owner = self.parent.unwrap_or_else(|| {
-            if let Some(defid) = owner {
-                return defid;
-            }
-            if let Some(defid) = self.res.default_export(self.module) {
-                return defid;
-            }
-            self.res
-                .add_anonymous("__UNKNOWN", AnonType::Closure, self.module)
-        });
-        let mut argdef = ArgDefiner {
-            res: self.res,
-            module: self.module,
-            func: owner,
-            body: Body::with_owner(owner),
-        };
-        n.params.visit_children_with(&mut argdef);
-        let body = argdef.body;
-        let mut localdef = LocalDefiner {
-            res: self.res,
-            module: self.module,
-            func: owner,
-            body,
-        };
-        n.body.visit_children_with(&mut localdef);
-        let body = localdef.body;
-        let mut analyzer = FunctionAnalyzer {
-            res: self.res,
-            module: self.module,
-            current_def: owner,
-            assigning_to: None,
-            body,
-            block: BasicBlockId::default(),
-            operand_stack: vec![],
-            in_lhs: false,
-        };
-        if let Some(BlockStmt { stmts, .. }) = &n.body {
-            analyzer.lower_stmts(stmts);
-            let body = analyzer.body;
+impl Visit for FunctionCollector<'_> {
+    fn visit_class_decl(&mut self, n: &ClassDecl) {
+        if let Some(DefKind::Class(class)) = self.res.sym_to_def(n.ident.to_id(), self.module) {
+            self.curr_class = Some(class.def); // sets the current class so that mehtods are assigned to the proper class
+        }
+        n.visit_children_with(self);
+    }
 
-            *self.res.def_mut(owner).expect_body() = body;
+    fn visit_constructor(&mut self, n: &Constructor) {
+        n.visit_children_with(self);
+        if let Some(class_def) = self.curr_class {
+            if let DefKind::Class(class) = self.res.clone().def_ref(class_def) {
+                if let Some((_, owner)) = &class
+                    .pub_members
+                    .iter()
+                    .find(|(name, defid)| name == "constructor")
+                {
+                    let mut argdef = ArgDefiner {
+                        res: self.res,
+                        module: self.module,
+                        func: *owner,
+                        body: Body::with_owner(*owner),
+                    };
+                    n.params.visit_children_with(&mut argdef);
+                    let body = argdef.body;
+                    let mut localdef = LocalDefiner {
+                        res: self.res,
+                        module: self.module,
+                        func: *owner,
+                        body,
+                    };
+                    n.body.visit_children_with(&mut localdef);
+                    let body = localdef.body;
+                    let mut analyzer = FunctionAnalyzer {
+                        res: self.res,
+                        module: self.module,
+                        current_def: *owner,
+                        assigning_to: None,
+                        body,
+                        block: BasicBlockId::default(),
+                        operand_stack: vec![],
+                        in_lhs: false,
+                    };
+                    if let Some(BlockStmt { stmts, .. }) = &n.body {
+                        analyzer.lower_stmts(stmts);
+                        let body = analyzer.body;
+                        *self.res.def_mut(*owner).expect_body() = body;
+                    }
+                }
+            }
         }
     }
-}
 
-impl Visit for FunctionCollector<'_> {
+    fn visit_class_method(&mut self, n: &ClassMethod) {
+        n.visit_children_with(self);
+        if let Some(class_def) = self.curr_class {
+            if let DefKind::Class(class) = self.res.clone().def_ref(class_def) {
+                if let Some((_, owner)) = &class.pub_members.iter().find(|(name, defid)| {
+                    if let PropName::Ident(ident) = &n.key {
+                        if name == &ident.sym {
+                            return true;
+                        }
+                    }
+                    false
+                }) {
+                    let mut argdef = ArgDefiner {
+                        res: self.res,
+                        module: self.module,
+                        func: *owner,
+                        body: Body::with_owner(*owner),
+                    };
+                    n.function.params.visit_children_with(&mut argdef);
+                    let body = argdef.body;
+                    let mut localdef = LocalDefiner {
+                        res: self.res,
+                        module: self.module,
+                        func: *owner,
+                        body,
+                    };
+                    n.function.body.visit_children_with(&mut localdef);
+                    let body = localdef.body;
+                    let mut analyzer = FunctionAnalyzer {
+                        res: self.res,
+                        module: self.module,
+                        current_def: *owner,
+                        assigning_to: None,
+                        body,
+                        block: BasicBlockId::default(),
+                        operand_stack: vec![],
+                        in_lhs: false,
+                    };
+                    if let Some(BlockStmt { stmts, .. }) = &n.function.body {
+                        analyzer.lower_stmts(stmts);
+                        let body = analyzer.body;
+                        *self.res.def_mut(*owner).expect_body() = body;
+                    }
+                }
+            }
+        }
+    }
+
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
-        if let PatOrExpr::Pat(pat) = &n.left {
-            if let Pat::Expr(expr) = &**pat {
-                if let Expr::Member(mem_expr) = &**expr {
-                    if let Expr::Ident(ident) = &*mem_expr.obj {
-                        if ident.sym.to_string() == "exports" {
-                            if let MemberProp::Ident(ident_property) = &mem_expr.prop {
-                                match &*n.right {
-                                    Expr::Fn(FnExpr { ident, function }) => {
-                                        if let Some(defid) =
-                                            self.res.get_sym(ident_property.to_id(), self.module)
-                                        {
-                                            self.handle_function(&**function, Some(defid));
-                                        }
+        if let Some(expr) = &n.left.as_expr() {
+            if let Expr::Member(mem_expr) = &**expr {
+                if let Expr::Ident(ident) = &*mem_expr.obj {
+                    if &ident.sym == "exports" {
+                        if let MemberProp::Ident(ident_property) = &mem_expr.prop {
+                            match &*n.right {
+                                Expr::Fn(FnExpr { ident, function }) => {
+                                    if let Some(defid) =
+                                        self.res.get_sym(ident_property.to_id(), self.module)
+                                    {
+                                        self.handle_function(&**function, Some(defid));
                                     }
-                                    _ => {}
                                 }
+                                _ => {}
                             }
                         }
                     }
@@ -1791,12 +1988,6 @@ impl Visit for FunctionCollector<'_> {
         }
 
         n.visit_children_with(self)
-    }
-
-    fn visit_function(&mut self, n: &Function) {
-        // likley an issue where we are adding anon instead of using the actual value
-        n.visit_children_with(self);
-        self.handle_function(n, None);
     }
 
     fn visit_arrow_expr(
@@ -1952,6 +2143,58 @@ impl Visit for FunctionCollector<'_> {
         n.function.visit_with(self);
         self.parent = None;
     }
+
+    fn visit_function(&mut self, n: &Function) {
+        n.visit_children_with(self);
+        self.handle_function(n, None);
+    }
+}
+
+
+impl FunctionCollector<'_> {
+    fn handle_function(&mut self, n: &Function, owner: Option<DefId>) {
+        let owner = self.parent.unwrap_or_else(|| {
+            if let Some(defid) = owner {
+                return defid;
+            }
+            if let Some(defid) = self.res.default_export(self.module) {
+                return defid;
+            }
+            self.res
+                .add_anonymous("__UNKNOWN", AnonType::Closure, self.module)
+        });
+        let mut argdef = ArgDefiner {
+            res: self.res,
+            module: self.module,
+            func: owner,
+            body: Body::with_owner(owner),
+        };
+        n.params.visit_children_with(&mut argdef);
+        let body = argdef.body;
+        let mut localdef = LocalDefiner {
+            res: self.res,
+            module: self.module,
+            func: owner,
+            body,
+        };
+        n.body.visit_children_with(&mut localdef);
+        let body = localdef.body;
+        let mut analyzer = FunctionAnalyzer {
+            res: self.res,
+            module: self.module,
+            current_def: owner,
+            assigning_to: None,
+            body,
+            block: BasicBlockId::default(),
+            operand_stack: vec![],
+            in_lhs: false,
+        };
+        if let Some(BlockStmt { stmts, .. }) = &n.body {
+            analyzer.lower_stmts(stmts);
+            let body = analyzer.body;
+            *self.res.def_mut(owner).expect_body() = body;
+        }
+    }
 }
 
 impl Lowerer<'_> {
@@ -2038,6 +2281,43 @@ fn as_resolver_def<'a>(
 
 impl Visit for Lowerer<'_> {
     noop_visit_type!();
+
+    fn visit_class_decl(&mut self, n: &ClassDecl) {
+        if let Some(DefKind::Class(class)) = self.res.sym_to_def(n.ident.to_id(), self.curr_mod) {
+            self.curr_class = Some(class.def); // sets the curr class so that mehtods are assigned to the proper class
+        }
+        n.visit_children_with(self);
+    }
+
+    fn visit_constructor(&mut self, n: &Constructor) {
+        n.visit_children_with(self);
+        if let Some(class_def) = self.curr_class {
+            if let DefKind::Class(class) = self.res.def_mut(class_def) {
+                if let PropName::Ident(ident) = &n.key {
+                    let owner =
+                        self.res
+                            .add_anonymous("__CONSTRUCTOR", AnonType::Closure, self.curr_mod);
+                    self.res
+                        .add_class_method(&ident.sym, n.key.clone(), class_def, owner);
+                }
+            }
+        }
+    }
+
+    fn visit_class_method(&mut self, n: &ClassMethod) {
+        n.visit_children_with(self);
+        if let Some(class_def) = self.curr_class {
+            if let DefKind::Class(class) = self.res.def_mut(class_def) {
+                if let PropName::Ident(ident) = &n.key {
+                    let owner =
+                        self.res
+                            .add_anonymous("__CLASSMETHOD", AnonType::Closure, self.curr_mod);
+                    self.res
+                        .add_class_method(&ident.sym, n.key.clone(), class_def, owner);
+                }
+            }
+        }
+    }
 
     fn visit_call_expr(&mut self, n: &CallExpr) {
         if let Some(expr) = n.callee.as_expr() {
@@ -2388,7 +2668,7 @@ impl Visit for ExportCollector<'_> {
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
         if let Some(ident) = ident_from_assign_expr(n) {
             if ident.sym.to_string() == "module" {
-                if let Some(mem_expr) = mem_expr_from_assign(n.clone()) {
+                if let Some(mem_expr) = mem_expr_from_assign(n) {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
                         if ident_property.sym.to_string() == "exports" {
                             match &*n.right {
@@ -2406,7 +2686,7 @@ impl Visit for ExportCollector<'_> {
                     }
                 }
             } else if ident.sym.to_string() == "exports" {
-                if let Some(mem_expr) = mem_expr_from_assign(n.clone()) {
+                if let Some(mem_expr) = mem_expr_from_assign(n) {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
                         //self.add_export(DefRes::Undefined, ident_property.to_id());
                         match &*n.right {
@@ -2482,7 +2762,7 @@ impl Visit for ExportCollector<'_> {
 }
 
 fn ident_from_assign_expr(n: &AssignExpr) -> Option<Ident> {
-    if let Some(mem_expr) = mem_expr_from_assign(n.clone()) {
+    if let Some(mem_expr) = mem_expr_from_assign(n) {
         if let Expr::Ident(ident) = &*mem_expr.obj {
             return Some(ident.clone());
         }
@@ -2490,13 +2770,9 @@ fn ident_from_assign_expr(n: &AssignExpr) -> Option<Ident> {
     None
 }
 
-fn mem_expr_from_assign(n: AssignExpr) -> Option<MemberExpr> {
-    if let PatOrExpr::Pat(pat) = &n.left {
-        if let Pat::Expr(expr) = &**pat {
-            if let Expr::Member(mem_expr) = &**expr {
-                return Some(mem_expr.clone());
-            }
-        }
+fn mem_expr_from_assign(n: &AssignExpr) -> Option<&MemberExpr> {
+    if let Some(Expr::Member(mem_expr)) = n.left.as_expr() {
+        return Some(mem_expr);
     }
     None
 }
@@ -2543,8 +2819,9 @@ impl Environment {
         def_id
     }
 
-    fn get_sym(&mut self, id: Id, module: ModId) -> Option<DefId> {
-        self.resolver.get_sym(id, module)
+    #[inline]
+    fn get_sym(&self, id: Id, module: ModId) -> Option<DefId> {
+        self.resolver.sym_id(id, module)
     }
 
     fn new_key_from_res(&mut self, id: DefId, res: DefRes) -> DefKey {
@@ -2576,6 +2853,20 @@ impl Environment {
             DefKind::ResolverDef(i) => DefKind::ResolverDef(i),
             DefKind::ModuleNs(i) => DefKind::ModuleNs(i),
             DefKind::Undefined => DefKind::Undefined,
+        }
+    }
+
+    fn add_class_method(
+        &mut self,
+        name: impl Into<JsWord>,
+        n: PropName,
+        class_def: DefId,
+        owner: DefId,
+    ) {
+        if let DefKind::Class(class) = self.def_mut(class_def) {
+            if let PropName::Ident(ident) = &n {
+                class.pub_members.push((ident.sym.to_owned(), owner));
+            }
         }
     }
 

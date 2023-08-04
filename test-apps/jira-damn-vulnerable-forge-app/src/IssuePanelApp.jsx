@@ -1,19 +1,25 @@
 import { IssuePanel, IssuePanelAction, useProductContext } from '@forge/ui';
 import { writeComment } from './utils';
 
-export default IssuePanelApp = () => {
+export const IssuePanelApp = () => {
   const { platformContext } = useProductContext();
   if (platformContext == null || platformContext.type !== 'jira') {
     console.error('product context is not in JIRA');
     return null;
   }
   const { issueId } = platformContext;
+
+
+  const writeCommentFunction = () => {
+    writeComment(issueId, 'Overwrite')
+  }
+
   return (
     <IssuePanel
       actions={[
         <IssuePanelAction
           text="Issues"
-          onClick={() => writeComment(issueId, 'Overwrite')}
+          onClick={writeCommentFunction}
         />,
       ]}
     >
