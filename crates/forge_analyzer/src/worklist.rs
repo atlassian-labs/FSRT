@@ -5,7 +5,7 @@ use tracing::debug;
 
 use crate::{
     definitions::{DefId, Environment},
-    ir::{BasicBlockId, Operand},
+    ir::BasicBlockId,
 };
 
 #[derive(Debug, Clone)]

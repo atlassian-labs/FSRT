@@ -2,9 +2,8 @@ use crate::Exports;
 use forge_utils::FxHashMap;
 use swc_core::ecma::{
     ast::{
-        AssignExpr, BindingIdent, Decl, ExportAll, ExportDecl, ExportDefaultDecl,
-        ExportDefaultExpr, Expr, FnDecl, MemberProp, ModuleDecl, ModuleExportName, ModuleItem, Pat,
-        PatOrExpr, VarDecl, VarDeclarator,
+        BindingIdent, Decl, ExportAll, ExportDecl, ExportDefaultDecl, ExportDefaultExpr, FnDecl,
+        ModuleDecl, ModuleItem, Pat, VarDecl, VarDeclarator,
     },
     visit::{noop_visit_type, Visit, VisitWith},
 };
