@@ -1,16 +1,16 @@
 use regex::Regex;
 use serde::Deserialize;
 use serde_json;
-use std::{collections::HashMap, hash::Hash, vec};
+use std::{cmp::Reverse, collections::HashMap, hash::Hash, vec};
 use tracing::warn;
 use ureq;
 
 type PermissionHashMap = HashMap<(String, RequestType), Vec<String>>;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct SwaggerReponse<'a> {
-    #[serde(default, borrow)]
-    paths: HashMap<&'a str, Endpoint>,
+struct SwaggerReponse {
+    #[serde(default)]
+    paths: HashMap<String, Endpoint>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -67,26 +67,23 @@ pub fn check_url_for_permissions(
     request: RequestType,
     url: &str,
 ) -> Vec<String> {
-    let mut length_of_regex = Vec::new();
-
     // sort by the length of regex
-    for (string, regex) in endpoint_regex.iter() {
-        length_of_regex.push((regex.as_str().len(), string))
-    }
-
-    length_of_regex.sort_by_key(|k| k.0);
-    length_of_regex.reverse();
+    let mut length_of_regex = endpoint_regex
+        .iter()
+        .map(|(string, regex)| (regex.as_str().len(), &*string))
+        .collect::<Vec<_>>();
+    length_of_regex.sort_by_key(|k| Reverse(k.0));
 
     for (_, endpoint) in length_of_regex {
         let regex = endpoint_regex.get(endpoint).unwrap();
         if regex.is_match(&(url.to_owned() + "-")) {
             return permission_map
-                .get(&(endpoint.clone(), request))
-                .unwrap_or(&vec![])
-                .clone();
+                .get(&(endpoint.to_owned(), request))
+                .cloned()
+                .unwrap_or_default();
         }
     }
-    return vec![];
+    vec![]
 }
 
 pub fn get_permission_resolver() -> (PermissionHashMap, HashMap<String, Regex>) {
@@ -107,20 +104,18 @@ pub fn get_permisions_for(
     endpoint_map_classic: &mut PermissionHashMap,
     endpoint_regex: &mut HashMap<String, Regex>,
 ) {
-    if let Result::Ok(repsonse) = ureq::get(url).call() {
-        if let Result::Ok(data) = repsonse.into_string() {
-            let data: SwaggerReponse = serde_json::from_str(&data).unwrap();
-            for (key, endpoint_data) in data.paths.iter() {
-                let endpoint_data = get_request_type(endpoint_data, key);
-                endpoint_data
-                    .into_iter()
-                    .for_each(|(key, request, permissions)| {
-                        let regex = Regex::new(&find_regex_for_endpoint(&key)).unwrap();
+    if let Result::Ok(response) = ureq::get(url).call() {
+        let data: SwaggerReponse = response.into_json().unwrap();
+        for (key, endpoint_data) in &data.paths {
+            let endpoint_data = get_request_type(endpoint_data, key);
+            endpoint_data
+                .into_iter()
+                .for_each(|(key, request, permissions)| {
+                    let regex = Regex::new(&find_regex_for_endpoint(&key)).unwrap();
 
-                        endpoint_regex.insert(key.clone(), regex);
-                        endpoint_map_classic.insert((key, request), permissions);
-                    });
-            }
+                    endpoint_regex.insert(key.clone(), regex);
+                    endpoint_map_classic.insert((key, request), permissions);
+                });
         }
     } else {
         warn!("Failed to retreive the permission json");
@@ -145,7 +140,8 @@ pub fn find_regex_for_endpoint(key: &str) -> String {
         regex_str += &key[prev_index..key.len()];
     }
 
-    return String::from(regex_str + "-");
+    regex_str.push('-');
+    regex_str
 }
 
 fn get_request_type(

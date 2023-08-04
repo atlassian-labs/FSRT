@@ -312,6 +312,8 @@ pub(crate) struct EntryPoint {
 
 pub struct Interp<'cx, C: Checker<'cx>> {
     env: &'cx Environment,
+    // We can probably get rid of these RefCells by refactoring the Interp and Checker into
+    // two fields in another struct.
     call_graph: CallGraph,
     entry: EntryPoint,
     func_state: RefCell<FxHashMap<DefId, C::State>>,
