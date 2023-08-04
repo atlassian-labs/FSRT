@@ -2865,6 +2865,7 @@ impl Environment {
     ) {
         if let DefKind::Class(class) = self.def_mut(class_def) {
             if let PropName::Ident(ident) = &n {
+                println!("adding class method --");
                 class.pub_members.push((ident.sym.to_owned(), owner));
             }
         }
