@@ -11,6 +11,7 @@ pub mod permissionclassifier;
 pub mod pretty;
 pub mod reporter;
 pub mod resolver;
+pub mod utils;
 pub mod worklist;
 
 use ctx::ModuleCtx;

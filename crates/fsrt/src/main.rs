@@ -6,6 +6,7 @@ use std::{
     collections::HashSet,
     convert::TryFrom,
     fs,
+    io::{self, BufReader},
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -181,6 +182,17 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         HashSet::from_iter(permission_scopes.iter().cloned());
 
     let paths = collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>();
+
+    let transpiled_async = paths.iter().any(|path| {
+        if let Ok(data) = fs::read_to_string(path) {
+            return data
+                .lines()
+                .next()
+                .is_some_and(|data| data == "\"use strict\";" || data == "'use strict';");
+        }
+        false
+    });
+
     let funcrefs = manifest.modules.into_analyzable_functions().flat_map(|f| {
         f.sequence(|fmod| {
             let resolved_func = FunctionRef::try_from(fmod)?.try_resolve(&paths, &dir)?;
@@ -188,7 +200,11 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         })
     });
     let src_root = dir.join("src");
-    let mut proj = ForgeProject::with_files_and_sourceroot(src_root.clone(), paths.clone());
+    let mut proj = ForgeProject::with_files_and_sourceroot(src_root, paths.clone());
+    if transpiled_async {
+        warn!("Unable to scan due to transpiled async");
+        return Ok(proj);
+    }
     proj.opts = opts.clone();
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
