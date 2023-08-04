@@ -1,5 +1,6 @@
 import api, { route } from '@forge/api';
 import {testFunctionFromTestFile} from './testfile';
+import UselessClass from './uselessClass';
 
 export async function fetchIssueSummary(issueIdOrKey, url) {
 
@@ -10,6 +11,8 @@ export async function fetchIssueSummary(issueIdOrKey, url) {
       Accept: 'application/json',
     },
   };
+
+  testFunctionFromTestFile();
 
   let val = "grapefruit";
 
@@ -36,7 +39,12 @@ export async function writeComment(issueIdOrKey, comment) {
   /* const api = require('@forge/api'); */
 
 
-  testFunctionFromTestFile("test_value_param")
+  // ERROR, even if this is not assigned anything then it will assign the param to the issueIdOrKey var
+  let issueIdOrKey = testFunctionFromTestFile("test_value_param")
+
+  let my_class = new UselessClass();
+
+  my_class.test_function();
 
   const resp = await api
     .asApp()
