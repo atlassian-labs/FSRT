@@ -1,0 +1,20 @@
+[package]
+name = "forge_permission_resolver"
+authors.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+regex.workspace = true
+ureq = { version = "2.7.1", features = ["json", "charset"] }
+
+
+
+[dev-dependencies]
+pretty_assertions.workspace = true

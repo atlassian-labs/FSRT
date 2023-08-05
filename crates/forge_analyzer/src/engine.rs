@@ -117,6 +117,7 @@ impl<'ctx> Machine<'ctx> {
                 Inst::Step(next_block, next_stmt) => {
                     debug!(?next_block, ?next_stmt, "stepping into");
                     self.eip = (next_block, next_stmt);
+                    // we need to return if possible
                     if let Some(val) = self.transfer() {
                         if let Some(ret) = self.callstack.pop() {
                             debug!(?ret, "returning");
