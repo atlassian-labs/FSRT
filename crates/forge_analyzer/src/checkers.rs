@@ -1441,6 +1441,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 }
             }
             Rvalue::Template(template) => {
+                // trying to get the template stirngs in order ....
+
                 let quasis_joined = template.quasis.join("");
                 let mut all_potential_values = vec![quasis_joined];
                 for expr in &template.exprs {
@@ -1470,6 +1472,9 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                             _ => {}
                         }
                     }
+
+                    println!("all potential values {all_potential_values:?} {all_values:?}");
+                    all_potential_values = all_values;
                 }
 
                 if all_potential_values.len() > 1 {
@@ -1477,6 +1482,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         .into_iter()
                         .map(|value| Const::Literal(value.clone()))
                         .collect::<Vec<_>>();
+
+                    println!("consts == {consts:?}");
                     let value = Value::Phi(consts);
                     self.add_value(def, *varid, value.clone());
                 } else if all_potential_values.len() == 1 {
