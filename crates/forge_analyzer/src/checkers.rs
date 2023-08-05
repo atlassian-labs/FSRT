@@ -925,37 +925,82 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 }
             }
             Rvalue::Template(template) => {
+
+                // trying to get the template stirngs in order ....
+
                 let quasis_joined = template.quasis.join("");
                 let (mut original_consts, mut all_potential_values) =
-                    (vec![quasis_joined.clone()], vec![]);
+                    (vec![""], vec![String::from("")]);
                 if template.exprs.len() == 0 {
                     all_potential_values.push(quasis_joined.clone());
                 } else if template.exprs.len() <= 3 {
-                    for expr in &template.exprs {
-                        let value = self.get_str_from_expr(expr, def);
-                        if value.len() > 0 {
-                            value.iter().for_each(|str| {
-                                let mut new_all_values = vec![];
-                                if let Some(str) = str {
-                                    for values in &original_consts {
-                                        new_all_values.push(values.clone() + str);
-                                    }
-                                    all_potential_values.extend_from_slice(&new_all_values);
-                                } else {
-                                    for values in &original_consts {
-                                        new_all_values.push(values.clone());
-                                    }
-                                    all_potential_values.extend_from_slice(&new_all_values);
-                                }
-                            });
+                    
+
+                    let mut all_values = vec![String::from("")];
+
+                    for (i, expr) in template.exprs.iter().enumerate() {
+
+                        if let Some(quasis) = template.quasis.get(i) {
+                            all_values = all_values.iter().map(|value| value.to_owned() + &quasis.to_string()).collect();
+
                         }
+
+                        // abc abd
+
+                        let mut new_values__ = vec![];
+
+                        let values = self.get_str_from_expr(expr, def);
+                        if values.len() > 0 {
+                            for str_value in values {
+                                for value in &all_values {
+                                    if let Some(str) = &str_value {
+                                        new_values__.push(value.clone() + &str)
+                                    } 
+                                }
+                            }
+
+                            all_values = new_values__
+                        }
+
+                    //     for value in &all_potential_values {
+                    //         if let Some(quasis) = template.quasis.get(i) {
+                    //             let newstr = value.clone().to_owned() + &quasis.to_string();
+                    //             all_potential_values.push(newstr)
+                    //         }
+                    //     }
+
+                    //     let value = self.get_str_from_expr(expr, def);
+                    //     if value.len() > 0 {
+                    //         value.iter().for_each(|str| {
+                    //             let mut new_all_values = vec![];
+                    //             if let Some(str) = str {
+                    //                 for values in &all_potential_values {
+
+                    //                     println!("values == {values:?} {str:?}");
+
+                    //                     new_all_values.push(values.clone().to_owned() + str);
+                    //                 }
+                    //                 all_potential_values.extend_from_slice(&new_all_values);
+                    //             } else {
+                    //                 for values in &all_potential_values {
+                    //                     new_all_values.push(values.to_string().clone());
+                    //                 }
+                    //                 all_potential_values.extend_from_slice(&new_all_values);
+                    //             }
+                    //         });
+                    //     }
                     }
+
+                    println!("all potential values {all_potential_values:?} {all_values:?}");
+                    all_potential_values = all_values;
                 }
                 if all_potential_values.len() > 1 {
                     let consts = all_potential_values
                         .into_iter()
                         .map(|value| Const::Literal(value.clone()))
                         .collect::<Vec<_>>();
+
+                    println!("consts == {consts:?}");
                     let value = Value::Phi(consts);
                     self.add_value(def, *varid, value.clone());
                 } else if all_potential_values.len() == 1 {
