@@ -178,8 +178,11 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 
     let requested_permissions = manifest.permissions;
     let permission_scopes = requested_permissions.scopes;
-    let mut permissions_declared: HashSet<ForgePermissions> =
-        HashSet::from_iter(permission_scopes.iter().cloned());
+    let permissions_declared: HashSet<String> =
+        HashSet::from_iter(permission_scopes.iter().map(|s| s.replace("\"", "")
+    ));
+
+    println!("permission scopes: {permission_scopes:?}");
 
     let paths = collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>();
 
@@ -232,7 +235,9 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 {
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
-                all_used_permissions.extend(checker2.used_permissions);
+
+                all_used_permissions.extend(perm_interp.permissions.clone());
+                
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
                 let mut checker = AuthenticateChecker::new();
@@ -251,14 +256,16 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     println!("error while scanning {func} in {path:?}: {err}");
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
-                all_used_permissions.extend(checker2.used_permissions);
+                all_used_permissions.extend(perm_interp.permissions.clone());
             }
         }
     }
+    println!("all used permissions {all_used_permissions:?}");
+
     let unused_permissions = permissions_declared.difference(&all_used_permissions);
     if unused_permissions.clone().count() > 0 {
         reporter.add_vulnerabilities(
-            vec![PermissionVuln::new(HashSet::<ForgePermissions>::from_iter(
+            vec![PermissionVuln::new(HashSet::<String>::from_iter(
                 unused_permissions.cloned().into_iter(),
             ))]
             .into_iter(),

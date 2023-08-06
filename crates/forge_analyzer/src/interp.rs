@@ -10,8 +10,13 @@ use std::{
     path::PathBuf,
 };
 
+use forge_permission_resolver::permissions_resolver::{
+    check_url_for_permissions, get_permission_resolver_confluence, get_permission_resolver_jira,
+    PermissionHashMap,
+};
 use forge_loader::forgepermissions::ForgePermissions;
 use forge_utils::{FxHashMap, FxHashSet};
+use regex::Regex;
 use smallvec::SmallVec;
 use swc_core::ecma::atoms::JsWord;
 use tracing::{debug, info, instrument, warn};
@@ -475,8 +480,12 @@ pub struct Interp<'cx, C: Checker<'cx>> {
     callstack: RefCell<Vec<Frame>>,
     pub callstack_arguments: Vec<Vec<Value>>,
     vulns: RefCell<Vec<C::Vuln>>,
-    pub permissions: Vec<ForgePermissions>,
+    pub permissions: Vec<String>,
     pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
+    pub jira_permission_resolver: PermissionHashMap,
+    pub confluence_permission_resolver: PermissionHashMap,
+    pub jira_regex_map: HashMap<String, Regex>,
+    pub confluence_regex_map: HashMap<String, Regex>,
     _checker: PhantomData<C>,
 }
 
@@ -536,6 +545,10 @@ impl std::error::Error for Error {}
 
 impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
     pub fn new(env: &'cx Environment) -> Self {
+        let (jira_permission_resolver, jira_regex_map) = get_permission_resolver_jira();
+        let (confluence_permission_resolver, confluence_regex_map) =
+            get_permission_resolver_confluence();
+
         let call_graph = CallGraph::new(env);
         Self {
             env,
@@ -553,6 +566,10 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             callstack: RefCell::new(Vec::new()),
             vulns: RefCell::new(Vec::new()),
             permissions: Vec::new(),
+            jira_permission_resolver,
+            confluence_permission_resolver,
+            jira_regex_map,
+            confluence_regex_map,
             _checker: PhantomData,
         }
     }
@@ -656,6 +673,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             let arguments = self.callstack_arguments.pop();
             let name = self.env.def_name(def);
             debug!("Dataflow: {name} - {block_id}");
+            println!("Dataflow: {def:?} {name} - {block_id}");
             self.dataflow_visited.insert(def);
             let func = self.env().def_ref(def).expect_body();
             self.curr_body.set(Some(func));

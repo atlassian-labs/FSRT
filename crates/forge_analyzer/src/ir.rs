@@ -395,6 +395,7 @@ impl Body {
 
     #[inline]
     pub(crate) fn push_inst(&mut self, bb: BasicBlockId, inst: Inst) {
+        println!("{:?} {inst}", self.owner);
         self.blocks[bb].insts.push(inst);
     }
 

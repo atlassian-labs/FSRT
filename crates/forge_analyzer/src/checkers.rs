@@ -1,10 +1,21 @@
 use core::fmt;
 use forge_loader::forgepermissions::ForgePermissions;
+use forge_permission_resolver::permissions_resolver::{
+    check_url_for_permissions, get_permission_resolver_confluence, get_permission_resolver_jira,
+    PermissionHashMap, RequestType,
+};
 use forge_utils::FxHashMap;
 use itertools::Itertools;
+use regex::Regex;
 use serde::de::value;
 use smallvec::SmallVec;
-use std::{cmp::max, collections::HashSet, iter, mem, ops::ControlFlow, path::PathBuf};
+use std::{
+    cmp::max,
+    collections::{HashMap, HashSet},
+    iter, mem,
+    ops::ControlFlow,
+    path::PathBuf,
+};
 use swc_core::ecma::transforms::base::perf::Check;
 
 use tracing::{debug, info, warn};
@@ -18,7 +29,6 @@ use crate::{
         Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand, Rvalue,
         Successors, VarId, VarKind, Variable,
     },
-    permissionclassifier::check_permission_used,
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     worklist::WorkList,
 };
@@ -480,6 +490,7 @@ impl WithCallStack for AuthNVuln {
 pub struct PermissionDataflow {
     needs_call: Vec<(DefId, Vec<Operand>, Vec<Value>)>,
     varid_to_value: FxHashMap<VarId, Value>,
+
 }
 
 impl WithCallStack for PermissionVuln {
@@ -638,7 +649,10 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             if let Some(operand) = second {
                 self.handle_second_arg(_interp, operand, _def, &mut intrinsic_argument);
             }
-            let mut permissions_within_call: Vec<ForgePermissions> = vec![];
+
+            // CLEAN UP
+
+            let mut permissions_within_call: Vec<String> = vec![];
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
             intrinsic_argument
                 .first_arg
@@ -648,20 +662,29 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         first_arg_vec.iter().for_each(|first_arg| {
                             println!("first arg ===> {first_arg:?}");
                             second_arg_vec.iter().for_each(|second_arg| {
-                                let permissions = check_permission_used(
-                                    intrinsic_func_type,
-                                    first_arg,
-                                    Some(second_arg),
-                                );
-                                permissions_within_call.extend_from_slice(&permissions);
+                                if intrinsic_func_type == IntrinsicName::RequestConfluence {
+                                    let permissions = check_url_for_permissions(&_interp.confluence_permission_resolver, &_interp.confluence_regex_map, trnaslate_request_type(Some(second_arg)), &first_arg);
+                                    permissions_within_call.extend_from_slice(&permissions)
+                                    // change this to seoiimthinf abdonaofoadinadsjoklj
+                                } else if intrinsic_func_type == IntrinsicName::RequestJira {
+                                    let permissions = check_url_for_permissions(&_interp.jira_permission_resolver, &_interp.jira_regex_map, trnaslate_request_type(Some(second_arg)), &first_arg);
+                                    permissions_within_call.extend_from_slice(&permissions)
+                                }   
                             })
                         })
                     } else {
                         first_arg_vec.iter().for_each(|first_arg| {
                             println!("first arg ===> {first_arg:?}");
-                            let permissions =
-                                check_permission_used(intrinsic_func_type, first_arg, None);
-                            permissions_within_call.extend_from_slice(&permissions);
+                            if intrinsic_func_type == IntrinsicName::RequestConfluence {
+                                let permissions = check_url_for_permissions(&_interp.confluence_permission_resolver, &_interp.confluence_regex_map, RequestType::Get, &first_arg);
+                                permissions_within_call.extend_from_slice(&permissions)
+                                // change this to seoiimthinf abdonaofoadinadsjoklj
+                            } else if intrinsic_func_type == IntrinsicName::RequestJira {
+                                let permissions = check_url_for_permissions(&_interp.jira_permission_resolver, &_interp.jira_regex_map, RequestType::Get, &first_arg);
+                                permissions_within_call.extend_from_slice(&permissions)
+                            }   
+                        
+                            //HERE
                         })
                     }
                 });
@@ -671,6 +694,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             _interp
                 .permissions
                 .extend_from_slice(&permissions_within_call);
+
+            println!("_interp permisisions {:?}", _interp.permissions);
         }
         initial_state
     }
@@ -809,7 +834,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
-        println!("inst {inst}");
+        println!("\tinst {inst}");
         match inst {
             Inst::Expr(rvalue) => {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
@@ -925,7 +950,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 }
             }
             Rvalue::Template(template) => {
-
                 // trying to get the template stirngs in order ....
 
                 let quasis_joined = template.quasis.join("");
@@ -934,15 +958,14 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 if template.exprs.len() == 0 {
                     all_potential_values.push(quasis_joined.clone());
                 } else if template.exprs.len() <= 3 {
-                    
-
                     let mut all_values = vec![String::from("")];
 
                     for (i, expr) in template.exprs.iter().enumerate() {
-
                         if let Some(quasis) = template.quasis.get(i) {
-                            all_values = all_values.iter().map(|value| value.to_owned() + &quasis.to_string()).collect();
-
+                            all_values = all_values
+                                .iter()
+                                .map(|value| value.to_owned() + &quasis.to_string())
+                                .collect();
                         }
 
                         // abc abd
@@ -955,40 +978,12 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                 for value in &all_values {
                                     if let Some(str) = &str_value {
                                         new_values__.push(value.clone() + &str)
-                                    } 
+                                    }
                                 }
                             }
 
                             all_values = new_values__
                         }
-
-                    //     for value in &all_potential_values {
-                    //         if let Some(quasis) = template.quasis.get(i) {
-                    //             let newstr = value.clone().to_owned() + &quasis.to_string();
-                    //             all_potential_values.push(newstr)
-                    //         }
-                    //     }
-
-                    //     let value = self.get_str_from_expr(expr, def);
-                    //     if value.len() > 0 {
-                    //         value.iter().for_each(|str| {
-                    //             let mut new_all_values = vec![];
-                    //             if let Some(str) = str {
-                    //                 for values in &all_potential_values {
-
-                    //                     println!("values == {values:?} {str:?}");
-
-                    //                     new_all_values.push(values.clone().to_owned() + str);
-                    //                 }
-                    //                 all_potential_values.extend_from_slice(&new_all_values);
-                    //             } else {
-                    //                 for values in &all_potential_values {
-                    //                     new_all_values.push(values.to_string().clone());
-                    //                 }
-                    //                 all_potential_values.extend_from_slice(&new_all_values);
-                    //             }
-                    //         });
-                    //     }
                     }
 
                     println!("all potential values {all_potential_values:?} {all_values:?}");
@@ -1228,15 +1223,31 @@ fn return_value_from_string(values: Vec<String>) -> Value {
     }
 }
 
+fn trnaslate_request_type(request_type: Option<&str>) -> RequestType {
+    if let Some(request_type) = request_type {
+        match request_type {
+            "PATCH" => RequestType::Patch,
+            "PUT" => RequestType::Put,
+            "DELETE" => RequestType::Delete,
+            "POST" => RequestType::Post,
+            _ => RequestType::Get,
+        }
+    } else {
+        return RequestType::Get;
+    }
+
+} 
+
 pub struct PermissionChecker {
     pub visit: bool,
     pub vulns: Vec<PermissionVuln>,
-    pub declared_permissions: HashSet<ForgePermissions>,
-    pub used_permissions: HashSet<ForgePermissions>,
+    pub declared_permissions: HashSet<String>,
+    pub used_permissions: HashSet<String>,
 }
 
 impl PermissionChecker {
-    pub fn new(declared_permissions: HashSet<ForgePermissions>) -> Self {
+    pub fn new(declared_permissions: HashSet<String>) -> Self {
+
         Self {
             visit: false,
             vulns: vec![],
@@ -1314,11 +1325,11 @@ impl<'cx> Checker<'cx> for PermissionChecker {
 
 #[derive(Debug)]
 pub struct PermissionVuln {
-    unused_permissions: HashSet<ForgePermissions>,
+    unused_permissions: HashSet<String>,
 }
 
 impl PermissionVuln {
-    pub fn new(unused_permissions: HashSet<ForgePermissions>) -> PermissionVuln {
+    pub fn new(unused_permissions: HashSet<String>) -> PermissionVuln {
         PermissionVuln { unused_permissions }
     }
 }
