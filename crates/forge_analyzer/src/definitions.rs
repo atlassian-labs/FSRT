@@ -675,9 +675,8 @@ impl ResolverTable {
 
     #[inline]
     fn recent_sym(&self, sym: JsWord, module: ModId) -> Option<DefId> {
-        self.recent_names.get(&(sym, module )).copied()
+        self.recent_names.get(&(sym, module)).copied()
     }
-
 
     // this won't work becasue there may be names that are the same acrosss modules ...
     #[inline]
@@ -703,7 +702,8 @@ impl ResolverTable {
 
     #[inline]
     fn get_or_insert_sym(&mut self, id: Id, module: ModId) -> DefId {
-        let defid = self.sym_id(id.clone(), module)
+        let defid = self
+            .sym_id(id.clone(), module)
             .unwrap_or_else(|| self.reserve_symbol(id.clone(), module));
         self.recent_names.insert((id.0, module), defid);
         defid
@@ -1892,7 +1892,6 @@ impl Visit for LocalDefiner<'_> {
 }
 
 impl Visit for FunctionCollector<'_> {
-
     fn visit_export_default_decl(&mut self, n: &ExportDefaultDecl) {
         if let Some(defid) = self.res.default_export(self.module) {
             if let Some(defid) = self.res.resolver.get_default(self.module) {
@@ -1913,20 +1912,24 @@ impl Visit for FunctionCollector<'_> {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
                         if ident_property.sym.to_string() == "exports" {
                             match &*n.right {
-                                Expr::Fn(FnExpr { ident, function }) => self.handle_function(&**&function, self.res.default_export(self.module)),
-                                Expr::Class(ClassExpr { ident, class }) => {},
+                                Expr::Fn(FnExpr { ident, function }) => self.handle_function(
+                                    &**&function,
+                                    self.res.default_export(self.module),
+                                ),
+                                Expr::Class(ClassExpr { ident, class }) => {}
                                 _ => {}
                             }
                         }
                     }
                 }
-            }
-            else if ident.sym.to_string() == "exports" {
+            } else if ident.sym.to_string() == "exports" {
                 if let Some(mem_expr) = mem_expr_from_assign(n) {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
                         match &*n.right {
                             Expr::Fn(n) => {
-                                if let Some(defid) = self.res.get_sym(ident_property.to_id(), self.module) {
+                                if let Some(defid) =
+                                    self.res.get_sym(ident_property.to_id(), self.module)
+                                {
                                     self.handle_function(&**&n.function, Some(defid));
                                 }
                             }
@@ -2185,7 +2188,12 @@ impl Visit for FunctionCollector<'_> {
 
     fn visit_fn_decl(&mut self, n: &FnDecl) {
         let id = n.ident.to_id();
-        if let Some(defid) = self.res.resolver.exported_names.get(&(n.ident.clone().sym, self.module)) {
+        if let Some(defid) = self
+            .res
+            .resolver
+            .exported_names
+            .get(&(n.ident.clone().sym, self.module))
+        {
             self.handle_function(&*n.function, Some(defid.clone()));
         } else {
             let def = self
@@ -2208,11 +2216,11 @@ impl FunctionCollector<'_> {
         let owner = self.parent.unwrap_or_else(|| {
             if let Some(defid) = owner {
                 defid
-            } else if let Some(defid ) = self.curr_function {
+            } else if let Some(defid) = self.curr_function {
                 defid
             } else {
                 self.res
-                .add_anonymous("__UNKNOWN", AnonType::Closure, self.module)
+                    .add_anonymous("__UNKNOWN", AnonType::Closure, self.module)
             }
         });
         let mut argdef = ArgDefiner {
@@ -2742,10 +2750,13 @@ impl Visit for ExportCollector<'_> {
                         match &*n.right {
                             Expr::Fn(FnExpr { ident, function }) => {
                                 self.add_export(DefRes::Function(()), ident_property.to_id());
-                            },
+                            }
                             Expr::Ident(ident) => {
-                                let export_defid = self.add_export(DefRes::Function(()), ident_property.to_id());
-                                self.res_table.exported_names.insert((ident.sym.clone(), self.curr_mod), export_defid);
+                                let export_defid =
+                                    self.add_export(DefRes::Function(()), ident_property.to_id());
+                                self.res_table
+                                    .exported_names
+                                    .insert((ident.sym.clone(), self.curr_mod), export_defid);
                             }
                             _ => {}
                         }
@@ -2811,10 +2822,11 @@ impl Visit for ExportCollector<'_> {
 
     fn visit_export_default_expr(&mut self, n: &ExportDefaultExpr) {
         if let Expr::Ident(ident) = &*n.expr {
-
             self.add_default(DefRes::Function(()), None);
 
-            self.res_table.exported_names.insert((ident.sym.clone(), self.curr_mod), self.default.unwrap());
+            self.res_table
+                .exported_names
+                .insert((ident.sym.clone(), self.curr_mod), self.default.unwrap());
         }
         //n.visit_children_with(self)
     }

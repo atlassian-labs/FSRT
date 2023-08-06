@@ -179,8 +179,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     let requested_permissions = manifest.permissions;
     let permission_scopes = requested_permissions.scopes;
     let permissions_declared: HashSet<String> =
-        HashSet::from_iter(permission_scopes.iter().map(|s| s.replace("\"", "")
-    ));
+        HashSet::from_iter(permission_scopes.iter().map(|s| s.replace("\"", "")));
 
     println!("permission scopes: {permission_scopes:?}");
 
@@ -237,7 +236,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 }
 
                 all_used_permissions.extend(perm_interp.permissions.clone());
-                
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
                 let mut checker = AuthenticateChecker::new();
