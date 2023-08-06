@@ -5,7 +5,7 @@ use std::{cmp::Reverse, collections::HashMap, hash::Hash, vec};
 use tracing::warn;
 use ureq;
 
-type PermissionHashMap = HashMap<(String, RequestType), Vec<String>>;
+pub type PermissionHashMap = HashMap<(String, RequestType), Vec<String>>;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct SwaggerReponse {
@@ -86,15 +86,21 @@ pub fn check_url_for_permissions(
     vec![]
 }
 
-pub fn get_permission_resolver() -> (PermissionHashMap, HashMap<String, Regex>) {
+pub fn get_permission_resolver_jira() -> (PermissionHashMap, HashMap<String, Regex>) {
     let jira_url = "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json";
-    let confluence_url = "https://developer.atlassian.com/cloud/confluence/swagger.v3.json";
+    return get_permission_resolver(jira_url);
+}
 
+pub fn get_permission_resolver_confluence() -> (PermissionHashMap, HashMap<String, Regex>) {
+    let confluence_url = "https://developer.atlassian.com/cloud/confluence/swagger.v3.json";
+    return get_permission_resolver(confluence_url);
+}
+
+pub fn get_permission_resolver(url: &str) -> (PermissionHashMap, HashMap<String, Regex>) {
     let mut endpoint_map: PermissionHashMap = HashMap::default();
     let mut endpoint_regex: HashMap<String, Regex> = HashMap::default();
 
-    get_permisions_for(jira_url, &mut endpoint_map, &mut endpoint_regex);
-    get_permisions_for(confluence_url, &mut endpoint_map, &mut endpoint_regex);
+    get_permisions_for(url, &mut endpoint_map, &mut endpoint_regex);
 
     return (endpoint_map, endpoint_regex);
 }

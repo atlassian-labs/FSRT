@@ -3,6 +3,10 @@ use crate::permissions_resolver::{
 };
 
 mod tests {
+    use crate::permissions_resolver::{
+        get_permission_resolver_confluence, get_permission_resolver_jira,
+    };
+
     use super::*;
 
     #[test]
@@ -25,7 +29,7 @@ mod tests {
 
     #[test]
     fn test_resolving_permssion_basic() {
-        let (permission_map, regex_map) = get_permission_resolver();
+        let (permission_map, regex_map) = get_permission_resolver_jira();
         let url = "/rest/api/3/issue/27/attachments";
         let request_type = RequestType::Post;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
@@ -43,7 +47,7 @@ mod tests {
 
     #[test]
     fn test_resolving_permssion_end_var() {
-        let (permission_map, regex_map) = get_permission_resolver();
+        let (permission_map, regex_map) = get_permission_resolver_confluence();
         let url = "/wiki/rest/api/relation/1/from/1/2/to/3/4";
         let request_type = RequestType::Get;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
@@ -59,7 +63,7 @@ mod tests {
 
     #[test]
     fn test_resolving_permssion_no_var() {
-        let (permission_map, regex_map) = get_permission_resolver();
+        let (permission_map, regex_map) = get_permission_resolver_jira();
         let url = "/rest/api/3/issue/archive";
         let request_type = RequestType::Post;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);

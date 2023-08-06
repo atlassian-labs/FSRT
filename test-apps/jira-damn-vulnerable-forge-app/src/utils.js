@@ -1,18 +1,33 @@
 import api, { route } from '@forge/api';
 import {testFunctionFromTestFile} from './testfile';
-import UselessClass from './uselessClass';
+import module_exports_func from './moduleex.js'
+import {func_from_exports, diffunc} from "./exportse.js"
+import {another_export, newExport} from './newexports.js'
+import func_defult from './export_default';
+import my_function from "./export_default2.js"
 
 export async function fetchIssueSummary(issueIdOrKey, url) {
 
   let obj = {
-    method: 'PTACH',
+    method: 'POST',
     bananas: 'apple',
     headers: { //
       Accept: 'application/json',
     },
   };
 
-  testFunctionFromTestFile();
+  module_exports_func()
+  func_from_exports()
+  another_export()
+  newExport()
+  func_defult()
+  my_function()
+
+  // testFunctionFromTestFile();
+
+  diffunc()
+
+  different_function();
 
   let val = "grapefruit";
 

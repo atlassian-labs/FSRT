@@ -109,7 +109,7 @@ struct Content<'a> {
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Perms<'a> {
     #[serde(default)]
-    pub scopes: Vec<ForgePermissions>,
+    pub scopes: Vec<String>,
     #[serde(default, borrow)]
     content: Content<'a>,
 }
