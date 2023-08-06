@@ -1208,7 +1208,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                         &first_arg,
                                     );
                                     permissions_within_call.extend_from_slice(&permissions)
-                                    // change this to seoiimthinf abdonaofoadinadsjoklj
                                 } else if intrinsic_func_type == IntrinsicName::RequestJira {
                                     let permissions = check_url_for_permissions(
                                         &_interp.jira_permission_resolver,
@@ -1231,7 +1230,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     &first_arg,
                                 );
                                 permissions_within_call.extend_from_slice(&permissions)
-                                // change this to seoiimthinf abdonaofoadinadsjoklj
                             } else if intrinsic_func_type == IntrinsicName::RequestJira {
                                 let permissions = check_url_for_permissions(
                                     &_interp.jira_permission_resolver,
@@ -1474,8 +1472,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 }
             }
             Rvalue::Template(template) => {
-                // trying to get the template stirngs in order ....
-
                 let quasis_joined = template.quasis.join("");
                 let mut all_potential_values = vec![quasis_joined];
                 for expr in &template.exprs {
