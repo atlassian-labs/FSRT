@@ -10,11 +10,11 @@ use std::{
     path::PathBuf,
 };
 
+use forge_loader::forgepermissions::ForgePermissions;
 use forge_permission_resolver::permissions_resolver::{
     check_url_for_permissions, get_permission_resolver_confluence, get_permission_resolver_jira,
     PermissionHashMap,
 };
-use forge_loader::forgepermissions::ForgePermissions;
 use forge_utils::{FxHashMap, FxHashSet};
 use regex::Regex;
 use smallvec::SmallVec;

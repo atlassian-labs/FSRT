@@ -490,7 +490,6 @@ impl WithCallStack for AuthNVuln {
 pub struct PermissionDataflow {
     needs_call: Vec<(DefId, Vec<Operand>, Vec<Value>)>,
     varid_to_value: FxHashMap<VarId, Value>,
-
 }
 
 impl WithCallStack for PermissionVuln {
@@ -663,27 +662,45 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                             println!("first arg ===> {first_arg:?}");
                             second_arg_vec.iter().for_each(|second_arg| {
                                 if intrinsic_func_type == IntrinsicName::RequestConfluence {
-                                    let permissions = check_url_for_permissions(&_interp.confluence_permission_resolver, &_interp.confluence_regex_map, trnaslate_request_type(Some(second_arg)), &first_arg);
+                                    let permissions = check_url_for_permissions(
+                                        &_interp.confluence_permission_resolver,
+                                        &_interp.confluence_regex_map,
+                                        trnaslate_request_type(Some(second_arg)),
+                                        &first_arg,
+                                    );
                                     permissions_within_call.extend_from_slice(&permissions)
-                                    // change this to seoiimthinf abdonaofoadinadsjoklj
                                 } else if intrinsic_func_type == IntrinsicName::RequestJira {
-                                    let permissions = check_url_for_permissions(&_interp.jira_permission_resolver, &_interp.jira_regex_map, trnaslate_request_type(Some(second_arg)), &first_arg);
+                                    let permissions = check_url_for_permissions(
+                                        &_interp.jira_permission_resolver,
+                                        &_interp.jira_regex_map,
+                                        trnaslate_request_type(Some(second_arg)),
+                                        &first_arg,
+                                    );
                                     permissions_within_call.extend_from_slice(&permissions)
-                                }   
+                                }
                             })
                         })
                     } else {
                         first_arg_vec.iter().for_each(|first_arg| {
                             println!("first arg ===> {first_arg:?}");
                             if intrinsic_func_type == IntrinsicName::RequestConfluence {
-                                let permissions = check_url_for_permissions(&_interp.confluence_permission_resolver, &_interp.confluence_regex_map, RequestType::Get, &first_arg);
+                                let permissions = check_url_for_permissions(
+                                    &_interp.confluence_permission_resolver,
+                                    &_interp.confluence_regex_map,
+                                    RequestType::Get,
+                                    &first_arg,
+                                );
                                 permissions_within_call.extend_from_slice(&permissions)
-                                // change this to seoiimthinf abdonaofoadinadsjoklj
                             } else if intrinsic_func_type == IntrinsicName::RequestJira {
-                                let permissions = check_url_for_permissions(&_interp.jira_permission_resolver, &_interp.jira_regex_map, RequestType::Get, &first_arg);
+                                let permissions = check_url_for_permissions(
+                                    &_interp.jira_permission_resolver,
+                                    &_interp.jira_regex_map,
+                                    RequestType::Get,
+                                    &first_arg,
+                                );
                                 permissions_within_call.extend_from_slice(&permissions)
-                            }   
-                        
+                            }
+
                             //HERE
                         })
                     }
@@ -950,8 +967,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 }
             }
             Rvalue::Template(template) => {
-                // trying to get the template stirngs in order ....
-
                 let quasis_joined = template.quasis.join("");
                 let (mut original_consts, mut all_potential_values) =
                     (vec![""], vec![String::from("")]);
@@ -967,8 +982,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                 .map(|value| value.to_owned() + &quasis.to_string())
                                 .collect();
                         }
-
-                        // abc abd
 
                         let mut new_values__ = vec![];
 
@@ -1235,8 +1248,7 @@ fn trnaslate_request_type(request_type: Option<&str>) -> RequestType {
     } else {
         return RequestType::Get;
     }
-
-} 
+}
 
 pub struct PermissionChecker {
     pub visit: bool,
@@ -1247,7 +1259,6 @@ pub struct PermissionChecker {
 
 impl PermissionChecker {
     pub fn new(declared_permissions: HashSet<String>) -> Self {
-
         Self {
             visit: false,
             vulns: vec![],
