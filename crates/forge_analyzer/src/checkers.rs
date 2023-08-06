@@ -12,7 +12,6 @@ use crate::{
         Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand, Rvalue,
         Successors, VarId, VarKind,
     },
-    permissionclassifier::check_permission_used,
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     worklist::WorkList,
 };
@@ -1188,7 +1187,10 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             if let Some(operand) = second {
                 self.handle_second_arg(_interp, operand, _def, &mut intrinsic_argument);
             }
-            let mut permissions_within_call: Vec<ForgePermissions> = vec![];
+
+            // CLEAN UP
+
+            let mut permissions_within_call: Vec<String> = vec![];
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
             intrinsic_argument
                 .first_arg
@@ -1198,20 +1200,49 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         first_arg_vec.iter().for_each(|first_arg| {
                             println!("first arg ===> {first_arg:?}");
                             second_arg_vec.iter().for_each(|second_arg| {
-                                let permissions = check_permission_used(
-                                    intrinsic_func_type,
-                                    first_arg,
-                                    Some(second_arg),
-                                );
-                                permissions_within_call.extend_from_slice(&permissions);
+                                if intrinsic_func_type == IntrinsicName::RequestConfluence {
+                                    let permissions = check_url_for_permissions(
+                                        &_interp.confluence_permission_resolver,
+                                        &_interp.confluence_regex_map,
+                                        trnaslate_request_type(Some(second_arg)),
+                                        &first_arg,
+                                    );
+                                    permissions_within_call.extend_from_slice(&permissions)
+                                    // change this to seoiimthinf abdonaofoadinadsjoklj
+                                } else if intrinsic_func_type == IntrinsicName::RequestJira {
+                                    let permissions = check_url_for_permissions(
+                                        &_interp.jira_permission_resolver,
+                                        &_interp.jira_regex_map,
+                                        trnaslate_request_type(Some(second_arg)),
+                                        &first_arg,
+                                    );
+                                    permissions_within_call.extend_from_slice(&permissions)
+                                }
                             })
                         })
                     } else {
                         first_arg_vec.iter().for_each(|first_arg| {
                             println!("first arg ===> {first_arg:?}");
-                            let permissions =
-                                check_permission_used(intrinsic_func_type, first_arg, None);
-                            permissions_within_call.extend_from_slice(&permissions);
+                            if intrinsic_func_type == IntrinsicName::RequestConfluence {
+                                let permissions = check_url_for_permissions(
+                                    &_interp.confluence_permission_resolver,
+                                    &_interp.confluence_regex_map,
+                                    RequestType::Get,
+                                    &first_arg,
+                                );
+                                permissions_within_call.extend_from_slice(&permissions)
+                                // change this to seoiimthinf abdonaofoadinadsjoklj
+                            } else if intrinsic_func_type == IntrinsicName::RequestJira {
+                                let permissions = check_url_for_permissions(
+                                    &_interp.jira_permission_resolver,
+                                    &_interp.jira_regex_map,
+                                    RequestType::Get,
+                                    &first_arg,
+                                );
+                                permissions_within_call.extend_from_slice(&permissions)
+                            }
+
+                            //HERE
                         })
                     }
                 });
@@ -1221,6 +1252,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             _interp
                 .permissions
                 .extend_from_slice(&permissions_within_call);
+
+            println!("_interp permisisions {:?}", _interp.permissions);
         }
         initial_state
     }
@@ -1711,15 +1744,29 @@ fn return_value_from_string(values: Vec<String>) -> Value {
     }
 }
 
+fn trnaslate_request_type(request_type: Option<&str>) -> RequestType {
+    if let Some(request_type) = request_type {
+        match request_type {
+            "PATCH" => RequestType::Patch,
+            "PUT" => RequestType::Put,
+            "DELETE" => RequestType::Delete,
+            "POST" => RequestType::Post,
+            _ => RequestType::Get,
+        }
+    } else {
+        return RequestType::Get;
+    }
+}
+
 pub struct PermissionChecker {
     pub visit: bool,
     pub vulns: Vec<PermissionVuln>,
-    pub declared_permissions: HashSet<ForgePermissions>,
-    pub used_permissions: HashSet<ForgePermissions>,
+    pub declared_permissions: HashSet<String>,
+    pub used_permissions: HashSet<String>,
 }
 
 impl PermissionChecker {
-    pub fn new(declared_permissions: HashSet<ForgePermissions>) -> Self {
+    pub fn new(declared_permissions: HashSet<String>) -> Self {
         Self {
             visit: false,
             vulns: vec![],
@@ -1797,11 +1844,11 @@ impl<'cx> Checker<'cx> for PermissionChecker {
 
 #[derive(Debug)]
 pub struct PermissionVuln {
-    unused_permissions: HashSet<ForgePermissions>,
+    unused_permissions: HashSet<String>,
 }
 
 impl PermissionVuln {
-    pub fn new(unused_permissions: HashSet<ForgePermissions>) -> PermissionVuln {
+    pub fn new(unused_permissions: HashSet<String>) -> PermissionVuln {
         PermissionVuln { unused_permissions }
     }
 }

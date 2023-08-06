@@ -7,7 +7,6 @@ pub mod exports;
 pub mod interp;
 pub mod ir;
 pub mod lattice;
-pub mod permissionclassifier;
 pub mod pretty;
 pub mod reporter;
 pub mod resolver;

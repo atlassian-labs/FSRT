@@ -3,6 +3,10 @@ use crate::permissions_resolver::{
 };
 
 mod tests {
+    use crate::permissions_resolver::{
+        get_permission_resolver_confluence, get_permission_resolver_jira,
+    };
+
     use super::*;
     use crate::permissions_resolver::{
         get_permission_resolver_confluence, get_permission_resolver_jira,

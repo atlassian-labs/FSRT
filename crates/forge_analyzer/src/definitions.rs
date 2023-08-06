@@ -3283,6 +3283,13 @@ impl Visit for ExportCollector<'_> {
                             Expr::Fn(FnExpr { ident, function }) => {
                                 self.add_export(DefRes::Function(()), ident_property.to_id());
                             }
+                            Expr::Ident(ident) => {
+                                let export_defid =
+                                    self.add_export(DefRes::Function(()), ident_property.to_id());
+                                self.res_table
+                                    .exported_names
+                                    .insert((ident.sym.clone(), self.curr_mod), export_defid);
+                            }
                             _ => {}
                         }
                     }
