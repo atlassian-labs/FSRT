@@ -13,6 +13,10 @@ use crate::{
         Successors, VarId, VarKind,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
+    utils::{
+        add_const_to_val_vec, add_elements_to_intrinsic_struct, convert_operand_to_raw,
+        get_defid_from_varkind, get_prev_value, get_str_from_operand, resolve_var_from_operand,
+    },
     worklist::WorkList,
 };
 
@@ -781,6 +785,7 @@ impl<'cx> Runner<'cx> for SecretChecker {
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
             }
+            Intrinsic::JWTSign(_) => ControlFlow::Continue(*state),
             Intrinsic::ApiCall(_) => ControlFlow::Continue(*state),
             Intrinsic::SafeCall(_) => ControlFlow::Continue(*state),
             Intrinsic::EnvRead => ControlFlow::Continue(*state),
@@ -839,6 +844,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
                 debug!("authenticated");
                 Authenticated::Yes
             }
+            Intrinsic::JWTSign(_) => initial_state,
             Intrinsic::ApiCall(_) => initial_state,
             Intrinsic::SafeCall(_) => initial_state,
         }
@@ -936,6 +942,7 @@ impl<'cx> Checker<'cx> for AuthenticateChecker {
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
             }
+            Intrinsic::JWTSign(_) => ControlFlow::Continue(*state),
             Intrinsic::ApiCall(_) => ControlFlow::Continue(*state),
             Intrinsic::SafeCall(_) => ControlFlow::Continue(*state),
         }
@@ -1051,6 +1058,44 @@ impl PermissionDataflow {
         }
     }
 
+    fn handle_second_arg(
+        &self,
+        operand: &Operand,
+        _def: DefId,
+        intrinsic_argument: &mut IntrinsicArguments,
+    ) {
+        if let Operand::Var(variable) = operand {
+            if let Base::Var(varid) = variable.base {
+                if let Some(value) =
+                    self.get_value(_def, varid, Some(Projection::Known("method".into())))
+                {
+                    match value {
+                        Value::Const(Const::Literal(lit)) => {
+                            intrinsic_argument.second_arg = Some(vec![lit.to_string()]);
+                        }
+                        Value::Phi(phi_val) => {
+                            intrinsic_argument.second_arg = Some(
+                                phi_val
+                                    .iter()
+                                    .map(|data| {
+                                        if let Const::Literal(lit) = data {
+                                            return Some(lit.to_string());
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .filter(|const_val| const_val != &None)
+                                    .map(|f| f.unwrap())
+                                    .collect_vec(),
+                            )
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
     fn add_value(
         &mut self,
         defid_block: DefId,
@@ -1058,7 +1103,7 @@ impl PermissionDataflow {
         value: Value,
         projection: Option<Projection>,
     ) {
-        println!("varid from {varid:?} -- {projection:?} -- {value:?}");
+        // println!("varid from {varid:?} -- {projection:?} -- {value:?}");
         self.varid_to_value
             .insert((defid_block, varid, projection), value);
     }
@@ -1185,8 +1230,10 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 self.handle_first_arg(operand, _def, &mut intrinsic_argument);
             }
             if let Some(operand) = second {
-                self.handle_second_arg(_interp, operand, _def, &mut intrinsic_argument);
+                self.handle_second_arg(operand, _def, &mut intrinsic_argument);
             }
+
+            println!("intrinsic argument {intrinsic_argument:?}");
 
             let mut permissions_within_call: Vec<String> = vec![];
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
@@ -1238,6 +1285,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         })
                     }
                 });
+
+            println!("permissions found {permissions_within_call:?}");
 
             _interp
                 .permissions
@@ -1515,6 +1564,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
 
                 if all_potential_values.len() > 1 {
                     let consts = all_potential_values
+                        .clone()
                         .into_iter()
                         .map(|value| Const::Literal(value.clone()))
                         .collect::<Vec<_>>();
@@ -1648,97 +1698,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
     }
 }
 
-pub(crate) fn resolve_var_from_operand(operand: &Operand) -> Option<(Variable, VarId)> {
-    if let Operand::Var(var) = operand {
-        if let Base::Var(varid) = var.base {
-            return Some((var.clone(), varid));
-        }
-    }
-    None
-}
-
-fn add_const_to_val_vec(val: &Value, const_val: &Const, vals: &mut Vec<String>) {
-    match val {
-        Value::Const(Const::Literal(lit)) => {
-            if let Const::Literal(lit2) = const_val {
-                vals.push(lit.to_owned() + &lit2);
-            }
-        }
-        Value::Phi(phi_val2) => phi_val2.iter().for_each(|val2| {
-            if let (Const::Literal(lit1), Const::Literal(lit2)) = (&const_val, val2) {
-                vals.push(lit1.to_owned() + lit2);
-            }
-        }),
-        _ => {}
-    }
-}
-
-pub(crate) fn get_defid_from_varkind(varkind: &VarKind) -> Option<DefId> {
-    match varkind {
-        VarKind::GlobalRef(defid) => Some(defid.clone()),
-        VarKind::LocalDef(defid) => Some(defid.clone()),
-        VarKind::Arg(defid) => Some(defid.clone()),
-        VarKind::AnonClosure(defid) => Some(defid.clone()),
-        VarKind::Temp { parent } => parent.clone(),
-        _ => None,
-    }
-}
-
-fn convert_operand_to_raw(operand: &Operand) -> Option<String> {
-    if let Operand::Lit(lit) = operand {
-        convert_lit_to_raw(lit)
-    } else {
-        None
-    }
-}
-
-fn convert_lit_to_raw(lit: &Literal) -> Option<String> {
-    match lit {
-        Literal::BigInt(bigint) => Some(bigint.to_string()),
-        Literal::Number(num) => Some(num.to_string()),
-        Literal::Str(str) => Some(str.to_string()),
-        _ => None,
-    }
-}
-
-fn get_str_from_operand(operand: &Operand) -> Option<String> {
-    if let Operand::Lit(lit) = operand {
-        if let Literal::Str(str) = lit {
-            return Some(str.to_string());
-        }
-    }
-    None
-}
-
-fn add_elements_to_intrinsic_struct(value: &Value, args: &mut Option<Vec<String>>) {
-    match value {
-        Value::Const(const_value) => {
-            if let Const::Literal(literal) = const_value {
-                args.as_mut().unwrap().push(literal.clone());
-            }
-        }
-        Value::Phi(phi_value) => {
-            for value in phi_value {
-                if let Const::Literal(literal) = value {
-                    args.as_mut().unwrap().push(literal.clone());
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn get_prev_value(value: Option<&Value>) -> Option<Vec<Const>> {
-    if let Some(value) = value {
-        return match value {
-            Value::Const(const_value) => Some(vec![const_value.clone()]),
-            Value::Phi(phi_value) => Some(phi_value.clone()),
-            _ => None,
-        };
-    }
-    None
-}
-
 fn return_value_from_string(values: Vec<String>) -> Value {
     // assert!(values.len() > 0);
     if values.len() == 1 {
@@ -1824,26 +1783,6 @@ impl JoinSemiLattice for PermissionTest {
     #[inline]
     fn join(&self, other: &Self) -> Self {
         max(*other, *self)
-    }
-}
-
-impl<'cx> Checker<'cx> for PermissionChecker {
-    type State = PermissionTest;
-    type Dataflow = PermissionDataflow;
-    type Vuln = PermissionVuln;
-
-    fn visit(&mut self) -> bool {
-        self.visit
-    }
-
-    fn visit_intrinsic(
-        &mut self,
-        interp: &Interp<'cx, Self>,
-        intrinsic: &'cx Intrinsic,
-        state: &Self::State,
-        operands: Option<SmallVec<[Operand; 4]>>,
-    ) -> ControlFlow<(), Self::State> {
-        ControlFlow::Continue(*state)
     }
 }
 

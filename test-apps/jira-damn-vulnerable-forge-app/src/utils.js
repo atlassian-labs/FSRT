@@ -25,13 +25,15 @@ let global = 'test';
 
 export async function fetchIssueSummary(issueIdOrKey, test_value) {
   let obj = {
-    method: 'DELETE',
+    method: 'POST',
     bananas: 'apple',
     headers: {
       //
       Accept: 'application/json',
     },
   };
+
+  var token = jwt.sign({ foo: 'bar' }, 'secret_token');
 
   testFunctionFromTestFile();
   let val = 'grapefruit';
@@ -111,7 +113,7 @@ export async function writeComment(issueIdOrKey, comment) {
   const resp = await api
     .asApp()
     .requestJira(route`/rest/api/3/issue/${issueIdOrKey}/comment`, {
-      method: 'POST',
+      method: 'DELETE',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',

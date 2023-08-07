@@ -863,9 +863,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         })?;
         self.set_body(body);
         self.run(resolved_def);
-        if checker.visit() {
-            checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
-        }
+        checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
         Ok(())
     }
 
