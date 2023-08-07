@@ -26,7 +26,7 @@ use crate::{
     definitions::{Class, Const, DefId, Environment, Value},
     ir::{
         Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue,
-        Successors, VarId, STARTING_BLOCK,
+        Successors, VarId, Variable, STARTING_BLOCK,
     },
     worklist::WorkList,
 };
@@ -160,15 +160,17 @@ pub trait Dataflow<'cx>: Sized {
     fn add_variable<C: Checker<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
+        lval: &Variable,
         varid: &VarId,
         def: DefId,
         rvalue: &Rvalue,
     ) {
     }
 
-    fn insert_value2<C: Checker<'cx, State = Self::State>>(
+    fn insert_value<C: Checker<'cx, State = Self::State>>(
         &mut self,
         operand: &Operand,
+        lval: &Variable,
         varid: &VarId,
         def: DefId,
         interp: &Interp<'cx, C>,
@@ -251,21 +253,6 @@ pub trait Dataflow<'cx>: Sized {
         _def: DefId,
         const_var: Const,
     ) -> Option<&Value> {
-        None
-    }
-
-    fn get_defid_from_operand<C: Checker<'cx, State = Self::State>>(
-        &self,
-        _interp: &Interp<'cx, C>,
-        operand: &Operand,
-    ) -> Option<(DefId, VarId)> {
-        if let Some(varid) = resolve_var_from_operand(operand) {
-            if let Some(varkind) = _interp.body().vars.get(varid) {
-                if let Some(defid) = get_defid_from_varkind(varkind) {
-                    return Some((defid, varid));
-                }
-            }
-        }
         None
     }
 

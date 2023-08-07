@@ -1340,25 +1340,12 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                     );
                                 }
                                 Prop::KeyValue(KeyValueProp { key, value }) => {
-                                    let span = match key {
-                                        PropName::BigInt(bigint) => bigint.span,
-                                        PropName::Computed(computed) => computed.span,
-                                        PropName::Ident(ident) => ident.span,
-                                        PropName::Num(num) => num.span,
-                                        PropName::Str(str) => str.span,
-                                    };
                                     let lowered_value = self.lower_expr(&value, None);
-                                    let next_key = self.res.get_or_overwrite_sym(
-                                        (key.as_symbol().unwrap_or_default(), span.ctxt),
-                                        self.module,
-                                        DefKind::Arg,
-                                    );
-                                    let mut lowered_var = self.body.coerce_to_lval(
+                                    let lowered_var = self.body.coerce_to_lval(
                                         self.block,
                                         lowered_value.clone(),
-                                        Some(next_key),
+                                        None,
                                     );
-                                    if let Base::Var(varid) = lowered_var.base {}
 
                                     let rval = Rvalue::Read(lowered_value);
                                     match lowered_var.base {
@@ -2941,7 +2928,6 @@ impl Environment {
     ) {
         if let DefKind::Class(class) = self.def_mut(class_def) {
             if let PropName::Ident(ident) = &n {
-                println!("adding class method --");
                 class.pub_members.push((ident.sym.to_owned(), owner));
             }
         }

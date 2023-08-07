@@ -63,6 +63,10 @@ struct Args {
     #[arg(short, long)]
     out: Option<PathBuf>,
 
+    // Run the permission checker
+    #[arg(short, long)]
+    check_permissions: bool,
+
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the source code is located in `src/`
     #[arg(name = "DIRS", value_hint = ValueHint::DirPath)]
@@ -73,6 +77,7 @@ struct Args {
 struct Opts {
     dump_cfg: bool,
     dump_callgraph: bool,
+    check_permissions: bool,
     appkey: Option<String>,
     out: Option<PathBuf>,
 }
@@ -195,6 +200,10 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         false
     });
 
+    let run_permission_checker = opts.check_permissions && !transpiled_async;
+
+    println!("run permissions checker {:?}", run_permission_checker);
+
     let funcrefs = manifest.modules.into_analyzable_functions().flat_map(|f| {
         f.sequence(|fmod| {
             let resolved_func = FunctionRef::try_from(fmod)?.try_resolve(&paths, &dir)?;
@@ -205,7 +214,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     let mut proj = ForgeProject::with_files_and_sourceroot(src_root, paths.clone());
     if transpiled_async {
         warn!("Unable to scan due to transpiled async");
-        return Ok(proj);
     }
     proj.opts = opts.clone();
     proj.add_funcs(funcrefs);
@@ -228,14 +236,15 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
-                let mut checker2 = PermissionChecker::new(permissions_declared.clone());
-                if let Err(err) =
-                    perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
-                {
-                    warn!("error while scanning {func} in {path:?}: {err}");
+                if run_permission_checker {
+                    let mut checker2 = PermissionChecker::new(permissions_declared.clone());
+                    if let Err(err) =
+                        perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
+                    {
+                        warn!("error while scanning {func} in {path:?}: {err}");
+                    }
+                    all_used_permissions.extend(perm_interp.permissions.clone());
                 }
-
-                all_used_permissions.extend(perm_interp.permissions.clone());
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
                 let mut checker = AuthenticateChecker::new();
@@ -247,27 +256,31 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
-                let mut checker2 = PermissionChecker::new(permissions_declared.clone());
-                if let Err(err) =
-                    perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
-                {
-                    println!("error while scanning {func} in {path:?}: {err}");
-                    warn!("error while scanning {func} in {path:?}: {err}");
+                if run_permission_checker {
+                    let mut checker2 = PermissionChecker::new(permissions_declared.clone());
+                    if let Err(err) =
+                        perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
+                    {
+                        println!("error while scanning {func} in {path:?}: {err}");
+                        warn!("error while scanning {func} in {path:?}: {err}");
+                    }
+                    all_used_permissions.extend(perm_interp.permissions.clone());
                 }
-                all_used_permissions.extend(perm_interp.permissions.clone());
             }
         }
     }
     println!("all used permissions {all_used_permissions:?}");
 
-    let unused_permissions = permissions_declared.difference(&all_used_permissions);
-    if unused_permissions.clone().count() > 0 {
-        reporter.add_vulnerabilities(
-            vec![PermissionVuln::new(HashSet::<String>::from_iter(
-                unused_permissions.cloned().into_iter(),
-            ))]
-            .into_iter(),
-        );
+    if run_permission_checker {
+        let unused_permissions = permissions_declared.difference(&all_used_permissions);
+        if unused_permissions.clone().count() > 0 {
+            reporter.add_vulnerabilities(
+                vec![PermissionVuln::new(HashSet::<String>::from_iter(
+                    unused_permissions.cloned().into_iter(),
+                ))]
+                .into_iter(),
+            );
+        }
     }
 
     let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
@@ -291,6 +304,7 @@ fn main() -> Result<()> {
     let opts = Opts {
         dump_callgraph: args.callgraph,
         dump_cfg: args.cfg,
+        check_permissions: args.check_permissions,
         out: args.out,
         appkey: args.appkey,
     };
