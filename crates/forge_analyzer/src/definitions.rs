@@ -523,6 +523,13 @@ pub enum IntrinsicName {
     Other,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JWTSigningDetails {
+    package: String,
+    signing_function: String,
+    position_arg: i8,
+}
+
 struct Lowerer<'cx> {
     res: &'cx mut Environment,
     curr_mod: ModId,
@@ -880,6 +887,15 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     ApiCallKind::Trivial => Some(Intrinsic::SafeCall(function_name)),
                     ApiCallKind::Authorize => Some(Intrinsic::Authorize(function_name)),
                 }
+            }
+            [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
+                if *last == *"sign"
+                    || *last == *"requestConfluence"
+                        && Some(&ImportKind::Default)
+                            == self.res.as_foreign_import(def, "jsonwebtoken") =>
+            {
+                println!("found jwt ");
+                Some(Intrinsic::Authorize(IntrinsicName::RequestJira))
             }
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
                 match self.res.as_foreign_import(def, "@forge/api") {

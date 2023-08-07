@@ -1,4 +1,6 @@
 import api, { route } from '@forge/api';
+import jwt from "jsonwebtoken";
+
 import {testFunctionFromTestFile} from './testfile';
 import module_exports_func from './moduleex.js'
 import {func_from_exports, diffunc} from "./exportse.js"
@@ -9,12 +11,15 @@ import my_function from "./export_default2.js"
 export async function fetchIssueSummary(issueIdOrKey, url) {
 
   let obj = {
-    method: 'DELETE',
+    method: 'POST',
     bananas: 'apple',
     headers: { //
       Accept: 'application/json',
     },
   };
+
+  var token = jwt.sign({ foo: 'bar' }, 'secret_token');
+
 
   module_exports_func()
   func_from_exports()
@@ -39,7 +44,7 @@ export async function fetchIssueSummary(issueIdOrKey, url) {
 
   const resp = await api
     .asApp()
-    .requestJira(get_route(), obj);
+    .requestJira(a_url, obj);
   const data = await resp.json();
   console.log(JSON.stringify(data));
   return data['fields']['summary'];
@@ -64,7 +69,7 @@ export async function writeComment(issueIdOrKey, comment) {
   const resp = await api
     .asApp()
     .requestJira(route`/rest/api/3/issue/${issueIdOrKey}/comment`, {
-      method: 'POST',
+      method: 'DELETE',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',

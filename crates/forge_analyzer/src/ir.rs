@@ -36,6 +36,7 @@ use crate::definitions::DefId;
 use crate::definitions::DefKind;
 use crate::definitions::Environment;
 use crate::definitions::IntrinsicName;
+use crate::definitions::JWTSigningDetails;
 use crate::definitions::Value;
 
 pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
@@ -73,6 +74,7 @@ pub enum Intrinsic {
     Fetch,
     ApiCall(IntrinsicName),
     SafeCall(IntrinsicName),
+    JWTSign(JWTSigningDetails),
     EnvRead,
     StorageRead,
 }
@@ -759,6 +761,7 @@ impl fmt::Display for Intrinsic {
         match *self {
             Intrinsic::Fetch => write!(f, "fetch"),
             Intrinsic::Authorize(_) => write!(f, "authorize"),
+            Intrinsic::JWTSign(_) => write!(f, "jwt sign"),
             Intrinsic::ApiCall(_) => write!(f, "api call"),
             Intrinsic::SafeCall(_) => write!(f, "safe api call"),
             Intrinsic::EnvRead => write!(f, "env read"),
