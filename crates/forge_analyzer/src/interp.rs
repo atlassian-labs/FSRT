@@ -158,7 +158,7 @@ pub trait Dataflow<'cx>: Sized {
 
     fn add_variable<C: Checker<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         lval: &Variable,
         varid: &VarId,
         def: DefId,
@@ -167,27 +167,6 @@ pub trait Dataflow<'cx>: Sized {
     }
     fn insert_value2<C: Checker<'cx, State = Self::State>>(
         &mut self,
-        operand: &Operand,
-        lval: &Variable,
-        varid: &VarId,
-        def: DefId,
-        interp: &Interp<'cx, C>,
-        prev_values: Option<Vec<Const>>,
-    ) {
-    }
-
-    fn add_variable<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        lval: &Variable,
-        varid: &VarId,
-        def: DefId,
-        rvalue: &Rvalue,
-    ) {
-    }
-
-    fn insert_value<C: Runner<'cx, State = Self::State>>(
-        &mut self,
         interp: &mut Interp<'cx, C>,
         operand: &Operand,
         lval: &Variable,
@@ -197,7 +176,7 @@ pub trait Dataflow<'cx>: Sized {
     ) {
     }
 
-    fn join_term<C: Runner<'cx, State = Self::State>>(
+    fn join_term<C: Checker<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -285,6 +264,15 @@ pub trait Dataflow<'cx>: Sized {
     ) {
     }
 
+    fn handle_first_arg<C: Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        operand: &Operand,
+        _def: DefId,
+        intrinsic_argument: &mut IntrinsicArguments,
+    ) {
+    }
+
     fn read_mem_from_object<C: Runner<'cx, State = Self::State>>(
         &self,
         _interp: &Interp<'cx, C>,
@@ -292,6 +280,24 @@ pub trait Dataflow<'cx>: Sized {
         obj: Class,
     ) -> Option<&Value> {
         None
+    }
+
+    fn handle_second_arg<C: Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        operand: &Operand,
+        _def: DefId,
+        intrinsic_argument: &mut IntrinsicArguments,
+    ) {
+    }
+
+    fn get_str_from_expr<C: Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        expr: &Operand,
+        def: DefId,
+    ) -> Vec<Option<String>> {
+        vec![None]
     }
 
     fn get_str_from_expr<C: Runner<'cx, State = Self::State>>(
