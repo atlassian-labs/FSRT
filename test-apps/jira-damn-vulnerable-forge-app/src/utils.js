@@ -9,7 +9,7 @@ import my_function from "./export_default2.js"
 export async function fetchIssueSummary(issueIdOrKey, url) {
 
   let obj = {
-    method: 'POST',
+    method: 'DELETE',
     bananas: 'apple',
     headers: { //
       Accept: 'application/json',
