@@ -67,7 +67,8 @@ pub fn check_url_for_permissions(
     request: RequestType,
     url: &str,
 ) -> Vec<String> {
-    // sort by the length of regex
+    println!("check_url_for_permissions {request:?} {url:?}");
+
     let mut length_of_regex = endpoint_regex
         .iter()
         .map(|(string, regex)| (regex.as_str().len(), &*string))

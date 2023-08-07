@@ -22,12 +22,13 @@ use swc_core::ecma::atoms::JsWord;
 use tracing::{debug, info, instrument, warn};
 
 use crate::{
-    checkers::{get_defid_from_varkind, resolve_var_from_operand, IntrinsicArguments},
+    checkers::IntrinsicArguments,
     definitions::{Class, Const, DefId, Environment, Value},
     ir::{
         Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue,
         Successors, VarId, Variable, STARTING_BLOCK,
     },
+    utils::{get_defid_from_varkind, resolve_var_from_operand},
     worklist::WorkList,
 };
 
@@ -323,10 +324,6 @@ pub trait Checker<'cx>: Sized {
     type State: JoinSemiLattice + Clone + fmt::Debug;
     type Vuln: Display + WithCallStack;
     type Dataflow: Dataflow<'cx, State = Self::State>;
-
-    fn visit(&mut self) -> bool {
-        true
-    }
 
     fn visit_intrinsic(
         &mut self,
@@ -688,9 +685,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             .ok_or_else(|| Error::NotAFunction(name.to_owned()))?;
         self.set_body(body);
         self.run(resolved_def);
-        if checker.visit() {
-            checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
-        }
+        checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
         Ok(())
     }
 

@@ -9,6 +9,7 @@ export const IssuePanelApp = () => {
   }
   const { issueId } = platformContext;
 
+  writeComment();
 
   const writeCommentFunction = () => {
     writeComment(issueId, 'Overwrite')
