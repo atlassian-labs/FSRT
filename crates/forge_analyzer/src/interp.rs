@@ -26,11 +26,13 @@ use crate::{
     definitions::{Class, Const, DefId, Environment, Value},
     ir::{
         Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue,
-        Successors, VarId, Variable, STARTING_BLOCK,
+        Successors, VarId, Variable, STARTING_BLOCK, Projection,
     },
     utils::{get_defid_from_varkind, resolve_var_from_operand},
     worklist::WorkList,
 };
+
+pub type DefinitionAnalysisMap = FxHashMap<(DefId, VarId, Option<Projection>), Value>;
 
 pub trait JoinSemiLattice: Sized + Ord {
     const BOTTOM: Self;
@@ -160,7 +162,7 @@ pub trait Dataflow<'cx>: Sized {
 
     fn add_variable<C: Checker<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         lval: &Variable,
         varid: &VarId,
         def: DefId,
@@ -170,11 +172,11 @@ pub trait Dataflow<'cx>: Sized {
 
     fn insert_value<C: Checker<'cx, State = Self::State>>(
         &mut self,
+        interp: &mut Interp<'cx, C>,
         operand: &Operand,
         lval: &Variable,
         varid: &VarId,
         def: DefId,
-        interp: &Interp<'cx, C>,
         prev_values: Option<Vec<Const>>,
     ) {
     }
@@ -267,6 +269,14 @@ pub trait Dataflow<'cx>: Sized {
     ) {
     }
 
+    fn handle_first_arg<C: Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        operand: &Operand,
+        _def: DefId,
+        intrinsic_argument: &mut IntrinsicArguments,
+    ) {}
+
     fn read_mem_from_object<C: Checker<'cx, State = Self::State>>(
         &self,
         _interp: &Interp<'cx, C>,
@@ -274,6 +284,18 @@ pub trait Dataflow<'cx>: Sized {
         obj: Class,
     ) -> Option<&Value> {
         None
+    }
+
+    fn handle_second_arg<C: Checker<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        operand: &Operand,
+        _def: DefId,
+        intrinsic_argument: &mut IntrinsicArguments,
+    ) {}
+
+    fn get_str_from_expr<C: Checker<'cx, State = Self::State>>(&self,  _interp: &Interp<'cx, C>, expr: &Operand, def: DefId) -> Vec<Option<String>> {
+        vec![None]
     }
 
     fn def_to_class_property<C: Checker<'cx, State = Self::State>>(
@@ -287,34 +309,18 @@ pub trait Dataflow<'cx>: Sized {
 
     fn get_values_from_operand<C: Checker<'cx, State = Self::State>>(
         &self,
-        _interp: &Interp<'cx, C>,
+        _interp: &mut Interp<'cx, C>,
         _def: DefId,
         operand: &Operand,
     ) -> Option<&Value> {
         None
     }
 
-    fn get_str_from_expr<C: Checker<'cx, State = Self::State>>(
-        &self,
-        expr: &Operand,
-        def: DefId,
-    ) -> Option<String> {
-        None
-    }
     fn try_insert<C: crate::interp::Checker<'cx, State = Self::State>>(
         &self,
         _interp: &Interp<'cx, C>,
         _def: DefId,
         const_var: Const,
-        intrinsic_argument: &mut IntrinsicArguments,
-    ) {
-    }
-
-    fn handle_second_arg<C: crate::interp::Checker<'cx, State = Self::State>>(
-        &self,
-        _interp: &Interp<'cx, C>,
-        operand: &Operand,
-        _def: DefId,
         intrinsic_argument: &mut IntrinsicArguments,
     ) {
     }
@@ -470,6 +476,7 @@ pub struct Interp<'cx, C: Checker<'cx>> {
     pub confluence_permission_resolver: PermissionHashMap,
     pub jira_regex_map: HashMap<String, Regex>,
     pub confluence_regex_map: HashMap<String, Regex>,
+    pub varid_to_value: DefinitionAnalysisMap,
     _checker: PhantomData<C>,
 }
 
@@ -550,6 +557,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             callstack: RefCell::new(Vec::new()),
             vulns: RefCell::new(Vec::new()),
             permissions: Vec::new(),
+            varid_to_value: DefinitionAnalysisMap::default(),
             jira_permission_resolver,
             confluence_permission_resolver,
             jira_regex_map,
@@ -578,8 +586,31 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         (*self.callstack.borrow()).clone()
     }
 
+    #[inline]
     pub(crate) fn checker_visit(&self, def: DefId) -> bool {
         self.checker_visited.borrow_mut().insert(def)
+    }
+
+    #[inline]
+    pub(crate) fn add_value(
+        &mut self,
+        defid_block: DefId,
+        varid: VarId,
+        value: Value,
+        projection: Option<Projection>,
+    ) {
+        // println!("varid from {varid:?} -- {projection:?} -- {value:?}");
+        self.varid_to_value
+            .insert((defid_block, varid, projection), value);
+    }
+    #[inline]
+    pub(crate) fn get_value(
+        &self,
+        defid_block: DefId,
+        varid: VarId,
+        projection: Option<Projection>,
+    ) -> Option<&Value> {
+        self.varid_to_value.get(&(defid_block, varid, projection))
     }
 
     #[inline]
