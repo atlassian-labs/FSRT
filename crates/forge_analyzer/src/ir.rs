@@ -213,7 +213,7 @@ pub enum Operand {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Base {
+pub enum Base {
     This,
     Super,
     Var(VarId),
@@ -243,7 +243,7 @@ impl From<VarId> for Variable {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Projection {
+pub enum Projection {
     Known(JsWord),
     Computed(Base),
 }
