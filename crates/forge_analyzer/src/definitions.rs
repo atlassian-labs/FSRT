@@ -1515,7 +1515,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                     let lowered_var = self.body.coerce_to_lval(
                                         self.block,
                                         lowered_value.clone(),
-                                        Some(next_key),
+                                        None,
                                     );
 
                                     let rval = Rvalue::Read(lowered_value);
@@ -3507,7 +3507,6 @@ impl Environment {
     fn add_class_method(&mut self, n: PropName, class_def: DefId, owner: DefId) {
         if let DefKind::Class(class) = self.def_mut(class_def) {
             if let PropName::Ident(ident) = &n {
-                println!("adding class method --");
                 class.pub_members.push((ident.sym.to_owned(), owner));
             }
         }

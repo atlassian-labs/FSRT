@@ -25,7 +25,7 @@ let global = 'test';
 
 export async function fetchIssueSummary(issueIdOrKey, test_value) {
   let obj = {
-    method: 'POST',
+    method: 'DELETE',
     bananas: 'apple',
     headers: {
       //
