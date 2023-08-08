@@ -1374,14 +1374,12 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     }
                 }
             }
-            if let Some(operand) = second {
-                if let Operand::Var(variable) = operand {
-                    if let Base::Var(varid) = variable.base {
-                        if let Some(value) =
-                            _interp.get_value(_def, varid, Some(Projection::Known("method".into())))
-                        {
-                            self.handle_second_arg(value, &mut intrinsic_argument);
-                        }
+            if let Some(Operand::Var(variable)) = second {
+                if let Base::Var(varid) = variable.base {
+                    if let Some(value) =
+                        _interp.get_value(_def, varid, Some(Projection::Known("method".into())))
+                    {
+                        self.handle_second_arg(value, &mut intrinsic_argument);
                     }
                 }
             }
@@ -1436,6 +1434,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         })
                     }
                 });
+
+            println!("intrinsic argument {intrinsic_argument:?}");
 
             _interp
                 .permissions
@@ -1623,21 +1623,19 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         }
 
         for (varid, varkind) in interp.body().vars.clone().iter_enumerated() {
-            match varkind {
-                VarKind::Ret => {
-                    for (defid, (varid_value, defid_value)) in interp.expecting_value.clone() {
-                        if def == defid.clone() {
-                            if let Some(value) = interp.get_value(def, varid, None).clone() {
-                                interp.add_value(def, varid, value.clone(), None);
-                            }
-                        }
-                    }
+            if &VarKind::Ret == varkind {
+                if let Some((defid_calling_func, varid_calling_func)) =
+                    interp.expected_return_values.get(&def)
+                {
                     if let Some(value) = interp.get_value(def, varid, None) {
-                        interp.return_value = Some((value.clone(), def));
-                        //interp.return_value_alt.insert(def, value.clone());
+                        interp.add_value(
+                            *defid_calling_func,
+                            *varid_calling_func,
+                            value.clone(),
+                            None,
+                        );
                     }
                 }
-                _ => {}
             }
         }
 
@@ -1921,10 +1919,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 let value = _interp.get_value(def, varid, None);
                 if let Some(value) = value {
                     match value {
-                        Value::Const(const_val) => {
-                            if let Const::Literal(str) = const_val {
-                                return vec![Some(str.clone())];
-                            }
+                        Value::Const(Const::Literal(str)) => {
+                            return vec![Some(str.clone())];
                         }
                         Value::Phi(phi_val) => {
                             return phi_val

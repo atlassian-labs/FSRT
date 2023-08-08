@@ -811,7 +811,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             debug!("Dataflow: {name} - {block_id}");
             self.dataflow_visited.insert(def);
             let func = self.env().def_ref(def).expect_body();
-            self.curr_body.set(Some(func));
+            self.curr_body.set(Some(func))
             let block = func.block(block_id);
             let mut before_state = self.block_state(def, block_id);
             let block = func.block(block_id);
