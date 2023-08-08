@@ -829,14 +829,12 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     }
                 }
             }
-            if let Some(operand) = second {
-                if let Operand::Var(variable) = operand {
-                    if let Base::Var(varid) = variable.base {
-                        if let Some(value) =
-                            _interp.get_value(_def, varid, Some(Projection::Known("method".into())))
-                        {
-                            self.handle_second_arg(value, &mut intrinsic_argument);
-                        }
+            if let Some(Operand::Var(variable)) = second {
+                if let Base::Var(varid) = variable.base {
+                    if let Some(value) =
+                        _interp.get_value(_def, varid, Some(Projection::Known("method".into())))
+                    {
+                        self.handle_second_arg(value, &mut intrinsic_argument);
                     }
                 }
             }
@@ -892,6 +890,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     }
                 });
 
+            println!("intrinsic argument {intrinsic_argument:?}");
+
             _interp
                 .permissions
                 .extend_from_slice(&permissions_within_call);
@@ -918,25 +918,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         debug!("Found call to {callee_name} at {def:?} {caller_name}");
         self.needs_call.push((callee_def, operands.into_vec()));
         initial_state
-    }
-
-    fn transfer_inst<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        loc: Location,
-        block: &'cx BasicBlock,
-        inst: &'cx Inst,
-        initial_state: Self::State,
-    ) -> Self::State {
-        match inst {
-            Inst::Expr(rvalue) => {
-                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
-            }
-            Inst::Assign(var, rvalue) => {
-                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
-            }
-        }
     }
 
     fn transfer_block<C: Runner<'cx, State = Self::State>>(
@@ -1199,13 +1180,18 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                 match var.base {
                     Base::Var(varid) => match rvalue {
                         Rvalue::Call(operand, _) => {
-                            if let Some((defid, varid)) = resolve_var_from_operand(operand) {
-                                // interp.expecting_value.push_back((defid, (varid, defid)));
-                            }
-                            if let Some((var, varid)) = resolve_var_from_operand(operand) {
-                                // if let Some(return_value) = interp.return_value_alt.get(&defid) {
-                                //     self.add_value(def, varid, return_value.clone());
-                                // }
+                            if let Operand::Var(variable) = operand {
+                                if let Base::Var(varid) = variable.base {
+                                    if let Some(VarKind::GlobalRef(defid)) =
+                                        interp.body().vars.get(varid)
+                                    {
+                                        if let Base::Var(varid_to_assign) = var.base {
+                                            interp
+                                                .expected_return_values
+                                                .insert(*defid, (def, varid_to_assign));
+                                        }
+                                    }
+                                }
                             }
                         }
                         Rvalue::Read(_) => {
@@ -1269,21 +1255,19 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         }
 
         for (varid, varkind) in interp.body().vars.clone().iter_enumerated() {
-            match varkind {
-                VarKind::Ret => {
-                    for (defid, (varid_value, defid_value)) in interp.expecting_value.clone() {
-                        if def == defid.clone() {
-                            if let Some(value) = interp.get_value(def, varid, None).clone() {
-                                interp.add_value(def, varid, value.clone(), None);
-                            }
-                        }
-                    }
+            if &VarKind::Ret == varkind {
+                if let Some((defid_calling_func, varid_calling_func)) =
+                    interp.expected_return_values.get(&def)
+                {
                     if let Some(value) = interp.get_value(def, varid, None) {
-                        interp.return_value = Some((value.clone(), def));
-                        //interp.return_value_alt.insert(def, value.clone());
+                        interp.add_value(
+                            *defid_calling_func,
+                            *varid_calling_func,
+                            value.clone(),
+                            None,
+                        );
                     }
                 }
-                _ => {}
             }
         }
 
@@ -1515,10 +1499,8 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                 let value = _interp.get_value(def, varid, None);
                 if let Some(value) = value {
                     match value {
-                        Value::Const(const_val) => {
-                            if let Const::Literal(str) = const_val {
-                                return vec![Some(str.clone())];
-                            }
+                        Value::Const(Const::Literal(str)) => {
+                            return vec![Some(str.clone())];
                         }
                         Value::Phi(phi_val) => {
                             return phi_val

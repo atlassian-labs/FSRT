@@ -3,6 +3,7 @@ use std::{
     cell::{Cell, RefCell, RefMut},
     collections::{BTreeMap, HashMap, VecDeque},
     fmt::{self, Display},
+    hash::Hash,
     io::{self, Write},
     iter,
     marker::PhantomData,
@@ -502,6 +503,7 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     callstack: RefCell<Vec<Frame>>,
     pub callstack_arguments: Vec<Vec<Value>>,
     // vulns: RefCell<Vec<C::Vuln>>,
+    pub expected_return_values: HashMap<DefId, (DefId, VarId)>,
     pub permissions: Vec<String>,
     pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
     pub jira_permission_resolver: PermissionHashMap,
@@ -588,6 +590,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             expecting_value: VecDeque::default(),
             callstack: RefCell::new(Vec::new()),
             // vulns: RefCell::new(Vec::new()),
+            expected_return_values: HashMap::default(),
             permissions: Vec::new(),
             varid_to_value: DefinitionAnalysisMap::default(),
             jira_permission_resolver,
@@ -728,7 +731,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             self.dataflow_visited.insert(def);
             let func = self.env().def_ref(def).expect_body();
             self.curr_body.set(Some(func));
-            let block = func.block(block_id);
             let mut before_state = self.block_state(def, block_id);
             let block = func.block(block_id);
             for &pred in func.predecessors(block_id) {

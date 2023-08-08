@@ -98,7 +98,7 @@ function SecureGlance() {
     return '';
   }
   const [flagVal] = useState(async () => {
-    const issueData = await fetchIssueSummary(platformContext.issueKey, value);
+    const issueData = await fetchIssueSummary(platformContext.issueKey, "test_value_passed_in_as_argument");
     const test = writeComment("test", "test");
     return JSON.stringify(issueData + test);
   });
