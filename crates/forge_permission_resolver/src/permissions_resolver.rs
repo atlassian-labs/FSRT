@@ -67,6 +67,7 @@ pub fn check_url_for_permissions(
     request: RequestType,
     url: &str,
 ) -> Vec<String> {
+    // sort by the length of regex
     let mut length_of_regex = endpoint_regex
         .iter()
         .map(|(string, regex)| (regex.as_str().len(), &*string))
@@ -100,6 +101,7 @@ pub fn get_permission_resolver(url: &str) -> (PermissionHashMap, HashMap<String,
     let mut endpoint_regex: HashMap<String, Regex> = HashMap::default();
 
     get_permisions_for(url, &mut endpoint_map, &mut endpoint_regex);
+
 
     return (endpoint_map, endpoint_regex);
 }
