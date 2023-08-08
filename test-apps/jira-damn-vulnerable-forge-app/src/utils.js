@@ -35,6 +35,9 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
 
   var token = jwt.sign({ foo: 'bar' }, 'secret_token');
 
+  // trick case
+  var token = jwt.sign({ foo: 'bar' }, 'process.env.SECRET');
+
   testFunctionFromTestFile();
   let val = 'grapefruit';
 
