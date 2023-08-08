@@ -68,6 +68,20 @@ pub fn convert_lit_to_raw(lit: &Literal) -> Option<String> {
     }
 }
 
+pub fn translate_request_type(request_type: Option<&str>) -> RequestType {
+    if let Some(request_type) = request_type {
+        match request_type {
+            "PATCH" => RequestType::Patch,
+            "PUT" => RequestType::Put,
+            "DELETE" => RequestType::Delete,
+            "POST" => RequestType::Post,
+            _ => RequestType::Get,
+        }
+    } else {
+        return RequestType::Get;
+    }
+}
+
 pub fn get_str_from_operand(operand: &Operand) -> Option<String> {
     if let Operand::Lit(lit) = operand {
         if let Literal::Str(str) = lit {

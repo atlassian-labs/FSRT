@@ -23,7 +23,8 @@ use tracing::{debug, info, warn};
 use crate::{
     definitions::{Class, Const, DefId, DefKind, Environment, IntrinsicName, Value},
     interp::{
-        Checker, Dataflow, EntryKind, EntryPoint, Frame, Interp, JoinSemiLattice, WithCallStack,
+        Checker, Dataflow, EntryKind, EntryPoint, Frame, Interp, JoinSemiLattice, Runner,
+        WithCallStack,
     },
     ir::{
         Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
@@ -32,7 +33,8 @@ use crate::{
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     utils::{
         add_const_to_val_vec, add_elements_to_intrinsic_struct, convert_operand_to_raw,
-        get_defid_from_varkind, get_prev_value, get_str_from_operand, resolve_var_from_operand, return_value_from_string,
+        get_defid_from_varkind, get_prev_value, get_str_from_operand, resolve_var_from_operand,
+        return_value_from_string, translate_request_type,
     },
     worklist::WorkList,
 };
@@ -65,13 +67,13 @@ impl JoinSemiLattice for AuthorizeState {
 impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
     type State = AuthorizeState;
 
-    fn with_interp<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
         _interp: &Interp<'cx, C>,
     ) -> Self {
         Self { needs_call: vec![] }
     }
 
-    fn transfer_intrinsic<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         _interp: &mut Interp<'cx, C>,
         _def: DefId,
@@ -95,7 +97,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         }
     }
 
-    fn transfer_call<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
@@ -125,7 +127,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         }
     }
 
-    fn join_term<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -236,10 +238,9 @@ impl WithCallStack for AuthZVuln {
     fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
 }
 
-impl<'cx> Checker<'cx> for AuthZChecker {
+impl<'cx> Runner<'cx> for AuthZChecker {
     type State = AuthorizeState;
     type Dataflow = AuthorizeDataflow;
-    type Vuln = AuthZVuln;
 
     fn visit_intrinsic(
         &mut self,
@@ -267,6 +268,10 @@ impl<'cx> Checker<'cx> for AuthZChecker {
             Intrinsic::StorageRead => ControlFlow::Continue(*state),
         }
     }
+}
+
+impl<'cx> Checker<'cx> for AuthZChecker {
+    type Vuln = AuthZVuln;
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
@@ -297,13 +302,13 @@ pub struct AuthenticateDataflow {
 impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
     type State = Authenticated;
 
-    fn with_interp<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
         _interp: &Interp<'cx, C>,
     ) -> Self {
         Self { needs_call: vec![] }
     }
 
-    fn transfer_intrinsic<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         _interp: &mut Interp<'cx, C>,
         _def: DefId,
@@ -325,7 +330,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         }
     }
 
-    fn transfer_call<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
@@ -355,7 +360,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         }
     }
 
-    fn join_term<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -394,10 +399,10 @@ impl Default for AuthenticateChecker {
     }
 }
 
-impl<'cx> Checker<'cx> for AuthenticateChecker {
+impl<'cx> Runner<'cx> for AuthenticateChecker {
     type State = Authenticated;
     type Dataflow = AuthenticateDataflow;
-    type Vuln = AuthNVuln;
+
     fn visit_intrinsic(
         &mut self,
         interp: &Interp<'cx, Self>,
@@ -422,6 +427,10 @@ impl<'cx> Checker<'cx> for AuthenticateChecker {
             Intrinsic::SafeCall(_) => ControlFlow::Continue(*state),
         }
     }
+}
+
+impl<'cx> Checker<'cx> for AuthenticateChecker {
+    type Vuln = AuthNVuln;
 }
 
 #[derive(Debug)]
@@ -496,8 +505,35 @@ impl WithCallStack for AuthNVuln {
 }
 
 pub struct PermissionDataflow {
-    needs_call: Vec<(DefId, Vec<Operand>, Vec<Value>)>,
-    varid_to_value: FxHashMap<(DefId, VarId, Option<Projection>), Value>,
+    needs_call: Vec<(DefId, Vec<Operand>)>,
+    pub varid_to_value: FxHashMap<(DefId, VarId, Option<Projection>), Value>,
+}
+
+impl PermissionDataflow {
+    fn handle_second_arg(&self, value: &Value, intrinsic_argument: &mut IntrinsicArguments) {
+        match value {
+            Value::Const(Const::Literal(lit)) => {
+                intrinsic_argument.second_arg = Some(vec![lit.to_string()]);
+            }
+            Value::Phi(phi_val) => {
+                intrinsic_argument.second_arg = Some(
+                    phi_val
+                        .iter()
+                        .map(|data| {
+                            if let Const::Literal(lit) = data {
+                                return Some(lit.to_string());
+                            } else {
+                                None
+                            }
+                        })
+                        .filter(|const_val| const_val != &None)
+                        .map(|f| f.unwrap())
+                        .collect_vec(),
+                )
+            }
+            _ => {}
+        }
+    }
 }
 
 impl WithCallStack for PermissionVuln {
@@ -514,7 +550,7 @@ pub struct IntrinsicArguments {
 impl<'cx> Dataflow<'cx> for PermissionDataflow {
     type State = PermissionTest;
 
-    fn with_interp<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
         _interp: &Interp<'cx, C>,
     ) -> Self {
         Self {
@@ -523,7 +559,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         }
     }
 
-    fn transfer_intrinsic<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         _interp: &mut Interp<'cx, C>,
         _def: DefId,
@@ -540,10 +576,33 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             intrinsic_argument.name = Some(name.clone());
             let (first, second) = (operands.get(0), operands.get(1));
             if let Some(operand) = first {
-                self.handle_first_arg(_interp, operand, _def, &mut intrinsic_argument);
+                match operand {
+                    Operand::Lit(lit) => {
+                        intrinsic_argument.first_arg = Some(vec![lit.to_string()]);
+                    }
+                    Operand::Var(var) => {
+                        if let Base::Var(varid) = var.base {
+                            if let Some(value) = _interp.get_value(_def, varid, None) {
+                                intrinsic_argument.first_arg = Some(vec![]);
+                                add_elements_to_intrinsic_struct(
+                                    value,
+                                    &mut intrinsic_argument.first_arg,
+                                );
+                            }
+                        }
+                    }
+                }
             }
             if let Some(operand) = second {
-                self.handle_second_arg(_interp, operand, _def, &mut intrinsic_argument);
+                if let Operand::Var(variable) = operand {
+                    if let Base::Var(varid) = variable.base {
+                        if let Some(value) =
+                            _interp.get_value(_def, varid, Some(Projection::Known("method".into())))
+                        {
+                            self.handle_second_arg(value, &mut intrinsic_argument);
+                        }
+                    }
+                }
             }
 
             println!("intrinsic argument {intrinsic_argument:?}");
@@ -561,7 +620,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     let permissions = check_url_for_permissions(
                                         &_interp.confluence_permission_resolver,
                                         &_interp.confluence_regex_map,
-                                        trnaslate_request_type(Some(second_arg)),
+                                        translate_request_type(Some(second_arg)),
                                         &first_arg,
                                     );
                                     permissions_within_call.extend_from_slice(&permissions)
@@ -569,7 +628,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     let permissions = check_url_for_permissions(
                                         &_interp.jira_permission_resolver,
                                         &_interp.jira_regex_map,
-                                        trnaslate_request_type(Some(second_arg)),
+                                        translate_request_type(Some(second_arg)),
                                         &first_arg,
                                     );
                                     permissions_within_call.extend_from_slice(&permissions)
@@ -608,19 +667,241 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         initial_state
     }
 
-    fn get_values_from_operand<C: Checker<'cx, State = Self::State>>(
-        &self,
-        _interp: &mut Interp<'cx, C>,
-        _def: DefId,
-        operand: &Operand,
-    ) -> Option<&Value> {
-        if let Some((var, varid)) = resolve_var_from_operand(operand) {
-            return None // return _interp.get_value(_def, varid, var.projections.get(0).cloned());
-        }
-        None
+    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &Interp<'cx, C>,
+        def: DefId,
+        loc: Location,
+        _block: &'cx BasicBlock,
+        callee: &'cx crate::ir::Operand,
+        initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
+    ) -> Self::State {
+        let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
+            return initial_state;
+        };
+
+        let callee_name = interp.env().def_name(callee_def);
+        let caller_name = interp.env().def_name(def);
+        debug!("Found call to {callee_name} at {def:?} {caller_name}");
+        self.needs_call.push((callee_def, operands.into_vec()));
+        initial_state
     }
 
-    fn transfer_call<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn transfer_inst<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &mut Interp<'cx, C>,
+        def: DefId,
+        loc: Location,
+        block: &'cx BasicBlock,
+        inst: &'cx Inst,
+        initial_state: Self::State,
+    ) -> Self::State {
+        println!("\tinst {inst}");
+        match inst {
+            Inst::Expr(rvalue) => {
+                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
+            }
+            Inst::Assign(var, rvalue) => {
+                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
+            }
+        }
+    }
+
+    fn transfer_block<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &mut Interp<'cx, C>,
+        def: DefId,
+        bb: BasicBlockId,
+        block: &'cx BasicBlock,
+        initial_state: Self::State,
+        arguments: Option<Vec<Value>>,
+    ) -> Self::State {
+        let mut state = initial_state;
+
+        for (stmt, inst) in block.iter().enumerate() {
+            let loc = Location::new(bb, stmt as u32);
+            state = self.transfer_inst(interp, def, loc, block, inst, state);
+        }
+        state
+    }
+
+    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &mut Interp<'cx, C>,
+        def: DefId,
+        block: &'cx BasicBlock,
+        state: Self::State,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
+    ) {
+        self.super_join_term(interp, def, block, state, worklist);
+        for (def, arguments) in self.needs_call.drain(..) {
+            worklist.push_front_blocks(interp.env(), def);
+        }
+    }
+}
+
+pub struct PermissionChecker {
+    pub visit: bool,
+    pub vulns: Vec<PermissionVuln>,
+    pub declared_permissions: HashSet<String>,
+    pub used_permissions: HashSet<String>,
+}
+
+impl PermissionChecker {
+    pub fn new(declared_permissions: HashSet<String>) -> Self {
+        Self {
+            visit: false,
+            vulns: vec![],
+            declared_permissions,
+            used_permissions: HashSet::default(),
+        }
+    }
+
+    pub fn into_vulns(self) -> impl IntoIterator<Item = PermissionVuln> {
+        if self.declared_permissions.len() > 0 {
+            return Vec::from([PermissionVuln {
+                unused_permissions: self.declared_permissions.clone(),
+            }])
+            .into_iter();
+        }
+        self.vulns.into_iter()
+    }
+}
+
+impl Default for PermissionChecker {
+    fn default() -> Self {
+        Self::new(HashSet::new())
+    }
+}
+
+impl fmt::Display for PermissionVuln {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Authentication vulnerability")
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
+pub enum PermissionTest {
+    Yes,
+}
+
+impl JoinSemiLattice for PermissionTest {
+    const BOTTOM: Self = Self::Yes;
+
+    #[inline]
+    fn join_changed(&mut self, other: &Self) -> bool {
+        let old = mem::replace(self, max(*other, *self));
+        old == *self
+    }
+
+    #[inline]
+    fn join(&self, other: &Self) -> Self {
+        max(*other, *self)
+    }
+}
+
+#[derive(Debug)]
+pub struct PermissionVuln {
+    unused_permissions: HashSet<String>,
+}
+
+impl PermissionVuln {
+    pub fn new(unused_permissions: HashSet<String>) -> PermissionVuln {
+        PermissionVuln { unused_permissions }
+    }
+}
+
+pub struct DefintionAnalysisRunner {
+    pub needs_call: Vec<(DefId, Vec<Operand>, Vec<Value>)>,
+}
+
+impl<'cx> Runner<'cx> for PermissionChecker {
+    type State = PermissionTest;
+    type Dataflow = PermissionDataflow;
+
+    fn visit_intrinsic(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        intrinsic: &'cx Intrinsic,
+        state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
+    ) -> ControlFlow<(), Self::State> {
+        ControlFlow::Continue(*state)
+    }
+}
+
+impl<'cx> Checker<'cx> for PermissionChecker {
+    type Vuln = PermissionVuln;
+}
+
+impl IntoVuln for PermissionVuln {
+    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+        Vulnerability {
+            check_name: format!("Least-Privilege"),
+            description: format!(
+                "Unused permissions listed in manifest file: {:?}",
+                self.unused_permissions
+            ),
+            recommendation: "Remove permissions in manifest file that are not needed.",
+            proof: format!(
+                "Unused permissions found in manifest.yml: {:?}",
+                self.unused_permissions
+            ),
+            severity: Severity::Low,
+            app_key: reporter.app_key().to_string(),
+            app_name: reporter.app_name().to_string(),
+            date: reporter.current_date(),
+        }
+    }
+}
+
+impl<'cx> Runner<'cx> for DefintionAnalysisRunner {
+    type State = PermissionTest;
+    type Dataflow = DefintionAnalysisRunner;
+
+    fn visit_intrinsic(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        intrinsic: &'cx Intrinsic,
+        state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
+    ) -> ControlFlow<(), Self::State> {
+        ControlFlow::Continue(*state)
+    }
+}
+
+impl DefintionAnalysisRunner {
+    pub fn new() -> Self {
+        Self {
+            needs_call: Vec::default(),
+        }
+    }
+}
+
+impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
+    type State = PermissionTest;
+
+    fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
+        _interp: &Interp<'cx, C>,
+    ) -> Self {
+        Self { needs_call: vec![] }
+    }
+
+    fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &mut Interp<'cx, C>,
+        _def: DefId,
+        _loc: Location,
+        _block: &'cx BasicBlock,
+        intrinsic: &'cx Intrinsic,
+        initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
+    ) -> Self::State {
+        initial_state
+    }
+
+    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
@@ -668,7 +949,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         initial_state
     }
 
-    fn transfer_inst<C: Checker<'cx, State = Self::State>>(
+    fn transfer_inst<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -710,7 +991,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         }
     }
 
-    fn transfer_block<C: Checker<'cx, State = Self::State>>(
+    fn transfer_block<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -739,7 +1020,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     get_defid_from_varkind(varkind),
                                 ) {
                                     if defid == defid_alt && varid_alt != varid {
-                                        self.varid_to_value
+                                        interp
+                                            .varid_to_value
                                             .insert((def, varid_alt, None), operand.clone());
                                     }
                                 }
@@ -757,7 +1039,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         for (varid, varkind) in interp.body().vars.clone().iter_enumerated() {
             match varkind {
                 VarKind::Ret => {
-                    for (defid, (varid_value, defid_value)) in &interp.expecting_value {
+                    for (defid, (varid_value, defid_value)) in interp.expecting_value.clone() {
                         if def == defid.clone() {
                             if let Some(value) = interp.get_value(def, varid, None).clone() {
                                 interp.add_value(def, varid, value.clone(), None);
@@ -776,7 +1058,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         state
     }
 
-    fn add_variable<C: Checker<'cx, State = Self::State>>(
+    fn add_variable<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         lval: &Variable,
@@ -874,12 +1156,12 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     let val1 = if let Some(val) = get_str_from_operand(op1) {
                         Some(Value::Const(Const::Literal(val)))
                     } else {
-                        self.get_values_from_operand(interp, def, op1).cloned()
+                        self.get_values_from_operand(interp, def, op2)
                     };
                     let val2 = if let Some(val) = get_str_from_operand(op2) {
                         Some(Value::Const(Const::Literal(val)))
                     } else {
-                        self.get_values_from_operand(interp, def, op2).cloned()
+                        self.get_values_from_operand(interp, def, op2)
                     };
                     let mut new_vals = vec![];
                     if let (Some(val1), Some(val2)) = (val1.clone(), val2.clone()) {
@@ -892,7 +1174,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                 .for_each(|val1| add_const_to_val_vec(&val2, &val1, &mut new_vals)),
                             _ => {}
                         }
-                        self.varid_to_value
+                        interp
+                            .varid_to_value
                             .insert((def, *varid, None), return_value_from_string(new_vals));
                     } else if let Some(val1) = val1 {
                         interp.add_value(def, *varid, val1, None);
@@ -905,7 +1188,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         }
     }
 
-    fn insert_value<C: Checker<'cx, State = Self::State>>(
+    fn insert_value<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         operand: &Operand,
@@ -961,7 +1244,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         }
                     } else {
                         if let Some(potential_value) = interp.get_value(def, prev_varid, None) {
-                            self.varid_to_value.insert(
+                            interp.varid_to_value.insert(
                                 (def, *varid, var.projections.get(0).cloned()),
                                 potential_value.clone(),
                             );
@@ -972,7 +1255,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         }
     }
 
-    fn join_term<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -987,68 +1270,12 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         }
     }
 
-    fn handle_first_arg<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn get_str_from_expr<C: crate::interp::Runner<'cx, State = Self::State>>(
         &self,
-        interp: &Interp<'cx, C>,
-        operand: &Operand,
-        _def: DefId,
-        intrinsic_argument: &mut IntrinsicArguments,
-    ) {
-        match operand {
-            Operand::Lit(lit) => {
-                intrinsic_argument.first_arg = Some(vec![lit.to_string()]);
-            }
-            Operand::Var(var) => {
-                if let Base::Var(varid) = var.base {
-                    if let Some(value) = interp.get_value(_def, varid, None) {
-                        intrinsic_argument.first_arg = Some(vec![]);
-                        add_elements_to_intrinsic_struct(value, &mut intrinsic_argument.first_arg);
-                    }
-                }
-            }
-        }
-    }
-
-    fn handle_second_arg<C: crate::interp::Checker<'cx, State = Self::State>>(
-        &self,
-        interp: &Interp<'cx, C>,
-        operand: &Operand,
-        _def: DefId,
-        intrinsic_argument: &mut IntrinsicArguments,
-    ) {
-        if let Operand::Var(variable) = operand {
-            if let Base::Var(varid) = variable.base {
-                if let Some(value) =
-                    interp.get_value(_def, varid, Some(Projection::Known("method".into())))
-                {
-                    match value {
-                        Value::Const(Const::Literal(lit)) => {
-                            intrinsic_argument.second_arg = Some(vec![lit.to_string()]);
-                        }
-                        Value::Phi(phi_val) => {
-                            intrinsic_argument.second_arg = Some(
-                                phi_val
-                                    .iter()
-                                    .map(|data| {
-                                        if let Const::Literal(lit) = data {
-                                            return Some(lit.to_string());
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .filter(|const_val| const_val != &None)
-                                    .map(|f| f.unwrap())
-                                    .collect_vec(),
-                            )
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-
-    fn get_str_from_expr<C: crate::interp::Checker<'cx, State = Self::State>>(&self, _interp: &Interp<'cx, C>, expr: &Operand, def: DefId) -> Vec<Option<String>> {
+        _interp: &Interp<'cx, C>,
+        expr: &Operand,
+        def: DefId,
+    ) -> Vec<Option<String>> {
         if let Some(str) = get_str_from_operand(expr) {
             return vec![Some(str)];
         } else if let Operand::Var(var) = expr {
@@ -1079,127 +1306,5 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             }
         }
         vec![None]
-    }
-}
-
-fn trnaslate_request_type(request_type: Option<&str>) -> RequestType {
-    if let Some(request_type) = request_type {
-        match request_type {
-            "PATCH" => RequestType::Patch,
-            "PUT" => RequestType::Put,
-            "DELETE" => RequestType::Delete,
-            "POST" => RequestType::Post,
-            _ => RequestType::Get,
-        }
-    } else {
-        return RequestType::Get;
-    }
-}
-
-pub struct PermissionChecker {
-    pub visit: bool,
-    pub vulns: Vec<PermissionVuln>,
-    pub declared_permissions: HashSet<String>,
-    pub used_permissions: HashSet<String>,
-}
-
-impl PermissionChecker {
-    pub fn new(declared_permissions: HashSet<String>) -> Self {
-        Self {
-            visit: false,
-            vulns: vec![],
-            declared_permissions,
-            used_permissions: HashSet::default(),
-        }
-    }
-
-    pub fn into_vulns(self) -> impl IntoIterator<Item = PermissionVuln> {
-        if self.declared_permissions.len() > 0 {
-            return Vec::from([PermissionVuln {
-                unused_permissions: self.declared_permissions.clone(),
-            }])
-            .into_iter();
-        }
-        self.vulns.into_iter()
-    }
-}
-
-impl Default for PermissionChecker {
-    fn default() -> Self {
-        Self::new(HashSet::new())
-    }
-}
-
-impl fmt::Display for PermissionVuln {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Authentication vulnerability")
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
-pub enum PermissionTest {
-    Yes,
-}
-
-impl JoinSemiLattice for PermissionTest {
-    const BOTTOM: Self = Self::Yes;
-
-    #[inline]
-    fn join_changed(&mut self, other: &Self) -> bool {
-        let old = mem::replace(self, max(*other, *self));
-        old == *self
-    }
-
-    #[inline]
-    fn join(&self, other: &Self) -> Self {
-        max(*other, *self)
-    }
-}
-
-#[derive(Debug)]
-pub struct PermissionVuln {
-    unused_permissions: HashSet<String>,
-}
-
-impl PermissionVuln {
-    pub fn new(unused_permissions: HashSet<String>) -> PermissionVuln {
-        PermissionVuln { unused_permissions }
-    }
-}
-
-impl<'cx> Checker<'cx> for PermissionChecker {
-    type State = PermissionTest;
-    type Dataflow = PermissionDataflow;
-    type Vuln = PermissionVuln;
-    
-    fn visit_intrinsic(
-        &mut self,
-        interp: &Interp<'cx, Self>,
-        intrinsic: &'cx Intrinsic,
-        state: &Self::State,
-        operands: Option<SmallVec<[Operand; 4]>>,
-    ) -> ControlFlow<(), Self::State> {
-        ControlFlow::Continue(*state)
-    }
-}
-
-impl IntoVuln for PermissionVuln {
-    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
-        Vulnerability {
-            check_name: format!("Least-Privilege"),
-            description: format!(
-                "Unused permissions listed in manifest file: {:?}",
-                self.unused_permissions
-            ),
-            recommendation: "Remove permissions in manifest file that are not needed.",
-            proof: format!(
-                "Unused permissions found in manifest.yml: {:?}",
-                self.unused_permissions
-            ),
-            severity: Severity::Low,
-            app_key: reporter.app_key().to_string(),
-            app_name: reporter.app_name().to_string(),
-            date: reporter.current_date(),
-        }
     }
 }

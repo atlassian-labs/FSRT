@@ -22,3 +22,4 @@ tracing-subscriber.workspace = true
 tracing-tree.workspace = true
 tracing.workspace = true
 walkdir.workspace = true
+futures = "0.3.28"

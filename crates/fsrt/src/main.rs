@@ -1,6 +1,7 @@
 #![allow(clippy::type_complexity)]
 use clap::{Parser, ValueHint};
 use forge_loader::forgepermissions::ForgePermissions;
+use futures::executor::block_on;
 use miette::{IntoDiagnostic, Result};
 use std::{
     collections::HashSet,
@@ -26,7 +27,10 @@ use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
-    checkers::{AuthZChecker, AuthenticateChecker, PermissionChecker, PermissionVuln},
+    checkers::{
+        AuthZChecker, AuthenticateChecker, DefintionAnalysisRunner, PermissionChecker,
+        PermissionVuln,
+    },
     ctx::{AppCtx, ModId},
     definitions::{run_resolver, DefId, Environment},
     interp::Interp,
@@ -219,6 +223,8 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
 
+    let mut defintion_analysis_interp = Interp::new(&proj.env);
+
     let mut interp = Interp::new(&proj.env);
     let mut authn_interp = Interp::new(&proj.env);
     let mut perm_interp = Interp::new(&proj.env);
@@ -229,6 +235,16 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     for func in &proj.funcs {
         match *func {
             FunctionTy::Invokable((ref func, ref path, _, def)) => {
+                let mut runner = DefintionAnalysisRunner::new();
+                debug!("checking {func} at {path:?}");
+                if let Err(err) = defintion_analysis_interp.run_checker(
+                    def,
+                    &mut runner,
+                    path.clone(),
+                    func.clone(),
+                ) {
+                    warn!("error while getting definition analysis {func} in {path:?}: {err}");
+                }
                 let mut checker = AuthZChecker::new();
                 debug!("checking {func} at {path:?}");
                 if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
@@ -236,8 +252,10 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
+
                 if run_permission_checker {
                     let mut checker2 = PermissionChecker::new(permissions_declared.clone());
+                    perm_interp.varid_to_value = defintion_analysis_interp.get_defs();
                     if let Err(err) =
                         perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
                     {
@@ -247,21 +265,32 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 }
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
+                let mut runner = DefintionAnalysisRunner::new();
+                debug!("checking {func} at {path:?}");
+                if let Err(err) = defintion_analysis_interp.run_checker(
+                    def,
+                    &mut runner,
+                    path.clone(),
+                    func.clone(),
+                ) {
+                    warn!("error while getting definition analysis {func} in {path:?}: {err}");
+                }
+
                 let mut checker = AuthenticateChecker::new();
                 debug!("checking webtrigger {func} at {path:?}");
                 if let Err(err) =
                     authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
                 {
-                    println!("error while scanning {func} in {path:?}: {err}");
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
+
                 if run_permission_checker {
+                    perm_interp.varid_to_value = defintion_analysis_interp.get_defs();
                     let mut checker2 = PermissionChecker::new(permissions_declared.clone());
                     if let Err(err) =
                         perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
                     {
-                        println!("error while scanning {func} in {path:?}: {err}");
                         warn!("error while scanning {func} in {path:?}: {err}");
                     }
                     all_used_permissions.extend(perm_interp.permissions.clone());
@@ -291,6 +320,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         }
         None => println!("{report}"),
     }
+
     Ok(proj)
 }
 

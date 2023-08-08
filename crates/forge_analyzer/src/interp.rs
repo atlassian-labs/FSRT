@@ -16,6 +16,7 @@ use forge_permission_resolver::permissions_resolver::{
     PermissionHashMap,
 };
 use forge_utils::{FxHashMap, FxHashSet};
+use itertools::Itertools;
 use regex::Regex;
 use smallvec::SmallVec;
 use swc_core::ecma::atoms::JsWord;
@@ -25,10 +26,10 @@ use crate::{
     checkers::IntrinsicArguments,
     definitions::{Class, Const, DefId, Environment, Value},
     ir::{
-        Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue,
-        Successors, VarId, Variable, STARTING_BLOCK, Projection,
+        Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Projection,
+        Rvalue, Successors, VarId, Variable, STARTING_BLOCK,
     },
-    utils::{get_defid_from_varkind, resolve_var_from_operand},
+    utils::{get_defid_from_varkind, get_str_from_operand, resolve_var_from_operand},
     worklist::WorkList,
 };
 
@@ -54,10 +55,10 @@ pub trait WithCallStack {
 pub trait Dataflow<'cx>: Sized {
     type State: JoinSemiLattice + Clone;
 
-    fn with_interp<C: Checker<'cx, State = Self::State>>(interp: &Interp<'cx, C>) -> Self;
+    fn with_interp<C: Runner<'cx, State = Self::State>>(interp: &Interp<'cx, C>) -> Self;
 
     #[inline]
-    fn resolve_call<C: Checker<'cx, State = Self::State>>(
+    fn resolve_call<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
         callee: &Operand,
@@ -65,7 +66,7 @@ pub trait Dataflow<'cx>: Sized {
         interp.body().resolve_call(interp.env(), callee)
     }
 
-    fn transfer_intrinsic<C: Checker<'cx, State = Self::State>>(
+    fn transfer_intrinsic<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -76,7 +77,7 @@ pub trait Dataflow<'cx>: Sized {
         operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State;
 
-    fn transfer_call<C: Checker<'cx, State = Self::State>>(
+    fn transfer_call<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
@@ -88,7 +89,7 @@ pub trait Dataflow<'cx>: Sized {
         oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State;
 
-    fn transfer_rvalue<C: Checker<'cx, State = Self::State>>(
+    fn transfer_rvalue<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -124,7 +125,7 @@ pub trait Dataflow<'cx>: Sized {
         }
     }
 
-    fn transfer_inst<C: Checker<'cx, State = Self::State>>(
+    fn transfer_inst<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -143,7 +144,7 @@ pub trait Dataflow<'cx>: Sized {
         }
     }
 
-    fn transfer_block<C: Checker<'cx, State = Self::State>>(
+    fn transfer_block<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -160,7 +161,7 @@ pub trait Dataflow<'cx>: Sized {
         state
     }
 
-    fn add_variable<C: Checker<'cx, State = Self::State>>(
+    fn add_variable<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         lval: &Variable,
@@ -170,7 +171,7 @@ pub trait Dataflow<'cx>: Sized {
     ) {
     }
 
-    fn insert_value<C: Checker<'cx, State = Self::State>>(
+    fn insert_value<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         operand: &Operand,
@@ -181,7 +182,7 @@ pub trait Dataflow<'cx>: Sized {
     ) {
     }
 
-    fn join_term<C: Checker<'cx, State = Self::State>>(
+    fn join_term<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -192,7 +193,7 @@ pub trait Dataflow<'cx>: Sized {
         self.super_join_term(interp.borrow_mut(), def, block, state, worklist);
     }
 
-    fn super_join_term<C: Checker<'cx, State = Self::State>>(
+    fn super_join_term<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -234,7 +235,7 @@ pub trait Dataflow<'cx>: Sized {
         }
     }
 
-    fn read_class_from_variable<C: Checker<'cx, State = Self::State>>(
+    fn read_class_from_variable<C: Runner<'cx, State = Self::State>>(
         &mut self,
         _interp: &Interp<'cx, C>,
         defid: DefId,
@@ -242,7 +243,7 @@ pub trait Dataflow<'cx>: Sized {
         None
     }
 
-    fn read_class_from_object<C: Checker<'cx, State = Self::State>>(
+    fn read_class_from_object<C: Runner<'cx, State = Self::State>>(
         &mut self,
         _interp: &Interp<'cx, C>,
         defid: DefId,
@@ -250,7 +251,7 @@ pub trait Dataflow<'cx>: Sized {
         None
     }
 
-    fn try_read_mem_from_object<C: Checker<'cx, State = Self::State>>(
+    fn try_read_mem_from_object<C: Runner<'cx, State = Self::State>>(
         &self,
         _interp: &Interp<'cx, C>,
         _def: DefId,
@@ -259,7 +260,7 @@ pub trait Dataflow<'cx>: Sized {
         None
     }
 
-    fn insert_with_existing_value<C: Checker<'cx, State = Self::State>>(
+    fn insert_with_existing_value<C: Runner<'cx, State = Self::State>>(
         &mut self,
         operand: &Operand,
         value: &Value,
@@ -269,15 +270,7 @@ pub trait Dataflow<'cx>: Sized {
     ) {
     }
 
-    fn handle_first_arg<C: Checker<'cx, State = Self::State>>(
-        &self,
-        _interp: &Interp<'cx, C>,
-        operand: &Operand,
-        _def: DefId,
-        intrinsic_argument: &mut IntrinsicArguments,
-    ) {}
-
-    fn read_mem_from_object<C: Checker<'cx, State = Self::State>>(
+    fn read_mem_from_object<C: Runner<'cx, State = Self::State>>(
         &self,
         _interp: &Interp<'cx, C>,
         _def: DefId,
@@ -286,19 +279,45 @@ pub trait Dataflow<'cx>: Sized {
         None
     }
 
-    fn handle_second_arg<C: Checker<'cx, State = Self::State>>(
+    fn get_str_from_expr<C: Runner<'cx, State = Self::State>>(
         &self,
         _interp: &Interp<'cx, C>,
-        operand: &Operand,
-        _def: DefId,
-        intrinsic_argument: &mut IntrinsicArguments,
-    ) {}
-
-    fn get_str_from_expr<C: Checker<'cx, State = Self::State>>(&self,  _interp: &Interp<'cx, C>, expr: &Operand, def: DefId) -> Vec<Option<String>> {
+        expr: &Operand,
+        def: DefId,
+    ) -> Vec<Option<String>> {
+        if let Some(str) = get_str_from_operand(expr) {
+            return vec![Some(str)];
+        } else if let Operand::Var(var) = expr {
+            if let Base::Var(varid) = var.base {
+                let value = _interp.get_value(def, varid, None);
+                if let Some(value) = value {
+                    match value {
+                        Value::Const(const_val) => {
+                            if let Const::Literal(str) = const_val {
+                                return vec![Some(str.clone())];
+                            }
+                        }
+                        Value::Phi(phi_val) => {
+                            return phi_val
+                                .iter()
+                                .map(|const_val| {
+                                    if let Const::Literal(str) = const_val {
+                                        Some(str.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect_vec();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
         vec![None]
     }
 
-    fn def_to_class_property<C: Checker<'cx, State = Self::State>>(
+    fn def_to_class_property<C: Runner<'cx, State = Self::State>>(
         &self,
         _interp: &Interp<'cx, C>,
         _def: DefId,
@@ -307,16 +326,22 @@ pub trait Dataflow<'cx>: Sized {
         None
     }
 
-    fn get_values_from_operand<C: Checker<'cx, State = Self::State>>(
+    #[inline]
+    fn get_values_from_operand<C: Runner<'cx, State = Self::State>>(
         &self,
         _interp: &mut Interp<'cx, C>,
         _def: DefId,
         operand: &Operand,
-    ) -> Option<&Value> {
+    ) -> Option<Value> {
+        if let Some((var, varid)) = resolve_var_from_operand(operand) {
+            return _interp
+                .get_value(_def, varid, var.projections.get(0).cloned())
+                .cloned();
+        }
         None
     }
 
-    fn try_insert<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn try_insert<C: crate::interp::Runner<'cx, State = Self::State>>(
         &self,
         _interp: &Interp<'cx, C>,
         _def: DefId,
@@ -326,9 +351,8 @@ pub trait Dataflow<'cx>: Sized {
     }
 }
 
-pub trait Checker<'cx>: Sized {
+pub trait Runner<'cx>: Sized {
     type State: JoinSemiLattice + Clone + fmt::Debug;
-    type Vuln: Display + WithCallStack;
     type Dataflow: Dataflow<'cx, State = Self::State>;
 
     fn visit_intrinsic(
@@ -432,6 +456,10 @@ pub trait Checker<'cx>: Sized {
     }
 }
 
+pub trait Checker<'cx>: Sized + Runner<'cx> {
+    type Vuln: Display + WithCallStack;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Frame {
     pub(crate) calling_function: DefId,
@@ -454,7 +482,7 @@ pub(crate) struct EntryPoint {
 }
 
 #[derive(Debug)]
-pub struct Interp<'cx, C: Checker<'cx>> {
+pub struct Interp<'cx, C: Runner<'cx>> {
     pub env: &'cx Environment,
     // We can probably get rid of these RefCells by refactoring the Interp and Checker into
     // two fields in another struct.
@@ -469,14 +497,14 @@ pub struct Interp<'cx, C: Checker<'cx>> {
     checker_visited: RefCell<FxHashSet<DefId>>,
     callstack: RefCell<Vec<Frame>>,
     pub callstack_arguments: Vec<Vec<Value>>,
-    vulns: RefCell<Vec<C::Vuln>>,
+    // vulns: RefCell<Vec<C::Vuln>>,
     pub permissions: Vec<String>,
     pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
     pub jira_permission_resolver: PermissionHashMap,
     pub confluence_permission_resolver: PermissionHashMap,
     pub jira_regex_map: HashMap<String, Regex>,
     pub confluence_regex_map: HashMap<String, Regex>,
-    pub varid_to_value: DefinitionAnalysisMap,
+    pub varid_to_value: FxHashMap<(DefId, VarId, Option<Projection>), Value>,
     _checker: PhantomData<C>,
 }
 
@@ -534,7 +562,7 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
+impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     pub fn new(env: &'cx Environment) -> Self {
         let (jira_permission_resolver, jira_regex_map) = get_permission_resolver_jira();
         let (confluence_permission_resolver, confluence_regex_map) =
@@ -555,7 +583,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             callstack_arguments: Vec::new(),
             expecting_value: VecDeque::default(),
             callstack: RefCell::new(Vec::new()),
-            vulns: RefCell::new(Vec::new()),
+            // vulns: RefCell::new(Vec::new()),
             permissions: Vec::new(),
             varid_to_value: DefinitionAnalysisMap::default(),
             jira_permission_resolver,
@@ -564,6 +592,11 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             confluence_regex_map,
             _checker: PhantomData,
         }
+    }
+
+    #[inline]
+    pub fn get_defs(&self) -> DefinitionAnalysisMap {
+        self.varid_to_value.clone()
     }
 
     #[inline]
@@ -599,10 +632,10 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         value: Value,
         projection: Option<Projection>,
     ) {
-        // println!("varid from {varid:?} -- {projection:?} -- {value:?}");
         self.varid_to_value
             .insert((defid_block, varid, projection), value);
     }
+
     #[inline]
     pub(crate) fn get_value(
         &self,
@@ -754,16 +787,16 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         Ok(())
     }
 
-    pub fn dump_results(&self, out: &mut dyn Write) -> io::Result<()> {
-        let vulns = &**self.vulns.borrow();
-        if vulns.is_empty() {
-            writeln!(out, "No vulnerabilities found")
-        } else {
-            writeln!(out, "Found {} vulnerabilities", vulns.len())?;
-            for vuln in vulns {
-                writeln!(out, "{vuln}")?;
-            }
-            Ok(())
-        }
-    }
+    // pub fn dump_results(&self, out: &mut dyn Write) -> io::Result<()> {
+    //     let vulns = &**self.vulns.borrow();
+    //     if vulns.is_empty() {
+    //         writeln!(out, "No vulnerabilities found")
+    //     } else {
+    //         writeln!(out, "Found {} vulnerabilities", vulns.len())?;
+    //         for vuln in vulns {
+    //             writeln!(out, "{vuln}")?;
+    //         }
+    //         Ok(())
+    //     }
+    // }
 }
