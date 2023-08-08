@@ -6,7 +6,6 @@ mod tests {
     use crate::permissions_resolver::{
         get_permission_resolver_confluence, get_permission_resolver_jira,
     };
-
     use super::*;
 
     #[test]
@@ -30,6 +29,7 @@ mod tests {
     #[test]
     fn test_resolving_permssion_basic() {
         let (permission_map, regex_map) = get_permission_resolver_jira();
+
         let url = "/rest/api/3/issue/27/attachments";
         let request_type = RequestType::Post;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
