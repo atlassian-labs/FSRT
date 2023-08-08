@@ -102,7 +102,6 @@ pub fn get_permission_resolver(url: &str) -> (PermissionHashMap, HashMap<String,
 
     get_permisions_for(url, &mut endpoint_map, &mut endpoint_regex);
 
-
     return (endpoint_map, endpoint_regex);
 }
 
