@@ -6,7 +6,8 @@ use tracing::{debug, info, warn};
 use crate::{
     definitions::{Class, Const, DefId, DefKind, Environment, IntrinsicName, Value},
     interp::{
-        Checker, Dataflow, EntryKind, EntryPoint, Frame, Interp, JoinSemiLattice, WithCallStack,
+        Checker, Dataflow, EntryKind, EntryPoint, Frame, Interp, JoinSemiLattice, Runner,
+        WithCallStack,
     },
     ir::{
         Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand, Rvalue,
@@ -795,6 +796,10 @@ impl<'cx> Runner<'cx> for SecretChecker {
     }
 }
 
+impl<'cx> Checker<'cx> for AuthZChecker {
+    type Vuln = AuthZVuln;
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 pub enum Authenticated {
     No,
@@ -823,13 +828,13 @@ pub struct AuthenticateDataflow {
 impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
     type State = Authenticated;
 
-    fn with_interp<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
         _interp: &Interp<'cx, C>,
     ) -> Self {
         Self { needs_call: vec![] }
     }
 
-    fn transfer_intrinsic<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         _interp: &mut Interp<'cx, C>,
         _def: DefId,
@@ -851,7 +856,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         }
     }
 
-    fn transfer_call<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
@@ -881,7 +886,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         }
     }
 
-    fn join_term<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -920,10 +925,10 @@ impl Default for AuthenticateChecker {
     }
 }
 
-impl<'cx> Checker<'cx> for AuthenticateChecker {
+impl<'cx> Runner<'cx> for AuthenticateChecker {
     type State = Authenticated;
     type Dataflow = AuthenticateDataflow;
-    type Vuln = AuthNVuln;
+
     fn visit_intrinsic(
         &mut self,
         interp: &Interp<'cx, Self>,
@@ -948,6 +953,10 @@ impl<'cx> Checker<'cx> for AuthenticateChecker {
             Intrinsic::SafeCall(_) => ControlFlow::Continue(*state),
         }
     }
+}
+
+impl<'cx> Checker<'cx> for AuthenticateChecker {
+    type Vuln = AuthNVuln;
 }
 
 #[derive(Debug)]
@@ -1040,7 +1049,7 @@ pub struct IntrinsicArguments {
 impl<'cx> Dataflow<'cx> for PermissionDataflow {
     type State = PermissionTest;
 
-    fn with_interp<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
         _interp: &Interp<'cx, C>,
     ) -> Self {
         Self {
@@ -1096,7 +1105,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         }
     }
 
-    fn transfer_intrinsic<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         _interp: &mut Interp<'cx, C>,
         _def: DefId,
@@ -1113,10 +1122,33 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             intrinsic_argument.name = Some(name.clone());
             let (first, second) = (operands.get(0), operands.get(1));
             if let Some(operand) = first {
-                self.handle_first_arg(_interp, operand, _def, &mut intrinsic_argument);
+                match operand {
+                    Operand::Lit(lit) => {
+                        intrinsic_argument.first_arg = Some(vec![lit.to_string()]);
+                    }
+                    Operand::Var(var) => {
+                        if let Base::Var(varid) = var.base {
+                            if let Some(value) = _interp.get_value(_def, varid, None) {
+                                intrinsic_argument.first_arg = Some(vec![]);
+                                add_elements_to_intrinsic_struct(
+                                    value,
+                                    &mut intrinsic_argument.first_arg,
+                                );
+                            }
+                        }
+                    }
+                }
             }
             if let Some(operand) = second {
-                self.handle_second_arg(_interp, operand, _def, &mut intrinsic_argument);
+                if let Operand::Var(variable) = operand {
+                    if let Base::Var(varid) = variable.base {
+                        if let Some(value) =
+                            _interp.get_value(_def, varid, Some(Projection::Known("method".into())))
+                        {
+                            self.handle_second_arg(value, &mut intrinsic_argument);
+                        }
+                    }
+                }
             }
 
             println!("intrinsic argument {intrinsic_argument:?}");
@@ -1134,7 +1166,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     let permissions = check_url_for_permissions(
                                         &_interp.confluence_permission_resolver,
                                         &_interp.confluence_regex_map,
-                                        trnaslate_request_type(Some(second_arg)),
+                                        translate_request_type(Some(second_arg)),
                                         &first_arg,
                                     );
                                     permissions_within_call.extend_from_slice(&permissions)
@@ -1142,7 +1174,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     let permissions = check_url_for_permissions(
                                         &_interp.jira_permission_resolver,
                                         &_interp.jira_regex_map,
-                                        trnaslate_request_type(Some(second_arg)),
+                                        translate_request_type(Some(second_arg)),
                                         &first_arg,
                                     );
                                     permissions_within_call.extend_from_slice(&permissions)
@@ -1362,7 +1394,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         for (varid, varkind) in interp.body().vars.clone().iter_enumerated() {
             match varkind {
                 VarKind::Ret => {
-                    for (defid, (varid_value, defid_value)) in &interp.expecting_value {
+                    for (defid, (varid_value, defid_value)) in interp.expecting_value.clone() {
                         if def == defid.clone() {
                             if let Some(value) = interp.get_value(def, varid, None).clone() {
                                 interp.add_value(def, varid, value.clone(), None);
@@ -1381,7 +1413,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         state
     }
 
-    fn add_variable<C: Checker<'cx, State = Self::State>>(
+    fn add_variable<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         lval: &Variable,
@@ -1470,12 +1502,12 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     let val1 = if let Some(val) = get_str_from_operand(op1) {
                         Some(Value::Const(Const::Literal(val)))
                     } else {
-                        self.get_values_from_operand(interp, def, op1).cloned()
+                        self.get_values_from_operand(interp, def, op2)
                     };
                     let val2 = if let Some(val) = get_str_from_operand(op2) {
                         Some(Value::Const(Const::Literal(val)))
                     } else {
-                        self.get_values_from_operand(interp, def, op2).cloned()
+                        self.get_values_from_operand(interp, def, op2)
                     };
                     let mut new_vals = vec![];
                     if let (Some(val1), Some(val2)) = (val1.clone(), val2.clone()) {
@@ -1488,7 +1520,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                 .for_each(|val1| add_const_to_val_vec(&val2, &val1, &mut new_vals)),
                             _ => {}
                         }
-                        self.varid_to_value
+                        interp
+                            .varid_to_value
                             .insert((def, *varid, None), return_value_from_string(new_vals));
                     } else if let Some(val1) = val1 {
                         interp.add_value(def, *varid, val1, None);
@@ -1501,7 +1534,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         }
     }
 
-    fn insert_value<C: Checker<'cx, State = Self::State>>(
+    fn insert_value<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         operand: &Operand,
@@ -1557,7 +1590,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         }
                     } else {
                         if let Some(potential_value) = interp.get_value(def, prev_varid, None) {
-                            self.varid_to_value.insert(
+                            interp.varid_to_value.insert(
                                 (def, *varid, var.projections.get(0).cloned()),
                                 potential_value.clone(),
                             );
@@ -1568,7 +1601,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         }
     }
 
-    fn join_term<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -1583,7 +1616,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         }
     }
 
-    fn handle_first_arg<C: crate::interp::Checker<'cx, State = Self::State>>(
+    fn get_str_from_expr<C: crate::interp::Runner<'cx, State = Self::State>>(
         &self,
         interp: &Interp<'cx, C>,
         operand: &Operand,

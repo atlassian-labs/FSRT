@@ -156,7 +156,7 @@ pub trait Dataflow<'cx>: Sized {
         state
     }
 
-    fn add_variable<C: Checker<'cx, State = Self::State>>(
+    fn add_variable<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         lval: &Variable,
@@ -176,7 +176,7 @@ pub trait Dataflow<'cx>: Sized {
     ) {
     }
 
-    fn join_term<C: Checker<'cx, State = Self::State>>(
+    fn join_term<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -282,7 +282,7 @@ pub trait Dataflow<'cx>: Sized {
         None
     }
 
-    fn handle_second_arg<C: Checker<'cx, State = Self::State>>(
+    fn get_str_from_expr<C: Runner<'cx, State = Self::State>>(
         &self,
         _interp: &Interp<'cx, C>,
         operand: &Operand,
