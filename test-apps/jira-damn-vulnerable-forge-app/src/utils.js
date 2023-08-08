@@ -1,5 +1,5 @@
 import api, { route } from '@forge/api';
-import jwt from "jsonwebtoken";
+import jwt from "jwt";
 
 import {testFunctionFromTestFile} from './testfile';
 import module_exports_func from './moduleex.js'
@@ -18,7 +18,7 @@ export async function fetchIssueSummary(issueIdOrKey, url) {
     },
   };
 
-  var token = jwt.sign({ foo: 'bar' }, 'secret_token');
+  var token = jwt.sign({ foo: 'bar' }, "process.env.SECRET");
 
 
   module_exports_func()

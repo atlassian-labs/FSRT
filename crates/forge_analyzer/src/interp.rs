@@ -359,6 +359,7 @@ pub trait Runner<'cx>: Sized {
         &mut self,
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
+        def: DefId,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State>;
@@ -407,13 +408,14 @@ pub trait Runner<'cx>: Sized {
         &mut self,
         interp: &Interp<'cx, Self>,
         rvalue: &'cx Rvalue,
+        def: DefId,
         id: BasicBlockId,
         curr_state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
         debug!("visiting rvalue {rvalue:?} with {curr_state:?}");
         match rvalue {
             Rvalue::Intrinsic(intrinsic, operands) => {
-                self.visit_intrinsic(interp, intrinsic, curr_state, Some(operands.clone()))
+                self.visit_intrinsic(interp, intrinsic, def, curr_state, Some(operands.clone()))
             }
             Rvalue::Call(callee, args) => self.visit_call(interp, callee, args, id, curr_state),
             Rvalue::Unary(_, _)
@@ -436,8 +438,10 @@ pub trait Runner<'cx>: Sized {
         let mut curr_state = interp.block_state(def, id).join(curr_state);
         for stmt in block {
             match stmt {
-                Inst::Expr(r) => curr_state = self.visit_rvalue(interp, r, id, &curr_state)?,
-                Inst::Assign(_, r) => curr_state = self.visit_rvalue(interp, r, id, &curr_state)?,
+                Inst::Expr(r) => curr_state = self.visit_rvalue(interp, r, def, id, &curr_state)?,
+                Inst::Assign(_, r) => {
+                    curr_state = self.visit_rvalue(interp, r, def, id, &curr_state)?
+                }
             }
         }
         match block.successors() {
@@ -721,7 +725,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             let arguments = self.callstack_arguments.pop();
             let name = self.env.def_name(def);
             debug!("Dataflow: {name} - {block_id}");
-            println!("Dataflow: {def:?} {name} - {block_id}");
             self.dataflow_visited.insert(def);
             let func = self.env().def_ref(def).expect_body();
             self.curr_body.set(Some(func));

@@ -21,7 +21,7 @@ use swc_core::ecma::{transforms::base::perf::Check, utils::Value::Known};
 use tracing::{debug, info, warn};
 
 use crate::{
-    definitions::{Class, Const, DefId, DefKind, Environment, IntrinsicName, Value},
+    definitions::{Class, Const, DefId, DefKind, Environment, IntrinsicName, PackageData, Value},
     interp::{
         Checker, Dataflow, EntryKind, EntryPoint, Frame, Interp, JoinSemiLattice, Runner,
         WithCallStack,
@@ -246,6 +246,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
         &mut self,
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
+        def: DefId,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -407,6 +408,7 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
         &mut self,
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
+        def: DefId,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -502,6 +504,240 @@ impl IntoVuln for AuthNVuln {
 
 impl WithCallStack for AuthNVuln {
     fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
+}
+
+pub struct SecretDataflow {
+    needs_call: Vec<DefId>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
+pub enum SecretState {
+    ALL,
+}
+
+impl JoinSemiLattice for SecretState {
+    const BOTTOM: Self = Self::ALL;
+
+    #[inline]
+    fn join_changed(&mut self, other: &Self) -> bool {
+        let old = mem::replace(self, max(*other, *self));
+        old == *self
+    }
+
+    #[inline]
+    fn join(&self, other: &Self) -> Self {
+        max(*other, *self)
+    }
+}
+
+impl<'cx> Dataflow<'cx> for SecretDataflow {
+    type State = SecretState;
+
+    fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
+        _interp: &Interp<'cx, C>,
+    ) -> Self {
+        Self { needs_call: vec![] }
+    }
+
+    fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &mut Interp<'cx, C>,
+        _def: DefId,
+        _loc: Location,
+        _block: &'cx BasicBlock,
+        intrinsic: &'cx Intrinsic,
+        initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
+    ) -> Self::State {
+        initial_state
+    }
+
+    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &Interp<'cx, C>,
+        def: DefId,
+        loc: Location,
+        _block: &'cx BasicBlock,
+        callee: &'cx crate::ir::Operand,
+        initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
+    ) -> Self::State {
+        let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
+            return initial_state;
+        };
+        self.needs_call.push(callee_def);
+        SecretState::ALL
+    }
+
+    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &mut Interp<'cx, C>,
+        def: DefId,
+        block: &'cx BasicBlock,
+        state: Self::State,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
+    ) {
+        self.super_join_term(interp, def, block, state, worklist);
+        for def in self.needs_call.drain(..) {
+            worklist.push_front_blocks(interp.env(), def);
+        }
+    }
+}
+
+pub struct SecretChecker {
+    visit: bool,
+    vulns: Vec<SecretVuln>,
+}
+
+impl SecretChecker {
+    pub fn new() -> Self {
+        Self {
+            visit: true,
+            vulns: vec![],
+        }
+    }
+
+    pub fn into_vulns(self) -> impl IntoIterator<Item = SecretVuln> {
+        // TODO: make this an associated function on the Checker trait.
+        self.vulns.into_iter()
+    }
+}
+
+impl Default for SecretChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug)]
+pub struct SecretVuln {
+    stack: String,
+    entry_func: String,
+    file: PathBuf,
+}
+
+impl SecretVuln {
+    fn new(callstack: Vec<Frame>, env: &Environment, entry: &EntryPoint) -> Self {
+        let entry_func = match &entry.kind {
+            EntryKind::Function(func) => func.clone(),
+            EntryKind::Resolver(res, prop) => format!("{res}.{prop}"),
+            EntryKind::Empty => {
+                warn!("empty function");
+                String::new()
+            }
+        };
+        let file = entry.file.clone();
+        let stack = Itertools::intersperse(
+            iter::once(&*entry_func).chain(
+                callstack
+                    .into_iter()
+                    .rev()
+                    .map(|frame| env.def_name(frame.calling_function)),
+            ),
+            " -> ",
+        )
+        .collect();
+        Self {
+            stack,
+            entry_func,
+            file,
+        }
+    }
+}
+
+impl fmt::Display for SecretVuln {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Hardcoded secret vulnerability")
+    }
+}
+
+impl IntoVuln for SecretVuln {
+    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.file
+            .iter()
+            .skip_while(|comp| *comp != "src")
+            .for_each(|comp| comp.hash(&mut hasher));
+        self.entry_func.hash(&mut hasher);
+        self.stack.hash(&mut hasher);
+        Vulnerability {
+            check_name: format!("Secret-{}", hasher.finish()),
+            description: format!(
+                "Hardcoded secret found within codebase {} in {:?}.",
+                self.entry_func, self.file
+            ),
+            recommendation: "Use secrets as enviornment variables instead of hardcoding them.",
+            proof: format!("Hardcoded secret found in found via {}", self.stack),
+            severity: Severity::High,
+            app_key: reporter.app_key().to_owned(),
+            app_name: reporter.app_name().to_owned(),
+            date: reporter.current_date(),
+        }
+    }
+}
+
+impl WithCallStack for SecretVuln {
+    fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
+}
+
+impl<'cx> Runner<'cx> for SecretChecker {
+    type State = SecretState;
+    type Dataflow = SecretDataflow;
+
+    fn visit_intrinsic(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        intrinsic: &'cx Intrinsic,
+        def: DefId,
+        state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
+    ) -> ControlFlow<(), Self::State> {
+        if let Intrinsic::JWTSign(package_data) = intrinsic {
+            if let Some(operand) = operands
+                .unwrap_or_default()
+                .get((package_data.secret_position - 1) as usize)
+            {
+                match operand {
+                    Operand::Lit(lit) => {
+                        let vuln =
+                            SecretVuln::new(interp.callstack(), interp.env(), interp.entry());
+                        if let Literal::Str(_) = lit {
+                            info!("Found a vuln!");
+                            self.vulns.push(vuln);
+                        }
+                    }
+                    Operand::Var(var) => {
+                        if let Base::Var(varid) = var.base {
+                            if let Some(value) =
+                                interp.get_value(def, varid, var.projections.get(0).cloned())
+                            {
+                                match value {
+                                    Value::Const(_) | Value::Phi(_) => {
+                                        let vuln = SecretVuln::new(
+                                            interp.callstack(),
+                                            interp.env(),
+                                            interp.entry(),
+                                        );
+                                        info!("Found a vuln!");
+                                        self.vulns.push(vuln);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ControlFlow::Continue(*state)
+    }
+}
+
+impl<'cx> Checker<'cx> for SecretChecker {
+    type Vuln = SecretVuln;
 }
 
 pub struct PermissionDataflow {
@@ -605,8 +841,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 }
             }
 
-            println!("intrinsic argument {intrinsic_argument:?}");
-
             let mut permissions_within_call: Vec<String> = vec![];
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
             intrinsic_argument
@@ -658,8 +892,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     }
                 });
 
-            println!("permissions found {permissions_within_call:?}");
-
             _interp
                 .permissions
                 .extend_from_slice(&permissions_within_call);
@@ -697,7 +929,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
-        println!("\tinst {inst}");
         match inst {
             Inst::Expr(rvalue) => {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
@@ -824,6 +1055,7 @@ impl<'cx> Runner<'cx> for PermissionChecker {
         &mut self,
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
+        def: DefId,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -864,6 +1096,7 @@ impl<'cx> Runner<'cx> for DefintionAnalysisRunner {
         &mut self,
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
+        def: DefId,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -958,7 +1191,6 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
-        println!("\tinst {inst}");
         match inst {
             Inst::Expr(rvalue) => {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)

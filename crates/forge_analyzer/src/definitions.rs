@@ -6,6 +6,8 @@ use crate::utils::calls_method;
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
 
+use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use swc_core::{
     common::SyntaxContext,
@@ -149,6 +151,7 @@ struct ModuleDefs {
 pub fn run_resolver(
     modules: &TiSlice<ModId, Module>,
     file_resolver: &ForgeResolver,
+    secret_packages: Vec<PackageData>,
 ) -> Environment {
     let mut environment = Environment::new();
     for (curr_mod, module) in modules.iter_enumerated() {
@@ -207,6 +210,7 @@ pub fn run_resolver(
             res: &mut environment,
             curr_class: None,
             curr_function: None,
+            secret_packages: secret_packages.clone(), // remove the clone
             module: curr_mod,
             parent: None,
         };
@@ -523,11 +527,11 @@ pub enum IntrinsicName {
     Other,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JWTSigningDetails {
-    package: String,
-    signing_function: String,
-    position_arg: i8,
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Eq)]
+pub struct PackageData {
+    pub package_name: String,
+    pub function_name: String,
+    pub secret_position: u8,
 }
 
 struct Lowerer<'cx> {
@@ -768,6 +772,7 @@ struct FunctionCollector<'cx> {
     module: ModId,
     curr_class: Option<DefId>,
     curr_function: Option<DefId>,
+    secret_packages: Vec<PackageData>,
     parent: Option<DefId>,
 }
 
@@ -778,6 +783,7 @@ struct FunctionAnalyzer<'cx> {
     assigning_to: Option<Variable>,
     pub body: Body,
     block: BasicBlockId,
+    secret_packages: Vec<PackageData>,
     operand_stack: Vec<Operand>,
     in_lhs: bool,
 }
@@ -889,13 +895,26 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
             }
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
-                if *last == *"sign"
-                    || *last == *"requestConfluence"
+                if self.secret_packages.iter().any(|package_data| {
+                    return *package_data.function_name == *last
                         && Some(&ImportKind::Default)
-                            == self.res.as_foreign_import(def, "jsonwebtoken") =>
+                            == self.res.as_foreign_import(def, &package_data.package_name);
+                }) =>
             {
-                println!("found jwt ");
-                Some(Intrinsic::Authorize(IntrinsicName::RequestJira))
+                Some(Intrinsic::JWTSign(
+                    self.secret_packages
+                        .iter()
+                        .cloned()
+                        .filter(|package| {
+                            *package.function_name == *last
+                                && Some(&ImportKind::Default)
+                                    == self.res.as_foreign_import(def, &package.package_name)
+                        })
+                        .collect_vec()
+                        .get(0)
+                        .unwrap()
+                        .clone(),
+                ))
             }
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
                 match self.res.as_foreign_import(def, "@forge/api") {
@@ -1982,6 +2001,7 @@ impl Visit for FunctionCollector<'_> {
                         module: self.module,
                         current_def: *owner,
                         assigning_to: None,
+                        secret_packages: self.secret_packages.clone(),
                         body,
                         block: BasicBlockId::default(),
                         operand_stack: vec![],
@@ -2029,6 +2049,7 @@ impl Visit for FunctionCollector<'_> {
                         res: self.res,
                         module: self.module,
                         current_def: *owner,
+                        secret_packages: self.secret_packages.clone(),
                         assigning_to: None,
                         body,
                         block: BasicBlockId::default(),
@@ -2080,6 +2101,7 @@ impl Visit for FunctionCollector<'_> {
             module: self.module,
             current_def: owner,
             assigning_to: None,
+            secret_packages: self.secret_packages.clone(),
             body,
             block: BasicBlockId::default(),
             operand_stack: vec![],
@@ -2145,6 +2167,7 @@ impl Visit for FunctionCollector<'_> {
                             module: self.module,
                             current_def: owner,
                             assigning_to: None,
+                            secret_packages: self.secret_packages.clone(),
                             body: Body::with_owner(owner),
                             block: BasicBlockId::default(),
                             operand_stack: vec![],
@@ -2248,6 +2271,7 @@ impl FunctionCollector<'_> {
             current_def: owner,
             assigning_to: None,
             body,
+            secret_packages: self.secret_packages.clone(),
             block: BasicBlockId::default(),
             operand_stack: vec![],
             in_lhs: false,

@@ -1,7 +1,6 @@
 #![allow(clippy::type_complexity)]
 use clap::{Parser, ValueHint};
 use forge_loader::forgepermissions::ForgePermissions;
-use futures::executor::block_on;
 use miette::{IntoDiagnostic, Result};
 use std::{
     collections::HashSet,
@@ -29,10 +28,10 @@ use tracing_tree::HierarchicalLayer;
 use forge_analyzer::{
     checkers::{
         AuthZChecker, AuthenticateChecker, DefintionAnalysisRunner, PermissionChecker,
-        PermissionVuln,
+        PermissionVuln, SecretChecker,
     },
     ctx::{AppCtx, ModId},
-    definitions::{run_resolver, DefId, Environment},
+    definitions::{run_resolver, DefId, Environment, PackageData},
     interp::Interp,
     reporter::Reporter,
     resolver::resolve_calls,
@@ -100,6 +99,7 @@ impl ForgeProject {
     fn with_files_and_sourceroot<P: AsRef<Path>, I: IntoIterator<Item = PathBuf>>(
         src: P,
         iter: I,
+        secret_packages: Vec<PackageData>,
     ) -> Self {
         let sm = Arc::<SourceMap>::default();
         let target = EsVersion::latest();
@@ -133,7 +133,7 @@ impl ForgeProject {
         });
         let keys = ctx.module_ids().collect::<Vec<_>>();
         debug!(?keys);
-        let env = run_resolver(ctx.modules(), ctx.file_resolver());
+        let env = run_resolver(ctx.modules(), ctx.file_resolver(), secret_packages);
         Self {
             sm,
             ctx,
@@ -190,7 +190,14 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     let permissions_declared: HashSet<String> =
         HashSet::from_iter(permission_scopes.iter().map(|s| s.replace("\"", "")));
 
-    println!("permission scopes: {permission_scopes:?}");
+    let secret_packages: Vec<PackageData> =
+        if let Result::Ok(f) = std::fs::File::open("secretdata.yaml") {
+            let scrape_config: Vec<PackageData> =
+                serde_yaml::from_reader(f).expect("Failed to deserialize package");
+            scrape_config
+        } else {
+            vec![]
+        };
 
     let paths = collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>();
 
@@ -203,10 +210,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         }
         false
     });
-
     let run_permission_checker = opts.check_permissions && !transpiled_async;
-
-    println!("run permissions checker {:?}", run_permission_checker);
 
     let funcrefs = manifest.modules.into_analyzable_functions().flat_map(|f| {
         f.sequence(|fmod| {
@@ -215,7 +219,8 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         })
     });
     let src_root = dir.join("src");
-    let mut proj = ForgeProject::with_files_and_sourceroot(src_root, paths.clone());
+    let mut proj =
+        ForgeProject::with_files_and_sourceroot(src_root, paths.clone(), secret_packages);
     if transpiled_async {
         warn!("Unable to scan due to transpiled async");
     }
@@ -229,6 +234,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     let mut authn_interp = Interp::new(&proj.env);
     let mut perm_interp = Interp::new(&proj.env);
     let mut reporter = Reporter::new();
+    let mut secret_interp = Interp::new(&proj.env);
     reporter.add_app(opts.appkey.unwrap_or_default(), name.to_owned());
     let mut all_used_permissions = HashSet::default();
 
@@ -253,11 +259,21 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
 
+                let mut checker2 = SecretChecker::new();
+                secret_interp.varid_to_value = defintion_analysis_interp.get_defs();
+                debug!("checking {func} at {path:?}");
+                if let Err(err) =
+                    secret_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
+                {
+                    warn!("error while scanning {func} in {path:?}: {err}");
+                }
+                reporter.add_vulnerabilities(checker2.into_vulns());
+
                 if run_permission_checker {
-                    let mut checker2 = PermissionChecker::new(permissions_declared.clone());
+                    let mut checker3 = PermissionChecker::new(permissions_declared.clone());
                     perm_interp.varid_to_value = defintion_analysis_interp.get_defs();
                     if let Err(err) =
-                        perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
+                        perm_interp.run_checker(def, &mut checker3, path.clone(), func.clone())
                     {
                         warn!("error while scanning {func} in {path:?}: {err}");
                     }
@@ -275,6 +291,16 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 ) {
                     warn!("error while getting definition analysis {func} in {path:?}: {err}");
                 }
+
+                let mut checker2 = SecretChecker::new();
+                secret_interp.varid_to_value = defintion_analysis_interp.get_defs();
+                debug!("checking {func} at {path:?}");
+                if let Err(err) =
+                    secret_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
+                {
+                    warn!("error while scanning {func} in {path:?}: {err}");
+                }
+                reporter.add_vulnerabilities(checker2.into_vulns());
 
                 let mut checker = AuthenticateChecker::new();
                 debug!("checking webtrigger {func} at {path:?}");
@@ -298,7 +324,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
             }
         }
     }
-    println!("all used permissions {all_used_permissions:?}");
 
     if run_permission_checker {
         let unused_permissions = permissions_declared.difference(&all_used_permissions);
