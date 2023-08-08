@@ -3,10 +3,10 @@ use crate::permissions_resolver::{
 };
 
 mod tests {
+    use super::*;
     use crate::permissions_resolver::{
         get_permission_resolver_confluence, get_permission_resolver_jira,
     };
-    use super::*;
 
     #[test]
     fn test_simple_url_with_end_var() {
