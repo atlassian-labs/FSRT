@@ -36,7 +36,7 @@ use crate::definitions::DefId;
 use crate::definitions::DefKind;
 use crate::definitions::Environment;
 use crate::definitions::IntrinsicName;
-use crate::definitions::JWTSigningDetails;
+use crate::definitions::PackageData;
 use crate::definitions::Value;
 
 pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
@@ -74,7 +74,7 @@ pub enum Intrinsic {
     Fetch,
     ApiCall(IntrinsicName),
     SafeCall(IntrinsicName),
-    JWTSign(JWTSigningDetails),
+    JWTSign(PackageData),
     EnvRead,
     StorageRead,
 }
