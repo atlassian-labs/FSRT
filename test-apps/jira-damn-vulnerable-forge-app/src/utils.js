@@ -8,7 +8,7 @@ import {another_export, newExport} from './newexports.js'
 import func_defult from './export_default';
 import my_function from "./export_default2.js"
 
-export async function fetchIssueSummary(issueIdOrKey, url) {
+export async function fetchIssueSummary(issueIdOrKey, test_value) {
 
   let obj = {
     method: 'POST',
@@ -18,7 +18,7 @@ export async function fetchIssueSummary(issueIdOrKey, url) {
     },
   };
 
-  var token = jwt.sign({ foo: 'bar' }, "process.env.SECRET");
+  var token = jwt.sign({ foo: 'bar' }, process.env.SECRET);
 
 
   module_exports_func()
@@ -44,15 +44,15 @@ export async function fetchIssueSummary(issueIdOrKey, url) {
 
   const resp = await api
     .asApp()
-    .requestJira(a_url, obj);
+    .requestJira(get_random_string(), obj);
   const data = await resp.json();
   console.log(JSON.stringify(data));
   return data['fields']['summary'];
 }
 
-function get_route() {
+function get_random_string() {
   //return a_url = route`/rest/api/3/issue/${issueIdOrKey}?fields=summary`;
-  return route`/bananas/${issueIdOrKey}?fields=summary`;
+  return "test_string_from_get_random_string";
 }
 
 export async function writeComment(issueIdOrKey, comment) {
