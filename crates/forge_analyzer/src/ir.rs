@@ -430,7 +430,6 @@ impl Body {
         env: &'cx Environment,
         callee: &Operand,
     ) -> Option<(DefId, &'cx Body)> {
-        /* callee is the name of the function that is being called */
 
         match callee {
             Operand::Var(Variable {

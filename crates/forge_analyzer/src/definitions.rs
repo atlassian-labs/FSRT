@@ -3084,6 +3084,8 @@ impl Visit for ImportCollector<'_> {
                     }
                     None => warn!("unable to find default import for {}", &self.current_import),
                 }
+
+                // POI
             }
             Err(_) => {
                 let foreign_id = self.foreign_defs.push_and_get_key(ForeignItem {
@@ -3354,6 +3356,8 @@ impl Visit for ExportCollector<'_> {
         }
         n.decl.visit_children_with(self);
     }
+
+    // POI
 
     fn visit_export_named_specifier(&mut self, n: &ExportNamedSpecifier) {
         if let ModuleExportName::Ident(ident) = &n.orig {

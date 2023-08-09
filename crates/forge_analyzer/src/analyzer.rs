@@ -237,6 +237,7 @@ impl Visit for FunctionAnalyzer<'_> {
                                 _ => {}
                             }
                         }
+                        // we don't need to add this to the IR, since we know it's useless
                         return;
                     } else {
                         IrStmt::Call(id.into())
