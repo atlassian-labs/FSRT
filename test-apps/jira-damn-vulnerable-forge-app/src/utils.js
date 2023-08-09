@@ -1,12 +1,13 @@
 import api, { route } from '@forge/api';
-import jwt from "jwt";
+import jwt from "jsonwebtoken";
 
 import {testFunctionFromTestFile} from './testfile';
 import module_exports_func from './moduleex.js'
 import {func_from_exports, diffunc} from "./exportse.js"
 import {another_export, newExport} from './newexports.js'
 import func_defult from './export_default';
-import my_function from "./export_default2.js"
+import my_function from "./export_default2.js";
+import ANewClass from './anewclass';
 
 export async function fetchIssueSummary(issueIdOrKey, test_value) {
 
@@ -18,6 +19,9 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
     },
   };
 
+
+  let a_class = new ANewClass();
+  a_class.function_a_new_class();
   var token = jwt.sign({ foo: 'bar' }, process.env.SECRET);
 
 
