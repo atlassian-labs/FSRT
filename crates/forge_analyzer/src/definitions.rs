@@ -1156,7 +1156,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
         let callee = match callee {
             CalleeRef::Super => Operand::Var(Variable::SUPER),
             CalleeRef::Import => Operand::UNDEF,
-            CalleeRef::Expr(expr) => self.lower_expr(expr, None),
+            CalleeRef::Expr(expr) => self.get_operand_for_call(expr),
         };
 
         let first_arg = args.first().map(|expr| &*expr.expr);
@@ -1521,7 +1521,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
             Expr::New(NewExpr { callee, args, .. }) => {
                 if let Expr::Ident(ident) = &**callee {
-                    let someething = self.res.sym_to_def(ident.to_id(), self.module);
                     // remove the clone
                     return self.lower_call(
                         CalleeRef::Expr(callee),
@@ -1938,7 +1937,9 @@ impl Visit for FunctionCollector<'_> {
                                     &**&function,
                                     self.res.default_export(self.module),
                                 ),
-                                Expr::Class(ClassExpr { ident, class }) => {}
+                                Expr::Class(ClassExpr { ident, class }) => {
+
+                                }
                                 _ => {}
                             }
                         }
@@ -1972,7 +1973,7 @@ impl Visit for FunctionCollector<'_> {
     }
 
     fn visit_constructor(&mut self, n: &Constructor) {
-        n.visit_children_with(self);
+        //n.visit_children_with(self);
         if let Some(class_def) = self.curr_class {
             if let DefKind::Class(class) = self.res.clone().def_ref(class_def) {
                 if let Some((_, owner)) = &class
@@ -2018,7 +2019,7 @@ impl Visit for FunctionCollector<'_> {
     }
 
     fn visit_class_method(&mut self, n: &ClassMethod) {
-        n.visit_children_with(self);
+        //n.visit_children_with(self);
         if let Some(class_def) = self.curr_class {
             if let DefKind::Class(class) = self.res.clone().def_ref(class_def) {
                 if let Some((_, owner)) = &class.pub_members.iter().find(|(name, defid)| {
@@ -2682,6 +2683,8 @@ impl Visit for ImportCollector<'_> {
                     }
                     None => warn!("unable to find default import for {}", &self.current_import),
                 }
+
+                // POI
             }
             Err(_) => {
                 let foreign_id = self.foreign_defs.push_and_get_key(ForeignItem {
@@ -2836,6 +2839,8 @@ impl Visit for ExportCollector<'_> {
         }
         n.decl.visit_children_with(self);
     }
+
+    // POI
 
     fn visit_export_named_specifier(&mut self, n: &ExportNamedSpecifier) {
         let orig_id = n.orig.as_id();
