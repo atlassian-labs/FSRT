@@ -1211,6 +1211,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn get_operand_for_call(&mut self, expr: &Expr) -> Operand {
+        println!("expr {expr:?}");
+
         if let Expr::Ident(ident) = expr {
             if let Some(DefKind::Class(class)) = self.res.sym_to_def(ident.to_id(), self.module) {
                 let id = ident.to_id();
@@ -2173,6 +2175,15 @@ impl Visit for FunctionCollector<'_> {
                                     self.curr_class = Some(defid);
                                 }
                             }
+                            Expr::Class(class) => {
+                                println!("class ~~~ {ident_property:?}");
+                                if let Some(defid) =
+                                    self.res.get_sym(ident_property.to_id(), self.module)
+                                {
+                                    println!("found def ... {defid:?}");
+                                    self.curr_class = Some(defid);
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -2196,6 +2207,9 @@ impl Visit for FunctionCollector<'_> {
         {
             self.curr_class = Some(class.def); // sets the current class so that mehtods are assigned to the proper class
         }
+
+        // need a way to get the curr class without using the sym ...
+
         n.visit_children_with(self);
     }
 
@@ -2248,8 +2262,11 @@ impl Visit for FunctionCollector<'_> {
 
     fn visit_class_method(&mut self, n: &ClassMethod) {
         //n.visit_children_with(self);
+        println!("visitng class method {:?}", self.curr_class);
         if let Some(class_def) = self.curr_class {
+            println!("1 ~ {n:?}");
             if let DefKind::Class(class) = self.res.clone().def_ref(class_def) {
+                println!("2 ~ {n:?}");
                 if let Some((_, owner)) = &class.pub_members.iter().find(|(name, defid)| {
                     if let PropName::Ident(ident) = &n.key {
                         return name == &ident.sym;
@@ -2787,9 +2804,12 @@ impl Visit for Lowerer<'_> {
 
     fn visit_class_method(&mut self, n: &ClassMethod) {
         n.visit_children_with(self);
+        println!("adding class mehtod .... ");
         if let Some(class_def) = self.curr_class {
             if let DefKind::Class(class) = self.res.def_mut(class_def) {
                 if let PropName::Ident(ident) = &n.key {
+                    println!("adding class mehtod .... ");
+
                     let owner =
                         self.res
                             .add_anonymous("__CLASSMETHOD", AnonType::Closure, self.curr_mod);
@@ -3000,6 +3020,7 @@ impl ExportCollector<'_> {
             }
         };
         self.default = Some(defid);
+
         defid
     }
 
@@ -3074,6 +3095,8 @@ impl Visit for ImportCollector<'_> {
                 debug_assert_ne!(self.curr_mod, mod_id);
                 match self.resolver.default_export(mod_id) {
                     Some(def) => {
+                        println!("def -- {def:?} {:?} {:?}", mod_id, self.curr_mod);
+
                         self.resolver.resolver.symbol_to_id.insert(
                             Symbol {
                                 module: self.curr_mod,
@@ -3082,7 +3105,7 @@ impl Visit for ImportCollector<'_> {
                             def,
                         );
                     }
-                    None => warn!("unable to find default import for {}", &self.current_import),
+                    None => println!("unable to find default import for {}", &self.current_import),
                 }
 
                 // POI
@@ -3284,6 +3307,9 @@ impl Visit for ExportCollector<'_> {
                         match &*n.right {
                             Expr::Fn(FnExpr { ident, function }) => {
                                 self.add_export(DefRes::Function(()), ident_property.to_id());
+                            }
+                            Expr::Class(_) => {
+                                self.add_export(DefRes::Class(()), ident_property.to_id());
                             }
                             Expr::Ident(ident) => {
                                 let export_defid =
@@ -3794,6 +3820,7 @@ impl Definitions {
                 }
                 DefKind::Class(_) => {
                     let objid = classes.push_and_get_key(Class::new(id));
+                    println!("pusing class 1");
                     DefKind::Class(objid)
                 }
                 DefKind::Foreign(d) => DefKind::Foreign(d),
