@@ -1172,7 +1172,6 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
-
         println!("\t inst {inst}");
         match inst {
             Inst::Expr(rvalue) => {
