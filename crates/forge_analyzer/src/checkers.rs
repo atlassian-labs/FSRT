@@ -890,7 +890,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     }
                 });
 
-
             _interp
                 .permissions
                 .extend_from_slice(&permissions_within_call);
