@@ -896,7 +896,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def);
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
     }
 }
@@ -1104,7 +1104,7 @@ impl<'cx> Dataflow<'cx> for SecretDataflow {
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def);
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
     }
 }
@@ -1838,7 +1838,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for (def, arguments, values) in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def);
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
             interp.callstack_arguments.push(values.clone());
         }
     }

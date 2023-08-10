@@ -74,7 +74,7 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
   // diffunc();
 
   // different_function();
-  let a_class = new ANewClass();
+  let a_class = new classone();
   a_class.function_a_new_class();
 
   let val = 'grapefruit';

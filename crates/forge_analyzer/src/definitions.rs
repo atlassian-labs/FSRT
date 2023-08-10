@@ -3082,11 +3082,6 @@ impl Visit for ImportCollector<'_> {
                 debug_assert_ne!(self.curr_mod, mod_id);
                 match self.resolver.default_export(mod_id) {
                     Some(def) => {
-                        println!(
-                            "def -- {:?} {def:?} {:?} {:?}",
-                            n.local, mod_id, self.curr_mod
-                        );
-
                         self.resolver.resolver.symbol_to_id.insert(
                             Symbol {
                                 module: self.curr_mod,
@@ -3284,10 +3279,11 @@ impl Visit for ExportCollector<'_> {
                                 ),
                                 Expr::Ident(ident) => {
                                     self.add_default(DefRes::Undefined, None);
-                                    self.res_table.default_export_names.insert(
-                                        (ident.sym.clone(), self.curr_mod),
-                                        self.default.unwrap(),
-                                    );
+                                    // adding the default export, so we can resolve it during the lowering
+                                    self.res_table
+                                        .exported_names
+                                        .insert((ident.sym.clone(), self.curr_mod), self.default.unwrap());
+                        
                                 }
                                 _ => {}
                             }
@@ -3393,6 +3389,7 @@ impl Visit for ExportCollector<'_> {
             }
             n.visit_children_with(self)
         }
+    }
     }
 
     fn visit_export_default_expr(&mut self, n: &ExportDefaultExpr) {
