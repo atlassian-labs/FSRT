@@ -137,7 +137,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def);
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
     }
 }
@@ -371,7 +371,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def);
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
     }
 }
@@ -579,7 +579,7 @@ impl<'cx> Dataflow<'cx> for SecretDataflow {
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def);
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
     }
 }
@@ -946,7 +946,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for (def, arguments) in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def);
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
     }
 }
@@ -1170,6 +1170,9 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
+
+        println!("\t inst {inst}");
+
         match inst {
             Inst::Expr(rvalue) => {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
@@ -1479,7 +1482,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
     ) {
         self.super_join_term(interp, def, block, state, worklist);
         for (def, arguments, values) in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def);
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
             interp.callstack_arguments.push(values.clone());
         }
     }

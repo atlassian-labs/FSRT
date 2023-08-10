@@ -14,7 +14,7 @@ use std::{
 use forge_loader::forgepermissions::ForgePermissions;
 use forge_permission_resolver::permissions_resolver::{
     check_url_for_permissions, get_permission_resolver_confluence, get_permission_resolver_jira,
-    PermissionHashMap,
+    PermissionHashMap, RequestType,
 };
 use forge_utils::{FxHashMap, FxHashSet};
 use itertools::Itertools;
@@ -356,6 +356,8 @@ pub trait Runner<'cx>: Sized {
     type State: JoinSemiLattice + Clone + fmt::Debug;
     type Dataflow: Dataflow<'cx, State = Self::State>;
 
+    const visit_all: bool = true;
+
     fn visit_intrinsic(
         &mut self,
         interp: &Interp<'cx, Self>,
@@ -491,6 +493,7 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     pub env: &'cx Environment,
     // We can probably get rid of these RefCells by refactoring the Interp and Checker into
     // two fields in another struct.
+    pub call_all: bool,
     call_graph: CallGraph,
     pub return_value: Option<(Value, DefId)>,
     pub return_value_alt: HashMap<DefId, Value>,
@@ -506,10 +509,10 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     pub expected_return_values: HashMap<DefId, (DefId, VarId)>,
     pub permissions: Vec<String>,
     pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
-    pub jira_permission_resolver: PermissionHashMap,
-    pub confluence_permission_resolver: PermissionHashMap,
-    pub jira_regex_map: HashMap<String, Regex>,
-    pub confluence_regex_map: HashMap<String, Regex>,
+    pub jira_permission_resolver: &'cx PermissionHashMap,
+    pub confluence_permission_resolver: &'cx PermissionHashMap,
+    pub jira_regex_map: &'cx HashMap<String, Regex>,
+    pub confluence_regex_map: &'cx HashMap<String, Regex>,
     pub varid_to_value: FxHashMap<(DefId, VarId, Option<Projection>), Value>,
     _checker: PhantomData<C>,
 }
@@ -569,15 +572,13 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
-    pub fn new(env: &'cx Environment) -> Self {
-        let (jira_permission_resolver, jira_regex_map) = get_permission_resolver_jira();
-        let (confluence_permission_resolver, confluence_regex_map) =
-            get_permission_resolver_confluence();
+    pub fn new(env: &'cx Environment, call_all: bool, jira_permission_resolver: &'cx PermissionHashMap, jira_regex_map: &'cx HashMap<String, Regex>, confluence_permission_resolver: &'cx PermissionHashMap, confluence_regex_map: &'cx HashMap<String, Regex>) -> Self {
 
         let call_graph = CallGraph::new(env);
         Self {
             env,
             call_graph,
+            call_all,
             entry: Default::default(),
             return_value: None,
             return_value_alt: HashMap::default(),
@@ -722,7 +723,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.dataflow_visited.insert(func_def);
         let mut dataflow = C::Dataflow::with_interp(self);
         let mut worklist = WorkList::new();
-        worklist.push_front_blocks(self.env, func_def);
+        worklist.push_front_blocks(self.env, func_def, self.call_all);
         let old_body = self.curr_body.get();
         while let Some((def, block_id)) = worklist.pop_front() {
             let arguments = self.callstack_arguments.pop();

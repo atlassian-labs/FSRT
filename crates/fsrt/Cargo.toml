@@ -12,6 +12,7 @@ clap.workspace = true
 forge_analyzer.workspace = true
 forge_file_resolver.workspace = true
 forge_loader.workspace = true
+forge_permission_resolver.workspace = true
 miette.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true

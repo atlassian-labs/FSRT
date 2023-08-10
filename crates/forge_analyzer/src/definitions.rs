@@ -2737,11 +2737,6 @@ impl Visit for ImportCollector<'_> {
                 debug_assert_ne!(self.curr_mod, mod_id);
                 match self.resolver.default_export(mod_id) {
                     Some(def) => {
-                        println!(
-                            "def -- {:?} {def:?} {:?} {:?}",
-                            n.local, mod_id, self.curr_mod
-                        );
-
                         self.resolver.resolver.symbol_to_id.insert(
                             Symbol {
                                 module: self.curr_mod,
@@ -2838,10 +2833,11 @@ impl Visit for ExportCollector<'_> {
                                 ),
                                 Expr::Ident(ident) => {
                                     self.add_default(DefRes::Undefined, None);
-                                    self.res_table.default_export_names.insert(
-                                        (ident.sym.clone(), self.curr_mod),
-                                        self.default.unwrap(),
-                                    );
+                                    // adding the default export, so we can resolve it during the lowering
+                                    self.res_table
+                                        .exported_names
+                                        .insert((ident.sym.clone(), self.curr_mod), self.default.unwrap());
+                        
                                 }
                                 _ => {}
                             }
@@ -2918,6 +2914,14 @@ impl Visit for ExportCollector<'_> {
     }
 
     fn visit_export_named_specifier(&mut self, n: &ExportNamedSpecifier) {
+        if let ModuleExportName::Ident(ident) =  &n.orig {
+            let export_defid =
+            self.add_export(DefRes::Undefined, ident.to_id());
+        self.res_table
+            .exported_names
+            .insert((ident.sym.clone(), self.curr_mod), export_defid);
+        } else {
+
         let orig_id = n.orig.as_id();
         let orig = self.add_export(DefRes::default(), orig_id);
         if let Some(id) = &n.exported {
@@ -2925,6 +2929,7 @@ impl Visit for ExportCollector<'_> {
             self.add_export(DefRes::ExportAlias(orig), exported_id);
         }
         n.visit_children_with(self)
+    }
     }
 
     fn visit_export_default_expr(&mut self, n: &ExportDefaultExpr) {

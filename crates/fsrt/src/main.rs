@@ -1,6 +1,7 @@
 #![allow(clippy::type_complexity)]
 use clap::{Parser, ValueHint};
 use forge_loader::forgepermissions::ForgePermissions;
+use forge_permission_resolver::permissions_resolver::{get_permission_resolver_confluence, get_permission_resolver_jira};
 use miette::{IntoDiagnostic, Result};
 use std::{
     collections::HashSet,
@@ -228,13 +229,17 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
 
-    let mut defintion_analysis_interp = Interp::new(&proj.env);
+    let (jira_permission_resolver, jira_regex_map) = get_permission_resolver_jira();
+    let (confluence_permission_resolver, confluence_regex_map) =
+        get_permission_resolver_confluence();
 
-    let mut interp = Interp::new(&proj.env);
-    let mut authn_interp = Interp::new(&proj.env);
-    let mut perm_interp = Interp::new(&proj.env);
+    let mut defintion_analysis_interp = Interp::new(&proj.env, true, &jira_permission_resolver, &jira_regex_map, &confluence_permission_resolver, &confluence_regex_map);
+
+    let mut interp = Interp::new(&proj.env, false, &jira_permission_resolver, &jira_regex_map, &confluence_permission_resolver, &confluence_regex_map);
+    let mut authn_interp = Interp::new(&proj.env, false, &jira_permission_resolver, &jira_regex_map, &confluence_permission_resolver, &confluence_regex_map);
+    let mut perm_interp = Interp::new(&proj.env, true, &jira_permission_resolver, &jira_regex_map, &confluence_permission_resolver, &confluence_regex_map);
     let mut reporter = Reporter::new();
-    let mut secret_interp = Interp::new(&proj.env);
+    let mut secret_interp = Interp::new(&proj.env, true, &jira_permission_resolver, &jira_regex_map, &confluence_permission_resolver, &confluence_regex_map);
     reporter.add_app(opts.appkey.unwrap_or_default(), name.to_owned());
     let mut all_used_permissions = HashSet::default();
 
