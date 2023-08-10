@@ -2136,7 +2136,7 @@ impl Visit for FunctionCollector<'_> {
     }
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
-                n.visit_children_with(self);
+        n.visit_children_with(self);
         let Some(BindingIdent{id, ..}) = n.name.as_ident() else {
             return;
         };
