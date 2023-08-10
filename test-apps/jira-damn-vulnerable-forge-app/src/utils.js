@@ -7,7 +7,7 @@ import {func_from_exports, diffunc} from "./exportse.js"
 import {another_export, newExport} from './newexports.js'
 import func_defult from './export_default';
 import my_function from "./export_default2.js";
-import {AClassNew} from './anewclass';
+import ANewClass from './anewclass';
 
 export async function fetchIssueSummary(issueIdOrKey, test_value) {
 
@@ -36,7 +36,7 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
   diffunc()
 
   // different_function();
-  let a_class = new AClassNew();
+  let a_class = new ANewClass();
   a_class.function_a_new_class();
 
   let val = "grapefruit";

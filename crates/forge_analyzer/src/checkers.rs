@@ -890,7 +890,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     }
                 });
 
-            println!("intrinsic argument {intrinsic_argument:?}");
 
             _interp
                 .permissions
@@ -1172,7 +1171,6 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
-        println!("\t inst {inst}");
         match inst {
             Inst::Expr(rvalue) => {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
