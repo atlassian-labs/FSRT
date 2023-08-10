@@ -1435,8 +1435,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     }
                 });
 
-            println!("intrinsic argument {intrinsic_argument:?}");
-
             _interp
                 .permissions
                 .extend_from_slice(&permissions_within_call);

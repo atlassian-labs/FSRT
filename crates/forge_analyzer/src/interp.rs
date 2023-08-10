@@ -806,13 +806,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         worklist.push_front_blocks(self.env, func_def, self.call_all);
         let old_body = self.curr_body.get();
         while let Some((def, block_id)) = worklist.pop_front() {
-            println!("def from popping {def:?} block id from popping {block_id:?}");
-
             let arguments = self.callstack_arguments.pop();
             let name = self.env.def_name(def);
             debug!("Dataflow: {name} - {block_id}");
             self.dataflow_visited.insert(def);
-            println!("expect body 8");
             let func = self.env().def_ref(def).expect_body();
             self.curr_body.set(Some(func))
             let block = func.block(block_id);
