@@ -223,7 +223,6 @@ pub fn run_resolver(
     }
 
     for (curr_mod, module) in modules.iter_enumerated() {
-
         let global_id = environment.get_or_reserve_global_scope(curr_mod);
 
         let mut global_collector = GlobalCollector {
@@ -1587,9 +1586,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let var = self.body.get_or_insert_global(def);
                 Operand::with_var(var)
             }
-            Expr::Lit(lit) => {
-                lit.clone().into()
-            }
+            Expr::Lit(lit) => lit.clone().into(),
             Expr::Tpl(tpl) => {
                 let tpl = self.lower_tpl(tpl);
                 Operand::with_var(
@@ -2841,9 +2838,7 @@ impl Visit for GlobalCollector<'_> {
 
     fn visit_class(&mut self, _: &Clss) {}
 
-
     fn visit_module(&mut self, n: &Module) {
-
         // we encouter 2 statements, so the defid gets reassigned every time
 
         let owner = self.global_id;
@@ -2877,10 +2872,8 @@ impl Visit for GlobalCollector<'_> {
         analyzer.lower_stmts(all_module_items.as_slice());
         let body = analyzer.body;
 
-
         *self.res.def_mut(owner).expect_body() = body;
     }
-
 }
 
 impl Visit for ExportCollector<'_> {
@@ -3115,11 +3108,10 @@ impl Environment {
     #[inline]
     fn get_or_reserve_global_scope(&mut self, module: ModId) -> DefId {
         if let Some(defid) = self.global.get(module) {
-            return defid.clone()
+            return defid.clone();
         }
         self.reserve_global_scope(module)
     }
-
 
     fn new_key_from_res(&mut self, id: DefId, res: DefRes) -> DefKey {
         match res {
