@@ -1359,7 +1359,9 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             if let Some(operand) = first {
                 match operand {
                     Operand::Lit(lit) => {
-                        intrinsic_argument.first_arg = Some(vec![lit.to_string()]);
+                        if &Literal::Undef != lit {
+                            intrinsic_argument.first_arg = Some(vec![lit.to_string()]);
+                        }
                     }
                     Operand::Var(var) => {
                         if let Base::Var(varid) = var.base {
@@ -1386,18 +1388,58 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
 
             let mut permissions_within_call: Vec<String> = vec![];
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
-            intrinsic_argument
-                .first_arg
-                .iter()
-                .for_each(|first_arg_vec| {
-                    if let Some(second_arg_vec) = intrinsic_argument.second_arg.clone() {
-                        first_arg_vec.iter().for_each(|first_arg| {
-                            second_arg_vec.iter().for_each(|second_arg| {
+
+            //println!("intrinsic_argument {:?}", intrinsic_argument);
+
+            if intrinsic_argument.first_arg == None {
+                println!("interp permissions {:?}", _interp.permissions);
+                println!("found none ....");
+                _interp.permissions.drain(..);
+                println!("interp permissions {:?}", _interp.permissions);
+            } else {
+                intrinsic_argument
+                    .first_arg
+                    .iter()
+                    .for_each(|first_arg_vec| {
+                        if let Some(second_arg_vec) = intrinsic_argument.second_arg.clone() {
+                            first_arg_vec.iter().for_each(|first_arg| {
+                                println!("first arg before {first_arg:?}");
+                                let first_arg = first_arg.replace(&['\"'][..], "");
+
+                                println!("first arg after {first_arg:?}");
+
+                                second_arg_vec.iter().for_each(|second_arg| {
+                                    if intrinsic_func_type == IntrinsicName::RequestConfluence {
+                                        let permissions = check_url_for_permissions(
+                                            &_interp.confluence_permission_resolver,
+                                            &_interp.confluence_regex_map,
+                                            translate_request_type(Some(second_arg)),
+                                            &first_arg,
+                                        );
+                                        permissions_within_call.extend_from_slice(&permissions)
+                                    } else if intrinsic_func_type == IntrinsicName::RequestJira {
+                                        let permissions = check_url_for_permissions(
+                                            &_interp.jira_permission_resolver,
+                                            &_interp.jira_regex_map,
+                                            translate_request_type(Some(second_arg)),
+                                            &first_arg,
+                                        );
+                                        permissions_within_call.extend_from_slice(&permissions)
+                                    }
+                                })
+                            })
+                        } else {
+                            first_arg_vec.iter().for_each(|first_arg| {
+                                println!("first arg before {first_arg:?}");
+                                let first_arg = first_arg.replace(&['\"'][..], "");
+
+                                println!("first arg after {first_arg:?}");
+
                                 if intrinsic_func_type == IntrinsicName::RequestConfluence {
                                     let permissions = check_url_for_permissions(
                                         &_interp.confluence_permission_resolver,
                                         &_interp.confluence_regex_map,
-                                        translate_request_type(Some(second_arg)),
+                                        RequestType::Get,
                                         &first_arg,
                                     );
                                     permissions_within_call.extend_from_slice(&permissions)
@@ -1405,39 +1447,26 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     let permissions = check_url_for_permissions(
                                         &_interp.jira_permission_resolver,
                                         &_interp.jira_regex_map,
-                                        translate_request_type(Some(second_arg)),
+                                        RequestType::Get,
                                         &first_arg,
                                     );
                                     permissions_within_call.extend_from_slice(&permissions)
                                 }
                             })
-                        })
-                    } else {
-                        first_arg_vec.iter().for_each(|first_arg| {
-                            if intrinsic_func_type == IntrinsicName::RequestConfluence {
-                                let permissions = check_url_for_permissions(
-                                    &_interp.confluence_permission_resolver,
-                                    &_interp.confluence_regex_map,
-                                    RequestType::Get,
-                                    &first_arg,
-                                );
-                                permissions_within_call.extend_from_slice(&permissions)
-                            } else if intrinsic_func_type == IntrinsicName::RequestJira {
-                                let permissions = check_url_for_permissions(
-                                    &_interp.jira_permission_resolver,
-                                    &_interp.jira_regex_map,
-                                    RequestType::Get,
-                                    &first_arg,
-                                );
-                                permissions_within_call.extend_from_slice(&permissions)
-                            }
-                        })
-                    }
-                });
+                        }
+                    });
 
-            _interp
-                .permissions
-                .extend_from_slice(&permissions_within_call);
+                println!("permissions within call {permissions_within_call:?}");
+
+                _interp.permissions = _interp
+                    .permissions
+                    .iter()
+                    .cloned()
+                    .filter(|permissions| !permissions_within_call.contains(permissions))
+                    .collect_vec();
+            }
+
+            // remvove all permissions that it finds
         }
         initial_state
     }
@@ -1772,18 +1801,20 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
     ) {
         match operand {
             Operand::Lit(_lit) => {
-                if let Some(prev_values) = prev_values {
-                    if let Some(lit_value) = convert_operand_to_raw(operand) {
-                        let const_value = Const::Literal(lit_value);
-                        let mut all_values = prev_values.clone();
-                        all_values.push(const_value);
-                        let value = Value::Phi(all_values);
-                        interp.add_value(def, *varid, value, lval.projections.get(0).cloned());
-                    }
-                } else {
-                    if let Some(lit_value) = convert_operand_to_raw(operand) {
-                        let value = Value::Const(Const::Literal(lit_value));
-                        interp.add_value(def, *varid, value, lval.projections.get(0).cloned());
+                if &Literal::Undef != _lit {
+                    if let Some(prev_values) = prev_values {
+                        if let Some(lit_value) = convert_operand_to_raw(operand) {
+                            let const_value = Const::Literal(lit_value);
+                            let mut all_values = prev_values.clone();
+                            all_values.push(const_value);
+                            let value = Value::Phi(all_values);
+                            interp.add_value(def, *varid, value, lval.projections.get(0).cloned());
+                        }
+                    } else {
+                        if let Some(lit_value) = convert_operand_to_raw(operand) {
+                            let value = Value::Const(Const::Literal(lit_value));
+                            interp.add_value(def, *varid, value, lval.projections.get(0).cloned());
+                        }
                     }
                 }
             }

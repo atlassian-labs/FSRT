@@ -74,7 +74,7 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
   // diffunc();
 
   // different_function();
-  let a_class = new classone();
+  let a_class = new ANewClass();
   a_class.function_a_new_class();
 
   let val = 'grapefruit';
@@ -116,7 +116,7 @@ export async function writeComment(issueIdOrKey, comment) {
   const resp = await api
     .asApp()
     .requestJira(route`/rest/api/3/issue/${issueIdOrKey}/comment`, {
-      method: 'DELETE',
+      method: 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',

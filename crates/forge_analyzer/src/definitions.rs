@@ -190,6 +190,7 @@ pub fn run_resolver(
         module.visit_with(&mut import_collector);
     }
 
+ 
     let mut foreign = TiVec::default();
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut import_collector = ImportCollector {
@@ -223,6 +224,7 @@ pub fn run_resolver(
         };
         module.visit_with(&mut lowerer);
     }
+
 
     for (curr_mod, module) in modules.iter_enumerated() {
         let global_id = environment.get_or_reserve_global_scope(curr_mod);
@@ -537,6 +539,8 @@ pub struct Environment {
     default_exports: FxHashMap<ModId, DefId>,
     pub resolver: ResolverTable,
 }
+
+// POI
 
 struct ImportCollector<'cx> {
     resolver: &'cx mut Environment,
@@ -1686,7 +1690,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let var = self.body.get_or_insert_global(def);
                 Operand::with_var(var)
             }
-            Expr::Lit(lit) => lit.clone().into(),
+            Expr::Lit(lit) => {
+                println!("lowering literal {lit:?}");
+
+                lit.clone().into()
+            }
             Expr::Tpl(tpl) => {
                 let tpl = self.lower_tpl(tpl);
                 Operand::with_var(
@@ -3280,10 +3288,10 @@ impl Visit for ExportCollector<'_> {
                                 Expr::Ident(ident) => {
                                     self.add_default(DefRes::Undefined, None);
                                     // adding the default export, so we can resolve it during the lowering
-                                    self.res_table
-                                        .exported_names
-                                        .insert((ident.sym.clone(), self.curr_mod), self.default.unwrap());
-                        
+                                    self.res_table.exported_names.insert(
+                                        (ident.sym.clone(), self.curr_mod),
+                                        self.default.unwrap(),
+                                    );
                                 }
                                 _ => {}
                             }
