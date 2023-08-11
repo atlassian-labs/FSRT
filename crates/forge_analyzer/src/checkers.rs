@@ -877,7 +877,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             let mut permissions_within_call: Vec<String> = vec![];
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
 
-            println!("intrinsic_argument {:?}", intrinsic_argument);
+            //println!("intrinsic_argument {:?}", intrinsic_argument);
 
             if intrinsic_argument.first_arg == None {
                 println!("interp permissions {:?}", _interp.permissions);
@@ -891,11 +891,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     .for_each(|first_arg_vec| {
                         if let Some(second_arg_vec) = intrinsic_argument.second_arg.clone() {
                             first_arg_vec.iter().for_each(|first_arg| {
-                                println!("first arg before {first_arg:?}");
                                 let first_arg = first_arg.replace(&['\"'][..], "");
-
-                                println!("first arg after {first_arg:?}");
-
                                 second_arg_vec.iter().for_each(|second_arg| {
                                     if intrinsic_func_type == IntrinsicName::RequestConfluence {
                                         let permissions = check_url_for_permissions(
@@ -918,11 +914,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                             })
                         } else {
                             first_arg_vec.iter().for_each(|first_arg| {
-                                println!("first arg before {first_arg:?}");
                                 let first_arg = first_arg.replace(&['\"'][..], "");
-
-                                println!("first arg after {first_arg:?}");
-
                                 if intrinsic_func_type == IntrinsicName::RequestConfluence {
                                     let permissions = check_url_for_permissions(
                                         &_interp.confluence_permission_resolver,
@@ -944,7 +936,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         }
                     });
 
-                println!("permissions within call {permissions_within_call:?}");
+                //println!("permissions within call {permissions_within_call:?}");
 
                 _interp.permissions = _interp
                     .permissions
@@ -1228,7 +1220,6 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
-        println!("\t inst {inst}");
 
         match inst {
             Inst::Expr(rvalue) => {
