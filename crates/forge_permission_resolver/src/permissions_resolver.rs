@@ -108,11 +108,8 @@ pub fn get_permisions_for(
     endpoint_map_classic: &mut PermissionHashMap,
     endpoint_regex: &mut HashMap<String, Regex>,
 ) {
-    println!("pre api call");
     if let Result::Ok(response) = ureq::get(url).call() {
-        println!("post api call");
         let data: SwaggerReponse = response.into_json().unwrap();
-        println!("post swagger parse");
         for (key, endpoint_data) in &data.paths {
             let endpoint_data = get_request_type(endpoint_data, key);
             endpoint_data
