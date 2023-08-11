@@ -231,7 +231,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
 
-    println!("permissions declares == {permissions_declared:?}");
+    // println!("permissions declares == {permissions_declared:?}");
 
     let permissions = Vec::from_iter(permissions_declared.iter().cloned());
 
@@ -379,7 +379,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     {
                         warn!("error while scanning {func} in {path:?}: {err}");
                     }
-                    println!("permissions :-) {:?}", perm_interp.permissions);
+                    // println!("permissions :-) {:?}", perm_interp.permissions);
                 }
             }
         }
@@ -387,7 +387,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 
     if run_permission_checker {
         if perm_interp.permissions.len() > 0 {
-            println!("here :))");
             reporter.add_vulnerabilities(
                 vec![PermissionVuln::new(perm_interp.permissions)].into_iter(),
             );
