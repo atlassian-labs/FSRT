@@ -1241,7 +1241,7 @@ impl<'cx> Runner<'cx> for SecretChecker {
                             {
                                 match value {
                                     Value::Const(_) | Value::Phi(_) => {
-                                        let vuln = SecretVunew(
+                                        let vuln = SecretVuln::new(
                                             interp.callstack(),
                                             interp.env(),
                                             interp.entry(),
@@ -1250,6 +1250,23 @@ impl<'cx> Runner<'cx> for SecretChecker {
                                         self.vulns.push(vuln);
                                     }
                                     _ => {}
+                                }
+                            } else if let Some(value) = interp.body().vars.get(varid) {
+                                if let VarKind::GlobalRef(def) = value {
+                                    if let Some(value) = interp.defid_to_value.get(def) {
+                                        match value {
+                                            Value::Const(_) | Value::Phi(_) => {
+                                                let vuln = SecretVuln::new(
+                                                    interp.callstack(),
+                                                    interp.env(),
+                                                    interp.entry(),
+                                                );
+                                                info!("Found a vuln!");
+                                                self.vulns.push(vuln);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1290,6 +1307,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         Self {
             needs_call: vec![],
             varid_to_value: FxHashMap::default(),
+            defid_to_value: FxHashMap::default(),
         }
     }
 
@@ -1371,6 +1389,18 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     value,
                                     &mut intrinsic_argument.first_arg,
                                 );
+                            } else if let Some(value) = _interp.body().vars.get(varid) {
+                                if let VarKind::GlobalRef(def) = value {
+                                    if let Some(Value::Const(value)) =
+                                        _interp.defid_to_value.get(def)
+                                    {
+                                        intrinsic_argument.first_arg = Some(vec![]);
+                                        add_elements_to_intrinsic_struct(
+                                            &Value::Const(value.clone()),
+                                            &mut intrinsic_argument.first_arg,
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -1389,7 +1419,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             let mut permissions_within_call: Vec<String> = vec![];
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
 
-            //println!("intrinsic_argument {:?}", intrinsic_argument);
+            println!("intrinsic_argument {:?}", intrinsic_argument);
 
             if intrinsic_argument.first_arg == None {
                 println!("interp permissions {:?}", _interp.permissions);

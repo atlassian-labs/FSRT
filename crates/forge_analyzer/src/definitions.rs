@@ -1691,8 +1691,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 Operand::with_var(var)
             }
             Expr::Lit(lit) => {
-                println!("lowering literal {lit:?}");
-
                 lit.clone().into()
             }
             Expr::Tpl(tpl) => {
