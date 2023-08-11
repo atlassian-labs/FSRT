@@ -9,6 +9,8 @@ import func_defult from './export_default';
 import my_function from "./export_default2.js";
 import {classone} from './anewclass';
 
+let global = "global__flag___test"
+
 export async function fetchIssueSummary(issueIdOrKey, test_value) {
 
   let obj = {
@@ -36,7 +38,7 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
   diffunc()
 
   // different_function();
-  let a_class = new classone();
+  let a_class = new ANewClass();
   a_class.function_a_new_class();
 
   let val = "grapefruit";
@@ -49,7 +51,7 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
 
   const resp = await api
     .asApp()
-    .requestJira(get_random_string(), obj);
+    .requestJira("/rest/api/3/issue/27/attachments", obj);
   const data = await resp.json();
   console.log(JSON.stringify(data));
   return data['fields']['summary'];
@@ -74,7 +76,7 @@ export async function writeComment(issueIdOrKey, comment) {
   const resp = await api
     .asApp()
     .requestJira(route`/rest/api/3/issue/${issueIdOrKey}/comment`, {
-      method: 'DELETE',
+      method: 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
