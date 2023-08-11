@@ -1,7 +1,9 @@
 #![allow(clippy::type_complexity)]
 use clap::{Parser, ValueHint};
 use forge_loader::forgepermissions::ForgePermissions;
-use forge_permission_resolver::permissions_resolver::{get_permission_resolver_confluence, get_permission_resolver_jira};
+use forge_permission_resolver::permissions_resolver::{
+    get_permission_resolver_confluence, get_permission_resolver_jira,
+};
 use miette::{IntoDiagnostic, Result};
 use std::{
     collections::HashSet,
@@ -229,19 +231,68 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
 
+    println!("permissions declares == {permissions_declared:?}");
+
+    let permissions = Vec::from_iter(permissions_declared.iter().cloned());
+
     let (jira_permission_resolver, jira_regex_map) = get_permission_resolver_jira();
     let (confluence_permission_resolver, confluence_regex_map) =
         get_permission_resolver_confluence();
 
-    let mut defintion_analysis_interp = Interp::new(&proj.env, true, &jira_permission_resolver, &jira_regex_map, &confluence_permission_resolver, &confluence_regex_map);
+    let mut defintion_analysis_interp = Interp::new(
+        &proj.env,
+        true,
+        true,
+        permissions.clone(),
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+    );
 
-    let mut interp = Interp::new(&proj.env, false, &jira_permission_resolver, &jira_regex_map, &confluence_permission_resolver, &confluence_regex_map);
-    let mut authn_interp = Interp::new(&proj.env, false, &jira_permission_resolver, &jira_regex_map, &confluence_permission_resolver, &confluence_regex_map);
-    let mut perm_interp = Interp::new(&proj.env, true, &jira_permission_resolver, &jira_regex_map, &confluence_permission_resolver, &confluence_regex_map);
+    let mut interp = Interp::new(
+        &proj.env,
+        false,
+        false,
+        permissions.clone(),
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+    );
+    let mut authn_interp = Interp::new(
+        &proj.env,
+        false,
+        false,
+        permissions.clone(),
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+    );
+    let mut perm_interp = Interp::new(
+        &proj.env,
+        true,
+        true,
+        permissions.clone(),
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+    );
     let mut reporter = Reporter::new();
-    let mut secret_interp = Interp::new(&proj.env, true, &jira_permission_resolver, &jira_regex_map, &confluence_permission_resolver, &confluence_regex_map);
+    let mut secret_interp = Interp::new(
+        &proj.env,
+        true,
+        false,
+        permissions.clone(),
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+    );
     reporter.add_app(opts.appkey.unwrap_or_default(), name.to_owned());
-    let mut all_used_permissions = HashSet::default();
+    //let mut all_used_permissions = HashSet::default();
 
     for func in &proj.funcs {
         match *func {
@@ -275,14 +326,13 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 reporter.add_vulnerabilities(checker2.into_vulns());
 
                 if run_permission_checker {
-                    let mut checker3 = PermissionChecker::new(permissions_declared.clone());
                     perm_interp.varid_to_value = defintion_analysis_interp.get_defs();
+                    let mut checker2 = PermissionChecker::new();
                     if let Err(err) =
-                        perm_interp.run_checker(def, &mut checker3, path.clone(), func.clone())
+                        perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
                     {
                         warn!("error while scanning {func} in {path:?}: {err}");
                     }
-                    all_used_permissions.extend(perm_interp.permissions.clone());
                 }
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
@@ -318,26 +368,24 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 
                 if run_permission_checker {
                     perm_interp.varid_to_value = defintion_analysis_interp.get_defs();
-                    let mut checker2 = PermissionChecker::new(permissions_declared.clone());
+                    //perm_interp.permissions = Vec::from_iter(permissions_declared.iter().cloned());
+                    let mut checker2 = PermissionChecker::new();
                     if let Err(err) =
                         perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
                     {
                         warn!("error while scanning {func} in {path:?}: {err}");
                     }
-                    all_used_permissions.extend(perm_interp.permissions.clone());
+                    println!("permissions :-) {:?}", perm_interp.permissions);
                 }
             }
         }
     }
 
     if run_permission_checker {
-        let unused_permissions = permissions_declared.difference(&all_used_permissions);
-        if unused_permissions.clone().count() > 0 {
+        if perm_interp.permissions.len() > 0 {
+            println!("here :))");
             reporter.add_vulnerabilities(
-                vec![PermissionVuln::new(HashSet::<String>::from_iter(
-                    unused_permissions.cloned().into_iter(),
-                ))]
-                .into_iter(),
+                vec![PermissionVuln::new(perm_interp.permissions)].into_iter(),
             );
         }
     }

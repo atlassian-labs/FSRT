@@ -15,11 +15,11 @@ use swc_core::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
             AssignProp, AwaitExpr, BinExpr, BindingIdent, BlockStmt, BlockStmtOrExpr, BreakStmt,
-            CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName, CondExpr,
-            Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll, ExportDecl,
-            ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier, Expr, ExprOrSpread,
-            ExprStmt, FnDecl, FnExpr, ForInStmt, ForOfStmt, ForStmt, Function, Id, Ident, IfStmt,
-            Import, ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier,
+            CallExpr, Callee, Class as Clss, ClassDecl, ClassExpr, ClassMethod, ComputedPropName,
+            CondExpr, Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll,
+            ExportDecl, ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier, Expr,
+            ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForInStmt, ForOfStmt, ForStmt, Function, Id,
+            Ident, IfStmt, Import, ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier,
             ImportStarAsSpecifier, JSXAttrName, JSXAttrOrSpread, JSXAttrValue, JSXElement,
             JSXElementChild, JSXElementName, JSXExpr, JSXExprContainer, JSXFragment, JSXMemberExpr,
             JSXNamespacedName, JSXObject, JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp,
@@ -125,10 +125,12 @@ struct SymbolExport {
 pub struct ResolverTable {
     defs: TiVec<DefId, DefRes>,
     pub names: TiVec<DefId, JsWord>,
+    pub global: TiVec<ModId, DefId>,
     recent_names: FxHashMap<(JsWord, ModId), DefId>,
     exported_names: FxHashMap<(JsWord, ModId), DefId>,
     default_export_names: FxHashMap<(JsWord, ModId), DefId>,
     symbol_to_id: FxHashMap<Symbol, DefId>,
+    global_defid_to_value: FxHashMap<DefId, Value>,
     parent: FxHashMap<DefId, DefId>,
     owning_module: TiVec<DefId, ModId>,
 }
@@ -155,6 +157,7 @@ pub fn run_resolver(
     secret_packages: Vec<PackageData>,
 ) -> Environment {
     let mut environment = Environment::new();
+
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut export_collector = ExportCollector {
             res_table: &mut environment.resolver,
@@ -171,6 +174,19 @@ pub fn run_resolver(
             let def_id = environment.default_exports.insert(curr_mod, default);
             debug_assert_eq!(def_id, None, "def_id shouldn't be set");
         }
+    }
+
+    let mut foreign = TiVec::default();
+    for (curr_mod, module) in modules.iter_enumerated() {
+        let mut import_collector = ImportCollector {
+            resolver: &mut environment,
+            file_resolver,
+            foreign_defs: &mut foreign,
+            curr_mod,
+            current_import: Default::default(),
+            in_foreign_import: false,
+        };
+        module.visit_with(&mut import_collector);
     }
 
     let mut foreign = TiVec::default();
@@ -204,6 +220,20 @@ pub fn run_resolver(
             curr_def: None,
         };
         module.visit_with(&mut lowerer);
+    }
+
+    for (curr_mod, module) in modules.iter_enumerated() {
+
+        let global_id = environment.get_or_reserve_global_scope(curr_mod);
+
+        let mut global_collector = GlobalCollector {
+            res: &mut environment,
+            global_id,
+            secret_packages: secret_packages.clone(), // remove the clone
+            module: curr_mod,
+            parent: None,
+        };
+        module.visit_with(&mut global_collector);
     }
 
     for (curr_mod, module) in modules.iter_enumerated() {
@@ -494,10 +524,13 @@ pub struct Definitions {
 #[derive(Debug, Clone, Default)]
 pub struct Environment {
     exports: TiVec<ModId, Vec<(JsWord, DefId)>>,
+    pub global: TiVec<ModId, DefId>,
     pub defs: Definitions,
     default_exports: FxHashMap<ModId, DefId>,
     pub resolver: ResolverTable,
 }
+
+// POI
 
 struct ImportCollector<'cx> {
     resolver: &'cx mut Environment,
@@ -513,6 +546,14 @@ struct ExportCollector<'cx> {
     curr_mod: ModId,
     exports: Vec<(JsWord, DefId)>,
     default: Option<DefId>,
+}
+
+struct GlobalCollector<'cx> {
+    res: &'cx mut Environment,
+    module: ModId,
+    global_id: DefId,
+    secret_packages: Vec<PackageData>,
+    parent: Option<DefId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1546,7 +1587,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let var = self.body.get_or_insert_global(def);
                 Operand::with_var(var)
             }
-            Expr::Lit(lit) => lit.clone().into(),
+            Expr::Lit(lit) => {
+                println!("lowering literal {lit:?}");
+
+                lit.clone().into()
+            }
             Expr::Tpl(tpl) => {
                 let tpl = self.lower_tpl(tpl);
                 Operand::with_var(
@@ -2492,6 +2537,7 @@ impl Visit for Lowerer<'_> {
         {
             let id = id.to_id();
             match &**expr {
+                Expr::Lit(lit) => {}
                 Expr::Arrow(expr) => {
                     let def_id = self.def_function(id);
                     let old_def = self.curr_def.replace(def_id);
@@ -2792,6 +2838,55 @@ impl Visit for ImportCollector<'_> {
     }
 }
 
+impl Visit for GlobalCollector<'_> {
+    fn visit_function(&mut self, _: &Function) {}
+
+    fn visit_class(&mut self, _: &Clss) {}
+
+
+    fn visit_module(&mut self, n: &Module) {
+
+        // we encouter 2 statements, so the defid gets reassigned every time
+
+        let owner = self.global_id;
+        let mut localdef = LocalDefiner {
+            res: self.res,
+            module: self.module,
+            func: owner,
+            body: Body::with_owner(owner),
+        };
+        n.visit_children_with(&mut localdef);
+        let body = localdef.body;
+        let mut analyzer = FunctionAnalyzer {
+            res: self.res,
+            module: self.module,
+            current_def: owner,
+            assigning_to: None,
+            secret_packages: self.secret_packages.clone(),
+            body,
+            block: BasicBlockId::default(),
+            operand_stack: vec![],
+            in_lhs: false,
+        };
+
+        let mut all_module_items = Vec::new();
+
+        for item in &n.body {
+            if let ModuleItem::Stmt(stmt) = item {
+                all_module_items.push(stmt.clone());
+            }
+        }
+        analyzer.lower_stmts(all_module_items.as_slice());
+        println!("analyzer body !` {owner:?} {:?}", analyzer.body.clone());
+
+        let body = analyzer.body;
+
+
+        *self.res.def_mut(owner).expect_body() = body;
+    }
+
+}
+
 impl Visit for ExportCollector<'_> {
     noop_visit_type!();
     fn visit_export_decl(&mut self, n: &ExportDecl) {
@@ -2834,10 +2929,10 @@ impl Visit for ExportCollector<'_> {
                                 Expr::Ident(ident) => {
                                     self.add_default(DefRes::Undefined, None);
                                     // adding the default export, so we can resolve it during the lowering
-                                    self.res_table
-                                        .exported_names
-                                        .insert((ident.sym.clone(), self.curr_mod), self.default.unwrap());
-                        
+                                    self.res_table.exported_names.insert(
+                                        (ident.sym.clone(), self.curr_mod),
+                                        self.default.unwrap(),
+                                    );
                                 }
                                 _ => {}
                             }
@@ -2914,22 +3009,20 @@ impl Visit for ExportCollector<'_> {
     }
 
     fn visit_export_named_specifier(&mut self, n: &ExportNamedSpecifier) {
-        if let ModuleExportName::Ident(ident) =  &n.orig {
-            let export_defid =
-            self.add_export(DefRes::Undefined, ident.to_id());
-        self.res_table
-            .exported_names
-            .insert((ident.sym.clone(), self.curr_mod), export_defid);
+        if let ModuleExportName::Ident(ident) = &n.orig {
+            let export_defid = self.add_export(DefRes::Undefined, ident.to_id());
+            self.res_table
+                .exported_names
+                .insert((ident.sym.clone(), self.curr_mod), export_defid);
         } else {
-
-        let orig_id = n.orig.as_id();
-        let orig = self.add_export(DefRes::default(), orig_id);
-        if let Some(id) = &n.exported {
-            let exported_id = id.as_id();
-            self.add_export(DefRes::ExportAlias(orig), exported_id);
+            let orig_id = n.orig.as_id();
+            let orig = self.add_export(DefRes::default(), orig_id);
+            if let Some(id) = &n.exported {
+                let exported_id = id.as_id();
+                self.add_export(DefRes::ExportAlias(orig), exported_id);
+            }
+            n.visit_children_with(self)
         }
-        n.visit_children_with(self)
-    }
     }
 
     fn visit_export_default_expr(&mut self, n: &ExportDefaultExpr) {
@@ -3011,6 +3104,27 @@ impl Environment {
         self.resolver.recent_sym(sym, module)
     }
 
+    #[inline]
+    pub fn get_all_functions(&self) -> Vec<DefId> {
+        self.defs.get_all_functions()
+    }
+
+    #[inline]
+    fn reserve_global_scope(&mut self, module: ModId) -> DefId {
+        let defid = self.add_anonymous("__GLOBAL", AnonType::Closure, module);
+        self.global.insert(module, defid);
+        defid
+    }
+
+    #[inline]
+    fn get_or_reserve_global_scope(&mut self, module: ModId) -> DefId {
+        if let Some(defid) = self.global.get(module) {
+            return defid.clone()
+        }
+        self.reserve_global_scope(module)
+    }
+
+
     fn new_key_from_res(&mut self, id: DefId, res: DefRes) -> DefKey {
         match res {
             DefKind::Arg => DefKind::Arg,
@@ -3069,6 +3183,8 @@ impl Environment {
                 id
             }
             AnonType::Closure => {
+                let name = name.into();
+                println!("name --> {name:?}");
                 let id = self
                     .resolver
                     .add_anon(DefRes::Closure(()), name.into(), module);
@@ -3339,6 +3455,14 @@ impl Definitions {
             classes,
             foreign,
         }
+    }
+
+    pub fn get_all_functions(&self) -> Vec<DefId> {
+        self.defs
+            .iter_enumerated()
+            .filter(|(defid, defkind)| defkind == &&DefKind::Function(()))
+            .map(|(defid, defkind)| defid)
+            .collect_vec()
     }
 }
 

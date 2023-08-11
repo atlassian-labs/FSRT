@@ -494,6 +494,7 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     // We can probably get rid of these RefCells by refactoring the Interp and Checker into
     // two fields in another struct.
     pub call_all: bool,
+    pub call_uncalled: bool,
     call_graph: CallGraph,
     pub return_value: Option<(Value, DefId)>,
     pub return_value_alt: HashMap<DefId, Value>,
@@ -572,13 +573,22 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
-    pub fn new(env: &'cx Environment, call_all: bool, jira_permission_resolver: &'cx PermissionHashMap, jira_regex_map: &'cx HashMap<String, Regex>, confluence_permission_resolver: &'cx PermissionHashMap, confluence_regex_map: &'cx HashMap<String, Regex>) -> Self {
-
+    pub fn new(
+        env: &'cx Environment,
+        call_all: bool,
+        call_uncalled: bool,
+        permissions: Vec<String>,
+        jira_permission_resolver: &'cx PermissionHashMap,
+        jira_regex_map: &'cx HashMap<String, Regex>,
+        confluence_permission_resolver: &'cx PermissionHashMap,
+        confluence_regex_map: &'cx HashMap<String, Regex>,
+    ) -> Self {
         let call_graph = CallGraph::new(env);
         Self {
             env,
             call_graph,
             call_all,
+            call_uncalled,
             entry: Default::default(),
             return_value: None,
             return_value_alt: HashMap::default(),
@@ -592,7 +602,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             callstack: RefCell::new(Vec::new()),
             // vulns: RefCell::new(Vec::new()),
             expected_return_values: HashMap::default(),
-            permissions: Vec::new(),
+            permissions,
             varid_to_value: DefinitionAnalysisMap::default(),
             jira_permission_resolver,
             confluence_permission_resolver,
@@ -723,12 +733,27 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.dataflow_visited.insert(func_def);
         let mut dataflow = C::Dataflow::with_interp(self);
         let mut worklist = WorkList::new();
+
+        // all all of the global state prior to running 
+
+        println!("all global {:?}", &self.env().global);
+
+        for global_def in &self.env().global {
+            println!("global_def {global_def:?}");
+
+
+            let func = self.env().def_ref(*global_def).expect_body();
+            println!("\tfunc {func:?}");
+            worklist.push_front_blocks(self.env, *global_def, self.call_all);
+        }
+
         worklist.push_front_blocks(self.env, func_def, self.call_all);
         let old_body = self.curr_body.get();
         while let Some((def, block_id)) = worklist.pop_front() {
             let arguments = self.callstack_arguments.pop();
             let name = self.env.def_name(def);
             debug!("Dataflow: {name} - {block_id}");
+            println!("Dataflow: {name} - {block_id}");
             self.dataflow_visited.insert(def);
             let func = self.env().def_ref(def).expect_body();
             self.curr_body.set(Some(func));
@@ -741,6 +766,41 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 dataflow.transfer_block(self, def, block_id, block, before_state, arguments);
             dataflow.join_term(self, def, block, state, &mut worklist);
         }
+
+        if self.call_uncalled {
+            let all_functions = self.env.get_all_functions();
+            let all_functions_set = FxHashSet::from_iter(all_functions.iter());
+
+            for def in all_functions_set {
+                if !worklist.visited(def) {
+                    let body = self.env.def_ref(*def).expect_body();
+                    let blocks = body.iter_block_keys().map(|bb| (def, bb)).rev();
+                    worklist.reserve(blocks.len());
+                    for work in blocks {
+                        debug!(?work, "push_front_blocks");
+                        worklist.push_back_force(*work.0, work.1);
+                    }
+                }
+            }
+
+            while let Some((def, block_id)) = worklist.pop_front() {
+                let arguments = self.callstack_arguments.pop();
+                let name = self.env.def_name(def);
+                debug!("Dataflow: {name} - {block_id}");
+                self.dataflow_visited.insert(def);
+                let func = self.env().def_ref(def).expect_body();
+                self.curr_body.set(Some(func));
+                let mut before_state = self.block_state(def, block_id);
+                let block = func.block(block_id);
+                for &pred in func.predecessors(block_id) {
+                    before_state = before_state.join(&self.block_state(def, pred));
+                }
+                let state =
+                    dataflow.transfer_block(self, def, block_id, block, before_state, arguments);
+                dataflow.join_term(self, def, block, state, &mut worklist);
+            }
+        }
+
         self.curr_body.set(old_body);
     }
 
