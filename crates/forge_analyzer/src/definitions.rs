@@ -1588,8 +1588,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 Operand::with_var(var)
             }
             Expr::Lit(lit) => {
-                println!("lowering literal {lit:?}");
-
                 lit.clone().into()
             }
             Expr::Tpl(tpl) => {
@@ -2877,8 +2875,6 @@ impl Visit for GlobalCollector<'_> {
             }
         }
         analyzer.lower_stmts(all_module_items.as_slice());
-        println!("analyzer body !` {owner:?} {:?}", analyzer.body.clone());
-
         let body = analyzer.body;
 
 
@@ -3184,7 +3180,6 @@ impl Environment {
             }
             AnonType::Closure => {
                 let name = name.into();
-                println!("name --> {name:?}");
                 let id = self
                     .resolver
                     .add_anon(DefRes::Closure(()), name.into(), module);

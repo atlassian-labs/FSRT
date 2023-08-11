@@ -51,7 +51,7 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
 
   const resp = await api
     .asApp()
-    .requestJira("/rest/api/3/issue/27/attachments", obj);
+    .requestJira(global, obj);
   const data = await resp.json();
   console.log(JSON.stringify(data));
   return data['fields']['summary'];

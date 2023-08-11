@@ -6,6 +6,7 @@ use forge_permission_resolver::permissions_resolver::{
 };
 use forge_utils::FxHashMap;
 use itertools::Itertools;
+use petgraph::operator;
 use regex::Regex;
 use serde::de::value;
 use smallvec::SmallVec;
@@ -726,6 +727,25 @@ impl<'cx> Runner<'cx> for SecretChecker {
                                     }
                                     _ => {}
                                 }
+                            } else if let Some(value) = interp.body().vars.get(varid) {
+                                if let VarKind::GlobalRef(def) = value {
+                                    if let Some(value) = interp.defid_to_value.get(def) {
+                                        println!("value [] {value:?}");
+                                        match value {
+                                            Value::Const(_) | Value::Phi(_) => {
+                                                let vuln = SecretVuln::new(
+                                                    interp.callstack(),
+                                                    interp.env(),
+                                                    interp.entry(),
+                                                );
+                                                info!("Found a vuln!");
+                                                self.vulns.push(vuln);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+
+                                }
                             }
                         }
                     }
@@ -743,6 +763,7 @@ impl<'cx> Checker<'cx> for SecretChecker {
 pub struct PermissionDataflow {
     needs_call: Vec<(DefId, Vec<Operand>)>,
     pub varid_to_value: FxHashMap<(DefId, VarId, Option<Projection>), Value>,
+    pub defid_to_value: FxHashMap<DefId, Value>,
 }
 
 impl PermissionDataflow {
@@ -792,6 +813,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         Self {
             needs_call: vec![],
             varid_to_value: FxHashMap::default(),
+            defid_to_value: FxHashMap::default(),
         }
     }
 
@@ -826,6 +848,17 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                     value,
                                     &mut intrinsic_argument.first_arg,
                                 );
+                            } else if let Some(value) = _interp.body().vars.get(varid) {
+                                if let VarKind::GlobalRef(def) = value {
+                                    if let Some(Value::Const(value)) = _interp.defid_to_value.get(def) {
+                                        intrinsic_argument.first_arg = Some(vec![]);
+                                        add_elements_to_intrinsic_struct(
+                                            &Value::Const(value.clone()),
+                                            &mut intrinsic_argument.first_arg,
+                                        );
+                                    }
+
+                                }
                             }
                         }
                     }
@@ -844,7 +877,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             let mut permissions_within_call: Vec<String> = vec![];
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
 
-            //println!("intrinsic_argument {:?}", intrinsic_argument);
+            println!("intrinsic_argument {:?}", intrinsic_argument);
 
             if intrinsic_argument.first_arg == None {
                 println!("interp permissions {:?}", _interp.permissions);
@@ -1219,7 +1252,23 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                 }
                             }
                         }
-                        Rvalue::Read(_) => {
+                        Rvalue::Read(operand) => {
+                            // test example exclusively for demo, needs to be fully implemented
+
+                            if let Rvalue::Read(read) = rvalue {
+                                if let Operand::Lit(lit) = read {
+                                    if let Literal::Str(str) = lit {
+                                        if let Base::Var(varid) = var.base {
+                                            if let Some(VarKind::GlobalRef(def)) = interp.body().vars.get(varid) {
+                                                println!("inserting ---> {def:?} {str:?}");
+                                                interp.defid_to_value.insert(*def, Value::Const(Const::Literal(str.to_string())));
+                                            }
+                                        }   
+                                    }
+                                }
+                            }
+                            /* should be expanded to include all of the cases ... */
+
                             self.add_variable(interp, var, &varid, def, rvalue);
                         }
                         Rvalue::Template(_) => {
