@@ -515,6 +515,7 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     pub jira_regex_map: &'cx HashMap<String, Regex>,
     pub confluence_regex_map: &'cx HashMap<String, Regex>,
     pub varid_to_value: FxHashMap<(DefId, VarId, Option<Projection>), Value>,
+    pub defid_to_value: FxHashMap<DefId, Value>,
     _checker: PhantomData<C>,
 }
 
@@ -604,6 +605,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             expected_return_values: HashMap::default(),
             permissions,
             varid_to_value: DefinitionAnalysisMap::default(),
+            defid_to_value: FxHashMap::default(),
             jira_permission_resolver,
             confluence_permission_resolver,
             jira_regex_map,
@@ -734,16 +736,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         let mut dataflow = C::Dataflow::with_interp(self);
         let mut worklist = WorkList::new();
 
-        // all all of the global state prior to running 
-
-        println!("all global {:?}", &self.env().global);
-
         for global_def in &self.env().global {
-            println!("global_def {global_def:?}");
-
-
-            let func = self.env().def_ref(*global_def).expect_body();
-            println!("\tfunc {func:?}");
             worklist.push_front_blocks(self.env, *global_def, self.call_all);
         }
 
