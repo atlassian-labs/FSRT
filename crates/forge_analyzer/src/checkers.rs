@@ -744,7 +744,6 @@ impl<'cx> Runner<'cx> for SecretChecker {
                                             _ => {}
                                         }
                                     }
-
                                 }
                             }
                         }
@@ -850,14 +849,15 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                 );
                             } else if let Some(value) = _interp.body().vars.get(varid) {
                                 if let VarKind::GlobalRef(def) = value {
-                                    if let Some(Value::Const(value)) = _interp.defid_to_value.get(def) {
+                                    if let Some(Value::Const(value)) =
+                                        _interp.defid_to_value.get(def)
+                                    {
                                         intrinsic_argument.first_arg = Some(vec![]);
                                         add_elements_to_intrinsic_struct(
                                             &Value::Const(value.clone()),
                                             &mut intrinsic_argument.first_arg,
                                         );
                                     }
-
                                 }
                             }
                         }
@@ -1259,11 +1259,16 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                 if let Operand::Lit(lit) = read {
                                     if let Literal::Str(str) = lit {
                                         if let Base::Var(varid) = var.base {
-                                            if let Some(VarKind::GlobalRef(def)) = interp.body().vars.get(varid) {
+                                            if let Some(VarKind::GlobalRef(def)) =
+                                                interp.body().vars.get(varid)
+                                            {
                                                 println!("inserting ---> {def:?} {str:?}");
-                                                interp.defid_to_value.insert(*def, Value::Const(Const::Literal(str.to_string())));
+                                                interp.defid_to_value.insert(
+                                                    *def,
+                                                    Value::Const(Const::Literal(str.to_string())),
+                                                );
                                             }
-                                        }   
+                                        }
                                     }
                                 }
                             }
