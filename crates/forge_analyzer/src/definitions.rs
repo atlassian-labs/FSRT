@@ -1690,9 +1690,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let var = self.body.get_or_insert_global(def);
                 Operand::with_var(var)
             }
-            Expr::Lit(lit) => {
-                lit.clone().into()
-            }
+            Expr::Lit(lit) => lit.clone().into(),
             Expr::Tpl(tpl) => {
                 let tpl = self.lower_tpl(tpl);
                 Operand::with_var(
