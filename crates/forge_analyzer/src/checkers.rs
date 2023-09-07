@@ -301,8 +301,8 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         initial_state: Self::State,
     ) -> Self::State {
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
-                                                return initial_state;
-                                                        };
+            return initial_state;
+        };
         match interp.func_state(callee_def) {
             Some(state) => {
                 if state == Authenticated::Yes {
