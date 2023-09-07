@@ -8,11 +8,6 @@ mod tests {
         get_permission_resolver_confluence, get_permission_resolver_jira,
     };
 
-    use super::*;
-    use crate::permissions_resolver::{
-        get_permission_resolver_confluence, get_permission_resolver_jira,
-    };
-
     #[test]
     fn test_simple_url_with_end_var() {
         let result = find_regex_for_endpoint("/rest/api/3/version/{id}/mergeto/{moveIssuesTo}");
@@ -79,11 +74,5 @@ mod tests {
         ];
 
         assert_eq!(result, expected_permission);
-    }
-
-    // TODO: Add a test case using a manifest that has a function exposed through both a non user invocable module and a user invocable module
-    #[test]
-    fn test_catch_indirect_func_invoke() {
-        assert_eq!(0, 0);
     }
 }
