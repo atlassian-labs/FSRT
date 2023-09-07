@@ -2,7 +2,7 @@
 
 use std::{borrow::Borrow, fmt, mem};
 
-use crate::utils::calls_method;
+use crate::utils::{calls_method, eq_prop_name};
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
 
@@ -834,10 +834,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn lower_member(&mut self, obj: &Expr, prop: &MemberProp) -> Operand {
-        // FIXME: add support for computed property names, i.e. process['env']
-        if obj.as_ident().is_some_and(|ident| *ident.sym == *"process")
-            && prop.as_ident().is_some_and(|ident| *ident.sym == *"env")
+        if obj.as_ident().is_some_and(|ident| *ident.sym == *"process") && eq_prop_name(prop, "env")
         {
+            // FIXME: Store the exact environment variable in the IR and don't create duplicate IR instructions.
             self.push_curr_inst(Inst::Expr(Rvalue::Intrinsic(
                 Intrinsic::EnvRead,
                 smallvec![],
