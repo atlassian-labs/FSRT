@@ -298,6 +298,8 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<F
     //let mut all_used_permissions = HashSet::default();
 
     for func in &proj.funcs {
+        // TODO: Update operations in for loop to scan functions.
+        // idea: iterate over each func which should be struct that tracks the function to be scanned. And performs scans according to bool.
         match *func {
             FunctionTy::Invokable((ref func, ref path, _, def)) => {
                 let mut runner = DefintionAnalysisRunner::new();
