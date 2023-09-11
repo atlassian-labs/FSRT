@@ -1220,7 +1220,6 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
-
         match inst {
             Inst::Expr(rvalue) => {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
@@ -1244,7 +1243,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                             }
                         }
                         Rvalue::Read(operand) => {
-                            // test example exclusively for demo, needs to be fully implemented
+                            // TODO: Handle for all cases
 
                             if let Rvalue::Read(read) = rvalue {
                                 if let Operand::Lit(lit) = read {
@@ -1253,7 +1252,6 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                             if let Some(VarKind::GlobalRef(def)) =
                                                 interp.body().vars.get(varid)
                                             {
-                                                println!("inserting ---> {def:?} {str:?}");
                                                 interp.defid_to_value.insert(
                                                     *def,
                                                     Value::Const(Const::Literal(str.to_string())),
