@@ -2,13 +2,13 @@
 
 use std::{borrow::Borrow, fmt, mem};
 
-use crate::utils::calls_method;
+use crate::utils::{calls_method, eq_prop_name};
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use smallvec::SmallVec;
+use smallvec::{smallvec, SmallVec};
 use swc_core::{
     common::SyntaxContext,
     ecma::{
@@ -881,7 +881,7 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
         fn check(&mut self, name: &str) {
             if name.contains("permission") {
                 self.kind = self.kind.max(ApiCallKind::Authorize);
-            } else if TRIVIAL.is_match(name) {
+            } else if TRIVIAL.is_match(name) || name.contains("group") {
                 self.kind = self.kind.max(ApiCallKind::Trivial);
             }
         }
@@ -991,6 +991,17 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn lower_member(&mut self, obj: &Expr, prop: &MemberProp) -> Operand {
+        if obj.as_ident().is_some_and(|ident| *ident.sym == *"process") && eq_prop_name(prop, "env")
+        {
+            // FIXME: Store the exact environment variable in the IR and don't create duplicate IR instructions.
+            self.push_curr_inst(Inst::Expr(Rvalue::Intrinsic(
+                Intrinsic::EnvRead,
+                smallvec![],
+            )));
+        }
+
+        // defid_
+
         let obj = self.lower_expr(obj, None);
         let Operand::Var(mut var) = obj else {
             // FIXME: handle literals
@@ -2177,7 +2188,7 @@ impl Visit for FunctionCollector<'_> {
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
         n.visit_children_with(self);
-        let Some(BindingIdent{id, ..}) = n.name.as_ident() else {
+        let Some(BindingIdent { id, .. }) = n.name.as_ident() else {
             return;
         };
         let id = id.to_id();
@@ -2213,7 +2224,9 @@ impl Visit for FunctionCollector<'_> {
                         let owner =
                             self.res
                                 .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
-                        let Some(ExprOrSpread { expr, .. }) = &args.first() else { return; };
+                        let Some(ExprOrSpread { expr, .. }) = &args.first() else {
+                            return;
+                        };
                         let old_parent = self.parent.replace(owner);
                         let mut analyzer = FunctionAnalyzer {
                             res: self.res,
@@ -2408,10 +2421,10 @@ fn as_resolver_def<'a>(
     module: ModId,
 ) -> Option<(DefId, &'a JsWord, &'a Expr)> {
     let Some((objid, ResolverDef::FnDef)) = call
-            .callee
-            .as_expr()
-            .and_then(|expr| as_resolver(expr, res, module)) else
-    {
+        .callee
+        .as_expr()
+        .and_then(|expr| as_resolver(expr, res, module))
+    else {
         return None;
     };
     let [ExprOrSpread { expr: name, .. }, ExprOrSpread { expr: args, .. }] = &*call.args else {
