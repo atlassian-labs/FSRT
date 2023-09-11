@@ -66,12 +66,14 @@ struct AccessImportType<'a> {
     import_status: Option<&'a str>,
 }
 
+// WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RawTrigger<'a> {
     key: &'a str,
     function: &'a str,
 }
 
+// Trigger => EventTriger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct EventTrigger<'a> {
     #[serde(flatten, borrow)]
@@ -88,6 +90,7 @@ enum Interval {
     Week,
 }
 
+// Thank you to whomeever kept this one the same. T.T
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ScheduledTrigger<'a> {
     #[serde(flatten, borrow)]
