@@ -66,12 +66,57 @@ struct ScheduledTrigger<'a> {
     interval: Interval,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct DataProvider<'a> {
+    key: &'a str,
+    #[serde(flatten, borrow)]
+    callback: Callback<'a>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Callback<'a> {
+    pub function: &'a str,
+}
+
+// Struct for Custom field Module. Check that search suggestion gets read in correctly. 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct CustomField<'a> {
+    #[serde(flatten, borrow)]
+    key: &'a str,
+    search_suggestion: &'a str,
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct UiModificatons<'a> {
+    #[serde(flatten, borrow)]
+    key: &'a str,
+    resolver: Callback<'a>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct WorkflowValidator<'a> {
+    #[serde(flatten, borrow)]
+    key: &'a str,
+    functon: &'a str,
+    resolver: Callback<'a>
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct WorkflowPostFunction<'a> {
+    #[serde(flatten, borrow)]
+    key: &'a str,
+    functon: &'a str,
+}
+
+// Add more structs here for deserializing forge modules
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ForgeModules<'a> {
     #[serde(rename = "macro", default, borrow)]
     macros: Vec<MacroMod<'a>>,
     #[serde(rename = "function", default, borrow)]
     pub functions: Vec<FunctionMod<'a>>,
+    // deserializing non user-invocable modules
     #[serde(rename = "webtrigger", default, borrow)]
     webtriggers: Vec<RawTrigger<'a>>,
     #[serde(rename = "trigger", default, borrow)]
@@ -80,6 +125,17 @@ pub struct ForgeModules<'a> {
     scheduled_triggers: Vec<ScheduledTrigger<'a>>,
     #[serde(rename = "consumer", default, borrow)]
     pub consumers: Vec<Consumer<'a>>,
+    #[serde(rename = "compass:dataProvider", default, borrow)]
+    pub data_provider: Vec<DataProvider<'a>>,
+    #[serde(rename = "jira:customField", default, borrow)]
+    pub custom_field: Vec<CustomField<'a>>,
+    #[serde(rename = "jira:uiModificatons", default, borrow)]
+    pub ui_modifications: Vec<UiModificatons<'a>>,
+    #[serde(rename = "jira:workflowValidator", default, borrow)]
+    pub workflow_validator: Vec<WorkflowValidator<'a>>,
+    #[serde(rename = "jira:workflowPostFunction", default, borrow)]
+    pub workflow_post_function: Vec<WorkflowPostFunction<'a>>,
+    // deserializing user invokable module functions
     #[serde(flatten)]
     extra: FxHashMap<String, Vec<Module<'a>>>,
 }
@@ -158,12 +214,25 @@ pub struct FunctionRef<'a, S = Unresolved> {
     status: S,
 }
 
+
+// Add an extra variant to the FunctionTy enum for non user invocable functions
+// Indirect: functions indirectly invoked by user :O So kewl. 
+// TODO: change this to struct with bools 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FunctionTy<T> {
     Invokable(T),
     WebTrigger(T),
 }
 
+// Struct used for tracking what scan a funtion requires.
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Entrypoints<'a> {
+    function:Vec<ForgeModules<'a>>,
+    invokable: bool,
+    web_trigger: bool,
+}
+
+// Helper functions that help filter out which functions are what. 
 impl<T> FunctionTy<T> {
     pub fn map<O>(self, f: impl FnOnce(T) -> O) -> FunctionTy<O> {
         match self {
@@ -199,16 +268,18 @@ impl<T> AsRef<T> for FunctionTy<T> {
     }
 }
 
+
 impl<'a> ForgeModules<'a> {
+
+
     pub fn into_analyzable_functions(
         mut self,
     ) -> impl Iterator<Item = FunctionTy<FunctionMod<'a>>> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
-        // the vec's storage instead of using a HashSet
         self.webtriggers
             .sort_unstable_by_key(|trigger| trigger.function);
 
-        // same rational for using a BTreeSet
+
         let mut ignored_functions: BTreeSet<_> = self
             .scheduled_triggers
             .into_iter()
@@ -220,6 +291,7 @@ impl<'a> ForgeModules<'a> {
             )
             .collect();
 
+        // make alternate_functions all user-invokable functions 
         let mut alternate_functions: Vec<&str> = Vec::new();
         for module in self.extra.into_values().flatten() {
             alternate_functions.extend(module.function);
@@ -228,12 +300,19 @@ impl<'a> ForgeModules<'a> {
             }
         }
 
+        // Iterate over Consumers and check that if consumers isn't in alternate functions, add consumer funtion to be ignored
+        // assuming that alternate functions already has all user invokable functions. 
         self.consumers.iter().for_each(|consumer| {
             if !alternate_functions.contains(&consumer.resolver.function) {
                 ignored_functions.insert(consumer.resolver.function);
             }
         });
 
+        // TODO: Iterate through all deserialized entrypoints that are represented as a struct when deserialized 
+        // Update Struct values to be true or not. If any part true, then scan. 
+        // This solution fixes the problem that we only check known user invokable modules and also acccounts for non-invokable module entry points
+
+        // return non-user invokable functions
         self.functions.into_iter().filter_map(move |func| {
             if ignored_functions.contains(&func.key) {
                 return None;
@@ -399,5 +478,60 @@ mod tests {
                 status: Unresolved,
             }
         );
+    }
+
+    // Modified specific deserialization schemes for modules. Checking that new schemes can deserialize function values. 
+    #[test]
+    fn test_new_deserialize() {
+
+        let json = r#"{
+            "app": {
+                "name": "My App",
+                "id": "my-app"
+            },
+            "modules": {
+                "macro": [
+                {
+                    "key": "my-macro",
+                    "title": "My Macro",
+                    "resolver": {
+                        "function": Catch-me-if-you-can1
+                    },
+                    "config": {
+                        "function": Catch-me-if-you-can2
+                    }
+                }
+                ],
+                "function": [
+                {
+                    "key": "my-function",
+                    "handler": "my-function-handler",
+                    "providers": {
+                        "auth": ["my-auth-provider"]
+                    }
+                }
+                ],
+                "webtrigger": [
+                {
+                    "key": "my-webtrigger",
+                    "function": "my-webtrigger-handler"
+                }
+                ]
+            },
+            "permissions": {
+                "scopes": [
+                    "my-scope"
+                ],
+                "content": {
+                    "scripts": [
+                        "my-script.js"
+                    ],
+                    "styles": [
+                        "my-style.css"
+                    ]
+                }
+            }
+        }"#;
+
     }
 }
