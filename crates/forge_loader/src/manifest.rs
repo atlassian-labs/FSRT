@@ -16,7 +16,7 @@ struct AuthProviders<'a> {
     #[serde(borrow)]
     auth: Vec<&'a str>,
 }
-
+// Maps the Functions Module in common Modules 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FunctionMod<'a> {
     key: &'a str,
@@ -25,24 +25,30 @@ pub struct FunctionMod<'a> {
     providers: Option<AuthProviders<'a>>,
 }
 
+// Modified 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ModInfo<'a> {
-    key: &'a str,
-    title: &'a str,
+    function: &'a str,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct MacroMod<'a> {
-    #[serde(flatten, borrow)]
-    info: ModInfo<'a>,
+struct MacroMod<'a> { 
+    #[serde(flatten, borrow)] 
+    key: &'a str,
+    function: &'a str,
+    resolver: ModInfo<'a>,
+    config: ModInfo<'a>,
+    export: ModInfo<'a>,
 }
 
+// WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RawTrigger<'a> {
     key: &'a str,
     function: &'a str,
 }
 
+// Trigger => EventTriger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct EventTrigger<'a> {
     #[serde(flatten, borrow)]
@@ -59,6 +65,7 @@ enum Interval {
     Week,
 }
 
+// Thank you to whomeever kept this one the same. T.T 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ScheduledTrigger<'a> {
     #[serde(flatten, borrow)]
@@ -66,6 +73,7 @@ struct ScheduledTrigger<'a> {
     interval: Interval,
 }
 
+// compass DataProvider module
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct DataProvider<'a> {
     key: &'a str,
@@ -73,6 +81,7 @@ struct DataProvider<'a> {
     callback: Callback<'a>,
 }
 
+// Struct for mapping functions defined one more level in whose value is {function: string}. Used to represent resolver types.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Callback<'a> {
     pub function: &'a str,
