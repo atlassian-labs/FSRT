@@ -242,9 +242,6 @@ pub struct FunctionRef<'a, S = Unresolved> {
     status: S,
 }
 
-// Add an extra variant to the FunctionTy enum for non user invocable functions
-// Indirect: functions indirectly invoked by user :O So kewl.
-// TODO: change this to struct with bools
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FunctionTy<T> {
     Invokable(T),
