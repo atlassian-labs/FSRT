@@ -66,14 +66,12 @@ struct AccessImportType<'a> {
     import_status: Option<&'a str>,
 }
 
-// WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RawTrigger<'a> {
     key: &'a str,
     function: &'a str,
 }
 
-// Trigger => EventTriger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct EventTrigger<'a> {
     #[serde(flatten, borrow)]
@@ -90,7 +88,6 @@ enum Interval {
     Week,
 }
 
-// Thank you to whomeever kept this one the same. T.T
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ScheduledTrigger<'a> {
     #[serde(flatten, borrow)]
@@ -157,17 +154,6 @@ pub struct ForgeModules<'a> {
     scheduled_triggers: Vec<ScheduledTrigger<'a>>,
     #[serde(rename = "consumer", default, borrow)]
     pub consumers: Vec<Consumer<'a>>,
-    #[serde(rename = "compass:dataProvider", default, borrow)]
-    pub data_provider: Vec<DataProvider<'a>>,
-    #[serde(rename = "jira:customField", default, borrow)]
-    pub custom_field: Vec<CustomField<'a>>,
-    #[serde(rename = "jira:uiModificatons", default, borrow)]
-    pub ui_modifications: Vec<UiModificatons<'a>>,
-    #[serde(rename = "jira:workflowValidator", default, borrow)]
-    pub workflow_validator: Vec<WorkflowValidator<'a>>,
-    #[serde(rename = "jira:workflowPostFunction", default, borrow)]
-    pub workflow_post_function: Vec<WorkflowPostFunction<'a>>,
-    // deserializing user invokable module functions
     #[serde(rename = "compass:dataProvider", default, borrow)]
     pub data_provider: Vec<DataProvider<'a>>,
     #[serde(rename = "jira:customField", default, borrow)]
@@ -272,48 +258,6 @@ pub struct Entrypoints<'a> {
     function: Vec<ForgeModules<'a>>,
     invokable: bool,
     web_trigger: bool,
-}
-
-// Helper functions that help filter out which functions are what.
-impl<T> FunctionTy<T> {
-    pub fn map<O>(self, f: impl FnOnce(T) -> O) -> FunctionTy<O> {
-        match self {
-            Self::Invokable(t) => FunctionTy::Invokable(f(t)),
-            Self::WebTrigger(t) => FunctionTy::WebTrigger(f(t)),
-        }
-    }
-
-//     #[inline]
-//     pub fn into_inner(self) -> T {
-//         match self {
-//             FunctionTy::Invokable(t) | FunctionTy::WebTrigger(t) => t,
-//         }
-//     }
-//     #[inline]
-//     pub fn into_inner(self) -> T {
-//         match self {
-//             FunctionTy::Invokable(t) | FunctionTy::WebTrigger(t) => t,
-//         }
-//     }
-
-//     pub fn sequence<I: IntoIterator>(
-//         self,
-//         f: impl FnOnce(T) -> I,
-//     ) -> impl Iterator<Item = FunctionTy<I::Item>> {
-//         match self {
-//             Self::Invokable(t) => Either::Left(f(t).into_iter().map(FunctionTy::Invokable)),
-//             Self::WebTrigger(t) => Either::Right(f(t).into_iter().map(FunctionTy::WebTrigger)),
-//         }
-//     }
-// }
-
-impl<T> AsRef<T> for FunctionTy<T> {
-    #[inline]
-    fn as_ref(&self) -> &T {
-        match self {
-            FunctionTy::Invokable(t) | FunctionTy::WebTrigger(t) => t,
-        }
-    }
 }
 
 impl<'a> ForgeModules<'a> {
