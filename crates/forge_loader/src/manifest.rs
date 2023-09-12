@@ -9,6 +9,7 @@ use crate::Error;
 use forge_utils::FxHashMap;
 use itertools::{Either, Itertools};
 use serde::Deserialize;
+use serde_json::map::Entry;
 use tracing::trace;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -75,7 +76,7 @@ struct ScheduledTrigger<'a> {
 
 // compass DataProvider module
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct DataProvider<'a> {
+pub struct DataProvider<'a> {
     key: &'a str,
     #[serde(flatten, borrow)]
     callback: Callback<'a>,
@@ -89,7 +90,7 @@ pub struct Callback<'a> {
 
 // Struct for Custom field Module. Check that search suggestion gets read in correctly. 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct CustomField<'a> {
+pub struct CustomField<'a> {
     #[serde(flatten, borrow)]
     key: &'a str,
     search_suggestion: &'a str,
@@ -97,14 +98,14 @@ struct CustomField<'a> {
 
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct UiModificatons<'a> {
+pub struct UiModificatons<'a> {
     #[serde(flatten, borrow)]
     key: &'a str,
     resolver: Callback<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct WorkflowValidator<'a> {
+pub struct WorkflowValidator<'a> {
     #[serde(flatten, borrow)]
     key: &'a str,
     functon: &'a str,
@@ -112,10 +113,10 @@ struct WorkflowValidator<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct WorkflowPostFunction<'a> {
+pub struct WorkflowPostFunction<'a> {
     #[serde(flatten, borrow)]
     key: &'a str,
-    functon: &'a str,
+    function: &'a str,
 }
 
 // Add more structs here for deserializing forge modules
@@ -234,9 +235,9 @@ pub enum FunctionTy<T> {
 }
 
 // Struct used for tracking what scan a funtion requires.
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Entrypoints<'a> {
-    function:Vec<ForgeModules<'a>>,
+    function: &'a str,
     invokable: bool,
     web_trigger: bool,
 }
@@ -280,64 +281,167 @@ impl<T> AsRef<T> for FunctionTy<T> {
 
 impl<'a> ForgeModules<'a> {
 
-
+// TODO: fix return type whop
     pub fn into_analyzable_functions(
         mut self,
-    ) -> impl Iterator<Item = FunctionTy<FunctionMod<'a>>> {
+    ) -> impl Iterator<Item = Entrypoints<'a>> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         self.webtriggers
             .sort_unstable_by_key(|trigger| trigger.function);
 
+        // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true 
+        // for all trigger things 
+        let web = self.webtriggers.iter().for_each(|webtriggers| {
+            Entrypoints {
+                function: webtriggers.function,
+                invokable: false,
+                web_trigger: true,
+            };
+        });
+        let event = self.event_triggers.iter().for_each(|event_triggers| {
+            Entrypoints {
+                function: event_triggers.raw.function,
+                invokable: false,
+                web_trigger: true,
+            };
+        });
+        let schedule = self.scheduled_triggers.iter().for_each(|schedule_triggers| {
+            Entrypoints {
+                function: schedule_triggers.raw.function,
+                invokable: false,
+                web_trigger: true,
+            };
+        });
 
-        let mut ignored_functions: BTreeSet<_> = self
-            .scheduled_triggers
-            .into_iter()
-            .map(|trigger| trigger.raw.function)
-            .chain(
-                self.event_triggers
-                    .into_iter()
-                    .map(|trigger| trigger.raw.function),
-            )
-            .collect();
+        // create arrays representing functions that expose user non-invokable functions 
+        let consumer = self.consumers.iter().for_each(|consumers| {
+            Entrypoints {
+                function: consumers.resolver.function,
+                invokable: true,
+                web_trigger: false,
+            };
+        });
 
+        let data_provider = self.data_provider.iter().for_each(|dataprovider| {
+            Entrypoints {
+                function: dataprovider.callback.function,
+                invokable: true,
+                web_trigger: false,
+            };
+        });
+
+        let custom_field = self.custom_field.iter().for_each(|customfield| {
+            Entrypoints {
+                function: customfield.search_suggestion,
+                invokable: true,
+                web_trigger: false,
+            };
+        });
+
+        let ui_mod = self.ui_modifications.iter().for_each(|ui| {
+            Entrypoints {
+                function: ui.resolver.function,
+                invokable: true,
+                web_trigger: false,
+            };
+        });
+
+        let workflow_validator = self.workflow_validator.iter().for_each(|validator| {
+            Entrypoints {
+                function: validator.resolver.function,
+                invokable: true,
+                web_trigger: false,
+            };
+        });
+
+        let workflow_post = self.workflow_post_function.iter().for_each(|post_function| {
+            Entrypoints {
+                function: post_function.function,
+                invokable: true,
+                web_trigger: false,
+            };
+        });
+
+        
+        // let user_invokable = self.extra.into_values().flatten().into_iter().for_each(|invokable| {
+
+        //     if invokable.resolver != None {
+        //         Entrypoints {
+        //             function: invokable.resolver,
+        //             invokable: true,
+        //             web_trigger: false,
+        //         };
+
+        //     }
+        //     Entrypoints {
+        //         function: invokable.function,
+        //         invokable: true,
+        //         web_trigger: false,
+        //     };
+        // });
+        
+        // let mut ignored_functions: BTreeSet<_> = self
+        //     .scheduled_triggers
+        //     .into_iter()
+        //     .map(|trigger| trigger.raw.function)
+        //     .chain(
+        //         self.event_triggers
+        //             .into_iter()
+        //             .map(|trigger| trigger.raw.function),
+        //     )
+        //     .collect();
+
+        // get array for user invokable module functions
         // make alternate_functions all user-invokable functions 
-        let mut alternate_functions: Vec<&str> = Vec::new();
+        let mut alternate_functions = Vec::new();
         for module in self.extra.into_values().flatten() {
-            alternate_functions.extend(module.function);
+            if let Some(mod_function) = module.function {
+                alternate_functions.push(Entrypoints {
+                    function: mod_function,
+                    invokable: true,
+                    web_trigger: false
+                });
+            }
+           
             if let Some(resolver) = module.resolver {
-                alternate_functions.push(resolver.function);
+                alternate_functions.push(Entrypoints {
+                    function: resolver.function,
+                    invokable: true,
+                    web_trigger: false
+                });
             }
         }
 
+        workflow_post
         // Iterate over Consumers and check that if consumers isn't in alternate functions, add consumer funtion to be ignored
         // assuming that alternate functions already has all user invokable functions. 
-        self.consumers.iter().for_each(|consumer| {
-            if !alternate_functions.contains(&consumer.resolver.function) {
-                ignored_functions.insert(consumer.resolver.function);
-            }
-        });
+        // self.consumers.iter().for_each(|consumer| {
+        //     if !alternate_functions.contains(&consumer.resolver.function) {
+        //         ignored_functions.insert(consumer.resolver.function);
+        //     }
+        // });
 
         // TODO: Iterate through all deserialized entrypoints that are represented as a struct when deserialized 
         // Update Struct values to be true or not. If any part true, then scan. 
         // This solution fixes the problem that we only check known user invokable modules and also acccounts for non-invokable module entry points
 
         // return non-user invokable functions
-        self.functions.into_iter().filter_map(move |func| {
-            if ignored_functions.contains(&func.key) {
-                return None;
-            }
-            Some(
-                if self
-                    .webtriggers
-                    .binary_search_by_key(&func.key, |trigger| trigger.function)
-                    .is_ok()
-                {
-                    FunctionTy::WebTrigger(func)
-                } else {
-                    FunctionTy::Invokable(func)
-                },
-            )
-        })
+        // self.functions.into_iter().filter_map(move |func| {
+        //     if ignored_functions.contains(&func.key) {
+        //         return None;
+        //     }
+        //     Some(
+        //         if self
+        //             .webtriggers
+        //             .binary_search_by_key(&func.key, |trigger| trigger.function)
+        //             .is_ok()
+        //         {
+        //             FunctionTy::WebTrigger(func)
+        //         } else {
+        //             FunctionTy::Invokable(func)
+        //         },
+        //     )
+        // })
     }
 }
 
@@ -453,8 +557,8 @@ mod tests {
         assert_eq!(manifest.app.name, Some("My App"));
         assert_eq!(manifest.app.id, "my-app");
         assert_eq!(manifest.modules.macros.len(), 1);
-        assert_eq!(manifest.modules.macros[0].info.title, "My Macro");
-        assert_eq!(manifest.modules.macros[0].info.key, "my-macro");
+        assert_eq!(manifest.modules.macros[0].key, "My Macro");
+        assert_eq!(manifest.modules.macros[0].function, "my-macro");
         assert_eq!(manifest.modules.functions.len(), 1);
         assert_eq!(
             manifest.modules.functions[0],
