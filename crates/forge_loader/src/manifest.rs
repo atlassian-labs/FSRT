@@ -283,7 +283,7 @@ impl<'a> ForgeModules<'a> {
 
 // TODO: function returns iterator where each item is some specified type. 
     pub fn into_analyzable_functions(
-        mut self,
+        self,
     ) {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         // self.webtriggers
@@ -383,35 +383,35 @@ impl<'a> ForgeModules<'a> {
             )
         });
 
-        
-        // let user_invokable = self.extra.into_values().flatten().into_iter().for_each(|invokable| {
+        // get user invokable modules that have additional exposure endpoints. 
+        // ie macros has config and export fields on top of resolver fields that are functions
+        for macros in self.macros {
+            if let Some(resolver)= Some(macros.resolver) {
+                functions_to_scan.push(Entrypoints {
+                    function: resolver.function,
+                    invokable: true,
+                    web_trigger: false
+                })
+            }
 
-        //     if invokable.resolver != None {
-        //         Entrypoints {
-        //             function: invokable.resolver,
-        //             invokable: true,
-        //             web_trigger: false,
-        //         };
+            if let Some(config)= Some(macros.config) {
+                functions_to_scan.push(Entrypoints {
+                    function: config.function,
+                    invokable: true,
+                    web_trigger: false
+                })
+            }
+            if let Some(export)= Some(macros.export) {
+                functions_to_scan.push(Entrypoints {
+                    function: export.function,
+                    invokable: true,
+                    web_trigger: false
+                })
+            }
 
-        //     }
-        //     Entrypoints {
-        //         function: invokable.function,
-        //         invokable: true,
-        //         web_trigger: false,
-        //     };
-        // });
-        
-        // let mut ignored_functions: BTreeSet<_> = self
-        //     .scheduled_triggers
-        //     .into_iter()
-        //     .map(|trigger| trigger.raw.function)
-        //     .chain(
-        //         self.event_triggers
-        //             .into_iter()
-        //             .map(|trigger| trigger.raw.function),
-        //     )
-        //     .collect();
+        }
 
+            
         // get array for user invokable module functions
         // make alternate_functions all user-invokable functions 
         // let mut alternate_functions = Vec::new();
@@ -430,7 +430,7 @@ impl<'a> ForgeModules<'a> {
                     invokable: true,
                     web_trigger: false
                 });
-            }
+            } 
         }
         functions_to_scan.into_iter();
         // alternate_functions.into_iter();
