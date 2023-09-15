@@ -1,8 +1,10 @@
 #![allow(clippy::type_complexity)]
 use clap::{Parser, ValueHint};
+use clap::{Parser, ValueHint};
 use forge_permission_resolver::permissions_resolver::{
     get_permission_resolver_confluence, get_permission_resolver_jira,
 };
+use miette::{IntoDiagnostic, Result};
 use miette::{IntoDiagnostic, Result};
 use std::{
     collections::HashSet,
