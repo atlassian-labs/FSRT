@@ -240,9 +240,9 @@ pub enum FunctionTy<T> {
 // Struct used for tracking what scan a funtion requires.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Entrypoints<'a> {
-    function: &'a str,
-    invokable: bool,
-    web_trigger: bool,
+    pub function: &'a str,
+    pub invokable: bool,
+    pub web_trigger: bool,
 }
 
 // Helper functions that help filter out which functions are what. 
@@ -285,9 +285,9 @@ impl<T> AsRef<T> for FunctionTy<T> {
 impl<'a> ForgeModules<'a> {
 
 // TODO: function returns iterator where each item is some specified type. 
-    pub fn into_analyzable_functions(
+    pub fn into_analyzable_functions (
         self,
-    ) {
+    ) -> Vec<Entrypoints<'a>>{
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         // self.webtriggers
         //     .sort_unstable_by_key(|trigger| trigger.function);
@@ -413,11 +413,9 @@ impl<'a> ForgeModules<'a> {
             }
 
         }
-
             
         // get array for user invokable module functions
         // make alternate_functions all user-invokable functions 
-        // let mut alternate_functions = Vec::new();
         for module in self.extra.into_values().flatten() {
             if let Some(mod_function) = module.function {
                 functions_to_scan.push(Entrypoints {
@@ -435,37 +433,8 @@ impl<'a> ForgeModules<'a> {
                 });
             } 
         }
-        functions_to_scan.into_iter();
-        // alternate_functions.into_iter();
-        // Iterate over Consumers and check that if consumers isn't in alternate functions, add consumer funtion to be ignored
-        // assuming that alternate functions already has all user invokable functions. 
-        // self.consumers.iter().for_each(|consumer| {
-        //     if !alternate_functions.contains(&consumer.resolver.function) {
-        //         ignored_functions.insert(consumer.resolver.function);
-        //     }
-        // });
-
-        // TODO: Iterate through all deserialized entrypoints that are represented as a struct when deserialized 
-        // Update Struct values to be true or not. If any part true, then scan. 
-        // This solution fixes the problem that we only check known user invokable modules and also acccounts for non-invokable module entry points
-
-        // return non-user invokable functions
-        // self.functions.into_iter().filter_map(move |func| {
-        //     if ignored_functions.contains(&func.key) {
-        //         return None;
-        //     }
-        //     Some(
-        //         if self
-        //             .webtriggers
-        //             .binary_search_by_key(&func.key, |trigger| trigger.function)
-        //             .is_ok()
-        //         {
-        //             FunctionTy::WebTrigger(func)
-        //         } else {
-        //             FunctionTy::Invokable(func)
-        //         },
-        //     )
-        // })
+        
+        return functions_to_scan;
     }
 }
 

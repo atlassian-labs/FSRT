@@ -12,6 +12,7 @@ use std::{
 use clap::{Parser, ValueHint};
 use miette::{IntoDiagnostic, Result};
 
+use serde_json::map::Entry;
 use swc_core::{
     common::{Globals, Mark, SourceMap, GLOBALS},
     ecma::{
@@ -34,7 +35,7 @@ use forge_analyzer::{
     resolver::resolve_calls,
 };
 
-use forge_loader::manifest::{ForgeManifest, FunctionRef, FunctionTy};
+use forge_loader::manifest::{ForgeManifest, FunctionRef, FunctionTy, Entrypoints};
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
@@ -82,7 +83,7 @@ struct ForgeProject {
     sm: Arc<SourceMap>,
     ctx: AppCtx,
     env: Environment,
-    funcs: Vec<FunctionTy<(String, PathBuf, ModId, DefId)>>,
+    funcs: Vec<Entrypoints<'a>>,
     opts: Opts,
 }
 
@@ -133,8 +134,8 @@ impl ForgeProject {
             opts: Opts::default(),
         }
     }
-
-    fn add_funcs<'a, I: IntoIterator<Item = FunctionTy<(&'a str, PathBuf)>>>(&mut self, iter: I) {
+// TODO: edit to work with new iterator that not FUNCTIONTY
+    fn add_funcs<'a, I: IntoIterator<Item = Entrypoints<'a>>>(&mut self, iter: I) {
         self.funcs.extend(iter.into_iter().flat_map(|ftype| {
             ftype.sequence(|(func_name, path)| {
                 let modid = self.ctx.modid_from_path(&path)?;
@@ -187,12 +188,14 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         false
     });
 
-    let funcrefs = manifest.modules.into_analyzable_functions().flat_map(|f| {
-        f.sequence(|fmod| {
-            let resolved_func = FunctionRef::try_from(fmod)?.try_resolve(&paths, &dir)?;
-            Ok::<_, forge_loader::Error>(resolved_func.into_func_path())
-        })
-    });
+    let funcrefs = &manifest.modules.into_analyzable_functions();
+    
+    // .flat_map(|f| {
+    //     f.sequence(|fmod| {
+    //         let resolved_func = FunctionRef::try_from(fmod)?.try_resolve(&paths, &dir)?;
+    //         Ok::<_, forge_loader::Error>(resolved_func.into_func_path())
+    //     })
+    // });
     let src_root = dir.join("src");
     let mut proj = ForgeProject::with_files_and_sourceroot(src_root, paths.clone());
     if transpiled_async {
@@ -210,26 +213,48 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     for func in &proj.funcs {
         // TODO: Update operations in for loop to scan functions.
         // idea: iterate over each func which should be struct that tracks the function to be scanned. And performs scans according to bool.
-        match *func {
-            FunctionTy::Invokable((ref func, ref path, _, def)) => {
-                let mut checker = AuthZChecker::new();
-                debug!("checking {func} at {path:?}");
-                if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
-                {
-                    warn!("error while scanning {func} in {path:?}: {err}");
-                }
-                reporter.add_vulnerabilities(checker.into_vulns());
+    //     match *func {
+    //         FunctionTy::Invokable((ref func, ref path, _, def)) => {
+    //             let mut checker = AuthZChecker::new();
+    //             debug!("checking {func} at {path:?}");
+    //             if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
+    //             {
+    //                 warn!("error while scanning {func} in {path:?}: {err}");
+    //             }
+    //             reporter.add_vulnerabilities(checker.into_vulns());
+    //         }
+    //         FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
+    //             let mut checker = AuthenticateChecker::new();
+    //             debug!("checking webtrigger {func} at {path:?}");
+    //             if let Err(err) =
+    //                 authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
+    //             {
+    //                 warn!("error while scanning {func} in {path:?}: {err}");
+    //             }
+    //             reporter.add_vulnerabilities(checker.into_vulns());
+    //         }
+    //     }
+
+        if func.invokable {
+            let mut checker = AuthZChecker::new();
+            debug!("checking {func} at {path:?}");
+            if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
+            {
+                warn!("error while scanning {func} in {path:?}: {err}");
             }
-            FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
-                let mut checker = AuthenticateChecker::new();
-                debug!("checking webtrigger {func} at {path:?}");
-                if let Err(err) =
-                    authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
-                {
-                    warn!("error while scanning {func} in {path:?}: {err}");
-                }
-                reporter.add_vulnerabilities(checker.into_vulns());
+            reporter.add_vulnerabilities(checker.into_vulns());
+
+        } else if func.web_trigger {
+            let mut checker = AuthenticateChecker::new();
+            debug!("checking webtrigger {func} at {path:?}");
+            if let Err(err) =
+                authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
+            {
+                warn!("error while scanning {func} in {path:?}: {err}");
             }
+            reporter.add_vulnerabilities(checker.into_vulns());
+            
+            
         }
     }
     let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
