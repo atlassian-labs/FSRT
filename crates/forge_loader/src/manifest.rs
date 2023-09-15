@@ -34,12 +34,15 @@ struct ModInfo<'a> {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct MacroMod<'a> { 
-    #[serde(flatten, borrow)] 
+    // #[serde(flatten, borrow)] 
     key: &'a str,
     function: &'a str,
-    resolver: ModInfo<'a>,
-    config: ModInfo<'a>,
-    export: ModInfo<'a>,
+    #[serde(borrow)] 
+    resolver: Option<ModInfo<'a>>,
+    #[serde(borrow)] 
+    config: Option<ModInfo<'a>>,
+    #[serde(borrow)] 
+    export: Option<ModInfo<'a>>,
 }
 
 // WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES 
@@ -386,7 +389,7 @@ impl<'a> ForgeModules<'a> {
         // get user invokable modules that have additional exposure endpoints. 
         // ie macros has config and export fields on top of resolver fields that are functions
         for macros in self.macros {
-            if let Some(resolver)= Some(macros.resolver) {
+            if let Some(resolver)= macros.resolver {
                 functions_to_scan.push(Entrypoints {
                     function: resolver.function,
                     invokable: true,
@@ -394,14 +397,14 @@ impl<'a> ForgeModules<'a> {
                 })
             }
 
-            if let Some(config)= Some(macros.config) {
+            if let Some(config)= macros.config {
                 functions_to_scan.push(Entrypoints {
                     function: config.function,
                     invokable: true,
                     web_trigger: false
                 })
             }
-            if let Some(export)= Some(macros.export) {
+            if let Some(export)= macros.export {
                 functions_to_scan.push(Entrypoints {
                     function: export.function,
                     invokable: true,
@@ -541,7 +544,7 @@ mod tests {
                 "macro": [
                 {
                     "key": "my-macro",
-                    "title": "My Macro"
+                    "function": "My Macro"
                 }
                 ],
                 "function": [
@@ -628,11 +631,15 @@ mod tests {
                 {
                     "key": "my-macro",
                     "title": "My Macro",
+                    "function": "Catch-me-if-you-can0", 
                     "resolver": {
-                        "function": Catch-me-if-you-can1
+                        "function": "Catch-me-if-you-can1"
                     },
                     "config": {
-                        "function": Catch-me-if-you-can2
+                        "function": "Catch-me-if-you-can2"
+                    }, 
+                    "export": {
+                        "function": "Catch-me-if-you-can3"
                     }
                 }
                 ],
@@ -666,6 +673,24 @@ mod tests {
                 }
             }
         }"#;
+        let manifest: ForgeManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(manifest.modules.macros.len(), 1);
+        assert_eq!(manifest.modules.macros[0].function, "Catch-me-if-you-can0");
+
+        if let Some(func) = &manifest.modules.macros[0].resolver {
+            assert_eq!(func.function, "Catch-me-if-you-can1");
+
+        }
+
+        if let Some(func) = &manifest.modules.macros[0].config {
+            assert_eq!(func.function, "Catch-me-if-you-can2");
+
+        }
+
+        if let Some(func) = &manifest.modules.macros[0].export {
+            assert_eq!(func.function, "Catch-me-if-you-can3");
+
+        }   
 
     }
 }
