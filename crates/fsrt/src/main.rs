@@ -35,7 +35,7 @@ use forge_analyzer::{
     resolver::resolve_calls,
 };
 
-use forge_loader::manifest::{ForgeManifest, FunctionRef, FunctionTy, Entrypoints};
+use forge_loader::manifest::{ForgeManifest, FunctionRef, FunctionTy, Entrypoint};
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
@@ -83,7 +83,7 @@ struct ForgeProject {
     sm: Arc<SourceMap>,
     ctx: AppCtx,
     env: Environment,
-    funcs: Vec<Entrypoints<'a>>,
+    funcs: Vec<Entrypoint<'a>>,
     opts: Opts,
 }
 
@@ -135,16 +135,19 @@ impl ForgeProject {
         }
     }
 // TODO: edit to work with new iterator that not FUNCTIONTY
-    fn add_funcs<'a, I: IntoIterator<Item = Entrypoints<'a>>>(&mut self, iter: I) {
-        self.funcs.extend(iter.into_iter().flat_map(|ftype| {
-            ftype.sequence(|(func_name, path)| {
-                let modid = self.ctx.modid_from_path(&path)?;
-                let func = self.env.module_export(modid, func_name)?;
-                Some((func_name.to_owned(), path, modid, func))
-            })
-        }));
+    fn add_funcs<'a, I: IntoIterator<Item = Entrypoint<'a>>>(&mut self, iter: I) {
+        self.funcs.extend(iter);
     }
 }
+
+
+// self.funcs.extend(iter.into_iter().flat_map(|ftype| {
+//     ftype.sequence(|(func_name, path)| {
+//         let modid = self.ctx.modid_from_path(&path)?;
+//         let func = self.env.module_export(modid, func_name)?;
+//         Some((func_name.to_owned(), path, modid, func))
+//     })
+// }));
 
 fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
     matches!(
@@ -188,7 +191,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         false
     });
 
-    let funcrefs = &manifest.modules.into_analyzable_functions();
+    let funcrefs = manifest.modules.into_analyzable_functions();
     
     // .flat_map(|f| {
     //     f.sequence(|fmod| {
@@ -237,20 +240,20 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 
         if func.invokable {
             let mut checker = AuthZChecker::new();
-            debug!("checking {func} at {path:?}");
-            if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
+            debug!("checking {:?} at {path:?}", func.function);
+            if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.function.to_string())
             {
-                warn!("error while scanning {func} in {path:?}: {err}");
+                warn!("error while scanning {:?} in {path:?}: {err}", func.function);
             }
             reporter.add_vulnerabilities(checker.into_vulns());
 
         } else if func.web_trigger {
             let mut checker = AuthenticateChecker::new();
-            debug!("checking webtrigger {func} at {path:?}");
+            debug!("checking webtrigger {:?} at {path:?}", func.function);
             if let Err(err) =
-                authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
+                authn_interp.run_checker(def, &mut checker, path.clone(), func.function.to_string())
             {
-                warn!("error while scanning {func} in {path:?}: {err}");
+                warn!("error while scanning {:?} in {path:?}: {err}", func.function);
             }
             reporter.add_vulnerabilities(checker.into_vulns());
             
