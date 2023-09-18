@@ -118,6 +118,7 @@ pub struct CustomField<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct UiModificatons<'a> {
+    key: &'a str,
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
 }
