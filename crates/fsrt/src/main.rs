@@ -458,21 +458,20 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
 
         if func.invokable {
             let mut checker = AuthZChecker::new();
-            debug!("checking {func} at {path:?}");
-            if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
+            debug!("checking {:?} at {path:?}", func.function);
+            if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.function.to_string())
             {
-                warn!("error while scanning {func} in {path:?}: {err}");
+                warn!("error while scanning {:?} in {path:?}: {err}", func.function);
             }
             reporter.add_vulnerabilities(checker.into_vulns());
 
         } else if func.web_trigger {
             let mut checker = AuthenticateChecker::new();
-            debug!("checking webtrigger {func} at {path:?}");
+            debug!("checking webtrigger {:?} at {path:?}", func.function);
             if let Err(err) =
-                authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
+                authn_interp.run_checker(def, &mut checker, path.clone(), func.function.to_string())
             {
-                warn!("error while scanning {func} in {path:?}: {err}");
->>>>>>> cd2ed7b (edited main to iterate over vector of functions. TODO: edit add_funcs in main.rs and test into_analyzble_function use case in main.rs)
+                warn!("error while scanning {:?} in {path:?}: {err}", func.function);
             }
             reporter.add_vulnerabilities(checker.into_vulns());
             
