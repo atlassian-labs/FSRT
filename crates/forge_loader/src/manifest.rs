@@ -253,7 +253,7 @@ pub enum FunctionTy<T> {
 }
 
 // Struct used for tracking what scan a funtion requires.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entrypoint<'a> {
     function: &'a str,
     invokable: bool,
