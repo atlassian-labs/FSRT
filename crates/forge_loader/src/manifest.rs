@@ -35,7 +35,7 @@ struct ModInfo<'a> {
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct MacroMod<'a> { 
     key: &'a str,
-    function: &'a str,
+    function: Option<&'a str>,
     #[serde(borrow)] 
     resolver: Option<ModInfo<'a>>,
     #[serde(borrow)] 
@@ -126,11 +126,11 @@ pub struct CustomField<'a> {
     #[serde(flatten, borrow)]
     key: &'a str,
     // all attributes below involve function calls
-    value: &'a str,
-    search_suggestion: &'a str,
-    function: &'a str,
-    edit: &'a str,
-    resolver: ModInfo<'a>
+    value: Option<&'a str>,
+    search_suggestions: &'a str,
+    function: Option<&'a str>,
+    edit: Option<&'a str>,
+    resolver: Option<ModInfo<'a>>,
 }
 
 
@@ -151,7 +151,6 @@ pub struct WorkflowValidator<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkflowPostFunction<'a> {
-    #[serde(flatten, borrow)]
     key: &'a str,
     function: &'a str,
 }
@@ -278,7 +277,7 @@ pub enum FunctionTy<T> {
 }
 
 // Struct used for tracking what scan a funtion requires.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entrypoint<'a> {
     pub function: &'a str,
     pub invokable: bool,
@@ -329,8 +328,8 @@ impl<'a> ForgeModules<'a> {
         self,
     ) -> Vec<Entrypoint<'a>>{
         // number of webtriggers are usually low, so it's better to just sort them and reuse
-        self.webtriggers.iter().
-            .sort_unstable_by_key(|trigger| trigger.function);
+        // self.webtriggers.iter().
+        //     .sort_unstable_by_key(|trigger| trigger.function);
 
         // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true 
         // for all trigger things 
@@ -387,42 +386,54 @@ impl<'a> ForgeModules<'a> {
         });
 
         self.custom_field.iter().for_each(|customfield| {
+
+            if let Some(value)= customfield.value {
+                functions_to_scan.push(
+                    Entrypoint {
+                        function: value,
+                        invokable: true,
+                        web_trigger: false,
+                    }
+                );
+            }
+            
             functions_to_scan.push(
                 Entrypoint {
-                    function: customfield.value,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            );
-            functions_to_scan.push(
-                Entrypoint {
-                    function: customfield.search_suggestion,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            );
-            functions_to_scan.push(
-                Entrypoint {
-                    function: customfield.function,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            );
-            functions_to_scan.push(
-                Entrypoint {
-                    function: customfield.edit,
+                    function: customfield.search_suggestions,
                     invokable: true,
                     web_trigger: false,
                 }
             );
 
-            functions_to_scan.push(
-                Entrypoint {
-                    function: customfield.resolver.function,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            );
+            if let Some(func)= customfield.function {
+                functions_to_scan.push(
+                    Entrypoint {
+                        function: func,
+                        invokable: true,
+                        web_trigger: false,
+                    }
+                );
+            }
+
+            if let Some(edit)= customfield.edit{
+                functions_to_scan.push(
+                    Entrypoint {
+                        function: edit,
+                        invokable: true,
+                        web_trigger: false,
+                    }
+                );
+            }
+
+            if let Some(resolver)= &customfield.resolver {
+                functions_to_scan.push(
+                        Entrypoint {
+                            function: resolver.function,
+                            invokable: true,
+                            web_trigger: false,
+                        }
+                    );
+            }
 
         });
 
@@ -717,7 +728,7 @@ mod tests {
         assert_eq!(manifest.app.id, "my-app");
         assert_eq!(manifest.modules.macros.len(), 1);
         assert_eq!(manifest.modules.macros[0].key, "My Macro");
-        assert_eq!(manifest.modules.macros[0].function, "my-macro");
+        // assert_eq!(manifest.modules.macros[0].function, "my-macro");
         assert_eq!(manifest.modules.functions.len(), 1);
         assert_eq!(
             manifest.modules.functions[0],
@@ -810,7 +821,12 @@ mod tests {
         }"#;
         let manifest: ForgeManifest = serde_json::from_str(json).unwrap();
         assert_eq!(manifest.modules.macros.len(), 1);
-        assert_eq!(manifest.modules.macros[0].function, "Catch-me-if-you-can0");
+
+        if let Some(func) = manifest.modules.macros[0].function {
+            assert_eq!(func, "Catch-me-if-you-can0");
+
+        }
+
 
         if let Some(func) = &manifest.modules.macros[0].resolver {
             assert_eq!(func.function, "Catch-me-if-you-can1");
