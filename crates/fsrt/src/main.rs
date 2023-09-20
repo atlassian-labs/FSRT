@@ -1,6 +1,6 @@
 #![allow(clippy::type_complexity)]
 use std::{
-    collections::HashSet,
+    collections::{HashSet, BTreeMap, hash_map::Entry},
     convert::TryFrom,
     fs,
     io::{self, BufReader},
@@ -83,7 +83,7 @@ struct ForgeProject<'a> {
     sm: Arc<SourceMap>,
     ctx: AppCtx,
     env: Environment,
-    funcs: Vec<Entrypoint<'a>>,
+    funcs:BTreeMap<&'a str, Entrypoint<'a>>,
     opts: Opts,
 }
 
