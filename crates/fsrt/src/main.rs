@@ -78,7 +78,7 @@ struct Opts {
     out: Option<PathBuf>,
 }
 
-struct ForgeProject {
+struct ForgeProject<'a> {
     #[allow(dead_code)]
     sm: Arc<SourceMap>,
     ctx: AppCtx,
@@ -87,7 +87,7 @@ struct ForgeProject {
     opts: Opts,
 }
 
-impl ForgeProject {
+impl ForgeProject<'_> {
     #[instrument(skip(src, iter))]
     fn with_files_and_sourceroot<P: AsRef<Path>, I: IntoIterator<Item = PathBuf>>(
         src: P,
