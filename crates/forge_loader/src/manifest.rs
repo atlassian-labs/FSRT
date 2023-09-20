@@ -1,6 +1,6 @@
 use std::{
     borrow::Borrow,
-    collections::{BTreeSet, HashSet},
+    collections::HashSet,
     hash::Hash,
     path::{Path, PathBuf},
     sync::Arc,
@@ -10,7 +10,7 @@ use crate::{forgepermissions::ForgePermissions, Error};
 use forge_utils::FxHashMap;
 use itertools::{Either, Itertools};
 use serde::Deserialize;
-use serde_json::map::Entry;
+use std::collections::BTreeMap;
 use tracing::trace;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -118,7 +118,6 @@ pub struct CustomField<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct UiModificatons<'a> {
-    key: &'a str,
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
 }
