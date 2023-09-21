@@ -3,6 +3,7 @@ use std::{
     collections::HashSet,
     hash::Hash,
     path::{Path, PathBuf},
+    str::pattern::SearchStep,
 };
 
 use crate::{forgepermissions::ForgePermissions, Error};
@@ -113,7 +114,7 @@ pub struct CustomField<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
     value: Option<&'a str>,
-    search_suggestions: &'a str,
+    search_suggestions: Option<&'a str>,
     edit: Option<&'a str>,
 }
 
@@ -372,8 +373,10 @@ impl<'a> ForgeModules<'a> {
                 }
             }
 
-            if let Some(entry) = functions_to_scan.get_mut(customfield.search_suggestions) {
-                entry.invokable = true;
+            if let Some(search) = customfield.search_suggestions {
+                if let Some(entry) = functions_to_scan.get_mut(search) {
+                    entry.invokable = true;
+                }
             }
 
             if let Some(entry) = functions_to_scan.get_mut(customfield.common_keys.function) {
