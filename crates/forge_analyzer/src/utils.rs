@@ -158,3 +158,12 @@ pub fn eq_prop_name(n: &MemberProp, name: &str) -> bool {
         _ => false,
     }
 }
+
+const RED_ZONE: usize = 100 * 1024;
+
+const STACK_SIZE: usize = 1024 * 1024;
+
+#[inline]
+pub(crate) fn ensure_sufficient_stack<T>(f: impl FnOnce() -> T) -> T {
+    stacker::maybe_grow(RED_ZONE, STACK_SIZE, || f())
+}

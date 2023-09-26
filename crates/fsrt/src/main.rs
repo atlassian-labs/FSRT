@@ -9,7 +9,6 @@ use miette::{IntoDiagnostic, Result};
 use std::{
     collections::HashSet,
     fs,
-    io::{self, BufReader},
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
