@@ -21,6 +21,7 @@ pub struct AuthorizeDataflow {
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 pub enum AuthorizeState {
     No,
+    CustomFieldOnly,
     Yes,
 }
 
@@ -62,7 +63,12 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
                 debug!("authorize intrinsic found");
                 AuthorizeState::Yes
             }
+            Intrinsic::UserFieldAccess => {
+                debug!("user field access found");
+                std::cmp::max(AuthorizeState::CustomFieldOnly, initial_state)
+            }
             Intrinsic::Fetch => initial_state,
+            Intrinsic::ApiCustomField => initial_state,
             Intrinsic::ApiCall => initial_state,
             Intrinsic::SafeCall => initial_state,
             Intrinsic::EnvRead => initial_state,
@@ -223,16 +229,24 @@ impl<'cx> Checker<'cx> for AuthZChecker {
                 ControlFlow::Continue(AuthorizeState::Yes)
             }
             Intrinsic::Fetch => ControlFlow::Continue(*state),
-            Intrinsic::ApiCall if *state == AuthorizeState::No => {
+            Intrinsic::ApiCall if *state != AuthorizeState::Yes => {
                 let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
             }
-            Intrinsic::ApiCall => ControlFlow::Continue(*state),
-            Intrinsic::SafeCall => ControlFlow::Continue(*state),
-            Intrinsic::EnvRead => ControlFlow::Continue(*state),
-            Intrinsic::StorageRead => ControlFlow::Continue(*state),
+            Intrinsic::ApiCustomField if *state < AuthorizeState::CustomFieldOnly => {
+                let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
+                info!("Found a vuln!");
+                self.vulns.push(vuln);
+                ControlFlow::Break(())
+            }
+            Intrinsic::ApiCall
+            | Intrinsic::SafeCall
+            | Intrinsic::EnvRead
+            | Intrinsic::UserFieldAccess
+            | Intrinsic::ApiCustomField
+            | Intrinsic::StorageRead => ControlFlow::Continue(*state),
         }
     }
 }
@@ -286,8 +300,10 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
                 debug!("authenticated");
                 Authenticated::Yes
             }
-            Intrinsic::ApiCall => initial_state,
-            Intrinsic::SafeCall => initial_state,
+            Intrinsic::ApiCall
+            | Intrinsic::ApiCustomField
+            | Intrinsic::UserFieldAccess
+            | Intrinsic::SafeCall => initial_state,
         }
     }
 
@@ -371,13 +387,15 @@ impl<'cx> Checker<'cx> for AuthenticateChecker {
                 debug!("authenticated");
                 ControlFlow::Continue(Authenticated::Yes)
             }
-            Intrinsic::ApiCall if *state == Authenticated::No => {
+            Intrinsic::ApiCall | Intrinsic::ApiCustomField if *state == Authenticated::No => {
                 let vuln = AuthNVuln::new(interp.callstack(), interp.env(), interp.entry());
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
             }
-            Intrinsic::ApiCall => ControlFlow::Continue(*state),
+            Intrinsic::ApiCall | Intrinsic::UserFieldAccess | Intrinsic::ApiCustomField => {
+                ControlFlow::Continue(*state)
+            }
             Intrinsic::SafeCall => ControlFlow::Continue(*state),
         }
     }

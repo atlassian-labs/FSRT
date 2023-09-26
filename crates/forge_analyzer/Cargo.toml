@@ -19,6 +19,7 @@ petgraph.workspace = true
 regex.workspace = true
 serde_json.workspace = true
 serde.workspace = true
+stacker.workspace = true
 smallvec.workspace = true
 swc_core.workspace = true
 time.workspace = true
