@@ -728,6 +728,8 @@ impl<'a> From<&'a Expr> for CalleeRef<'a> {
 enum ApiCallKind {
     #[default]
     Unknown,
+    Fields,
+    CustomField,
     Trivial,
     Authorize,
 }
@@ -752,6 +754,10 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
                 self.kind = self.kind.max(ApiCallKind::Authorize);
             } else if TRIVIAL.is_match(name) || name.contains("group") {
                 self.kind = self.kind.max(ApiCallKind::Trivial);
+            } else if name == "/rest/api/3/field" || name == "/rest/api/2/field" {
+                self.kind = ApiCallKind::Fields;
+            } else if name.contains("field") {
+                self.kind = self.kind.max(ApiCallKind::CustomField);
             }
         }
     }
@@ -785,18 +791,32 @@ impl<'cx> FunctionAnalyzer<'cx> {
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
-                if *last == *"requestJira"
-                    || *last == *"requestConfluence"
-                        && Some(&ImportKind::Default)
-                            == self.res.as_foreign_import(def, "@forge/api") =>
+                if (*last == *"requestJira" || *last == *"requestConfluence")
+                    && Some(&ImportKind::Default)
+                        == self.res.as_foreign_import(def, "@forge/api") =>
             {
                 let first_arg = first_arg?;
+                let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
                 match classify_api_call(first_arg) {
                     ApiCallKind::Unknown => {
-                        if authn.first() == Some(&PropPath::MemberCall("asApp".into())) {
+                        if is_as_app {
                             Some(Intrinsic::ApiCall)
                         } else {
                             Some(Intrinsic::SafeCall)
+                        }
+                    }
+                    ApiCallKind::CustomField => {
+                        if is_as_app {
+                            Some(Intrinsic::ApiCustomField)
+                        } else {
+                            Some(Intrinsic::SafeCall)
+                        }
+                    }
+                    ApiCallKind::Fields => {
+                        if is_as_app {
+                            Some(Intrinsic::ApiCustomField)
+                        } else {
+                            Some(Intrinsic::UserFieldAccess)
                         }
                     }
                     ApiCallKind::Trivial => Some(Intrinsic::SafeCall),
@@ -1579,7 +1599,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     alt: cont,
                 });
                 let check = mem::replace(&mut self.block, body_id);
-                self.lower_stmt(body);
+
                 self.set_curr_terminator(Terminator::Goto(check));
                 self.block = cont;
             }

@@ -19,6 +19,7 @@ use crate::{
         BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue, Successors,
         STARTING_BLOCK,
     },
+    utils::ensure_sufficient_stack,
     worklist::WorkList,
 };
 
@@ -266,26 +267,30 @@ pub trait Checker<'cx>: Sized {
         block: &'cx BasicBlock,
         curr_state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
-        let mut curr_state = interp.block_state(def, id).join(curr_state);
-        for stmt in block {
-            match stmt {
-                Inst::Expr(r) => curr_state = self.visit_rvalue(interp, r, id, &curr_state)?,
-                Inst::Assign(_, r) => curr_state = self.visit_rvalue(interp, r, id, &curr_state)?,
+        ensure_sufficient_stack(|| {
+            let mut curr_state = interp.block_state(def, id).join(curr_state);
+            for stmt in block {
+                match stmt {
+                    Inst::Expr(r) => curr_state = self.visit_rvalue(interp, r, id, &curr_state)?,
+                    Inst::Assign(_, r) => {
+                        curr_state = self.visit_rvalue(interp, r, id, &curr_state)?
+                    }
+                }
             }
-        }
-        match block.successors() {
-            Successors::Return => ControlFlow::Continue(curr_state),
-            Successors::One(succ) => {
-                let bb = interp.body().block(id);
-                self.visit_block(interp, def, succ, bb, &curr_state)
+            match block.successors() {
+                Successors::Return => ControlFlow::Continue(curr_state),
+                Successors::One(succ) => {
+                    let bb = interp.body().block(id);
+                    self.visit_block(interp, def, succ, bb, &curr_state)
+                }
+                Successors::Two(succ1, succ2) => {
+                    let bb = interp.body().block(succ1);
+                    self.visit_block(interp, def, succ1, bb, &curr_state)?;
+                    let bb = interp.body().block(succ2);
+                    self.visit_block(interp, def, succ2, bb, &curr_state)
+                }
             }
-            Successors::Two(succ1, succ2) => {
-                let bb = interp.body().block(succ1);
-                self.visit_block(interp, def, succ1, bb, &curr_state)?;
-                let bb = interp.body().block(succ2);
-                self.visit_block(interp, def, succ2, bb, &curr_state)
-            }
-        }
+        })
     }
 }
 

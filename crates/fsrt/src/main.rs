@@ -3,7 +3,6 @@ use std::{
     collections::HashSet,
     convert::TryFrom,
     fs,
-    io::{self, BufReader},
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,

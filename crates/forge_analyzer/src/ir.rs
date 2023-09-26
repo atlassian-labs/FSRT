@@ -65,12 +65,16 @@ pub(crate) enum Terminator {
     },
 }
 
+// FIXME: ideally we should record the API call expression in the IR and the `UserFieldAccess` and `ApiCustomField` variants
+// should be removed and the type of the API call should be determined during dataflow.
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum Intrinsic {
     Authorize,
     Fetch,
     ApiCall,
     SafeCall,
+    UserFieldAccess,
+    ApiCustomField,
     EnvRead,
     StorageRead,
 }
@@ -747,6 +751,8 @@ impl fmt::Display for Intrinsic {
             Intrinsic::Fetch => write!(f, "fetch"),
             Intrinsic::Authorize => write!(f, "authorize"),
             Intrinsic::ApiCall => write!(f, "api call"),
+            Intrinsic::ApiCustomField => write!(f, "accessing custom field route asApp"),
+            Intrinsic::UserFieldAccess => write!(f, "accessing which fields a user can access"),
             Intrinsic::SafeCall => write!(f, "safe api call"),
             Intrinsic::EnvRead => write!(f, "env read"),
             Intrinsic::StorageRead => write!(f, "forge storage read"),
