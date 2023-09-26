@@ -1599,7 +1599,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     alt: cont,
                 });
                 let check = mem::replace(&mut self.block, body_id);
-
+                self.lower_stmt(body);
                 self.set_curr_terminator(Terminator::Goto(check));
                 self.block = cont;
             }
