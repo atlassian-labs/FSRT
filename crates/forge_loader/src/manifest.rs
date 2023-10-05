@@ -10,7 +10,7 @@ use crate::{forgepermissions::ForgePermissions, Error};
 use forge_utils::FxHashMap;
 use itertools::{Either, Itertools};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use serde_json::map::Entry;
 use tracing::trace;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
