@@ -372,14 +372,12 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 if run_permission_checker {
                     perm_interp.varid_to_value = defintion_analysis_interp.get_defs();
                     perm_interp.defid_to_value = defintion_analysis_interp.defid_to_value.clone();
-                    //perm_interp.permissions = Vec::from_iter(permissions_declared.iter().cloned());
                     let mut checker2 = PermissionChecker::new();
                     if let Err(err) =
                         perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
                     {
                         warn!("error while scanning {func} in {path:?}: {err}");
                     }
-                    // println!("permissions :-) {:?}", perm_interp.permissions);
                 }
             }
         }

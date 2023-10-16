@@ -746,7 +746,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             let arguments = self.callstack_arguments.pop();
             let name = self.env.def_name(def);
             debug!("Dataflow: {name} - {block_id}");
-            // println!("Dataflow: {name} - {block_id}");
             self.dataflow_visited.insert(def);
             let func = self.env().def_ref(def).expect_body();
             self.curr_body.set(Some(func));
