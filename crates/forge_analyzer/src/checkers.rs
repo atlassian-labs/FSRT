@@ -1256,6 +1256,13 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                                     *def,
                                                     Value::Const(Const::Literal(str.to_string())),
                                                 );
+                                            } else if let Some(VarKind::LocalDef(def)) =
+                                                interp.body().vars.get(varid)
+                                            {
+                                                interp.defid_to_value.insert(
+                                                    *def,
+                                                    Value::Const(Const::Literal(str.to_string())),
+                                                );
                                             }
                                         }
                                     }
