@@ -1422,10 +1422,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             //println!("intrinsic_argument {:?}", intrinsic_argument);
 
             if intrinsic_argument.first_arg == None {
-                println!("interp permissions {:?}", _interp.permissions);
-                println!("found none ....");
                 _interp.permissions.drain(..);
-                println!("interp permissions {:?}", _interp.permissions);
             } else {
                 intrinsic_argument
                     .first_arg
@@ -1822,8 +1819,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         prev_values: Option<Vec<Const>>,
     ) {
         match operand {
-            Operand::Lit(_lit) => {
-                if &Literal::Undef != _lit {
+            Operand::Lit(lit) => {
+                if &Literal::Undef != lit {
                     if let Some(prev_values) = prev_values {
                         if let Some(lit_value) = convert_operand_to_raw(operand) {
                             let const_value = Const::Literal(lit_value);
@@ -1890,7 +1887,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
-        for (def, arguments, values) in self.needs_call.drain(..) {
+        for (def, _arguments, values) in self.needs_call.drain(..) {
             worklist.push_front_blocks(interp.env(), def, interp.call_all);
             interp.callstack_arguments.push(values.clone());
         }
