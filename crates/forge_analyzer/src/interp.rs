@@ -506,17 +506,21 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     checker_visited: RefCell<FxHashSet<DefId>>,
     callstack: RefCell<Vec<Frame>>,
     pub callstack_arguments: Vec<Vec<Value>>,
-    // vulns: RefCell<Vec<C::Vuln>>,
-    pub expected_return_values: HashMap<DefId, (DefId, VarId)>,
+    pub value_manager: ValueManager,
     pub permissions: Vec<String>,
-    pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
     pub jira_permission_resolver: &'cx PermissionHashMap,
     pub confluence_permission_resolver: &'cx PermissionHashMap,
     pub jira_regex_map: &'cx HashMap<String, Regex>,
     pub confluence_regex_map: &'cx HashMap<String, Regex>,
+    _checker: PhantomData<C>,
+}
+
+#[derive(Debug)]
+pub struct ValueManager {
     pub varid_to_value: FxHashMap<(DefId, VarId, Option<Projection>), Value>,
     pub defid_to_value: FxHashMap<DefId, Value>,
-    _checker: PhantomData<C>,
+    pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
+    pub expected_return_values: HashMap<DefId, (DefId, VarId)>,
 }
 
 #[derive(Debug)]
@@ -585,6 +589,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         confluence_regex_map: &'cx HashMap<String, Regex>,
     ) -> Self {
         let call_graph = CallGraph::new(env);
+
+
         Self {
             env,
             call_graph,
@@ -599,13 +605,15 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             dataflow_visited: FxHashSet::default(),
             checker_visited: RefCell::new(FxHashSet::default()),
             callstack_arguments: Vec::new(),
-            expecting_value: VecDeque::default(),
             callstack: RefCell::new(Vec::new()),
             // vulns: RefCell::new(Vec::new()),
-            expected_return_values: HashMap::default(),
+            value_manager: ValueManager {
+                varid_to_value: DefinitionAnalysisMap::default(),
+                defid_to_value: FxHashMap::default(),
+                expected_return_values: HashMap::default(),
+                expecting_value: VecDeque::default()
+            },
             permissions,
-            varid_to_value: DefinitionAnalysisMap::default(),
-            defid_to_value: FxHashMap::default(),
             jira_permission_resolver,
             confluence_permission_resolver,
             jira_regex_map,
@@ -616,7 +624,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
 
     #[inline]
     pub fn get_defs(&self) -> DefinitionAnalysisMap {
-        self.varid_to_value.clone()
+        self.value_manager.varid_to_value.clone()
     }
 
     #[inline]
@@ -652,7 +660,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         value: Value,
         projection: Option<Projection>,
     ) {
-        self.varid_to_value
+        self.value_manager.varid_to_value
             .insert((defid_block, varid, projection), value);
     }
 
@@ -663,7 +671,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         varid: VarId,
         projection: Option<Projection>,
     ) -> Option<&Value> {
-        self.varid_to_value.get(&(defid_block, varid, projection))
+        self.value_manager.varid_to_value.get(&(defid_block, varid, projection))
     }
 
     #[inline]
