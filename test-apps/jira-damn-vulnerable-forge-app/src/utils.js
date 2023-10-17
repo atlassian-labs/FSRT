@@ -9,7 +9,9 @@ import func_defult from './export_default';
 import my_function from "./export_default2.js";
 import {classone} from './anewclass';
 
-let global = "global__flag___test"
+
+
+let global = "test";
 
 export async function fetchIssueSummary(issueIdOrKey, test_value) {
 
@@ -23,8 +25,6 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
 
 
 
-  var token = jwt.sign({ foo: 'bar' }, process.env.SECRET);
-
 
   module_exports_func()
   func_from_exports()
@@ -32,6 +32,9 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
   newExport()
   func_defult()
   my_function()
+  let global = "test";
+
+  var token = jwt.sign({ foo: 'bar' }, global);
 
   // testFunctionFromTestFile();
 
