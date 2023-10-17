@@ -1392,7 +1392,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                             } else if let Some(value) = _interp.body().vars.get(varid) {
                                 if let VarKind::GlobalRef(def) = value {
                                     if let Some(Value::Const(value)) =
-                                        _interp.defid_to_value.get(def)
+                                        _interp.value_manager.defid_to_value.get(def)
                                     {
                                         intrinsic_argument.first_arg = Some(vec![]);
                                         add_elements_to_intrinsic_struct(
@@ -1418,8 +1418,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
 
             let mut permissions_within_call: Vec<String> = vec![];
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
-
-            //println!("intrinsic_argument {:?}", intrinsic_argument);
 
             if intrinsic_argument.first_arg == None {
                 _interp.permissions.drain(..);
@@ -1671,7 +1669,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         for (varid, varkind) in interp.body().vars.clone().iter_enumerated() {
             if &VarKind::Ret == varkind {
                 if let Some((defid_calling_func, varid_calling_func)) =
-                    interp.expected_return_values.get(&def)
+                    interp.value_manager.expected_return_values.get(&def)
                 {
                     if let Some(value) = interp.get_value(def, varid, None) {
                         interp.add_value(
@@ -1701,7 +1699,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 // transfer all of the variables
                 if let Operand::Var(variable) = operand {
                     if let Base::Var(varid_rval) = variable.base {
-                        interp.varid_to_value.clone().iter().for_each(
+                        interp.value_manager.varid_to_value.clone().iter().for_each(
                             |((defid, varid_rval_potential, projection), value)| {
                                 if varid_rval_potential == &varid_rval {
                                     interp.add_value(def, *varid, value.clone(), projection.clone())
@@ -1796,6 +1794,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                             _ => {}
                         }
                         interp
+                            .value_manager
                             .varid_to_value
                             .insert((def, *varid, None), return_value_from_string(new_vals));
                     } else if let Some(val1) = val1 {
@@ -1867,7 +1866,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         }
                     } else {
                         if let Some(potential_value) = interp.get_value(def, prev_varid, None) {
-                            interp.varid_to_value.insert(
+                            interp.value_manager.varid_to_value.insert(
                                 (def, *varid, var.projections.get(0).cloned()),
                                 potential_value.clone(),
                             );
