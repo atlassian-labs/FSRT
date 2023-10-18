@@ -66,6 +66,12 @@ struct ScheduledTrigger<'a> {
     interval: Interval,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct WorkflowPostFunction<'a> {
+    #[serde(flatten, borrow)]
+    raw: RawTrigger<'a>,
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ForgeModules<'a> {
     #[serde(rename = "macro", default, borrow)]
@@ -80,6 +86,8 @@ pub struct ForgeModules<'a> {
     scheduled_triggers: Vec<ScheduledTrigger<'a>>,
     #[serde(rename = "consumer", default, borrow)]
     pub consumers: Vec<Consumer<'a>>,
+    #[serde(rename = "jira:workflowPostFunction", default, borrow)]
+    workflow_post_functions: Vec<WorkflowPostFunction<'a>>,
     #[serde(flatten)]
     extra: FxHashMap<String, Vec<Module<'a>>>,
 }
@@ -203,6 +211,9 @@ impl<'a> ForgeModules<'a> {
     pub fn into_analyzable_functions(
         mut self,
     ) -> impl Iterator<Item = FunctionTy<FunctionMod<'a>>> {
+        //FIXME: The logic here is incorrect, a function should be in the ignored function IIF it
+        //is not invoked by a user-invocable module.
+
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         // the vec's storage instead of using a HashSet
         self.webtriggers
@@ -218,9 +229,14 @@ impl<'a> ForgeModules<'a> {
                     .into_iter()
                     .map(|trigger| trigger.raw.function),
             )
+            .chain(
+                self.workflow_post_functions
+                    .into_iter()
+                    .map(|pf| pf.raw.function),
+            )
             .collect();
 
-        let mut alternate_functions: Vec<&str> = Vec::new();
+        let mut alternate_functions = vec![];
         for module in self.extra.into_values().flatten() {
             alternate_functions.extend(module.function);
             if let Some(resolver) = module.resolver {
