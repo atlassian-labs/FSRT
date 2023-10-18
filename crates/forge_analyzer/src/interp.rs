@@ -590,7 +590,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     ) -> Self {
         let call_graph = CallGraph::new(env);
 
-
         Self {
             env,
             call_graph,
@@ -611,7 +610,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 varid_to_value: DefinitionAnalysisMap::default(),
                 defid_to_value: FxHashMap::default(),
                 expected_return_values: HashMap::default(),
-                expecting_value: VecDeque::default()
+                expecting_value: VecDeque::default(),
             },
             permissions,
             jira_permission_resolver,
@@ -660,7 +659,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         value: Value,
         projection: Option<Projection>,
     ) {
-        self.value_manager.varid_to_value
+        self.value_manager
+            .varid_to_value
             .insert((defid_block, varid, projection), value);
     }
 
@@ -671,7 +671,9 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         varid: VarId,
         projection: Option<Projection>,
     ) -> Option<&Value> {
-        self.value_manager.varid_to_value.get(&(defid_block, varid, projection))
+        self.value_manager
+            .varid_to_value
+            .get(&(defid_block, varid, projection))
     }
 
     #[inline]

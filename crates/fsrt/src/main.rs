@@ -316,7 +316,10 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 
                 let mut checker2 = SecretChecker::new();
                 secret_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                secret_interp.value_manager.defid_to_value = defintion_analysis_interp.value_manager.defid_to_value.clone();
+                secret_interp.value_manager.defid_to_value = defintion_analysis_interp
+                    .value_manager
+                    .defid_to_value
+                    .clone();
                 debug!("checking {func} at {path:?}");
                 if let Err(err) =
                     secret_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
@@ -327,7 +330,10 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 
                 if run_permission_checker {
                     perm_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                    perm_interp.value_manager.defid_to_value = defintion_analysis_interp.value_manager.defid_to_value.clone();
+                    perm_interp.value_manager.defid_to_value = defintion_analysis_interp
+                        .value_manager
+                        .defid_to_value
+                        .clone();
                     let mut checker2 = PermissionChecker::new();
                     if let Err(err) =
                         perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
@@ -350,7 +356,10 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 
                 let mut checker2 = SecretChecker::new();
                 secret_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                secret_interp.value_manager.defid_to_value = defintion_analysis_interp.value_manager.defid_to_value.clone();
+                secret_interp.value_manager.defid_to_value = defintion_analysis_interp
+                    .value_manager
+                    .defid_to_value
+                    .clone();
                 debug!("checking {func} at {path:?}");
                 if let Err(err) =
                     secret_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
@@ -370,7 +379,10 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 
                 if run_permission_checker {
                     perm_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                    perm_interp.value_manager.defid_to_value = defintion_analysis_interp.value_manager.defid_to_value.clone();
+                    perm_interp.value_manager.defid_to_value = defintion_analysis_interp
+                        .value_manager
+                        .defid_to_value
+                        .clone();
                     let mut checker2 = PermissionChecker::new();
                     if let Err(err) =
                         perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
