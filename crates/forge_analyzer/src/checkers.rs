@@ -97,8 +97,8 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
             Intrinsic::JWTSign(_)
             | Intrinsic::Fetch
             | Intrinsic::ApiCustomField 
-            | Intrinsic::ApiCall
-            | Intrinsic::SafeCall
+            | Intrinsic::ApiCall(_)
+            | Intrinsic::SafeCall(_)
             | Intrinsic::EnvRead
             | Intrinsic::StorageRead => initial_state,
         }
@@ -263,7 +263,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                 ControlFlow::Continue(AuthorizeState::Yes)
             }
             Intrinsic::Fetch => ControlFlow::Continue(*state),
-            Intrinsic::ApiCall if *state != AuthorizeState::Yes => {
+            Intrinsic::ApiCall(_) if *state != AuthorizeState::Yes => {
                 let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
@@ -276,8 +276,8 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                 ControlFlow::Break(())
             }
             Intrinsic::JWTSign(_)
-            | Intrinsic::ApiCall
-            | Intrinsic::SafeCall
+            | Intrinsic::ApiCall(_)
+            | Intrinsic::SafeCall(_)
             | Intrinsic::EnvRead
             | Intrinsic::UserFieldAccess
             | Intrinsic::ApiCustomField
@@ -340,11 +340,11 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
                 debug!("authenticated");
                 Authenticated::Yes
             }
-            Intrinsic::JWTSign
-            | Intrinsic::ApiCall
+            Intrinsic::JWTSign(_)
+            | Intrinsic::ApiCall(_)
             | Intrinsic::ApiCustomField
             | Intrinsic::UserFieldAccess
-            | Intrinsic::SafeCall => initial_state,
+            | Intrinsic::SafeCall(_) => initial_state,
         }
     }
 
@@ -435,17 +435,17 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
                 debug!("authenticated");
                 ControlFlow::Continue(Authenticated::Yes)
             }
-            Intrinsic::ApiCall | Intrinsic::ApiCustomField if *state == Authenticated::No => {
+            Intrinsic::ApiCall(_) | Intrinsic::ApiCustomField if *state == Authenticated::No => {
                 let vuln = AuthNVuln::new(interp.callstack(), interp.env(), interp.entry());
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
             }
             Intrinsic::JWTSign(_) => ControlFlow::Continue(*state),
-            Intrinsic::ApiCall | Intrinsic::UserFieldAccess | Intrinsic::ApiCustomField => {
+            Intrinsic::ApiCall(_) | Intrinsic::UserFieldAccess | Intrinsic::ApiCustomField => {
                 ControlFlow::Continue(*state)
             }
-            Intrinsic::SafeCall => ControlFlow::Continue(*state),
+            Intrinsic::SafeCall(_) => ControlFlow::Continue(*state),
         }
     }
 }

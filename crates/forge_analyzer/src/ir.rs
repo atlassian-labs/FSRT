@@ -74,6 +74,8 @@ pub enum Terminator {
 pub enum Intrinsic {
     Authorize(IntrinsicName),
     Fetch,
+    UserFieldAccess,
+    ApiCustomField,
     ApiCall(IntrinsicName),
     SafeCall(IntrinsicName),
     JWTSign(PackageData),
@@ -760,12 +762,12 @@ impl fmt::Display for Intrinsic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Intrinsic::Fetch => write!(f, "fetch"),
-            Intrinsic::Authorize => write!(f, "authorize"),
+            Intrinsic::Authorize(_) => write!(f, "authorize"),
             Intrinsic::JWTSign(_) => write!(f, "jwt sign"),
-            Intrinsic::ApiCall => write!(f, "api call"),
+            Intrinsic::ApiCall(_) => write!(f, "api call"),
             Intrinsic::ApiCustomField => write!(f, "accessing custom field route asApp"),
             Intrinsic::UserFieldAccess => write!(f, "accessing which fields a user can access"),
-            Intrinsic::SafeCall => write!(f, "safe api call"),
+            Intrinsic::SafeCall(_) => write!(f, "safe api call"),
             Intrinsic::EnvRead => write!(f, "env read"),
             Intrinsic::StorageRead => write!(f, "forge storage read"),
         }

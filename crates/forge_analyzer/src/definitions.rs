@@ -935,7 +935,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 match classify_api_call(first_arg) {
                     ApiCallKind::Unknown => {
                         if is_as_app {
-                            Some(Intrinsic::ApiCall)
+                            Some(Intrinsic::ApiCall(IntrinsicName::Other))
                         } else {
                             Some(Intrinsic::SafeCall(function_name))
                         }
@@ -944,7 +944,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         if is_as_app {
                             Some(Intrinsic::ApiCustomField)
                         } else {
-                            Some(Intrinsic::SafeCall)
+                            Some(Intrinsic::SafeCall(function_name))
                         }
                     }
                     ApiCallKind::Fields => {
@@ -954,8 +954,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                             Some(Intrinsic::UserFieldAccess)
                         }
                     }
-                    ApiCallKind::Trivial => Some(Intrinsic::SafeCall),
-                    ApiCallKind::Authorize => Some(Intrinsic::Authorize),
+                    ApiCallKind::Trivial => Some(Intrinsic::SafeCall(IntrinsicName::Other)),
+                    ApiCallKind::Authorize => Some(Intrinsic::Authorize(IntrinsicName::Other)),
                 }
             }
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
