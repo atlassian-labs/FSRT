@@ -96,7 +96,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
             }
             Intrinsic::JWTSign(_)
             | Intrinsic::Fetch
-            | Intrinsic::ApiCustomField 
+            | Intrinsic::ApiCustomField
             | Intrinsic::ApiCall(_)
             | Intrinsic::SafeCall(_)
             | Intrinsic::EnvRead
@@ -747,7 +747,9 @@ impl<'cx> Runner<'cx> for SecretChecker {
                                 }
                             } else if let Some(value) = interp.body().vars.get(varid) {
                                 if let VarKind::GlobalRef(def) = value {
-                                    if let Some(value) = interp.value_manager.defid_to_value.get(def) {
+                                    if let Some(value) =
+                                        interp.value_manager.defid_to_value.get(def)
+                                    {
                                         println!("value [] {value:?}");
                                         match value {
                                             Value::Const(_) | Value::Phi(_) => {
@@ -1247,8 +1249,9 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                         interp.body().vars.get(varid)
                                     {
                                         if let Base::Var(varid_to_assign) = var.base {
-                                            interp.
-                                            value_manager.expected_return_values
+                                            interp
+                                                .value_manager
+                                                .expected_return_values
                                                 .insert(*defid, (def, varid_to_assign));
                                         }
                                     }
@@ -1297,7 +1300,10 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                     Operand::Var(var) => {
                                         println!("{var}");
                                         if let Base::Var(varid) = var.base {
-                                            let values = interp.value_manager.varid_to_value.get(&(def, varid, None));
+                                            let values = interp
+                                                .value_manager
+                                                .varid_to_value
+                                                .get(&(def, varid, None));
                                             println!("values: {values:?}")
                                         }
                                     }
