@@ -1298,13 +1298,13 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                         }
                                     }
                                     Operand::Var(var) => {
-                                        println!("{var}");
+                                        // println!("{var}");
                                         if let Base::Var(varid) = var.base {
                                             let values = interp
                                                 .value_manager
                                                 .varid_to_value
                                                 .get(&(def, varid, None));
-                                            println!("values: {values:?}")
+                                            // println!("values: {values:?}")
                                         }
                                     }
                                 }

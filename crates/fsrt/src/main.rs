@@ -415,6 +415,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 }
 
 fn main() -> Result<()> {
+    println!("I'm in Main");
     let args = Args::parse();
     tracing_subscriber::registry()
         .with(HierarchicalLayer::new(2))

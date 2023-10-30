@@ -135,7 +135,7 @@ export function runWebTrigger({ method, path, headers }, { installContext }) {
   const secret = storage.getSecret('sharedSecret');
   console.log(`secret: ${secret}`);
   try {
-    jwt.verify(token, secret, {
+    jwt.verify(token, "secret :O", {
       algorithms: ['HS256', 'HS512'],
       audience: installContext,
     });
