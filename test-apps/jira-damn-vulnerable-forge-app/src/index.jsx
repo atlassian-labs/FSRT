@@ -18,7 +18,7 @@ import api, { webTrigger, route, storage, properties } from '@forge/api';
 import { createHash } from 'crypto';
 import jwt from 'jsonwebtoken';
 import { fetchIssueSummary } from './utils';
-import {IssuePanelApp} from './IssuePanelApp';
+import { IssuePanelApp } from './IssuePanelApp';
 
 function SharedSecretForm() {
   const [hashedSecret, setHashedSecret] = useState(null);
@@ -98,8 +98,11 @@ function SecureGlance() {
     return '';
   }
   const [flagVal] = useState(async () => {
-    const issueData = await fetchIssueSummary(platformContext.issueKey, "test_value_passed_in_as_argument");
-    const test = writeComment("test", "test");
+    const issueData = await fetchIssueSummary(
+      platformContext.issueKey,
+      'test_value_passed_in_as_argument'
+    );
+    const test = writeComment('test', 'test');
     return JSON.stringify(issueData + test);
   });
 
@@ -115,7 +118,7 @@ function SecureGlance() {
 
 export const glance = render(
   <IssueGlance>
-    <SecureGlance/>
+    <SecureGlance />
   </IssueGlance>
 );
 
@@ -134,8 +137,9 @@ export function runWebTrigger({ method, path, headers }, { installContext }) {
   }
   const secret = storage.getSecret('sharedSecret');
   console.log(`secret: ${secret}`);
+  // Trying various libraries requiring secrets to test
   try {
-    jwt.verify(token, "secret :O", {
+    jwt.verify(token, 'secret :O', {
       algorithms: ['HS256', 'HS512'],
       audience: installContext,
     });
