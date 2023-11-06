@@ -33,10 +33,11 @@ use swc_core::{
             VarDeclarator, WhileStmt, WithStmt, YieldExpr,
         },
         atoms::{Atom, JsWord},
+        utils::function,
         visit::{noop_visit_type, Visit, VisitWith},
     },
 };
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, field::debug, info, instrument, warn};
 use typed_index_collections::{TiSlice, TiVec};
 
 /**
@@ -571,6 +572,7 @@ pub enum IntrinsicName {
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Eq)]
 pub struct PackageData {
     pub package_name: String,
+    pub identifier: String,
     pub function_name: String,
     pub secret_position: u8,
 }
@@ -920,10 +922,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
         }
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
+            // [PropPath::Def(def)] => {}]
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
                 if (*last == *"requestJira" || *last == *"requestConfluence")
                     && Some(&ImportKind::Default)
-                        == self.res.as_foreign_import(def, "@forge/api") =>
+                        == self.res.is_imported_from(def, "@forge/api") =>
             {
                 let function_name = if *last == String::from("requestJira") {
                     IntrinsicName::RequestJira
@@ -959,36 +962,67 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
             }
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
-                if self.secret_packages.iter().any(|package_data| {
-                    return *package_data.function_name == *last
-                        && Some(&ImportKind::Default)
-                            == self.res.as_foreign_import(def, &package_data.package_name);
-                }) =>
+                if self
+                    .secret_packages
+                    .iter()
+                    .any(|ref package_data| *package_data.function_name == *last) =>
             {
-                Some(Intrinsic::JWTSign(
-                    self.secret_packages
-                        .iter()
-                        .cloned()
-                        .filter(|package| {
-                            *package.function_name == *last
-                                && Some(&ImportKind::Default)
-                                    == self.res.as_foreign_import(def, &package.package_name)
-                        })
-                        .collect_vec()
-                        .get(0)
-                        .unwrap()
-                        .clone(),
-                ))
+                debug!("last: {last}");
+                let package = self
+                    .secret_packages
+                    .iter()
+                    .filter(|package_data| *package_data.function_name == *last)
+                    .next()
+                    .unwrap();
+
+                let check = self.res.is_imported_from(def, &package.package_name);
+                debug!("checkingggg: {check:?}");
+                debug!("package.identifier: {package:?}");
+                match self.res.is_imported_from(def, &package.package_name) {
+                    Some(ImportKind::Default) if *package.identifier == *"default" => {
+                        return Some(Intrinsic::JWTSign(
+                            self.secret_packages
+                                .iter()
+                                .cloned()
+                                .filter(|package| {
+                                    *package.function_name == *last
+                                        && self.res.is_imported_from(def, &package.package_name)
+                                            == Some(&ImportKind::Default)
+                                })
+                                .collect_vec()
+                                .get(0)
+                                .unwrap()
+                                .clone(),
+                        ));
+                    }
+                    Some(ImportKind::Star) if *package.identifier == *"star" => {
+                        Some(Intrinsic::JWTSign(
+                            self.secret_packages
+                                .iter()
+                                .cloned()
+                                .filter(|package| {
+                                    *package.function_name == *last
+                                        && self.res.is_imported_from(def, &package.package_name)
+                                            == Some(&ImportKind::Star)
+                                })
+                                .collect_vec()
+                                .get(0)
+                                .unwrap()
+                                .clone(),
+                        ))
+                    }
+                    _ => None,
+                }
             }
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
-                match self.res.as_foreign_import(def, "@forge/api") {
+                match self.res.is_imported_from(def, "@forge/api") {
                     Some(ImportKind::Named(ref name)) if *name == *"storage" => {
                         Some(Intrinsic::StorageRead)
                     }
                     _ => None,
                 }
             }
-            [PropPath::Def(def), ..] => match self.res.as_foreign_import(def, "@forge/api") {
+            [PropPath::Def(def), ..] => match self.res.is_imported_from(def, "@forge/api") {
                 Some(ImportKind::Named(ref name)) if *name == *"authorize" => {
                     Some(Intrinsic::Authorize(IntrinsicName::Other))
                 }
@@ -1176,7 +1210,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first() {
-            if self.res.as_foreign_import(id, "@forge/ui").map_or(
+            if self.res.is_imported_from(id, "@forge/ui").map_or(
                 false,
                 |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect"),
             ) || calls_method(callee, "then")
@@ -1227,6 +1261,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
         };
 
         let first_arg = args.first().map(|expr| &*expr.expr);
+        // debug!("checking in lower_call. Think it's not getting classified correctly during lowering and IDK why");
+        // debug!("first_arg in lower call: {first_arg:?}");
+        let intrinsic = self.as_intrinsic(&props, first_arg);
+        debug!("WHAT FaUCKING INTRINSIC IS THIS: {intrinsic:?}");
         let call = match self.as_intrinsic(&props, first_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
@@ -2239,7 +2277,7 @@ impl Visit for FunctionCollector<'_> {
                     let Some(def) = self.res.sym_to_id(ident, self.module) else {
                         return;
                     };
-                    if matches!(self.res.as_foreign_import(def, "@forge/ui"), Some(ImportKind::Named(imp)) if *imp == *"render")
+                    if matches!(self.res.is_imported_from(def, "@forge/ui"), Some(ImportKind::Named(imp)) if *imp == *"render")
                     {
                         let owner =
                             self.res
@@ -3379,10 +3417,26 @@ impl Environment {
         }
     }
 
+    pub fn as_foreign_import(&self, def: DefId) -> Option<(JsWord, ImportKind)> {
+        let DefKind::Foreign(f) = self.def_ref(def) else {
+            return None;
+        };
+        Some((f.module_name.clone(), f.kind.clone()))
+    }
+
     /// Check if def is exported from the foreign module specified in `module_name`.
-    pub fn as_foreign_import(&self, def: DefId, module_name: &str) -> Option<&ImportKind> {
+    pub fn is_imported_from(&self, def: DefId, module_name: &str) -> Option<&ImportKind> {
+        // let thing = self.def_ref(def) == DefKind::Foreign(f);
+        // debug!("def id thing: {thing:?}");
         match self.def_ref(def) {
-            DefKind::Foreign(f) if f.module_name == *module_name => Some(&f.kind),
+            DefKind::Foreign(f) if f.module_name == *module_name => {
+                let return_value = Some(&f.kind);
+                debug!(
+                    "Entered match statement. Does evaluate true! return_value: {return_value:?}"
+                );
+
+                Some(&f.kind)
+            }
             _ => None,
         }
     }
