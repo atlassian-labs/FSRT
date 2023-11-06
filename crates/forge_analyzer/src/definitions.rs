@@ -980,7 +980,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 debug!("package.identifier: {package:?}");
                 match self.res.is_imported_from(def, &package.package_name) {
                     Some(ImportKind::Default) if *package.identifier == *"default" => {
-                        return Some(Intrinsic::JWTSign(
+                        Some(Intrinsic::JWTSign(
                             self.secret_packages
                                 .iter()
                                 .cloned()
@@ -993,7 +993,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                 .get(0)
                                 .unwrap()
                                 .clone(),
-                        ));
+                        ))
                     }
                     Some(ImportKind::Star) if *package.identifier == *"star" => {
                         Some(Intrinsic::JWTSign(
