@@ -933,6 +933,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
         }
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
+            // [PropPath::Def(def)] => {}]
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
                 if (*last == *"requestJira" || *last == *"requestConfluence")
                     && Some(&ImportKind::Default)
@@ -3734,7 +3735,14 @@ impl Environment {
     /// Check if def is exported from the foreign module specified in `module_name`.
     pub fn is_imported_from(&self, def: DefId, module_name: &str) -> Option<&ImportKind> {
         match self.def_ref(def) {
-            DefKind::Foreign(f) if f.module_name == *module_name => Some(&f.kind),
+            DefKind::Foreign(f) if f.module_name == *module_name => {
+                let return_value = Some(&f.kind);
+                debug!(
+                    "Entered match statement. Does evaluate true! return_value: {return_value:?}"
+                );
+
+                Some(&f.kind)
+            }
             _ => None,
         }
     }
