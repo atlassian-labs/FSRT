@@ -967,7 +967,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     .iter()
                     .any(|ref package_data| *package_data.function_name == *last) =>
             {
-                debug!("last: {last}");
                 let package = self
                     .secret_packages
                     .iter()
@@ -975,41 +974,12 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     .next()
                     .unwrap();
 
-                let check = self.res.is_imported_from(def, &package.package_name);
-                debug!("checkingggg: {check:?}");
-                debug!("package.identifier: {package:?}");
                 match self.res.is_imported_from(def, &package.package_name) {
                     Some(ImportKind::Default) if *package.identifier == *"default" => {
-                        Some(Intrinsic::JWTSign(
-                            self.secret_packages
-                                .iter()
-                                .cloned()
-                                .filter(|package| {
-                                    *package.function_name == *last
-                                        && self.res.is_imported_from(def, &package.package_name)
-                                            == Some(&ImportKind::Default)
-                                })
-                                .collect_vec()
-                                .get(0)
-                                .unwrap()
-                                .clone(),
-                        ))
+                        Some(Intrinsic::JWTSign(package.clone()))
                     }
                     Some(ImportKind::Star) if *package.identifier == *"star" => {
-                        Some(Intrinsic::JWTSign(
-                            self.secret_packages
-                                .iter()
-                                .cloned()
-                                .filter(|package| {
-                                    *package.function_name == *last
-                                        && self.res.is_imported_from(def, &package.package_name)
-                                            == Some(&ImportKind::Star)
-                                })
-                                .collect_vec()
-                                .get(0)
-                                .unwrap()
-                                .clone(),
-                        ))
+                        Some(Intrinsic::JWTSign(package.clone()))
                     }
                     _ => None,
                 }
