@@ -1,11 +1,11 @@
 import api, { route } from '@forge/api';
 import jwt from 'jsonwebtoken';
 import * as atlassian_jwt from 'atlassian-jwt';
-
+import * as cryptoJS from 'crypto-js';
+import * as jwtSimple from 'jwt-simple';
 import { testFunctionFromTestFile } from './testfile';
 import module_exports_func from './moduleex.js';
 import { func_from_exports, diffunc } from './exportse.js';
-// foo = DefId(22)
 import { another_export as foo, newExport } from './newexports.js';
 import func_defult from './export_default';
 import my_function from './export_default2.js';
@@ -51,9 +51,7 @@ type: Enum {
 // atlassian_jwt.sign();
 // }
 
-// var jwt = require('jwt-simple');
 let global = 'test';
-let CryptoJS = require('crypto-js');
 
 export async function fetchIssueSummary(issueIdOrKey, test_value) {
   let obj = {
@@ -74,9 +72,10 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
   let global = 'test';
 
   // testing all the libraries
-  var token = jwt.sign({ foo: 'bar' }, 'peek a boo');
+  // var token = jwt.sign({ foo: 'bar' }, 'peek a boo');
   // var hmac = HmacMD5('Secret Message', 'HMAC PASSWORD');
   var token = atlassian_jwt.encodeSymmetric({ foo: 'bar' }, 'Atlassian jwt');
+  var aes = cryptoJS.AES.encrypt('Secret messege', 'secret password');
   // var simple_token = jwt.encode({ foo: 'bar' }, 'Simple JWT');
 
   // testFunctionFromTestFile();
