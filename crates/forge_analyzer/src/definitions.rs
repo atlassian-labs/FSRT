@@ -971,7 +971,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     }
                 }) =>
             {
-                debug!("what's in authn? {authn:?}");
+                // debug!("what's in authn? {authn:?}");
                 match authn[0] {
                     PropPath::Static(ref object)
                         if self
@@ -1050,43 +1050,41 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
             // Case 2: The case where the root object is a named or default import,
             // in which case, you only need to check PackageData if it is an object
-            // [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
-            //     if self.secret_packages.iter().any(|ref package_data| {
-            //         if let Some(tuple) = self.res.as_foreign_import(def) {
-            //             return tuple.0 == package_data.package_name
-            //                 && (tuple.1 != ImportKind::Star);
-            //         } else {
-            //             return false;
-            //         }
-            //     }) =>
-            // {
-            //     debug!("what's last? {last}");
-            //     debug!("what's in the DEFID THING!: {def:?}");
-            //     let package = self
-            //         .secret_packages
-            //         .iter()
-            //         .filter(|ref package_data| {
-            //             if let Some(tuple) = self.res.as_foreign_import(def) {
-            //                 return tuple.0 == package_data.package_name
-            //                     && (tuple.1 != ImportKind::Star);
-            //             } else {
-            //                 return false;
-            //             }
-            //         })
-            //         .next()
-            //         .unwrap();
-            //     let def_kind = self.res.as_foreign_import(def);
-            //     debug!("What's the defkind? {def_kind:?}");
-            //     match self.res.is_imported_from(def, &package.package_name) {
-            //         Some(ImportKind::Default) if *package.identifier == *"default" => {
-            //             Some(Intrinsic::JWTSign(package.clone()))
-            //         }
-            //         Some(ImportKind::Star) if *package.identifier == *"star" => {
-            //             Some(Intrinsic::JWTSign(package.clone()))
-            //         }
-            //         _ => None,
-            //     }
-            // }
+            [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
+                if self.secret_packages.iter().any(|ref package_data| {
+                    if let Some(tuple) = self.res.as_foreign_import(def) {
+                        return tuple.0 == package_data.package_name && tuple.1 != ImportKind::Star;
+                    } else {
+                        return false;
+                    }
+                }) =>
+            {
+                debug!("Entering case 2!!!");
+                let mut package = self.secret_packages.iter().filter(|ref package_data| {
+                    if let Some(tuple) = self.res.as_foreign_import(def) {
+                        return tuple.0 == package_data.package_name
+                            && (tuple.1 != ImportKind::Star)
+                            && *last == package_data.identifier;
+                    } else {
+                        return false;
+                    }
+                });
+
+                if let Some(obj) = package.next() {
+                    Some(Intrinsic::JWTSign(obj.clone()))
+                } else {
+                    None
+                }
+                // match self.res.is_imported_from(def, &package.package_name) {
+                //     Some(ImportKind::Default) if *package.identifier == *"default" => {
+                //         Some(Intrinsic::JWTSign(package.clone()))
+                //     }
+                //     Some(ImportKind::Star) if *package.identifier == *"star" => {
+                //         Some(Intrinsic::JWTSign(package.clone()))
+                //     }
+                //     _ => None,
+                // }
+            }
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
                 match self.res.is_imported_from(def, "@forge/api") {
                     Some(ImportKind::Named(ref name)) if *name == *"storage" => {
