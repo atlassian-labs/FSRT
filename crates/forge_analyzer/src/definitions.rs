@@ -971,7 +971,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     }
                 }) =>
             {
-                // debug!("what's in authn? {authn:?}");
                 match authn[0] {
                     PropPath::Static(ref object)
                         if self
@@ -1053,18 +1052,18 @@ impl<'cx> FunctionAnalyzer<'cx> {
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
                 if self.secret_packages.iter().any(|ref package_data| {
                     if let Some(tuple) = self.res.as_foreign_import(def) {
-                        return tuple.0 == package_data.package_name && tuple.1 != ImportKind::Star;
+                        return tuple.0 == package_data.package_name
+                            && tuple.1 == ImportKind::Default;
                     } else {
                         return false;
                     }
                 }) =>
             {
-                debug!("Entering case 2!!!");
                 let mut package = self.secret_packages.iter().filter(|ref package_data| {
                     if let Some(tuple) = self.res.as_foreign_import(def) {
                         return tuple.0 == package_data.package_name
-                            && (tuple.1 != ImportKind::Star)
-                            && *last == package_data.identifier;
+                            && self.res.is_import(tuple.1, None)
+                            && *last == *package_data.identifier;
                     } else {
                         return false;
                     }
@@ -1075,15 +1074,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 } else {
                     None
                 }
-                // match self.res.is_imported_from(def, &package.package_name) {
-                //     Some(ImportKind::Default) if *package.identifier == *"default" => {
-                //         Some(Intrinsic::JWTSign(package.clone()))
-                //     }
-                //     Some(ImportKind::Star) if *package.identifier == *"star" => {
-                //         Some(Intrinsic::JWTSign(package.clone()))
-                //     }
-                //     _ => None,
-                // }
             }
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
                 match self.res.is_imported_from(def, "@forge/api") {
@@ -1092,6 +1082,32 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     }
                     _ => None,
                 }
+            }
+            // Case 2: The case where the root object is a named or default import,
+            // in which case, you only need to check PackageData if it is an object
+            // where iimport type is Named
+            [PropPath::Def(def), ..] if self.res.as_foreign_import(def).is_some() => {
+                if let Some((package_name, import_kind)) = self.res.as_foreign_import(def) {
+                    // Debug LOG when finding the darn thing
+                    // package_name: Atom('crypto-js' type=dynamic)
+                    // import_kind: Named(Atom('HmacMD5' type=inline))
+                    let package = self
+                        .secret_packages
+                        .iter()
+                        .filter(|ref package_data| {
+                            *package_name == *package_data.package_name
+                                && self.res.is_import(
+                                    import_kind.clone(),
+                                    Some(package_data.identifier.clone()),
+                                )
+                        })
+                        .next();
+                    if package != None {
+                        return Some(Intrinsic::JWTSign(package.unwrap().clone()));
+                    }
+                }
+
+                None
             }
             [PropPath::Def(def), ..] => match self.res.is_imported_from(def, "@forge/api") {
                 Some(ImportKind::Named(ref name)) if *name == *"authorize" => {
@@ -1332,10 +1348,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
         };
 
         let first_arg = args.first().map(|expr| &*expr.expr);
-        // debug!("checking in lower_call. Think it's not getting classified correctly during lowering and IDK why");
+        // debug!("props in lower call: {props:?}");
         // debug!("first_arg in lower call: {first_arg:?}");
         let intrinsic = self.as_intrinsic(&props, first_arg);
-        debug!("WHAT FaUCKING INTRINSIC IS THIS: {intrinsic:?}");
+        // debug!("Intrinsic Returned: {intrinsic:?}");
         let call = match self.as_intrinsic(&props, first_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
@@ -3485,6 +3501,21 @@ impl Environment {
             }
             DefKind::ModuleNs(id) => DefKind::ModuleNs(id),
             DefKind::Undefined => DefKind::Undefined,
+        }
+    }
+    pub fn is_import(&self, import_kind: ImportKind, named_import: Option<String>) -> bool {
+        // debug!("{named_import}");
+        match import_kind {
+            ImportKind::Star => true,
+            ImportKind::Default => true,
+            ImportKind::Named(ref name) => {
+                if let Some(import_name) = named_import {
+                    return *name == *import_name;
+                } else {
+                    false
+                }
+            }
+            _ => false,
         }
     }
 

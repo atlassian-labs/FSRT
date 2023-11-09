@@ -230,8 +230,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
 
-    // println!("permissions declares == {permissions_declared:?}");
-
     let permissions = Vec::from_iter(permissions_declared.iter().cloned());
 
     let (jira_permission_resolver, jira_regex_map) = get_permission_resolver_jira();
@@ -297,7 +295,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         match *func {
             FunctionTy::Invokable((ref func, ref path, _, def)) => {
                 let mut runner = DefintionAnalysisRunner::new();
-                debug!("checking {func} at {path:?}");
+                debug!("checking Invokable {func} at {path:?}");
                 if let Err(err) = defintion_analysis_interp.run_checker(
                     def,
                     &mut runner,
@@ -307,7 +305,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     warn!("error while getting definition analysis {func} in {path:?}: {err}");
                 }
                 let mut checker = AuthZChecker::new();
-                debug!("checking {func} at {path:?}");
+                debug!("Authorization Scaner on Invokable FunctionTy: checking {func} at {path:?}");
                 if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
                 {
                     warn!("error while scanning {func} in {path:?}: {err}");
@@ -320,7 +318,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     .value_manager
                     .defid_to_value
                     .clone();
-                debug!("checking {func} at {path:?}");
+                debug!("Secret Scanner on Invokable FunctionTy: checking {func} at {path:?}");
                 if let Err(err) =
                     secret_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
                 {
@@ -328,6 +326,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 }
                 reporter.add_vulnerabilities(checker2.into_vulns());
 
+                debug!("Permission Scanners on Invokable FunctionTy: checking {func} at {path:?}");
                 if run_permission_checker {
                     perm_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
                     perm_interp.value_manager.defid_to_value = defintion_analysis_interp
@@ -344,7 +343,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
                 let mut runner = DefintionAnalysisRunner::new();
-                debug!("checking {func} at {path:?}");
+                debug!("checking Web Trigger {func} at {path:?}");
                 if let Err(err) = defintion_analysis_interp.run_checker(
                     def,
                     &mut runner,
@@ -360,7 +359,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     .value_manager
                     .defid_to_value
                     .clone();
-                debug!("checking {func} at {path:?}");
+                debug!("Secret Scanner on Web Triggers: checking {func} at {path:?}");
                 if let Err(err) =
                     secret_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
                 {
@@ -369,7 +368,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 reporter.add_vulnerabilities(checker2.into_vulns());
 
                 let mut checker = AuthenticateChecker::new();
-                debug!("checking webtrigger {func} at {path:?}");
+                debug!("Authentication Checker on Web Triggers: checking webtrigger {func} at {path:?}");
                 if let Err(err) =
                     authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
                 {
@@ -377,6 +376,9 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
 
+                debug!(
+                    "Permission Checker on Web Triggers: checking webtrigger {func} at {path:?}"
+                );
                 if run_permission_checker {
                     perm_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
                     perm_interp.value_manager.defid_to_value = defintion_analysis_interp
@@ -403,7 +405,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     }
 
     let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
-    debug!("Writing Report");
+    debug!("On the debug layer: Writing Report");
     match opts.out {
         Some(path) => {
             fs::write(path, report).into_diagnostic()?;
@@ -415,7 +417,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 }
 
 fn main() -> Result<()> {
-    println!("I'm in Main");
     let args = Args::parse();
     tracing_subscriber::registry()
         .with(HierarchicalLayer::new(2))
