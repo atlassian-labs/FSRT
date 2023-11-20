@@ -3737,9 +3737,9 @@ impl Environment {
         match self.def_ref(def) {
             DefKind::Foreign(f) if f.module_name == *module_name => {
                 let return_value = Some(&f.kind);
-                debug!(
-                    "Entered match statement. Does evaluate true! return_value: {return_value:?}"
-                );
+                // debug!(
+                //     "Entered match statement. Does evaluate true! return_value: {return_value:?}"
+                // );
 
                 Some(&f.kind)
             }
