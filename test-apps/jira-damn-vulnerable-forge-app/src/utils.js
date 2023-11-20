@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import * as atlassian_jwt from 'atlassian-jwt';
 import * as cryptoJS from 'crypto-js';
 import * as jwtSimple from 'jwt-simple';
+import { HmacMD5 } from 'crypto-js';
 import { testFunctionFromTestFile } from './testfile';
 import module_exports_func from './moduleex.js';
 import { func_from_exports, diffunc } from './exportse.js';
@@ -11,45 +12,6 @@ import func_defult from './export_default';
 import my_function from './export_default2.js';
 import { classone } from './anewclass';
 import * as c1 from './anewclass';
-/*
-import {default as something} from what;
-import something from what;
-
-packagename: jsonwebtoken
-identifier: default
-type: Object("sign")
-position: 4
-
-function require(input) {}
-require('foo');
-
-type: Enum {
-  Function,
-  Object(String), // <- method_name
-}
-*/
-
-// import HmacMD5 from 'crypto-js';
-// DefId(4)
-
-// DEFINITIONS
-// 0 -> name
-// 0 -> Definition(enum)
-
-// function chair() {
-// DefId(22)
-//as_foreign_import(DefId(22), 'newexports')) -> Some(ImportKind("another_export"))
-// foo();
-//
-// [DefId(4), Static('blah'), Static('open')]
-// atlassian_jwt['blah' + 'test']();
-// atlassian_jwt.blah.open();
-// atlassian_jwt['blah']();
-
-// const blah = 'sign';
-// atlassian_jwt[blah]();
-// atlassian_jwt.sign();
-// }
 
 let global = 'test';
 
@@ -74,8 +36,8 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
   // testing all the libraries
   // var token = jwt.sign({ foo: 'bar' }, 'peek a boo');
   // var hmac = HmacMD5('Secret Message', 'HMAC PASSWORD');
-  var token = atlassian_jwt.encodeSymmetric({ foo: 'bar' }, 'Atlassian jwt');
-  var aes = cryptoJS.AES.encrypt('Secret messege', 'secret password');
+  // var token = atlassian_jwt.encodeSymmetric({ foo: 'bar' }, 'Atlassian jwt');
+  // var aes = cryptoJS.AES.encrypt('Secret message', 'secret password');
   // var simple_token = jwt.encode({ foo: 'bar' }, 'Simple JWT');
 
   // testFunctionFromTestFile();

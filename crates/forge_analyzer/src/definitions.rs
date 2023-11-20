@@ -971,8 +971,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     }
                 }) =>
             {
-                match authn[0] {
-                    PropPath::Static(ref object)
+                match authn.get(0) {
+                    // case where function requires object to be invoked first
+                    // example: import * as cryptoJS from 'crypto-js';
+                    // var aes = cryptoJS.AES.encrypt('Secret message', 'secret password');
+                    Some(PropPath::Static(ref object))
                         if self
                             .secret_packages
                             .iter()
@@ -1002,6 +1005,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                             .unwrap();
                         if let Some(method) = &package.method {
                             if *method == **last {
+                                debug!("bug caught on package: {package:?}");
                                 Some(Intrinsic::JWTSign(package.clone()))
                             } else {
                                 None
@@ -1011,6 +1015,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         }
                     }
 
+                    // Star imports that don't have any object call to invoke function
+                    // import * as atlassian_jwt from "atlassian-jwt";
+                    // atlassian_jwt.encode(blah, blah);
                     _ if self.secret_packages.iter().any(|ref package_data| {
                         if let Some(tuple) = self.res.as_foreign_import(def) {
                             return tuple.0 == package_data.package_name
@@ -1040,6 +1047,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         if package.is_none() {
                             None
                         } else {
+                            debug!("bug caught on package: {package:?}");
                             Some(Intrinsic::JWTSign(package.unwrap().clone()))
                         }
                     }
@@ -1047,13 +1055,14 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
             }
 
-            // Case 2: The case where the root object is a named or default import,
+            // Case 2: The case where the root object is default import,
             // in which case, you only need to check PackageData if it is an object
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
                 if self.secret_packages.iter().any(|ref package_data| {
                     if let Some(tuple) = self.res.as_foreign_import(def) {
-                        return tuple.0 == package_data.package_name
-                            && tuple.1 == ImportKind::Default;
+                        let checking_value = tuple.1.to_string();
+                        return *tuple.0 == *package_data.package_name
+                            && self.res.is_import(Some(tuple.1.to_string()));
                     } else {
                         return false;
                     }
@@ -1062,7 +1071,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let mut package = self.secret_packages.iter().filter(|ref package_data| {
                     if let Some(tuple) = self.res.as_foreign_import(def) {
                         return tuple.0 == package_data.package_name
-                            && self.res.is_import(tuple.1, None)
+                            && self.res.is_import(Some(tuple.1.to_string()))
                             && *last == *package_data.identifier;
                     } else {
                         return false;
@@ -1091,15 +1100,13 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     // Debug LOG when finding the darn thing
                     // package_name: Atom('crypto-js' type=dynamic)
                     // import_kind: Named(Atom('HmacMD5' type=inline))
+
                     let package = self
                         .secret_packages
                         .iter()
                         .filter(|ref package_data| {
                             *package_name == *package_data.package_name
-                                && self.res.is_import(
-                                    import_kind.clone(),
-                                    Some(package_data.identifier.clone()),
-                                )
+                                && import_kind.to_string() == package_data.identifier
                         })
                         .next();
                     if package != None {
@@ -3503,18 +3510,11 @@ impl Environment {
             DefKind::Undefined => DefKind::Undefined,
         }
     }
-    pub fn is_import(&self, import_kind: ImportKind, named_import: Option<String>) -> bool {
-        // debug!("{named_import}");
+    pub fn is_import(&self, import_kind: Option<String>) -> bool {
         match import_kind {
-            ImportKind::Star => true,
-            ImportKind::Default => true,
-            ImportKind::Named(ref name) => {
-                if let Some(import_name) = named_import {
-                    return *name == *import_name;
-                } else {
-                    false
-                }
-            }
+            Some(default) if default == "default" => true,
+            Some(named) if named == "named" => true,
+            Some(star) => false,
             _ => false,
         }
     }
@@ -3533,9 +3533,9 @@ impl Environment {
         match self.def_ref(def) {
             DefKind::Foreign(f) if f.module_name == *module_name => {
                 let return_value = Some(&f.kind);
-                debug!(
-                    "Entered match statement. Does evaluate true! return_value: {return_value:?}"
-                );
+                // debug!(
+                //     "Entered match statement. Does evaluate true! return_value: {return_value:?}"
+                // );
 
                 Some(&f.kind)
             }
