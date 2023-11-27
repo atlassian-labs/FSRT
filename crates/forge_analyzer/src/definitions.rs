@@ -3735,14 +3735,7 @@ impl Environment {
     /// Check if def is exported from the foreign module specified in `module_name`.
     pub fn is_imported_from(&self, def: DefId, module_name: &str) -> Option<&ImportKind> {
         match self.def_ref(def) {
-            DefKind::Foreign(f) if f.module_name == *module_name => {
-                let return_value = Some(&f.kind);
-                // debug!(
-                //     "Entered match statement. Does evaluate true! return_value: {return_value:?}"
-                // );
-
-                Some(&f.kind)
-            }
+            DefKind::Foreign(f) if f.module_name == *module_name => Some(&f.kind),
             _ => None,
         }
     }
