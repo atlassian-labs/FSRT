@@ -1061,6 +1061,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 if self.secret_packages.iter().any(|ref package_data| {
                     if let Some(tuple) = self.res.as_foreign_import(def) {
                         let checking_value = tuple.1.to_string();
+                        // debug!("TUPLE VALUES: {tuple:?} checking_value of to_string: {checking_value}");
+                        // debug!("PACKAGE: {package_data:?}");
+                        // let boolean_value = tuple.0 == package_data.package_name;
+                        // let is_import_value = self.res.is_import(Some(tuple.1.to_string()));
+                        // debug!("WHAT IS GOING ON WHY EVERYTHING FAILING!? Boolean value = {boolean_value} is_import_value: {is_import_value}");
                         return *tuple.0 == *package_data.package_name
                             && self.res.is_import(Some(tuple.1.to_string()));
                     } else {
@@ -1070,6 +1075,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
             {
                 let mut package = self.secret_packages.iter().filter(|ref package_data| {
                     if let Some(tuple) = self.res.as_foreign_import(def) {
+                        // debug!("LAST: {last}");
+                        // debug!("PACKAGE: {package_data:?}");
                         return tuple.0 == package_data.package_name
                             && self.res.is_import(Some(tuple.1.to_string()))
                             && *last == *package_data.identifier;
@@ -1079,6 +1086,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 });
 
                 if let Some(obj) = package.next() {
+                    // debug!("bug caught on package: {obj:?}");
+                    // debug!("tf is last!? {last}");
                     Some(Intrinsic::JWTSign(obj.clone()))
                 } else {
                     None
@@ -1110,6 +1119,12 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         })
                         .next();
                     if package != None {
+                        // debug!("Chicken!");
+                        // let is_import_value = self.res.is_import(Some(import_kind.to_string()));
+                        // debug!("import kind !>>>!>??@?? {import_kind}");
+                        // debug!("checking is_import value: {is_import_value}");
+                        // debug!("bug caught on package: {package:?}");
+                        // debug!("tf is callee!? {callee:?}");
                         return Some(Intrinsic::JWTSign(package.unwrap().clone()));
                     }
                 }
@@ -3514,7 +3529,7 @@ impl Environment {
         match import_kind {
             Some(default) if default == "default" => true,
             Some(named) if named == "named" => true,
-            Some(star) => false,
+            Some(star) if star == "star" => false,
             _ => false,
         }
     }
@@ -3528,17 +3543,8 @@ impl Environment {
 
     /// Check if def is exported from the foreign module specified in `module_name`.
     pub fn is_imported_from(&self, def: DefId, module_name: &str) -> Option<&ImportKind> {
-        // let thing = self.def_ref(def) == DefKind::Foreign(f);
-        // debug!("def id thing: {thing:?}");
         match self.def_ref(def) {
-            DefKind::Foreign(f) if f.module_name == *module_name => {
-                let return_value = Some(&f.kind);
-                // debug!(
-                //     "Entered match statement. Does evaluate true! return_value: {return_value:?}"
-                // );
-
-                Some(&f.kind)
-            }
+            DefKind::Foreign(f) if f.module_name == *module_name => Some(&f.kind),
             _ => None,
         }
     }

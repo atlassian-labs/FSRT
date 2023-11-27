@@ -1,9 +1,4 @@
 import api, { route } from '@forge/api';
-import jwt from 'jsonwebtoken';
-import * as atlassian_jwt from 'atlassian-jwt';
-import * as cryptoJS from 'crypto-js';
-import * as jwtSimple from 'jwt-simple';
-import { HmacMD5 } from 'crypto-js';
 import { testFunctionFromTestFile } from './testfile';
 import module_exports_func from './moduleex.js';
 import { func_from_exports, diffunc } from './exportse.js';
@@ -12,6 +7,17 @@ import func_defult from './export_default';
 import my_function from './export_default2.js';
 import { classone } from './anewclass';
 import * as c1 from './anewclass';
+
+// Secret Scanner Default Imports
+import jwt from 'jsonwebtoken';
+import * as atlassian_jwt from 'atlassian-jwt';
+
+// Secret Scanner Star Imports
+// import * as cryptoJS from 'crypto-js';
+// import * as jwtSimple from 'jwt-simple';
+
+// Secret Scanner Named Imports
+import { HmacSHA256 } from 'crypto-js';
 
 let global = 'test';
 
@@ -33,16 +39,24 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
   my_function();
   let global = 'test';
 
-  // testing all the libraries
+  // Function calls from default imports
   // var token = jwt.sign({ foo: 'bar' }, 'peek a boo');
-  // var hmac = HmacMD5('Secret Message', 'HMAC PASSWORD');
   // var token = atlassian_jwt.encodeSymmetric({ foo: 'bar' }, 'Atlassian jwt');
+
+  // Function calls from star imports
   // var aes = cryptoJS.AES.encrypt('Secret message', 'secret password');
-  // var simple_token = jwt.encode({ foo: 'bar' }, 'Simple JWT');
+  // var simple_token = jwtSimple.encode({ foo: 'bar' }, 'Simple JWT');
+
+  // Function calls from named imports
+  var hmac = HmacSHA256('Secret Message', 'HMAC PASSWORD');
+
+  // calling edge case
+  console.log(sign());
+  console.log('End secret scanning test cases');
 
   // testFunctionFromTestFile();
 
-  diffunc();
+  // diffunc();
 
   // different_function();
   let a_class = new ANewClass();
@@ -60,6 +74,14 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
   const data = await resp.json();
   console.log(JSON.stringify(data));
   return data['fields']['summary'];
+}
+
+// add Secret Scanner Edge cases here
+
+// TODO: Calling function with same name as function from Secret Scanner
+function sign() {
+  console.log('this is a test function');
+  return 'test function';
 }
 
 function get_random_string() {
