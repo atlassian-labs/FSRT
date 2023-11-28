@@ -28,12 +28,12 @@ pub fn add_const_to_val_vec(val: &Value, const_val: &Const, vals: &mut Vec<Strin
     match val {
         Value::Const(Const::Literal(lit)) => {
             if let Const::Literal(lit2) = const_val {
-                vals.push(lit.to_owned() + &lit2);
+                vals.push(format!("{lit}{lit2}"));
             }
         }
         Value::Phi(phi_val2) => phi_val2.iter().for_each(|val2| {
             if let (Const::Literal(lit1), Const::Literal(lit2)) = (&const_val, val2) {
-                vals.push(lit1.to_owned() + lit2);
+                vals.push(format!("{lit1}{lit2}"));
             }
         }),
         _ => {}

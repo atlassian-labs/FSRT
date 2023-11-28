@@ -1057,8 +1057,26 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
             // Case 2: The case where the root object is default import,
             // in which case, you only need to check PackageData if it is an object
+            // import { foo } from 'foo';
+            // foo.bar.sign('what');
+            // foo.bar.bar.sign('whatever');
+            // PackageData { package: 'foo', identifier: 'bar', method: 'sign' }
+            // [Def, Static, Static]
+            //[PropPath::Def(def), PropPath::Static(a), PropPath::Static(b)]
+            // 1. Star, identifier, method
+            //
+            // [Def, Static]
+            //[PropPath::Def(def), PropPath::Static(atom)]
+            // 1. Star, identifier (NO METHOD)
+            // 2. Named/Default => package matches imported from and ident is the same, method
+            //
+            // [PropPath::Def(def)]
+            // 1. Named/Default => package matches imported from and ident is the same, (NO METHOD)
+
+            // [Def, .., Static] star
+            // [Def, .., Static] named/default
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
-                if self.secret_packages.iter().any(|ref package_data| {
+                if self.secret_packages.iter().any(|package_data| {
                     if let Some(tuple) = self.res.as_foreign_import(def) {
                         let checking_value = tuple.1.to_string();
                         // debug!("TUPLE VALUES: {tuple:?} checking_value of to_string: {checking_value}");
@@ -1073,7 +1091,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     }
                 }) =>
             {
-                let mut package = self.secret_packages.iter().filter(|ref package_data| {
+                let mut package = self.secret_packages.iter().filter(|&package_data| {
                     if let Some(tuple) = self.res.as_foreign_import(def) {
                         // debug!("LAST: {last}");
                         // debug!("PACKAGE: {package_data:?}");
@@ -1446,7 +1464,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     match &**expr {
                         Expr::Arrow(arrow_expr) => {
                             if let BlockStmtOrExpr::Expr(expr) = &*arrow_expr.body {
-                                self.lower_expr(&**expr);
+                                self.lower_expr(&**expr, None);
                             }
                         }
                         Expr::Ident(ident) => {
@@ -3016,7 +3034,7 @@ impl Visit for ImportCollector<'_> {
 impl Visit for GlobalCollector<'_> {
     fn visit_function(&mut self, _: &Function) {}
 
-    fn visit_class(&mut self, _: &Clss) {}
+    fn visit_class(&mut self, _: &swc_core::ecma::ast::Class) {}
 
     fn visit_module(&mut self, n: &Module) {
         // we encouter 2 statements, so the defid gets reassigned every time
