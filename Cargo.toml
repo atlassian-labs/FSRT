@@ -9,28 +9,43 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-clap = { version = "4.1.1", features = ["derive", "wrap_help"] }
+clap = { version = "4.4.8", features = ["derive", "wrap_help"] }
 fixedbitset = "0.4.2"
-itertools = "0.10.5"
+itertools = "0.12.0"
 miette = { version = "5.5.0", features = ["fancy"] }
 num-bigint = { version = "0.4.3" }
-serde = { version = "1.0.152", features = ["derive"] }
-serde_json = "1.0.97"
-serde_yaml = "0.9.17"
-stacker = "0.1.15"
+serde = { version = "1.0.192", features = ["derive"] }
+serde_json = "1.0.108"
+serde_yaml = "0.9.27"
 petgraph = "0.6.2"
-pretty_assertions = "1.3.0"
-indexmap = { version = "1.9.2", features = ["std"] }
+pretty_assertions = "1.4.0"
+indexmap = { version = "2.1.0", features = ["std"] }
 once_cell = "1.17.0"
 regex = "1.7.1"
 rustc-hash = "1.1.0"
-smallvec = { version = "1.10.0", features = ["union", "const_new"] }
-swc_core = { version = "0.53.1", features = ["common_perf", "common", "common_sourcemap", "ecma_visit_path", "ecma_utils", "ecma_ast", "swc", "ecma_visit", "ecma_transforms", "ecma_transforms_module", "ecma_transforms_typescript", "ecma_parser_typescript"] }
-thiserror = "1.0.38"
-time = { version = "0.3.17", features = ["local-offset", "serde-human-readable"] }
-tracing = "0.1.37"
-tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
-tracing-tree = "0.2.2"
+smallvec = { version = "1.11.2", features = ["union", "const_new"] }
+swc_core = { version = "0.53.1", features = [
+    "common_perf",
+    "common",
+    "common_sourcemap",
+    "ecma_visit_path",
+    "ecma_utils",
+    "ecma_ast",
+    "swc",
+    "ecma_visit",
+    "ecma_transforms",
+    "ecma_transforms_module",
+    "ecma_transforms_typescript",
+    "ecma_parser_typescript",
+] }
+thiserror = "1.0.50"
+time = { version = "0.3.30", features = [
+    "local-offset",
+    "serde-human-readable",
+] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-tree = "0.3.0"
 typed-index-collections = "3.1.0"
 walkdir = "2.3.2"
 forge_loader = { path = "crates/forge_loader" }
