@@ -39,10 +39,11 @@ impl Visit for ExportCollector {
                 let VarDecl { decls, .. } = &**vardecls;
                 decls.iter().for_each(|var| self.visit_var_declarator(var));
             }
-            Decl::TsInterface(_) => {}
-            Decl::TsTypeAlias(_) => {}
-            Decl::TsEnum(_) => {}
-            Decl::TsModule(_) => {}
+            Decl::Using(_)
+            | Decl::TsInterface(_)
+            | Decl::TsTypeAlias(_)
+            | Decl::TsEnum(_)
+            | Decl::TsModule(_) => {}
         };
     }
 
