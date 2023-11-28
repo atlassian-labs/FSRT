@@ -4,7 +4,7 @@ use std::{cmp::max, mem, ops::ControlFlow};
 use tracing::{debug, info, warn};
 
 use crate::{
-    definitions::{Class, Const, DefId, DefKind, Environment, IntrinsicName, PackageData, Value},
+    definitions::{Const, DefId, Environment, IntrinsicName, Value},
     interp::{
         Checker, Dataflow, EntryKind, EntryPoint, Frame, Interp, JoinSemiLattice, Runner,
         WithCallStack,
