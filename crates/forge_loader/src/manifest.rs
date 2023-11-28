@@ -270,7 +270,7 @@ impl<'a> ForgeModules<'a> {
 }
 
 impl<S> FunctionRef<'_, S> {
-    const VALID_EXTS: [&str; 4] = ["jsx", "tsx", "ts", "js"];
+    const VALID_EXTS: [&'static str; 4] = ["jsx", "tsx", "ts", "js"];
 }
 
 impl<'a> FunctionRef<'a> {
