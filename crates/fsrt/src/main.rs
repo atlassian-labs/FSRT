@@ -1,6 +1,5 @@
 #![allow(clippy::type_complexity)]
 use clap::{Parser, ValueHint};
-use forge_loader::forgepermissions::ForgePermissions;
 use forge_permission_resolver::permissions_resolver::{
     get_permission_resolver_confluence, get_permission_resolver_jira,
 };

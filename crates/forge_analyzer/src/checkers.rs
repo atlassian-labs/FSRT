@@ -1,41 +1,27 @@
 use core::fmt;
-use forge_loader::forgepermissions::ForgePermissions;
-use forge_permission_resolver::permissions_resolver::{
-    check_url_for_permissions, get_permission_resolver_confluence, get_permission_resolver_jira,
-    PermissionHashMap, RequestType,
-};
+use forge_permission_resolver::permissions_resolver::{check_url_for_permissions, RequestType};
 use forge_utils::FxHashMap;
 use itertools::Itertools;
-use petgraph::operator;
-use regex::Regex;
-use serde::de::value;
 use smallvec::SmallVec;
-use std::{
-    cmp::max,
-    collections::{HashMap, HashSet},
-    iter, mem,
-    ops::ControlFlow,
-    path::PathBuf,
-};
-use swc_core::ecma::{transforms::base::perf::Check, utils::Value::Known};
+use std::{cmp::max, iter, mem, ops::ControlFlow, path::PathBuf};
 
 use tracing::{debug, info, warn};
 
 use crate::{
-    definitions::{Class, Const, DefId, DefKind, Environment, IntrinsicName, PackageData, Value},
+    definitions::{Const, DefId, Environment, IntrinsicName, Value},
     interp::{
         Checker, Dataflow, EntryKind, EntryPoint, Frame, Interp, JoinSemiLattice, Runner,
         WithCallStack,
     },
     ir::{
         Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
-        Projection, Rvalue, Successors, VarId, VarKind, Variable,
+        Projection, Rvalue, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     utils::{
         add_const_to_val_vec, add_elements_to_intrinsic_struct, convert_operand_to_raw,
-        get_defid_from_varkind, get_prev_value, get_str_from_operand, resolve_var_from_operand,
-        return_value_from_string, translate_request_type,
+        get_defid_from_varkind, get_prev_value, get_str_from_operand, return_value_from_string,
+        translate_request_type,
     },
     worklist::WorkList,
 };
@@ -1425,7 +1411,8 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                 }
             }
             Rvalue::Template(template) => {
-                let quasis_joined = template.quasis.join("");
+                let quasis_joined: String =
+                    template.quasis.iter().map(ToString::to_string).collect();
                 let mut all_potential_values = vec![String::from("")];
                 if template.exprs.len() == 0 {
                     all_potential_values.push(quasis_joined.clone());
@@ -1436,7 +1423,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                         if let Some(quasis) = template.quasis.get(i) {
                             all_values = all_values
                                 .iter()
-                                .map(|value| value.to_owned() + &quasis.to_string())
+                                .map(|value| format!("{value}{quasis}"))
                                 .collect();
                         }
                         let mut new_values = vec![];
@@ -1446,7 +1433,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                             for str_value in values {
                                 for value in &all_values {
                                     if let Some(str) = &str_value {
-                                        new_values.push(value.clone() + &str)
+                                        new_values.push(value.clone() + &**str)
                                     } else {
                                         new_values.push(value.clone())
                                     }
@@ -1457,11 +1444,10 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                     }
 
                     if template.quasis.len() > template.exprs.len() {
+                        let last_elem = template.quasis.last().unwrap();
                         all_values = all_values
                             .iter()
-                            .map(|value| {
-                                value.to_owned() + &template.quasis.last().unwrap().to_string()
-                            })
+                            .map(|value| format!("{value}{last_elem}"))
                             .collect();
                     }
 
