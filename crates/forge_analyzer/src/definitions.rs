@@ -15,11 +15,11 @@ use swc_core::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
             AssignProp, AwaitExpr, BinExpr, BindingIdent, BlockStmt, BlockStmtOrExpr, BreakStmt,
-            CallExpr, Callee, Class as Clss, ClassDecl, ClassExpr, ClassMethod, ComputedPropName,
-            CondExpr, Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll,
-            ExportDecl, ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier, Expr,
-            ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForInStmt, ForOfStmt, ForStmt, Function, Id,
-            Ident, IfStmt, Import, ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier,
+            CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName, CondExpr,
+            Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll, ExportDecl,
+            ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier, Expr, ExprOrSpread,
+            ExprStmt, FnDecl, FnExpr, ForHead, ForInStmt, ForOfStmt, ForStmt, Function, Id, Ident,
+            IfStmt, Import, ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier,
             ImportStarAsSpecifier, JSXAttrName, JSXAttrOrSpread, JSXAttrValue, JSXElement,
             JSXElementChild, JSXElementName, JSXExpr, JSXExprContainer, JSXFragment, JSXMemberExpr,
             JSXNamespacedName, JSXObject, JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp,
@@ -29,8 +29,8 @@ use swc_core::{
             PropName, PropOrSpread, RestPat, ReturnStmt, SeqExpr, Stmt, Str, Super, SuperProp,
             SuperPropExpr, SwitchStmt, TaggedTpl, ThisExpr, ThrowStmt, Tpl, TplElement, TryStmt,
             TsAsExpr, TsConstAssertion, TsInstantiation, TsNonNullExpr, TsSatisfiesExpr,
-            TsTypeAssertion, UnaryExpr, UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclOrPat,
-            VarDeclarator, WhileStmt, WithStmt, YieldExpr,
+            TsTypeAssertion, UnaryExpr, UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclarator,
+            WhileStmt, WithStmt, YieldExpr,
         },
         atoms::{Atom, JsWord},
         utils::function,
@@ -1119,12 +1119,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         })
                         .next();
                     if package != None {
-                        // debug!("Chicken!");
-                        // let is_import_value = self.res.is_import(Some(import_kind.to_string()));
-                        // debug!("import kind !>>>!>??@?? {import_kind}");
-                        // debug!("checking is_import value: {is_import_value}");
-                        // debug!("bug caught on package: {package:?}");
-                        // debug!("tf is callee!? {callee:?}");
                         return Some(Intrinsic::JWTSign(package.unwrap().clone()));
                     }
                 }
@@ -1331,7 +1325,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 if let [ExprOrSpread { expr, .. }] = args {
                     debug!("found useState/then/map/foreach/filter");
                     match &**expr {
-                        Expr::Arrow(ArrowExpr { body, .. }) => match body {
+                        Expr::Arrow(ArrowExpr { body, .. }) => match &**body {
                             BlockStmtOrExpr::BlockStmt(stmt) => {
                                 self.lower_stmts(&stmt.stmts);
                                 return Operand::UNDEF;
@@ -1451,8 +1445,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 if ident_value.sym.starts_with("on") && second_char.is_uppercase() {
                     match &**expr {
                         Expr::Arrow(arrow_expr) => {
-                            if let BlockStmtOrExpr::Expr(expr) = &arrow_expr.body {
-                                self.lower_expr(&**expr, None);
+                            if let BlockStmtOrExpr::Expr(expr) = &*arrow_expr.body {
+                                self.lower_expr(&**expr);
                             }
                         }
                         Expr::Ident(ident) => {
@@ -1819,7 +1813,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             | Expr::TsInstantiation(TsInstantiation { expr, .. })
             | Expr::TsSatisfies(TsSatisfiesExpr { expr, .. }) => self.lower_expr(expr, None),
             Expr::PrivateName(PrivateName { id, .. }) => todo!(),
-            Expr::OptChain(OptChainExpr { base, .. }) => match base {
+            Expr::OptChain(OptChainExpr { base, .. }) => match &**base {
                 OptChainBase::Call(OptCall { callee, args, .. }) => {
                     self.lower_call(callee.as_ref().into(), args)
                 }
@@ -1988,6 +1982,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 Decl::Var(var) => {
                     self.lower_var_decl(var);
                 }
+                Decl::Using(_) => {}
                 Decl::TsInterface(_)
                 | Decl::TsTypeAlias(_)
                 | Decl::TsEnum(_)
@@ -2000,12 +1995,15 @@ impl<'cx> FunctionAnalyzer<'cx> {
         }
     }
 
-    fn lower_loop(&mut self, left: &VarDeclOrPat, right: &Expr, body: &Stmt) {
+    fn lower_loop(&mut self, left: &ForHead, right: &Expr, body: &Stmt) {
         // FIXME: don't assume loops are infinite
         let opnd = self.lower_expr(right, None);
         match left {
-            VarDeclOrPat::VarDecl(var) => self.lower_var_decl(var),
-            VarDeclOrPat::Pat(pat) => self.bind_pats(pat, Rvalue::Read(opnd)),
+            ForHead::VarDecl(var) => self.lower_var_decl(&*var),
+            ForHead::Pat(pat) => self.bind_pats(pat, Rvalue::Read(opnd)),
+            ForHead::UsingDecl(_) => {
+                //FIXME: investigate this case
+            }
         }
         self.lower_stmt(body);
     }
@@ -2118,7 +2116,11 @@ impl Visit for LocalDefiner<'_> {
                 ident.visit_with(self);
             }
             Decl::Var(vars) => vars.visit_children_with(self),
-            Decl::TsInterface(_) | Decl::TsTypeAlias(_) | Decl::TsEnum(_) | Decl::TsModule(_) => {}
+            Decl::Using(_)
+            | Decl::TsInterface(_)
+            | Decl::TsTypeAlias(_)
+            | Decl::TsEnum(_)
+            | Decl::TsModule(_) => {}
         }
     }
 
@@ -2338,7 +2340,7 @@ impl Visit for FunctionCollector<'_> {
             operand_stack: vec![],
             in_lhs: false,
         };
-        match func_body {
+        match &**func_body {
             BlockStmtOrExpr::BlockStmt(BlockStmt { stmts, .. }) => {
                 analyzer.lower_stmts(stmts);
             }
@@ -2663,8 +2665,7 @@ impl Visit for Lowerer<'_> {
                     let owner =
                         self.res
                             .add_anonymous("__CONSTRUCTOR", AnonType::Closure, self.curr_mod);
-                    self.res
-                        .add_class_method(&ident.sym, n.key.clone(), class_def, owner);
+                    self.res.add_class_method(n.key.clone(), class_def, owner);
                 }
             }
         }
@@ -2678,8 +2679,7 @@ impl Visit for Lowerer<'_> {
                     let owner =
                         self.res
                             .add_anonymous("__CLASSMETHOD", AnonType::Closure, self.curr_mod);
-                    self.res
-                        .add_class_method(&ident.sym, n.key.clone(), class_def, owner);
+                    self.res.add_class_method(n.key.clone(), class_def, owner);
                 }
             }
         }
@@ -3072,10 +3072,11 @@ impl Visit for ExportCollector<'_> {
                 let VarDecl { decls, .. } = &**vardecls;
                 //decls.iter().for_each(|var| self.visit_var_declarator(var));
             }
-            Decl::TsInterface(_) => {}
-            Decl::TsTypeAlias(_) => {}
-            Decl::TsEnum(_) => {}
-            Decl::TsModule(_) => {}
+            Decl::Using(_)
+            | Decl::TsInterface(_)
+            | Decl::TsTypeAlias(_)
+            | Decl::TsEnum(_)
+            | Decl::TsModule(_) => {}
         };
         n.visit_children_with(self);
     }
@@ -3325,13 +3326,7 @@ impl Environment {
         }
     }
 
-    fn add_class_method(
-        &mut self,
-        name: impl Into<JsWord>,
-        n: PropName,
-        class_def: DefId,
-        owner: DefId,
-    ) {
+    fn add_class_method(&mut self, n: PropName, class_def: DefId, owner: DefId) {
         if let DefKind::Class(class) = self.def_mut(class_def) {
             if let PropName::Ident(ident) = &n {
                 class.pub_members.push((ident.sym.to_owned(), owner));
