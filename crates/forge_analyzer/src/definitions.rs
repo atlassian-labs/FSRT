@@ -1314,7 +1314,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
         match n {
             Pat::Ident(BindingIdent { id, .. }) => {
                 let id = id.to_id();
-                let def = self.res.get_or_insert_sym(id.clone(), self.module);
+                let def = self.res.get_or_insert_sym(id, self.module);
                 let var = self.body.get_or_insert_global(def);
                 self.push_curr_inst(Inst::Assign(Variable::new(var), val));
             }
