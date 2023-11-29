@@ -933,7 +933,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
         }
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
-            // [PropPath::Def(def)] => {}]
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
                 if (*last == *"requestJira" || *last == *"requestConfluence")
                     && Some(&ImportKind::Default)
