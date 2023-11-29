@@ -3461,14 +3461,6 @@ impl Environment {
             DefKind::Undefined => DefKind::Undefined,
         }
     }
-    // pub fn is_named_or(&self, import_kind: Option<String>) -> bool {
-    //     match import_kind {
-    //         Some(default) if default == "default" => true,
-    //         Some(named) if named == "named" => true,
-    //         Some(star) if star == "star" => false,
-    //         _ => false,
-    //     }
-    // }
 
     pub fn as_foreign_import(&self, def: DefId) -> Option<(JsWord, ImportKind)> {
         let DefKind::Foreign(f) = self.def_ref(def) else {
