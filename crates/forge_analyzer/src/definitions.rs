@@ -969,12 +969,20 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     _ => None,
                 }
             }
-            [PropPath::Def(def), ..] => match self.res.is_imported_from(def, "@forge/api") {
-                Some(ImportKind::Named(ref name)) if *name == *"authorize" => {
-                    Some(Intrinsic::Authorize(IntrinsicName::Other))
+
+            [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/api").is_some() => {
+                if let Some(ImportKind::Named(ref name)) =
+                    self.res.is_imported_from(def, "@forge/api")
+                {
+                    if *name == *"authorize" {
+                        Some(Intrinsic::Authorize(IntrinsicName::Other));
+                    } else {
+                        return None;
+                    }
                 }
-                _ => None,
-            },
+                None
+            }
+
             // Case 1: the “root” object is a star import and the Static proppath member is either identifier or method
             // [Def, Static, Static]
             //[PropPath::Def(def), PropPath::Static(a), PropPath::Static(b)]
@@ -983,23 +991,21 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 // case where function requires object to be invoked first
                 // example: import * as cryptoJS from 'crypto-js';
                 // var aes = cryptoJS.AES.encrypt('Secret message', 'secret password');
-                if let Some((package_name, import_kind)) = self.res.as_foreign_import(def) {
-                    let package_found = self.secret_packages.iter().find(|&package_data| {
-                        if let Some(package_method) = &package_data.method {
-                            return package_name == package_data.package_name
-                                && import_kind == ImportKind::Star
-                                && identifier == &package_data.identifier
-                                && *method == *package_method;
-                        } else {
-                            false
-                        }
-                    });
-
-                    if let Some(package) = package_found {
-                        Some(Intrinsic::JWTSign(package.clone()))
+                debug!("Checking if printing wth! thing");
+                let (package_name, import_kind) = self.res.as_foreign_import(def)?;
+                let package_found = self.secret_packages.iter().find(|&package_data| {
+                    if let Some(package_method) = &package_data.method {
+                        return package_name == package_data.package_name
+                            && import_kind == ImportKind::Star
+                            && identifier == &package_data.identifier
+                            && *method == *package_method;
                     } else {
-                        None
+                        false
                     }
+                });
+
+                if let Some(package) = package_found {
+                    Some(Intrinsic::JWTSign(package.clone()))
                 } else {
                     None
                 }
@@ -1018,7 +1024,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     // Star imports that don't have any object call to invoke function
                     // import * as atlassian_jwt from "atlassian-jwt";
                     // atlassian_jwt.encode(blah, blah);
-
+                    info!("Checking atlassian-jwt thing");
                     if import_kind == ImportKind::Star {
                         let package_found = self.secret_packages.iter().find(|&package_data| {
                             package_name == package_data.package_name
@@ -1059,19 +1065,19 @@ impl<'cx> FunctionAnalyzer<'cx> {
             // [PropPath::Def(def)]
             // 1. Named/Default => package matches imported from and ident is the same, (NO METHOD)
             [PropPath::Def(def)] if self.res.as_foreign_import(def).is_some() => {
-                if let Some((package_name, import_kind)) = self.res.as_foreign_import(def) {
-                    let package = self.secret_packages.iter().find(|&package_data| {
-                        *package_name == *package_data.package_name
-                            && import_kind == *package_data.identifier
-                            && package_data.method.is_none()
-                    });
-                    if package.is_some() {
-                        return Some(Intrinsic::JWTSign(package.unwrap().clone()));
-                    }
+                let (package_name, import_kind) = self.res.as_foreign_import(def)?;
+                let package = self.secret_packages.iter().find(|&package_data| {
+                    *package_name == *package_data.package_name
+                        && import_kind == *package_data.identifier
+                        && package_data.method.is_none()
+                });
+                if package.is_some() {
+                    return Some(Intrinsic::JWTSign(package.unwrap().clone()));
                 }
 
                 None
             }
+
             _ => None,
         }
     }
@@ -1306,6 +1312,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
         let first_arg = args.first().map(|expr| &*expr.expr);
         let intrinsic = self.as_intrinsic(&props, first_arg);
+        debug!("HELLO INTRINSIC!? {intrinsic:?}");
         let call = match self.as_intrinsic(&props, first_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
