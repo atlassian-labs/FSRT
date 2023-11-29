@@ -9,12 +9,14 @@ import { classone } from './anewclass';
 import * as c1 from './anewclass';
 
 // Secret Scanner Default Imports
-import jwt from 'jsonwebtoken';
+import * as bleep from 'jsonwebtoken';
+import { sign } from 'jsonwebtoken';
+
 import * as atlassian_jwt from 'atlassian-jwt';
 
 // Secret Scanner Star Imports
-// import * as cryptoJS from 'crypto-js';
-// import * as jwtSimple from 'jwt-simple';
+import * as cryptoJS from 'crypto-js';
+import * as jwtSimple from 'jwt-simple';
 
 // Secret Scanner Named Imports
 import { HmacSHA256 } from 'crypto-js';
@@ -40,7 +42,8 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
   let global = 'test';
 
   // Function calls from default imports
-  // var token = jwt.sign({ foo: 'bar' }, 'peek a boo');
+  // var token = bleep.sign({ foo: 'bar' }, 'peek a boo');
+  var siggy = sign('Message', 'secret');
   // var token = atlassian_jwt.encodeSymmetric({ foo: 'bar' }, 'Atlassian jwt');
 
   // Function calls from star imports
@@ -48,11 +51,11 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
   // var simple_token = jwtSimple.encode({ foo: 'bar' }, 'Simple JWT');
 
   // Function calls from named imports
-  var hmac = HmacSHA256('Secret Message', 'HMAC PASSWORD');
+  // var hmac = HmacSHA256('Secret Message', 'HMAC PASSWORD');
 
   // calling edge case
-  console.log(sign());
-  console.log('End secret scanning test cases');
+  // console.log(sign());
+  // console.log('End secret scanning test cases');
 
   // testFunctionFromTestFile();
 
@@ -79,10 +82,10 @@ export async function fetchIssueSummary(issueIdOrKey, test_value) {
 // add Secret Scanner Edge cases here
 
 // TODO: Calling function with same name as function from Secret Scanner
-function sign() {
-  console.log('this is a test function');
-  return 'test function';
-}
+// function sign() {
+//   console.log('this is a test function');
+//   return 'test function';
+// }
 
 function get_random_string() {
   return 'test_string_from_get_random_string';

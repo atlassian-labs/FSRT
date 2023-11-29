@@ -922,7 +922,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
         }
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
-            // [PropPath::Def(def)] => {}]
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
                 if (*last == *"requestJira" || *last == *"requestConfluence")
                     && Some(&ImportKind::Default)
@@ -961,156 +960,104 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     ApiCallKind::Authorize => Some(Intrinsic::Authorize(IntrinsicName::Other)),
                 }
             }
-            // Case 1: the “root” object is a star import and the Static proppath member is either identifier
-            [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
-                if self.secret_packages.iter().any(|ref package_data| {
-                    if let Some(tuple) = self.res.as_foreign_import(def) {
-                        return tuple.0 == package_data.package_name && tuple.1 == ImportKind::Star;
-                    } else {
-                        return false;
-                    }
-                }) =>
-            {
-                match authn.get(0) {
-                    // case where function requires object to be invoked first
-                    // example: import * as cryptoJS from 'crypto-js';
-                    // var aes = cryptoJS.AES.encrypt('Secret message', 'secret password');
-                    Some(PropPath::Static(ref object))
-                        if self
-                            .secret_packages
-                            .iter()
-                            .filter(|ref package_data| {
-                                if let Some(tuple) = self.res.as_foreign_import(def) {
-                                    return tuple.0 == package_data.package_name
-                                        && tuple.1 == ImportKind::Star;
-                                } else {
-                                    return false;
-                                }
-                            })
-                            .any(|package_data| *package_data.identifier == *object) =>
-                    {
-                        let package = self
-                            .secret_packages
-                            .iter()
-                            .filter(|ref package_data| {
-                                if let Some(tuple) = self.res.as_foreign_import(def) {
-                                    return tuple.0 == package_data.package_name
-                                        && tuple.1 == ImportKind::Star
-                                        && *package_data.identifier == *object;
-                                } else {
-                                    return false;
-                                }
-                            })
-                            .next()
-                            .unwrap();
-                        if let Some(method) = &package.method {
-                            if *method == **last {
-                                debug!("bug caught on package: {package:?}");
-                                Some(Intrinsic::JWTSign(package.clone()))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    }
-
-                    // Star imports that don't have any object call to invoke function
-                    // import * as atlassian_jwt from "atlassian-jwt";
-                    // atlassian_jwt.encode(blah, blah);
-                    _ if self.secret_packages.iter().any(|ref package_data| {
-                        if let Some(tuple) = self.res.as_foreign_import(def) {
-                            return tuple.0 == package_data.package_name
-                                && tuple.1 == ImportKind::Star
-                                && *package_data.identifier == *last
-                                && package_data.method == None;
-                        } else {
-                            return false;
-                        }
-                    }) =>
-                    {
-                        let package = self
-                            .secret_packages
-                            .iter()
-                            .filter(|ref package_data| {
-                                if let Some(tuple) = self.res.as_foreign_import(def) {
-                                    return tuple.0 == package_data.package_name
-                                        && tuple.1 == ImportKind::Star
-                                        && *package_data.identifier == *last
-                                        && package_data.method == None;
-                                } else {
-                                    return false;
-                                }
-                            })
-                            .next();
-
-                        if package.is_none() {
-                            None
-                        } else {
-                            debug!("bug caught on package: {package:?}");
-                            Some(Intrinsic::JWTSign(package.unwrap().clone()))
-                        }
-                    }
-                    _ => None,
-                }
-            }
-
-            // Case 2: The case where the root object is default import,
-            // in which case, you only need to check PackageData if it is an object
-            // import { foo } from 'foo';
-            // foo.bar.sign('what');
-            // foo.bar.bar.sign('whatever');
-            // PackageData { package: 'foo', identifier: 'bar', method: 'sign' }
+            // Case 1: the “root” object is a star import and the Static proppath member is either identifier or method
             // [Def, Static, Static]
             //[PropPath::Def(def), PropPath::Static(a), PropPath::Static(b)]
             // 1. Star, identifier, method
-            //
-            // [Def, Static]
-            //[PropPath::Def(def), PropPath::Static(atom)]
-            // 1. Star, identifier (NO METHOD)
-            // 2. Named/Default => package matches imported from and ident is the same, method
-            //
-            // [PropPath::Def(def)]
-            // 1. Named/Default => package matches imported from and ident is the same, (NO METHOD)
+            [PropPath::Def(def), PropPath::Static(ref identifier), PropPath::Static(ref method)] => {
+                // case where function requires object to be invoked first
+                // example: import * as cryptoJS from 'crypto-js';
+                // var aes = cryptoJS.AES.encrypt('Secret message', 'secret password');
+                if let Some((package_name, import_kind)) = self.res.as_foreign_import(def) {
+                    let package_found = self.secret_packages.iter().find(|&package_data| {
+                        if let Some(package_method) = &package_data.method {
+                            return package_name == package_data.package_name
+                                && import_kind == ImportKind::Star
+                                && identifier == &package_data.identifier
+                                && *method == *package_method;
+                        } else {
+                            false
+                        }
+                    });
 
-            // [Def, .., Static] star
-            // [Def, .., Static] named/default
-            [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
-                if self.secret_packages.iter().any(|package_data| {
-                    if let Some(tuple) = self.res.as_foreign_import(def) {
-                        let checking_value = tuple.1.to_string();
-                        // debug!("TUPLE VALUES: {tuple:?} checking_value of to_string: {checking_value}");
-                        // debug!("PACKAGE: {package_data:?}");
-                        // let boolean_value = tuple.0 == package_data.package_name;
-                        // let is_import_value = self.res.is_import(Some(tuple.1.to_string()));
-                        // debug!("WHAT IS GOING ON WHY EVERYTHING FAILING!? Boolean value = {boolean_value} is_import_value: {is_import_value}");
-                        return *tuple.0 == *package_data.package_name
-                            && self.res.is_import(Some(tuple.1.to_string()));
+                    if let Some(package) = package_found {
+                        Some(Intrinsic::JWTSign(package.clone()))
                     } else {
-                        return false;
+                        None
                     }
-                }) =>
-            {
-                let mut package = self.secret_packages.iter().filter(|&package_data| {
-                    if let Some(tuple) = self.res.as_foreign_import(def) {
-                        // debug!("LAST: {last}");
-                        // debug!("PACKAGE: {package_data:?}");
-                        return tuple.0 == package_data.package_name
-                            && self.res.is_import(Some(tuple.1.to_string()))
-                            && *last == *package_data.identifier;
-                    } else {
-                        return false;
-                    }
-                });
-
-                if let Some(obj) = package.next() {
-                    // debug!("bug caught on package: {obj:?}");
-                    // debug!("tf is last!? {last}");
-                    Some(Intrinsic::JWTSign(obj.clone()))
                 } else {
                     None
                 }
             }
+            // import { foo } from 'foo';
+            // foo.bar.sign('what');
+            // foo.bar.bar.sign('whatever');
+            // PackageData { package: 'foo', identifier: 'bar', method: 'sign' }
+
+            // [Def, Static]
+            //[PropPath::Def(def), PropPath::Static(atom)]
+            // 1. Star, identifier (NO METHOD)
+            // 2. Named/Default => import kind matches idenntifier and static(atom) matches method
+            [PropPath::Def(def), PropPath::Static(ref method_name)] => {
+                if let Some((package_name, import_kind)) = self.res.as_foreign_import(def) {
+                    // Star imports that don't have any object call to invoke function
+                    // import * as atlassian_jwt from "atlassian-jwt";
+                    // atlassian_jwt.encode(blah, blah);
+
+                    if import_kind == ImportKind::Star {
+                        let package_found = self.secret_packages.iter().find(|&package_data| {
+                            package_name == package_data.package_name
+                                && *method_name == package_data.identifier
+                                && package_data.method.is_none()
+                        });
+                        if let Some(package) = package_found {
+                            Some(Intrinsic::JWTSign(package.clone()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Named or default imports that
+                        // import AES from "crypto-js";
+                        // import {AES} from "crypto-js"
+                        // Aes.encrypt(blah, blah);
+                        let package_found = self.secret_packages.iter().find(|&package_data| {
+                            if let Some(method) = &package_data.method {
+                                return package_name == package_data.package_name
+                                    && import_kind == *package_data.identifier
+                                    && *method_name == *method;
+                            } else {
+                                false
+                            }
+                        });
+                        if let Some(package) = package_found {
+                            Some(Intrinsic::JWTSign(package.clone()))
+                        } else {
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
+            // [Def, .., Static] star
+            // [Def, .., Static] named/default
+            // [PropPath::Def(def)]
+            // 1. Named/Default => package matches imported from and ident is the same, (NO METHOD)
+            [PropPath::Def(def)] if self.res.as_foreign_import(def).is_some() => {
+                if let Some((package_name, import_kind)) = self.res.as_foreign_import(def) {
+                    let package = self.secret_packages.iter().find(|&package_data| {
+                        *package_name == *package_data.package_name
+                            && import_kind == *package_data.identifier
+                            && package_data.method.is_none()
+                    });
+                    if package.is_some() {
+                        return Some(Intrinsic::JWTSign(package.unwrap().clone()));
+                    }
+                }
+
+                None
+            }
+
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
                 match self.res.is_imported_from(def, "@forge/api") {
                     Some(ImportKind::Named(ref name)) if *name == *"storage" => {
@@ -1118,30 +1065,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     }
                     _ => None,
                 }
-            }
-            // Case 2: The case where the root object is a named or default import,
-            // in which case, you only need to check PackageData if it is an object
-            // where iimport type is Named
-            [PropPath::Def(def), ..] if self.res.as_foreign_import(def).is_some() => {
-                if let Some((package_name, import_kind)) = self.res.as_foreign_import(def) {
-                    // Debug LOG when finding the darn thing
-                    // package_name: Atom('crypto-js' type=dynamic)
-                    // import_kind: Named(Atom('HmacMD5' type=inline))
-
-                    let package = self
-                        .secret_packages
-                        .iter()
-                        .filter(|ref package_data| {
-                            *package_name == *package_data.package_name
-                                && import_kind.to_string() == package_data.identifier
-                        })
-                        .next();
-                    if package != None {
-                        return Some(Intrinsic::JWTSign(package.unwrap().clone()));
-                    }
-                }
-
-                None
             }
             [PropPath::Def(def), ..] => match self.res.is_imported_from(def, "@forge/api") {
                 Some(ImportKind::Named(ref name)) if *name == *"authorize" => {
@@ -3538,14 +3461,14 @@ impl Environment {
             DefKind::Undefined => DefKind::Undefined,
         }
     }
-    pub fn is_import(&self, import_kind: Option<String>) -> bool {
-        match import_kind {
-            Some(default) if default == "default" => true,
-            Some(named) if named == "named" => true,
-            Some(star) if star == "star" => false,
-            _ => false,
-        }
-    }
+    // pub fn is_named_or(&self, import_kind: Option<String>) -> bool {
+    //     match import_kind {
+    //         Some(default) if default == "default" => true,
+    //         Some(named) if named == "named" => true,
+    //         Some(star) if star == "star" => false,
+    //         _ => false,
+    //     }
+    // }
 
     pub fn as_foreign_import(&self, def: DefId) -> Option<(JsWord, ImportKind)> {
         let DefKind::Foreign(f) = self.def_ref(def) else {
@@ -3782,5 +3705,15 @@ impl DefId {
     #[inline]
     pub(crate) fn new(raw: u32) -> Self {
         Self(raw)
+    }
+}
+
+impl PartialEq<str> for ImportKind {
+    fn eq(&self, other: &str) -> bool {
+        match self {
+            ImportKind::Star => false,
+            ImportKind::Default => other == "default",
+            ImportKind::Named(name) => name == other,
+        }
     }
 }
