@@ -960,6 +960,21 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     ApiCallKind::Authorize => Some(Intrinsic::Authorize(IntrinsicName::Other)),
                 }
             }
+
+            [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
+                match self.res.is_imported_from(def, "@forge/api") {
+                    Some(ImportKind::Named(ref name)) if *name == *"storage" => {
+                        Some(Intrinsic::StorageRead)
+                    }
+                    _ => None,
+                }
+            }
+            [PropPath::Def(def), ..] => match self.res.is_imported_from(def, "@forge/api") {
+                Some(ImportKind::Named(ref name)) if *name == *"authorize" => {
+                    Some(Intrinsic::Authorize(IntrinsicName::Other))
+                }
+                _ => None,
+            },
             // Case 1: the “root” object is a star import and the Static proppath member is either identifier or method
             // [Def, Static, Static]
             //[PropPath::Def(def), PropPath::Static(a), PropPath::Static(b)]
@@ -1022,9 +1037,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         // Aes.encrypt(blah, blah);
                         let package_found = self.secret_packages.iter().find(|&package_data| {
                             if let Some(method) = &package_data.method {
-                                return package_name == package_data.package_name
+                                package_name == package_data.package_name
                                     && import_kind == *package_data.identifier
-                                    && *method_name == *method;
+                                    && *method_name == *method
                             } else {
                                 false
                             }
@@ -1057,21 +1072,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
                 None
             }
-
-            [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
-                match self.res.is_imported_from(def, "@forge/api") {
-                    Some(ImportKind::Named(ref name)) if *name == *"storage" => {
-                        Some(Intrinsic::StorageRead)
-                    }
-                    _ => None,
-                }
-            }
-            [PropPath::Def(def), ..] => match self.res.is_imported_from(def, "@forge/api") {
-                Some(ImportKind::Named(ref name)) if *name == *"authorize" => {
-                    Some(Intrinsic::Authorize(IntrinsicName::Other))
-                }
-                _ => None,
-            },
             _ => None,
         }
     }
@@ -1305,10 +1305,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
         };
 
         let first_arg = args.first().map(|expr| &*expr.expr);
-        // debug!("props in lower call: {props:?}");
-        // debug!("first_arg in lower call: {first_arg:?}");
         let intrinsic = self.as_intrinsic(&props, first_arg);
-        // debug!("Intrinsic Returned: {intrinsic:?}");
         let call = match self.as_intrinsic(&props, first_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
@@ -1322,7 +1319,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
         match n {
             Pat::Ident(BindingIdent { id, .. }) => {
                 let id = id.to_id();
-                let def = self.res.get_or_insert_sym(id.clone(), self.module);
+                let def = self.res.get_or_insert_sym(id, self.module);
                 let var = self.body.get_or_insert_global(def);
                 self.push_curr_inst(Inst::Assign(Variable::new(var), val));
             }
@@ -3027,7 +3024,7 @@ impl Visit for ExportCollector<'_> {
             if ident.sym.to_string() == "module" {
                 if let Some(mem_expr) = mem_expr_from_assign(n) {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
-                        if ident_property.sym.to_string() == "exports" {
+                        if ident_property.sym == "exports" {
                             match &*n.right {
                                 Expr::Fn(FnExpr { ident, function }) => self.add_default(
                                     DefRes::Function(()),
@@ -3050,7 +3047,7 @@ impl Visit for ExportCollector<'_> {
                         }
                     }
                 }
-            } else if ident.sym.to_string() == "exports" {
+            } else if ident.sym == "exports" {
                 if let Some(mem_expr) = mem_expr_from_assign(n) {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
                         match &*n.right {
