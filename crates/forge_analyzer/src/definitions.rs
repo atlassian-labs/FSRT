@@ -991,7 +991,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 // case where function requires object to be invoked first
                 // example: import * as cryptoJS from 'crypto-js';
                 // var aes = cryptoJS.AES.encrypt('Secret message', 'secret password');
-                debug!("Checking if printing wth! thing");
                 let (package_name, import_kind) = self.res.as_foreign_import(def)?;
                 let package_found = self.secret_packages.iter().find(|&package_data| {
                     if let Some(package_method) = &package_data.method {
@@ -1016,7 +1015,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             // PackageData { package: 'foo', identifier: 'bar', method: 'sign' }
 
             // [Def, Static]
-            //[PropPath::Def(def), PropPath::Static(atom)]
+            // [PropPath::Def(def), PropPath::Static(atom)]
             // 1. Star, identifier (NO METHOD)
             // 2. Named/Default => import kind matches idenntifier and static(atom) matches method
             [PropPath::Def(def), PropPath::Static(ref method_name)] => {
@@ -1024,7 +1023,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     // Star imports that don't have any object call to invoke function
                     // import * as atlassian_jwt from "atlassian-jwt";
                     // atlassian_jwt.encode(blah, blah);
-                    info!("Checking atlassian-jwt thing");
                     if import_kind == ImportKind::Star {
                         let package_found = self.secret_packages.iter().find(|&package_data| {
                             package_name == package_data.package_name
