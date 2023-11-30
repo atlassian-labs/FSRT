@@ -2819,7 +2819,7 @@ impl ExportCollector<'_> {
         defid
     }
 
-    fn add_default(&mut self, def: DefRes, id: Option<Id>) {
+    fn add_default(&mut self, def: DefRes, id: Option<Id>) -> DefId {
         let defid = match id {
             Some(id) => self.res_table.add_sym(def, id, self.curr_mod),
             None => {
@@ -2829,6 +2829,7 @@ impl ExportCollector<'_> {
             }
         };
         self.default = Some(defid);
+        defid
     }
 
     fn add_default_with_id(&mut self, def: DefRes, defid: DefId) {
@@ -2836,6 +2837,8 @@ impl ExportCollector<'_> {
         self.res_table.owning_module.push(self.curr_mod);
         self.default = Some(defid);
     }
+
+    // fn add_default(&mut self, def: DefRes, id: Option<Id>) -> DefId {}
 }
 
 impl Visit for ImportCollector<'_> {
@@ -3031,21 +3034,24 @@ impl Visit for ExportCollector<'_> {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
                         if ident_property.sym == "exports" {
                             match &*n.right {
-                                Expr::Fn(FnExpr { ident, function }) => self.add_default(
-                                    DefRes::Function(()),
-                                    ident.as_ref().map(Ident::to_id),
-                                ),
-                                Expr::Class(ClassExpr { ident, class }) => self.add_default(
-                                    DefRes::Class(()),
-                                    ident.as_ref().map(Ident::to_id),
-                                ),
-                                Expr::Ident(ident) => {
-                                    self.add_default(DefRes::Undefined, None);
-                                    // adding the default export, so we can resolve it during the lowering
-                                    self.res_table.exported_names.insert(
-                                        (ident.sym.clone(), self.curr_mod),
-                                        self.default.unwrap(),
+                                Expr::Fn(FnExpr { ident, function }) => {
+                                    self.add_default(
+                                        DefRes::Function(()),
+                                        ident.as_ref().map(Ident::to_id),
                                     );
+                                }
+                                Expr::Class(ClassExpr { ident, class }) => {
+                                    self.add_default(
+                                        DefRes::Class(()),
+                                        ident.as_ref().map(Ident::to_id),
+                                    );
+                                }
+                                Expr::Ident(ident) => {
+                                    let default_id = self.add_default(DefRes::Undefined, None);
+                                    // adding the default export, so we can resolve it during the lowering
+                                    self.res_table
+                                        .exported_names
+                                        .insert((ident.sym.clone(), self.curr_mod), default_id);
                                 }
                                 _ => {}
                             }
@@ -3111,10 +3117,10 @@ impl Visit for ExportCollector<'_> {
     fn visit_export_default_decl(&mut self, n: &ExportDefaultDecl) {
         match &n.decl {
             DefaultDecl::Class(ClassExpr { ident, .. }) => {
-                self.add_default(DefRes::Class(()), ident.as_ref().map(Ident::to_id))
+                self.add_default(DefRes::Class(()), ident.as_ref().map(Ident::to_id));
             }
             DefaultDecl::Fn(FnExpr { ident, .. }) => {
-                self.add_default(DefRes::Function(()), ident.as_ref().map(Ident::to_id))
+                self.add_default(DefRes::Function(()), ident.as_ref().map(Ident::to_id));
             }
             DefaultDecl::TsInterfaceDecl(_) => {}
         }
@@ -3140,11 +3146,11 @@ impl Visit for ExportCollector<'_> {
 
     fn visit_export_default_expr(&mut self, n: &ExportDefaultExpr) {
         if let Expr::Ident(ident) = &*n.expr {
-            self.add_default(DefRes::Undefined, None);
+            let default_id = self.add_default(DefRes::Undefined, None);
             // adding the default export, so we can resolve it during the lowering
             self.res_table
                 .exported_names
-                .insert((ident.sym.clone(), self.curr_mod), self.default.unwrap());
+                .insert((ident.sym.clone(), self.curr_mod), default_id);
         }
     }
 }
