@@ -69,7 +69,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         _block: &'cx BasicBlock,
         intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
+        _operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         match *intrinsic {
             Intrinsic::Authorize(_) => {
@@ -80,7 +80,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
                 debug!("user field access found");
                 std::cmp::max(AuthorizeState::CustomFieldOnly, initial_state)
             }
-            Intrinsic::JWTSign(_)
+            Intrinsic::SecretFunction(_)
             | Intrinsic::Fetch
             | Intrinsic::ApiCustomField
             | Intrinsic::ApiCall(_)
@@ -98,7 +98,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
+        _operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
             return initial_state;
@@ -261,7 +261,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
             }
-            Intrinsic::JWTSign(_)
+            Intrinsic::SecretFunction(_)
             | Intrinsic::ApiCall(_)
             | Intrinsic::SafeCall(_)
             | Intrinsic::EnvRead
@@ -326,7 +326,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
                 debug!("authenticated");
                 Authenticated::Yes
             }
-            Intrinsic::JWTSign(_)
+            Intrinsic::SecretFunction(_)
             | Intrinsic::ApiCall(_)
             | Intrinsic::ApiCustomField
             | Intrinsic::UserFieldAccess
@@ -427,7 +427,7 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
             }
-            Intrinsic::JWTSign(_) => ControlFlow::Continue(*state),
+            Intrinsic::SecretFunction(_) => ControlFlow::Continue(*state),
             Intrinsic::ApiCall(_) | Intrinsic::UserFieldAccess | Intrinsic::ApiCustomField => {
                 ControlFlow::Continue(*state)
             }
@@ -700,7 +700,7 @@ impl<'cx> Runner<'cx> for SecretChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        if let Intrinsic::JWTSign(package_data) = intrinsic {
+        if let Intrinsic::SecretFunction(package_data) = intrinsic {
             if let Some(operand) = operands
                 .unwrap_or_default()
                 .get((package_data.secret_position - 1) as usize)

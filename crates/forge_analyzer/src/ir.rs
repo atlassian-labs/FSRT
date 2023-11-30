@@ -78,7 +78,7 @@ pub enum Intrinsic {
     ApiCustomField,
     ApiCall(IntrinsicName),
     SafeCall(IntrinsicName),
-    JWTSign(PackageData),
+    SecretFunction(PackageData),
     EnvRead,
     StorageRead,
 }
@@ -763,7 +763,7 @@ impl fmt::Display for Intrinsic {
         match *self {
             Intrinsic::Fetch => write!(f, "fetch"),
             Intrinsic::Authorize(_) => write!(f, "authorize"),
-            Intrinsic::JWTSign(_) => write!(f, "jwt sign"),
+            Intrinsic::SecretFunction(_) => write!(f, "jwt sign"),
             Intrinsic::ApiCall(_) => write!(f, "api call"),
             Intrinsic::ApiCustomField => write!(f, "accessing custom field route asApp"),
             Intrinsic::UserFieldAccess => write!(f, "accessing which fields a user can access"),
