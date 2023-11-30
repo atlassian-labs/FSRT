@@ -1220,7 +1220,7 @@ impl<'cx> Runner<'cx> for SecretChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        if let Intrinsic::JWTSign(package_data) = intrinsic {
+        if let Intrinsic::SecretFunction(package_data) = intrinsic {
             if let Some(operand) = operands
                 .unwrap_or_default()
                 .get((package_data.secret_position - 1) as usize)

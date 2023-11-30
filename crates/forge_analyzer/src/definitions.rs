@@ -40,30 +40,6 @@ use swc_core::{
 use tracing::{debug, field::debug, info, instrument, warn};
 use typed_index_collections::{TiSlice, TiVec};
 
-/**
- * ident`, `block`, `stmt`, `expr`, `pat`, `ty`, `lifetime`, `literal`, `path`, `meta`, `tt`, `item` and `vis
- */
-macro_rules! unwrap_or {
-    ($c:vis, $e:expr, $or_do_what:expr) => {
-        if let c(d) = $e {
-            d
-        } else {
-            $or_do_what
-        }
-    };
-}
-
-macro_rules! add {
-    // macth like arm for macro
-    ($a:expr,$b:expr) => {
-        // macro expand to this code
-        {
-            // $a and $b will be templated using the value/variable provided to macro
-            $a + $b
-        }
-    };
-}
-
 use crate::{
     ctx::ModId,
     ir::{
@@ -539,8 +515,6 @@ pub struct Environment {
     default_exports: FxHashMap<ModId, DefId>,
     pub resolver: ResolverTable,
 }
-
-// POI
 
 struct ImportCollector<'cx> {
     resolver: &'cx mut Environment,
