@@ -709,7 +709,7 @@ impl ResolverTable {
     #[inline]
     fn get_default(&self, module: ModId) -> Option<DefId> {
         for (defid, sym) in self.names.iter_enumerated() {
-            if &sym.to_string() == "default" && self.owning_module.contains(&module) {
+            if sym == "default" && self.owning_module.contains(&module) {
                 return Some(defid);
             }
         }
@@ -1261,11 +1261,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
             .iter()
             .enumerate()
             .map(|(i, arg)| {
-                let defid = self.res.add_anonymous(
-                    i.to_string() + "argument",
-                    AnonType::Unknown,
-                    self.module,
-                );
+                let defid =
+                    self.res
+                        .add_anonymous(format!("{i}argument"), AnonType::Unknown, self.module);
                 self.lower_expr(&arg.expr, Some(defid))
             })
             .collect();
@@ -1381,8 +1379,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
     fn lower_jsx_child(&mut self, n: &JSXElementChild) -> Operand {
         match n {
             JSXElementChild::JSXText(JSXText { value, .. }) => {
-                let value = JsWord::from(value.to_string());
-                Operand::Lit(Literal::Str(value))
+                Operand::Lit(Literal::Str(value.clone()))
             }
             JSXElementChild::JSXExprContainer(JSXExprContainer { expr, .. }) => match expr {
                 JSXExpr::JSXEmptyExpr(_) => Operand::UNDEF,
@@ -2054,10 +2051,10 @@ impl Visit for FunctionCollector<'_> {
 
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
         if let Some(ident) = ident_from_assign_expr(n) {
-            if ident.sym.to_string() == "module" {
+            if ident.sym == "module" {
                 if let Some(mem_expr) = mem_expr_from_assign(n) {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
-                        if ident_property.sym.to_string() == "exports" {
+                        if ident_property.sym == "exports" {
                             match &*n.right {
                                 Expr::Fn(FnExpr { ident, function }) => self.handle_function(
                                     &**&function,
@@ -2072,7 +2069,7 @@ impl Visit for FunctionCollector<'_> {
                         }
                     }
                 }
-            } else if ident.sym.to_string() == "exports" {
+            } else if ident.sym == "exports" {
                 if let Some(mem_expr) = mem_expr_from_assign(n) {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
                         match &*n.right {
@@ -2528,10 +2525,10 @@ impl Visit for Lowerer<'_> {
 
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
         if let Some(ident) = ident_from_assign_expr(n) {
-            if ident.sym.to_string() == "module" {
+            if ident.sym == "module" {
                 if let Some(mem_expr) = mem_expr_from_assign(n) {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
-                        if ident_property.sym.to_string() == "exports" {
+                        if ident_property.sym == "exports" {
                             if let Expr::Class(ClassExpr { ident, class }) = &*n.right {
                                 if let Some(defid) = self.res.default_export(self.curr_mod) {
                                     self.curr_class = Some(defid);
@@ -2996,7 +2993,7 @@ impl Visit for ExportCollector<'_> {
 
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
         if let Some(ident) = ident_from_assign_expr(n) {
-            if ident.sym.to_string() == "module" {
+            if ident.sym == "module" {
                 if let Some(mem_expr) = mem_expr_from_assign(n) {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
                         if ident_property.sym == "exports" {
