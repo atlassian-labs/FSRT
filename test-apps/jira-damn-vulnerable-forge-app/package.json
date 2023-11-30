@@ -18,6 +18,9 @@
   "dependencies": {
     "@forge/api": "^2.7.0",
     "@forge/ui": "1.2.1",
+    "atlassian-jwt": "^2.0.2",
+    "crypto-js": "^4.2.0",
+    "install": "^0.13.0",
     "jsonwebtoken": "^8.5.1"
   }
 }

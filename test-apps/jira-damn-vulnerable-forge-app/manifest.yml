@@ -57,13 +57,9 @@ app:
   id: ari:cloud:ecosystem::app/22948e9c-8414-4d24-bd45-f0dc7428608f
 permissions:
   scopes:
-    - 'storage:app'
-    - 'read:jira-user'
+    - 'read:user:jira'
     - 'read:jira-work'
-    - 'write:jira-work'
-    - 'manage:jira-project'
-    - 'manage:jira-configuration'
-    - 'manage:jira-webhook'
+    
   external:
     fetch:
       client:
