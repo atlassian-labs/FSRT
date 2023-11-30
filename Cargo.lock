@@ -541,6 +541,7 @@ version = "0.1.0"
 dependencies = [
  "fixedbitset",
  "forge_file_resolver",
+ "forge_loader",
  "forge_permission_resolver",
  "forge_utils",
  "itertools 0.12.0",
@@ -626,6 +627,7 @@ dependencies = [
  "forge_analyzer",
  "forge_file_resolver",
  "forge_loader",
+ "forge_permission_resolver",
  "miette 5.5.0",
  "rustc-hash",
  "serde",

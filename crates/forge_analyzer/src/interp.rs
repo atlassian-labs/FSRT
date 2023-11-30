@@ -1,7 +1,9 @@
 use std::{
+    borrow::BorrowMut,
     cell::{Cell, RefCell, RefMut},
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, VecDeque},
     fmt::{self, Display},
+    hash::Hash,
     io::{self, Write},
     iter,
     marker::PhantomData,
@@ -9,18 +11,29 @@ use std::{
     path::PathBuf,
 };
 
+use forge_permission_resolver::permissions_resolver::{
+    check_url_for_permissions, get_permission_resolver_confluence, get_permission_resolver_jira,
+    PermissionHashMap, RequestType,
+};
 use forge_utils::{FxHashMap, FxHashSet};
+use itertools::Itertools;
+use regex::Regex;
+use smallvec::SmallVec;
 use swc_core::ecma::atoms::JsWord;
 use tracing::{debug, info, instrument, warn};
 
 use crate::{
-    definitions::{DefId, Environment},
+    checkers::IntrinsicArguments,
+    definitions::{Class, Const, DefId, Environment, Value},
     ir::{
-        BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Rvalue, Successors,
-        STARTING_BLOCK,
+        Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Projection,
+        Rvalue, Successors, VarId, Variable, STARTING_BLOCK,
     },
+    utils::{get_defid_from_varkind, get_str_from_operand, resolve_var_from_operand},
     worklist::WorkList,
 };
+
+pub type DefinitionAnalysisMap = FxHashMap<(DefId, VarId, Option<Projection>), Value>;
 
 pub trait JoinSemiLattice: Sized + Ord {
     const BOTTOM: Self;
@@ -42,10 +55,10 @@ pub trait WithCallStack {
 pub trait Dataflow<'cx>: Sized {
     type State: JoinSemiLattice + Clone;
 
-    fn with_interp<C: Checker<'cx, State = Self::State>>(interp: &Interp<'cx, C>) -> Self;
+    fn with_interp<C: Runner<'cx, State = Self::State>>(interp: &Interp<'cx, C>) -> Self;
 
     #[inline]
-    fn resolve_call<C: Checker<'cx, State = Self::State>>(
+    fn resolve_call<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
         callee: &Operand,
@@ -53,17 +66,18 @@ pub trait Dataflow<'cx>: Sized {
         interp.body().resolve_call(interp.env(), callee)
     }
 
-    fn transfer_intrinsic<C: Checker<'cx, State = Self::State>>(
+    fn transfer_intrinsic<C: Runner<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         loc: Location,
         block: &'cx BasicBlock,
         intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State;
 
-    fn transfer_call<C: Checker<'cx, State = Self::State>>(
+    fn transfer_call<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
@@ -71,11 +85,13 @@ pub trait Dataflow<'cx>: Sized {
         block: &'cx BasicBlock,
         callee: &'cx Operand,
         initial_state: Self::State,
+        // operands: &SmallVec<[Operand; 4]>,
+        oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State;
 
-    fn transfer_rvalue<C: Checker<'cx, State = Self::State>>(
+    fn transfer_rvalue<C: Runner<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         loc: Location,
         block: &'cx BasicBlock,
@@ -83,12 +99,24 @@ pub trait Dataflow<'cx>: Sized {
         initial_state: Self::State,
     ) -> Self::State {
         match rvalue {
-            Rvalue::Intrinsic(intrinsic, _) => {
-                self.transfer_intrinsic(interp, def, loc, block, intrinsic, initial_state)
-            }
-            Rvalue::Call(callee, _) => {
-                self.transfer_call(interp, def, loc, block, callee, initial_state)
-            }
+            Rvalue::Intrinsic(intrinsic, args) => self.transfer_intrinsic(
+                interp,
+                def,
+                loc,
+                block,
+                intrinsic,
+                initial_state,
+                args.clone(),
+            ),
+            Rvalue::Call(callee, operands) => self.transfer_call(
+                interp,
+                def,
+                loc,
+                block,
+                callee,
+                initial_state,
+                operands.clone(),
+            ),
             Rvalue::Unary(_, _) => initial_state,
             Rvalue::Bin(_, _, _) => initial_state,
             Rvalue::Read(_) => initial_state,
@@ -97,9 +125,9 @@ pub trait Dataflow<'cx>: Sized {
         }
     }
 
-    fn transfer_inst<C: Checker<'cx, State = Self::State>>(
+    fn transfer_inst<C: Runner<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         loc: Location,
         block: &'cx BasicBlock,
@@ -116,13 +144,14 @@ pub trait Dataflow<'cx>: Sized {
         }
     }
 
-    fn transfer_block<C: Checker<'cx, State = Self::State>>(
+    fn transfer_block<C: Runner<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         bb: BasicBlockId,
         block: &'cx BasicBlock,
         initial_state: Self::State,
+        arguments: Option<Vec<Value>>,
     ) -> Self::State {
         let mut state = initial_state;
         for (stmt, inst) in block.iter().enumerate() {
@@ -132,20 +161,41 @@ pub trait Dataflow<'cx>: Sized {
         state
     }
 
-    fn join_term<C: Checker<'cx, State = Self::State>>(
+    fn add_variable<C: Runner<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
+        lval: &Variable,
+        varid: &VarId,
+        def: DefId,
+        rvalue: &Rvalue,
+    ) {
+    }
+
+    fn insert_value<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &mut Interp<'cx, C>,
+        operand: &Operand,
+        lval: &Variable,
+        varid: &VarId,
+        def: DefId,
+        prev_values: Option<Vec<Const>>,
+    ) {
+    }
+
+    fn join_term<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
         worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
-        self.super_join_term(interp, def, block, state, worklist);
+        self.super_join_term(interp.borrow_mut(), def, block, state, worklist);
     }
 
-    fn super_join_term<C: Checker<'cx, State = Self::State>>(
+    fn super_join_term<C: Runner<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
@@ -178,25 +228,142 @@ pub trait Dataflow<'cx>: Sized {
                 if interp.block_state_mut(def, succ1).join_changed(&state) {
                     worklist.push_back(def, succ1);
                 }
-
                 if interp.block_state_mut(def, succ2).join_changed(&state) {
                     worklist.push_back(def, succ2);
                 }
             }
         }
     }
+
+    fn read_class_from_variable<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &Interp<'cx, C>,
+        defid: DefId,
+    ) -> Option<Class> {
+        None
+    }
+
+    fn read_class_from_object<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &Interp<'cx, C>,
+        defid: DefId,
+    ) -> Option<Class> {
+        None
+    }
+
+    fn try_read_mem_from_object<C: Runner<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        const_var: Const,
+    ) -> Option<&Value> {
+        None
+    }
+
+    fn insert_with_existing_value<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        operand: &Operand,
+        value: &Value,
+        varid: &VarId,
+        def: DefId,
+        interp: &Interp<'cx, C>,
+    ) {
+    }
+
+    fn read_mem_from_object<C: Runner<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        obj: Class,
+    ) -> Option<&Value> {
+        None
+    }
+
+    fn get_str_from_expr<C: Runner<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        expr: &Operand,
+        def: DefId,
+    ) -> Vec<Option<String>> {
+        if let Some(str) = get_str_from_operand(expr) {
+            return vec![Some(str)];
+        } else if let Operand::Var(var) = expr {
+            if let Base::Var(varid) = var.base {
+                let value = _interp.get_value(def, varid, None);
+                if let Some(value) = value {
+                    match value {
+                        Value::Const(const_val) => {
+                            if let Const::Literal(str) = const_val {
+                                return vec![Some(str.clone())];
+                            }
+                        }
+                        Value::Phi(phi_val) => {
+                            return phi_val
+                                .iter()
+                                .map(|const_val| {
+                                    if let Const::Literal(str) = const_val {
+                                        Some(str.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect_vec();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        vec![None]
+    }
+
+    fn def_to_class_property<C: Runner<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        defid: DefId,
+    ) -> Option<&Value> {
+        None
+    }
+
+    #[inline]
+    fn get_values_from_operand<C: Runner<'cx, State = Self::State>>(
+        &self,
+        _interp: &mut Interp<'cx, C>,
+        _def: DefId,
+        operand: &Operand,
+    ) -> Option<Value> {
+        if let Some((var, varid)) = resolve_var_from_operand(operand) {
+            return _interp
+                .get_value(_def, varid, var.projections.get(0).cloned())
+                .cloned();
+        }
+        None
+    }
+
+    fn try_insert<C: crate::interp::Runner<'cx, State = Self::State>>(
+        &self,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        const_var: Const,
+        intrinsic_argument: &mut IntrinsicArguments,
+    ) {
+    }
 }
 
-pub trait Checker<'cx>: Sized {
+pub trait Runner<'cx>: Sized {
     type State: JoinSemiLattice + Clone + fmt::Debug;
-    type Vuln: Display + WithCallStack;
     type Dataflow: Dataflow<'cx, State = Self::State>;
+
+    const visit_all: bool = true;
 
     fn visit_intrinsic(
         &mut self,
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
+        def: DefId,
         state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State>;
 
     fn visit_call(
@@ -210,6 +377,7 @@ pub trait Checker<'cx>: Sized {
         let Some((callee, body)) = interp.body().resolve_call(interp.env(), callee) else {
             return ControlFlow::Continue(curr_state.clone());
         };
+
         let func_state = interp.func_state(callee).unwrap_or(Self::State::BOTTOM);
         if func_state < *curr_state || !interp.checker_visit(callee) {
             return ControlFlow::Continue(curr_state.clone());
@@ -242,12 +410,15 @@ pub trait Checker<'cx>: Sized {
         &mut self,
         interp: &Interp<'cx, Self>,
         rvalue: &'cx Rvalue,
+        def: DefId,
         id: BasicBlockId,
         curr_state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
         debug!("visiting rvalue {rvalue:?} with {curr_state:?}");
         match rvalue {
-            Rvalue::Intrinsic(intrinsic, _) => self.visit_intrinsic(interp, intrinsic, curr_state),
+            Rvalue::Intrinsic(intrinsic, operands) => {
+                self.visit_intrinsic(interp, intrinsic, def, curr_state, Some(operands.clone()))
+            }
             Rvalue::Call(callee, args) => self.visit_call(interp, callee, args, id, curr_state),
             Rvalue::Unary(_, _)
             | Rvalue::Bin(_, _, _)
@@ -269,8 +440,10 @@ pub trait Checker<'cx>: Sized {
         let mut curr_state = interp.block_state(def, id).join(curr_state);
         for stmt in block {
             match stmt {
-                Inst::Expr(r) => curr_state = self.visit_rvalue(interp, r, id, &curr_state)?,
-                Inst::Assign(_, r) => curr_state = self.visit_rvalue(interp, r, id, &curr_state)?,
+                Inst::Expr(r) => curr_state = self.visit_rvalue(interp, r, def, id, &curr_state)?,
+                Inst::Assign(_, r) => {
+                    curr_state = self.visit_rvalue(interp, r, def, id, &curr_state)?
+                }
             }
         }
         match block.successors() {
@@ -287,6 +460,10 @@ pub trait Checker<'cx>: Sized {
             }
         }
     }
+}
+
+pub trait Checker<'cx>: Sized + Runner<'cx> {
+    type Vuln: Display + WithCallStack;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -310,20 +487,42 @@ pub(crate) struct EntryPoint {
     pub(crate) kind: EntryKind,
 }
 
-pub struct Interp<'cx, C: Checker<'cx>> {
-    env: &'cx Environment,
+#[derive(Debug)]
+pub struct Interp<'cx, C: Runner<'cx>> {
+    pub env: &'cx Environment,
+    // We can probably get rid of these RefCells by refactoring the Interp and Checker into
+    // two fields in another struct.
+    pub call_all: bool,
+    pub call_uncalled: bool,
     call_graph: CallGraph,
+    pub return_value: Option<(Value, DefId)>,
+    pub return_value_alt: HashMap<DefId, Value>,
     entry: EntryPoint,
     func_state: RefCell<FxHashMap<DefId, C::State>>,
-    curr_body: Cell<Option<&'cx Body>>,
+    pub curr_body: Cell<Option<&'cx Body>>,
     states: RefCell<BTreeMap<(DefId, BasicBlockId), C::State>>,
     dataflow_visited: FxHashSet<DefId>,
     checker_visited: RefCell<FxHashSet<DefId>>,
     callstack: RefCell<Vec<Frame>>,
-    vulns: RefCell<Vec<C::Vuln>>,
+    pub callstack_arguments: Vec<Vec<Value>>,
+    pub value_manager: ValueManager,
+    pub permissions: Vec<String>,
+    pub jira_permission_resolver: &'cx PermissionHashMap,
+    pub confluence_permission_resolver: &'cx PermissionHashMap,
+    pub jira_regex_map: &'cx HashMap<String, Regex>,
+    pub confluence_regex_map: &'cx HashMap<String, Regex>,
     _checker: PhantomData<C>,
 }
 
+#[derive(Debug)]
+pub struct ValueManager {
+    pub varid_to_value: FxHashMap<(DefId, VarId, Option<Projection>), Value>,
+    pub defid_to_value: FxHashMap<DefId, Value>,
+    pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
+    pub expected_return_values: HashMap<DefId, (DefId, VarId)>,
+}
+
+#[derive(Debug)]
 struct CallGraph {
     called_from: FxHashMap<DefId, Vec<(DefId, Location)>>,
     // (Caller, Callee) -> Location
@@ -377,22 +576,53 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
-    pub fn new(env: &'cx Environment) -> Self {
+impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
+    pub fn new(
+        env: &'cx Environment,
+        call_all: bool,
+        call_uncalled: bool,
+        permissions: Vec<String>,
+        jira_permission_resolver: &'cx PermissionHashMap,
+        jira_regex_map: &'cx HashMap<String, Regex>,
+        confluence_permission_resolver: &'cx PermissionHashMap,
+        confluence_regex_map: &'cx HashMap<String, Regex>,
+    ) -> Self {
         let call_graph = CallGraph::new(env);
+
         Self {
             env,
             call_graph,
+            call_all,
+            call_uncalled,
             entry: Default::default(),
+            return_value: None,
+            return_value_alt: HashMap::default(),
             func_state: RefCell::new(FxHashMap::default()),
             curr_body: Cell::new(None),
             states: RefCell::new(BTreeMap::new()),
             dataflow_visited: FxHashSet::default(),
             checker_visited: RefCell::new(FxHashSet::default()),
+            callstack_arguments: Vec::new(),
             callstack: RefCell::new(Vec::new()),
-            vulns: RefCell::new(Vec::new()),
+            // vulns: RefCell::new(Vec::new()),
+            value_manager: ValueManager {
+                varid_to_value: DefinitionAnalysisMap::default(),
+                defid_to_value: FxHashMap::default(),
+                expected_return_values: HashMap::default(),
+                expecting_value: VecDeque::default(),
+            },
+            permissions,
+            jira_permission_resolver,
+            confluence_permission_resolver,
+            jira_regex_map,
+            confluence_regex_map,
             _checker: PhantomData,
         }
+    }
+
+    #[inline]
+    pub fn get_defs(&self) -> DefinitionAnalysisMap {
+        self.value_manager.varid_to_value.clone()
     }
 
     #[inline]
@@ -401,12 +631,12 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    fn body(&self) -> &'cx Body {
+    pub fn body(&self) -> &'cx Body {
         self.curr_body.get().unwrap()
     }
 
     #[inline]
-    fn set_body(&self, body: &'cx Body) {
+    pub fn set_body(&self, body: &'cx Body) {
         self.curr_body.set(Some(body));
     }
 
@@ -415,8 +645,34 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         (*self.callstack.borrow()).clone()
     }
 
+    #[inline]
     pub(crate) fn checker_visit(&self, def: DefId) -> bool {
         self.checker_visited.borrow_mut().insert(def)
+    }
+
+    #[inline]
+    pub(crate) fn add_value(
+        &mut self,
+        defid_block: DefId,
+        varid: VarId,
+        value: Value,
+        projection: Option<Projection>,
+    ) {
+        self.value_manager
+            .varid_to_value
+            .insert((defid_block, varid, projection), value);
+    }
+
+    #[inline]
+    pub(crate) fn get_value(
+        &self,
+        defid_block: DefId,
+        varid: VarId,
+        projection: Option<Projection>,
+    ) -> Option<&Value> {
+        self.value_manager
+            .varid_to_value
+            .get(&(defid_block, varid, projection))
     }
 
     #[inline]
@@ -425,7 +681,7 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    fn block_state(&self, def: DefId, block: BasicBlockId) -> C::State {
+    pub fn block_state(&self, def: DefId, block: BasicBlockId) -> C::State {
         self.states
             .borrow()
             .get(&(def, block))
@@ -488,9 +744,15 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         self.dataflow_visited.insert(func_def);
         let mut dataflow = C::Dataflow::with_interp(self);
         let mut worklist = WorkList::new();
-        worklist.push_front_blocks(self.env, func_def);
+
+        for global_def in &self.env().global {
+            worklist.push_front_blocks(self.env, *global_def, self.call_all);
+        }
+
+        worklist.push_front_blocks(self.env, func_def, self.call_all);
         let old_body = self.curr_body.get();
         while let Some((def, block_id)) = worklist.pop_front() {
+            let arguments = self.callstack_arguments.pop();
             let name = self.env.def_name(def);
             debug!("Dataflow: {name} - {block_id}");
             self.dataflow_visited.insert(def);
@@ -501,9 +763,45 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
             for &pred in func.predecessors(block_id) {
                 before_state = before_state.join(&self.block_state(def, pred));
             }
-            let state = dataflow.transfer_block(self, def, block_id, block, before_state);
+            let state =
+                dataflow.transfer_block(self, def, block_id, block, before_state, arguments);
             dataflow.join_term(self, def, block, state, &mut worklist);
         }
+
+        if self.call_uncalled {
+            let all_functions = self.env.get_all_functions();
+            let all_functions_set = FxHashSet::from_iter(all_functions.iter());
+
+            for def in all_functions_set {
+                if !worklist.visited(def) {
+                    let body = self.env.def_ref(*def).expect_body();
+                    let blocks = body.iter_block_keys().map(|bb| (def, bb)).rev();
+                    worklist.reserve(blocks.len());
+                    for work in blocks {
+                        debug!(?work, "push_front_blocks");
+                        worklist.push_back_force(*work.0, work.1);
+                    }
+                }
+            }
+
+            while let Some((def, block_id)) = worklist.pop_front() {
+                let arguments = self.callstack_arguments.pop();
+                let name = self.env.def_name(def);
+                debug!("Dataflow: {name} - {block_id}");
+                self.dataflow_visited.insert(def);
+                let func = self.env().def_ref(def).expect_body();
+                self.curr_body.set(Some(func));
+                let mut before_state = self.block_state(def, block_id);
+                let block = func.block(block_id);
+                for &pred in func.predecessors(block_id) {
+                    before_state = before_state.join(&self.block_state(def, pred));
+                }
+                let state =
+                    dataflow.transfer_block(self, def, block_id, block, before_state, arguments);
+                dataflow.join_term(self, def, block, state, &mut worklist);
+            }
+        }
+
         self.curr_body.set(old_body);
     }
 
@@ -556,16 +854,16 @@ impl<'cx, C: Checker<'cx>> Interp<'cx, C> {
         Ok(())
     }
 
-    pub fn dump_results(&self, out: &mut dyn Write) -> io::Result<()> {
-        let vulns = &**self.vulns.borrow();
-        if vulns.is_empty() {
-            writeln!(out, "No vulnerabilities found")
-        } else {
-            writeln!(out, "Found {} vulnerabilities", vulns.len())?;
-            for vuln in vulns {
-                writeln!(out, "{vuln}")?;
-            }
-            Ok(())
-        }
-    }
+    // pub fn dump_results(&self, out: &mut dyn Write) -> io::Result<()> {
+    //     let vulns = &**self.vulns.borrow();
+    //     if vulns.is_empty() {
+    //         writeln!(out, "No vulnerabilities found")
+    //     } else {
+    //         writeln!(out, "Found {} vulnerabilities", vulns.len())?;
+    //         for vuln in vulns {
+    //             writeln!(out, "{vuln}")?;
+    //         }
+    //         Ok(())
+    //     }
+    // }
 }

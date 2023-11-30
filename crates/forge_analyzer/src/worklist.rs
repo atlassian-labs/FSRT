@@ -75,15 +75,20 @@ where
 
 impl WorkList<DefId, BasicBlockId> {
     #[inline]
-    pub(crate) fn push_front_blocks(&mut self, env: &Environment, def: DefId) -> bool {
-        if self.visited.insert(def) {
+    pub(crate) fn push_front_blocks(
+        &mut self,
+        env: &Environment,
+        def: DefId,
+        visit_all: bool,
+    ) -> bool {
+        if self.visited.insert(def) || visit_all {
             debug!("adding function: {}", env.def_name(def));
             let body = env.def_ref(def).expect_body();
             let blocks = body.iter_block_keys().map(|bb| (def, bb)).rev();
             self.worklist.reserve(blocks.len());
             for work in blocks {
                 debug!(?work, "push_front_blocks");
-                self.worklist.push_front(work);
+                self.worklist.push_front((work.0, work.1));
             }
             return true;
         }

@@ -1,4 +1,9 @@
 #![allow(clippy::type_complexity)]
+use clap::{Parser, ValueHint};
+use forge_permission_resolver::permissions_resolver::{
+    get_permission_resolver_confluence, get_permission_resolver_jira,
+};
+use miette::{IntoDiagnostic, Result};
 use std::{
     collections::HashSet,
     convert::TryFrom,
@@ -7,9 +12,6 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-
-use clap::{Parser, ValueHint};
-use miette::{IntoDiagnostic, Result};
 
 use swc_core::{
     common::{Globals, Mark, SourceMap, GLOBALS},
@@ -25,9 +27,12 @@ use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
-    checkers::{AuthZChecker, AuthenticateChecker},
+    checkers::{
+        AuthZChecker, AuthenticateChecker, DefintionAnalysisRunner, PermissionChecker,
+        PermissionVuln, SecretChecker,
+    },
     ctx::{AppCtx, ModId},
-    definitions::{run_resolver, DefId, Environment},
+    definitions::{run_resolver, DefId, Environment, PackageData},
     interp::Interp,
     reporter::Reporter,
     resolver::resolve_calls,
@@ -62,6 +67,10 @@ struct Args {
     #[arg(short, long)]
     out: Option<PathBuf>,
 
+    // Run the permission checker
+    #[arg(short, long)]
+    check_permissions: bool,
+
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the source code is located in `src/`
     #[arg(name = "DIRS", value_hint = ValueHint::DirPath)]
@@ -72,6 +81,7 @@ struct Args {
 struct Opts {
     dump_cfg: bool,
     dump_callgraph: bool,
+    check_permissions: bool,
     appkey: Option<String>,
     out: Option<PathBuf>,
 }
@@ -90,6 +100,7 @@ impl ForgeProject {
     fn with_files_and_sourceroot<P: AsRef<Path>, I: IntoIterator<Item = PathBuf>>(
         src: P,
         iter: I,
+        secret_packages: Vec<PackageData>,
     ) -> Self {
         let sm = Arc::<SourceMap>::default();
         let target = EsVersion::latest();
@@ -123,7 +134,7 @@ impl ForgeProject {
         });
         let keys = ctx.module_ids().collect::<Vec<_>>();
         debug!(?keys);
-        let env = run_resolver(ctx.modules(), ctx.file_resolver());
+        let env = run_resolver(ctx.modules(), ctx.file_resolver(), secret_packages);
         Self {
             sm,
             ctx,
@@ -170,9 +181,24 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         manifest_file.set_extension("yml");
     }
     debug!(?manifest_file);
+
     let manifest = fs::read_to_string(&manifest_file).into_diagnostic()?;
     let manifest: ForgeManifest = serde_yaml::from_str(&manifest).into_diagnostic()?;
     let name = manifest.app.name.unwrap_or_default();
+
+    let requested_permissions = manifest.permissions;
+    let permission_scopes = requested_permissions.scopes;
+    let permissions_declared: HashSet<String> =
+        HashSet::from_iter(permission_scopes.iter().map(|s| s.replace("\"", "")));
+
+    let secret_packages: Vec<PackageData> =
+        if let Result::Ok(f) = std::fs::File::open("secretdata.yaml") {
+            let scrape_config: Vec<PackageData> =
+                serde_yaml::from_reader(f).expect("Failed to deserialize package");
+            scrape_config
+        } else {
+            vec![]
+        };
 
     let paths = collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>();
 
@@ -185,6 +211,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         }
         false
     });
+    let run_permission_checker = opts.check_permissions && !transpiled_async;
 
     let funcrefs = manifest.modules.into_analyzable_functions().flat_map(|f| {
         f.sequence(|fmod| {
@@ -193,50 +220,198 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         })
     });
     let src_root = dir.join("src");
-    let mut proj = ForgeProject::with_files_and_sourceroot(src_root, paths.clone());
+    let mut proj =
+        ForgeProject::with_files_and_sourceroot(src_root, paths.clone(), secret_packages);
     if transpiled_async {
         warn!("Unable to scan due to transpiled async");
-        return Ok(proj);
     }
     proj.opts = opts.clone();
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
 
-    let mut interp = Interp::new(&proj.env);
-    let mut authn_interp = Interp::new(&proj.env);
+    let permissions = Vec::from_iter(permissions_declared.iter().cloned());
+
+    let (jira_permission_resolver, jira_regex_map) = get_permission_resolver_jira();
+    let (confluence_permission_resolver, confluence_regex_map) =
+        get_permission_resolver_confluence();
+
+    let mut defintion_analysis_interp = Interp::new(
+        &proj.env,
+        true,
+        true,
+        permissions.clone(),
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+    );
+
+    let mut interp = Interp::new(
+        &proj.env,
+        false,
+        false,
+        permissions.clone(),
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+    );
+    let mut authn_interp = Interp::new(
+        &proj.env,
+        false,
+        false,
+        permissions.clone(),
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+    );
+    let mut perm_interp = Interp::new(
+        &proj.env,
+        true,
+        true,
+        permissions.clone(),
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+    );
     let mut reporter = Reporter::new();
+    let mut secret_interp = Interp::new(
+        &proj.env,
+        true,
+        false,
+        permissions.clone(),
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+    );
     reporter.add_app(opts.appkey.unwrap_or_default(), name.to_owned());
+    //let mut all_used_permissions = HashSet::default();
+
     for func in &proj.funcs {
         match *func {
             FunctionTy::Invokable((ref func, ref path, _, def)) => {
+                let mut runner = DefintionAnalysisRunner::new();
+                debug!("checking Invokable {func} at {path:?}");
+                if let Err(err) = defintion_analysis_interp.run_checker(
+                    def,
+                    &mut runner,
+                    path.clone(),
+                    func.clone(),
+                ) {
+                    warn!("error while getting definition analysis {func} in {path:?}: {err}");
+                }
                 let mut checker = AuthZChecker::new();
-                debug!("checking {func} at {path:?}");
+                debug!("Authorization Scaner on Invokable FunctionTy: checking {func} at {path:?}");
                 if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
                 {
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
+
+                let mut checker2 = SecretChecker::new();
+                secret_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
+                secret_interp.value_manager.defid_to_value = defintion_analysis_interp
+                    .value_manager
+                    .defid_to_value
+                    .clone();
+                debug!("Secret Scanner on Invokable FunctionTy: checking {func} at {path:?}");
+                if let Err(err) =
+                    secret_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
+                {
+                    warn!("error while scanning {func} in {path:?}: {err}");
+                }
+                reporter.add_vulnerabilities(checker2.into_vulns());
+
+                debug!("Permission Scanners on Invokable FunctionTy: checking {func} at {path:?}");
+                if run_permission_checker {
+                    perm_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
+                    perm_interp.value_manager.defid_to_value = defintion_analysis_interp
+                        .value_manager
+                        .defid_to_value
+                        .clone();
+                    let mut checker2 = PermissionChecker::new();
+                    if let Err(err) =
+                        perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
+                    {
+                        warn!("error while scanning {func} in {path:?}: {err}");
+                    }
+                }
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
+                let mut runner = DefintionAnalysisRunner::new();
+                debug!("checking Web Trigger {func} at {path:?}");
+                if let Err(err) = defintion_analysis_interp.run_checker(
+                    def,
+                    &mut runner,
+                    path.clone(),
+                    func.clone(),
+                ) {
+                    warn!("error while getting definition analysis {func} in {path:?}: {err}");
+                }
+
+                let mut checker2 = SecretChecker::new();
+                secret_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
+                secret_interp.value_manager.defid_to_value = defintion_analysis_interp
+                    .value_manager
+                    .defid_to_value
+                    .clone();
+                debug!("Secret Scanner on Web Triggers: checking {func} at {path:?}");
+                if let Err(err) =
+                    secret_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
+                {
+                    warn!("error while scanning {func} in {path:?}: {err}");
+                }
+                reporter.add_vulnerabilities(checker2.into_vulns());
+
                 let mut checker = AuthenticateChecker::new();
-                debug!("checking webtrigger {func} at {path:?}");
+                debug!("Authentication Checker on Web Triggers: checking webtrigger {func} at {path:?}");
                 if let Err(err) =
                     authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
                 {
                     warn!("error while scanning {func} in {path:?}: {err}");
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
+
+                debug!(
+                    "Permission Checker on Web Triggers: checking webtrigger {func} at {path:?}"
+                );
+                if run_permission_checker {
+                    perm_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
+                    perm_interp.value_manager.defid_to_value = defintion_analysis_interp
+                        .value_manager
+                        .defid_to_value
+                        .clone();
+                    let mut checker2 = PermissionChecker::new();
+                    if let Err(err) =
+                        perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
+                    {
+                        warn!("error while scanning {func} in {path:?}: {err}");
+                    }
+                }
             }
         }
     }
+
+    if run_permission_checker {
+        if perm_interp.permissions.len() > 0 {
+            reporter.add_vulnerabilities(
+                vec![PermissionVuln::new(perm_interp.permissions)].into_iter(),
+            );
+        }
+    }
+
     let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
-    debug!("Writing Report");
+    debug!("On the debug layer: Writing Report");
     match opts.out {
         Some(path) => {
             fs::write(path, report).into_diagnostic()?;
         }
         None => println!("{report}"),
     }
+
     Ok(proj)
 }
 
@@ -250,6 +425,7 @@ fn main() -> Result<()> {
     let opts = Opts {
         dump_callgraph: args.callgraph,
         dump_cfg: args.cfg,
+        check_permissions: args.check_permissions,
         out: args.out,
         appkey: args.appkey,
     };

@@ -35,6 +35,9 @@ use crate::definitions::Class;
 use crate::definitions::DefId;
 use crate::definitions::DefKind;
 use crate::definitions::Environment;
+use crate::definitions::IntrinsicName;
+use crate::definitions::PackageData;
+use crate::definitions::Value;
 
 pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
 
@@ -43,13 +46,13 @@ create_newtype! {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct BranchTargets {
+pub struct BranchTargets {
     compare: SmallVec<[Operand; 1]>,
     branch: SmallVec<[BasicBlockId; 2]>,
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) enum Terminator {
+pub enum Terminator {
     #[default]
     Ret,
     Goto(BasicBlockId),
@@ -67,14 +70,15 @@ pub(crate) enum Terminator {
 
 // FIXME: ideally we should record the API call expression in the IR and the `UserFieldAccess` and `ApiCustomField` variants
 // should be removed and the type of the API call should be determined during dataflow.
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intrinsic {
-    Authorize,
+    Authorize(IntrinsicName),
     Fetch,
-    ApiCall,
-    SafeCall,
     UserFieldAccess,
     ApiCustomField,
+    ApiCall(IntrinsicName),
+    SafeCall(IntrinsicName),
+    SecretFunction(PackageData),
     EnvRead,
     StorageRead,
 }
@@ -101,8 +105,8 @@ pub enum Rvalue {
 
 #[derive(Clone, Debug, Default)]
 pub struct BasicBlock {
-    insts: Vec<Inst>,
-    term: Terminator,
+    pub insts: Vec<Inst>,
+    pub term: Terminator,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -129,11 +133,12 @@ pub(crate) const RETURN_VAR: Variable = Variable {
 #[derive(Clone, Debug)]
 pub struct Body {
     owner: Option<DefId>,
-    blocks: TiVec<BasicBlockId, BasicBlock>,
+    pub blocks: TiVec<BasicBlockId, BasicBlock>,
     pub vars: TiVec<VarId, VarKind>,
+    pub values: FxHashMap<DefId, Value>,
     ident_to_local: FxHashMap<Id, VarId>,
-    pub class_instantiations: HashMap<DefId, DefId>, // maps defids of variables to defids of classes
-    def_id_to_vars: FxHashMap<DefId, VarId>,
+    pub def_id_to_vars: FxHashMap<DefId, VarId>,
+    pub class_instantiations: HashMap<DefId, DefId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
 }
 
@@ -212,7 +217,7 @@ pub enum Operand {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Base {
+pub enum Base {
     This,
     Super,
     Var(VarId),
@@ -242,7 +247,7 @@ impl From<VarId> for Variable {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Projection {
+pub enum Projection {
     Known(JsWord),
     Computed(Base),
 }
@@ -285,6 +290,7 @@ impl Body {
             vars: local_vars,
             owner: None,
             blocks: vec![BasicBlock::default()].into(),
+            values: FxHashMap::default(),
             class_instantiations: Default::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
@@ -451,12 +457,19 @@ impl Body {
         }
     }
 
-    pub(crate) fn coerce_to_lval(&mut self, bb: BasicBlockId, val: Operand) -> Variable {
+    pub(crate) fn coerce_to_lval(
+        &mut self,
+        bb: BasicBlockId,
+        val: Operand,
+        parent_key: Option<DefId>,
+    ) -> Variable {
         match val {
             Operand::Var(var) => var,
             Operand::Lit(_) => Variable {
                 base: Base::Var({
-                    let var = self.vars.push_and_get_key(VarKind::Temp { parent: None });
+                    let var = self
+                        .vars
+                        .push_and_get_key(VarKind::Temp { parent: parent_key });
                     self.push_inst(bb, Inst::Assign(Variable::new(var), Rvalue::Read(val)));
                     var
                 }),
@@ -749,11 +762,12 @@ impl fmt::Display for Intrinsic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Intrinsic::Fetch => write!(f, "fetch"),
-            Intrinsic::Authorize => write!(f, "authorize"),
-            Intrinsic::ApiCall => write!(f, "api call"),
+            Intrinsic::Authorize(_) => write!(f, "authorize"),
+            Intrinsic::SecretFunction(_) => write!(f, "jwt sign"),
+            Intrinsic::ApiCall(_) => write!(f, "api call"),
             Intrinsic::ApiCustomField => write!(f, "accessing custom field route asApp"),
             Intrinsic::UserFieldAccess => write!(f, "accessing which fields a user can access"),
-            Intrinsic::SafeCall => write!(f, "safe api call"),
+            Intrinsic::SafeCall(_) => write!(f, "safe api call"),
             Intrinsic::EnvRead => write!(f, "env read"),
             Intrinsic::StorageRead => write!(f, "forge storage read"),
         }
