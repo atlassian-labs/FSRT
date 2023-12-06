@@ -497,7 +497,7 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     call_graph: CallGraph,
     pub return_value: Option<(Value, DefId)>,
     pub return_value_alt: HashMap<DefId, Value>,
-    entry: EntryPoint,
+    pub(crate) entry: EntryPoint,
     func_state: RefCell<FxHashMap<DefId, C::State>>,
     pub curr_body: Cell<Option<&'cx Body>>,
     states: RefCell<BTreeMap<(DefId, BasicBlockId), C::State>>,

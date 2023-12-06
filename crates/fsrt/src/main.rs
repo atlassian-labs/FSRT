@@ -29,7 +29,7 @@ use tracing_tree::HierarchicalLayer;
 use forge_analyzer::{
     checkers::{
         AuthZChecker, AuthenticateChecker, DefintionAnalysisRunner, PermissionChecker,
-        PermissionVuln, SecretChecker,
+        PermissionVuln, PrototypePollutionChecker, SecretChecker,
     },
     ctx::{AppCtx, ModId},
     definitions::{run_resolver, DefId, Environment, PackageData},
@@ -68,8 +68,12 @@ struct Args {
     out: Option<PathBuf>,
 
     // Run the permission checker
-    #[arg(short, long)]
+    #[arg(long)]
     check_permissions: bool,
+
+    // Run the prototype pollution scanner
+    #[arg(long)]
+    check_prototype_pollution: bool,
 
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the source code is located in `src/`
@@ -82,6 +86,7 @@ struct Opts {
     dump_cfg: bool,
     dump_callgraph: bool,
     check_permissions: bool,
+    check_prototype_pollution: bool,
     appkey: Option<String>,
     out: Option<PathBuf>,
 }
@@ -287,6 +292,16 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         &confluence_permission_resolver,
         &confluence_regex_map,
     );
+    let mut pp_interp = Interp::new(
+        &proj.env,
+        true,
+        false,
+        permissions.clone(),
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+    );
     reporter.add_app(opts.appkey.unwrap_or_default(), name.to_owned());
     //let mut all_used_permissions = HashSet::default();
 
@@ -338,6 +353,19 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     {
                         warn!("error while scanning {func} in {path:?}: {err}");
                     }
+                }
+                if opts.check_prototype_pollution {
+                    pp_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
+                    pp_interp.value_manager.defid_to_value = defintion_analysis_interp
+                        .value_manager
+                        .defid_to_value
+                        .clone();
+                    pp_interp.run_checker(
+                        def,
+                        &mut PrototypePollutionChecker,
+                        path.clone(),
+                        func.clone(),
+                    );
                 }
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
@@ -426,6 +454,7 @@ fn main() -> Result<()> {
         dump_callgraph: args.callgraph,
         dump_cfg: args.cfg,
         check_permissions: args.check_permissions,
+        check_prototype_pollution: args.check_prototype_pollution,
         out: args.out,
         appkey: args.appkey,
     };

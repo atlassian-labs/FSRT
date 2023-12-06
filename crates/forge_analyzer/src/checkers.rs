@@ -4,6 +4,7 @@ use forge_utils::FxHashMap;
 use itertools::Itertools;
 use smallvec::SmallVec;
 use std::{cmp::max, iter, mem, ops::ControlFlow, path::PathBuf};
+use typed_index_collections::TiVec;
 
 use tracing::{debug, info, warn};
 
@@ -25,6 +26,167 @@ use crate::{
     },
     worklist::WorkList,
 };
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Default)]
+pub enum Taint {
+    No,
+    Yes,
+    #[default]
+    Unknown,
+}
+
+impl JoinSemiLattice for Taint {
+    const BOTTOM: Self = Self::No;
+
+    #[inline]
+    fn join_changed(&mut self, other: &Self) -> bool {
+        let old = mem::replace(self, max(*other, *self));
+        old == *self
+    }
+
+    #[inline]
+    fn join(&self, other: &Self) -> Self {
+        max(*other, *self)
+    }
+}
+
+impl<D: JoinSemiLattice> JoinSemiLattice for Vec<D> {
+    const BOTTOM: Self = vec![];
+    fn join_changed(&mut self, other: &Self) -> bool {
+        let mut changed = false;
+        self.iter_mut().zip(other).for_each(|(a, b)| {
+            changed |= a.join_changed(b);
+        });
+        changed
+    }
+    fn join(&self, other: &Self) -> Self {
+        self.iter()
+            .zip(other.iter())
+            .map(|(a, b)| a.join(b))
+            .collect()
+    }
+}
+
+pub struct TaintDataflow {
+    needs_call: Vec<DefId>,
+    started: bool,
+}
+
+impl<'cx> Dataflow<'cx> for TaintDataflow {
+    type State = Vec<Taint>;
+
+    fn with_interp<C: Runner<'cx, State = Self::State>>(interp: &Interp<'cx, C>) -> Self {
+        Self {
+            needs_call: vec![],
+            started: false,
+        }
+    }
+
+    fn transfer_call<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &Interp<'cx, C>,
+        def: DefId,
+        loc: Location,
+        block: &'cx BasicBlock,
+        callee: &'cx Operand,
+        initial_state: Self::State,
+        // operands: &SmallVec<[Operand; 4]>,
+        oprands: SmallVec<[crate::ir::Operand; 4]>,
+    ) -> Self::State {
+        initial_state
+    }
+
+    fn transfer_intrinsic<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &mut Interp<'cx, C>,
+        def: DefId,
+        loc: Location,
+        block: &'cx BasicBlock,
+        intrinsic: &'cx Intrinsic,
+        initial_state: Self::State,
+        operands: SmallVec<[crate::ir::Operand; 4]>,
+    ) -> Self::State {
+        initial_state
+    }
+
+    fn transfer_inst<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &mut Interp<'cx, C>,
+        def: DefId,
+        loc: Location,
+        block: &'cx BasicBlock,
+        inst: &'cx Inst,
+        mut initial_state: Self::State,
+    ) -> Self::State {
+        match inst {
+            Inst::Assign(l, v) => {
+                let Some(var) = l.as_var_id() else {
+                    return initial_state;
+                };
+
+                if let Some(var) = v.as_var() {
+                    let Some(var_id) = var.as_var_id() else {
+                        return initial_state;
+                    };
+                    let taint = initial_state[var_id.0 as usize];
+                    if !self.started && taint == Taint::Yes {
+                        let Some(Projection::Known(s)) = var.projections.get(0) else {
+                            return initial_state;
+                        };
+                        if *s == "payload" {
+                            initial_state[var_id.0 as usize] = Taint::Yes;
+                            self.started = true;
+                        }
+                        return initial_state;
+                    } else {
+                        let new_state = initial_state[var_id.0 as usize].join(&taint);
+                        initial_state[var_id.0 as usize] = new_state;
+                        return initial_state;
+                    }
+                } else if initial_state[var.0 as usize] == Taint::Yes {
+                    initial_state[var.0 as usize] = Taint::Unknown;
+                }
+                initial_state
+            }
+            Inst::Expr(rvalue) => {
+                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
+            }
+        }
+    }
+
+    fn transfer_block<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &mut Interp<'cx, C>,
+        def: DefId,
+        bb: BasicBlockId,
+        block: &'cx BasicBlock,
+        mut initial_state: Self::State,
+        arguments: Option<Vec<Value>>,
+    ) -> Self::State {
+        if initial_state.len() < interp.body().vars.len() {
+            initial_state.resize(interp.body().vars.len(), Taint::Unknown);
+        }
+        if matches!(interp.entry.kind, EntryKind::Resolver(..)) {
+            if matches!(
+                interp.body().vars.get(VarId::from(2)),
+                Some(VarKind::Arg(_))
+            ) {
+                initial_state[2] = Taint::Yes;
+            }
+        }
+        for (idx, inst) in block.iter().enumerate() {
+            initial_state = self.transfer_inst(
+                interp,
+                def,
+                Location::new(bb, idx as u32),
+                block,
+                inst,
+                initial_state,
+            );
+        }
+        initial_state
+    }
+}
 
 pub struct AuthorizeDataflow {
     needs_call: Vec<DefId>,
@@ -132,6 +294,71 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         for def in self.needs_call.drain(..) {
             worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
+    }
+}
+
+pub struct PrototypePollutionChecker;
+
+#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Default)]
+enum PrototypePollutionState {
+    Yes,
+    #[default]
+    No,
+}
+
+impl JoinSemiLattice for PrototypePollutionState {
+    const BOTTOM: Self = Self::No;
+    fn join(&self, other: &Self) -> Self {
+        match (self, other) {
+            (Self::Yes, _) | (_, Self::Yes) => Self::Yes,
+            _ => Self::No,
+        }
+    }
+
+    fn join_changed(&mut self, other: &Self) -> bool {
+        let old = mem::replace(self, self.join(other));
+        old != *self
+    }
+}
+
+impl<'cx> Runner<'cx> for PrototypePollutionChecker {
+    type State = Vec<Taint>;
+
+    type Dataflow = TaintDataflow;
+
+    fn visit_intrinsic(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        intrinsic: &'cx Intrinsic,
+        def: DefId,
+        state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
+    ) -> ControlFlow<(), Self::State> {
+        ControlFlow::Continue(state.clone())
+    }
+    fn visit_block(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        id: BasicBlockId,
+        block: &'cx BasicBlock,
+        curr_state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        for inst in &block.insts {
+            if let Inst::Assign(l, r) = inst {
+                if let [Projection::Computed(Base::Var(fst)), Projection::Computed(Base::Var(snd)), ..] =
+                    *l.projections
+                {
+                    if curr_state.get(fst.0 as usize).copied() == Some(Taint::Yes)
+                        && curr_state.get(snd.0 as usize).copied() == Some(Taint::Yes)
+                    {
+                        info!("Prototype pollution vuln detected");
+                        return ControlFlow::Break(());
+                    }
+                }
+            }
+        }
+        ControlFlow::Continue(curr_state.clone())
     }
 }
 

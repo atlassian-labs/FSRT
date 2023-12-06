@@ -1,0 +1,31 @@
+modules:
+  jira:issuePanel:
+    - key: jira-pp-hello-world-issue-panel
+      resource: main
+      resolver:
+        function: resolver
+      render: native
+      title: jira-pp
+      icon: https://developer.atlassian.com/platform/forge/images/icons/issue-panel-icon.svg
+  function:
+    - key: resolver
+      handler: index.handler
+resources:
+  - key: main
+    path: src/frontend/index.jsx
+app:
+  id: ari:cloud:ecosystem::app/363ad44a-c9d3-4e52-a65c-ae718f7d574c
+  runtime:
+    name: nodejs18.x
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - manage:jira-project
+    - read:jira-user
+    - manage:jira-webhook
+    - manage:jira-configuration
+  external:
+    fetch:
+      backend:
+        - "*"
