@@ -216,8 +216,9 @@ pub enum Operand {
     Lit(Literal),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Base {
+    #[default]
     This,
     Super,
     Var(VarId),
@@ -228,10 +229,10 @@ create_newtype! {
 }
 
 create_newtype! {
-    pub struct VarId(u32);
+    pub struct VarId(pub u32);
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub struct Variable {
     pub(crate) base: Base,
     pub(crate) projections: SmallVec<[Projection; 1]>,
@@ -346,10 +347,11 @@ impl Body {
     }
 
     #[inline]
-    pub(crate) fn add_arg(&mut self, def: DefId, id: Id) {
-        self.vars.push(VarKind::Arg(def));
+    pub(crate) fn add_arg(&mut self, def: DefId, id: Id) -> VarId {
+        let var_id = self.vars.push_and_get_key(VarKind::Arg(def));
         self.ident_to_local
             .insert(id, VarId((self.vars.len() - 1) as u32));
+        var_id
     }
 
     #[inline]
@@ -516,6 +518,13 @@ impl Variable {
         projections: SmallVec::new_const(),
     };
 
+    pub(crate) fn as_var_id(&self) -> Option<VarId> {
+        match self.base {
+            Base::Var(var) => Some(var),
+            _ => None,
+        }
+    }
+
     #[inline]
     pub(crate) const fn new(var: VarId) -> Self {
         Self {
@@ -562,6 +571,13 @@ impl Rvalue {
     pub(crate) fn as_call(&self) -> Option<(&Operand, &[Operand])> {
         match self {
             Rvalue::Call(callee, args) => Some((callee, args)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_var(&self) -> Option<&Variable> {
+        match self {
+            Rvalue::Read(Operand::Var(var)) => Some(var),
             _ => None,
         }
     }
@@ -763,7 +779,7 @@ impl fmt::Display for Intrinsic {
         match *self {
             Intrinsic::Fetch => write!(f, "fetch"),
             Intrinsic::Authorize(_) => write!(f, "authorize"),
-            Intrinsic::SecretFunction(_) => write!(f, "jwt sign"),
+            Intrinsic::SecretFunction(_) => write!(f, "secret function"),
             Intrinsic::ApiCall(_) => write!(f, "api call"),
             Intrinsic::ApiCustomField => write!(f, "accessing custom field route asApp"),
             Intrinsic::UserFieldAccess => write!(f, "accessing which fields a user can access"),

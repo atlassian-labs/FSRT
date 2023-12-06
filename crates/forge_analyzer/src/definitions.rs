@@ -10,7 +10,7 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use smallvec::{smallvec, SmallVec};
 use swc_core::{
-    common::SyntaxContext,
+    common::{Span, SyntaxContext, DUMMY_SP},
     ecma::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
@@ -25,15 +25,15 @@ use swc_core::{
             JSXNamespacedName, JSXObject, JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp,
             LabeledStmt, Lit, MemberExpr, MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl,
             ModuleExportName, ModuleItem, NewExpr, Number, ObjectLit, ObjectPat, ObjectPatProp,
-            OptCall, OptChainBase, OptChainExpr, ParenExpr, Pat, PatOrExpr, PrivateName, Prop,
-            PropName, PropOrSpread, RestPat, ReturnStmt, SeqExpr, Stmt, Str, Super, SuperProp,
-            SuperPropExpr, SwitchStmt, TaggedTpl, ThisExpr, ThrowStmt, Tpl, TplElement, TryStmt,
-            TsAsExpr, TsConstAssertion, TsInstantiation, TsNonNullExpr, TsSatisfiesExpr,
+            OptCall, OptChainBase, OptChainExpr, Param, ParenExpr, Pat, PatOrExpr, PrivateName,
+            Prop, PropName, PropOrSpread, RestPat, ReturnStmt, SeqExpr, Stmt, Str, Super,
+            SuperProp, SuperPropExpr, SwitchStmt, TaggedTpl, ThisExpr, ThrowStmt, Tpl, TplElement,
+            TryStmt, TsAsExpr, TsConstAssertion, TsInstantiation, TsNonNullExpr, TsSatisfiesExpr,
             TsTypeAssertion, UnaryExpr, UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclarator,
             WhileStmt, WithStmt, YieldExpr,
         },
         atoms::{Atom, JsWord},
-        utils::function,
+        utils::{function, ident::IdentLike},
         visit::{noop_visit_type, Visit, VisitWith},
     },
 };
@@ -44,7 +44,7 @@ use crate::{
     ctx::ModId,
     ir::{
         Base, BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, Rvalue, Template,
-        Terminator, VarKind, Variable, RETURN_VAR,
+        Terminator, VarKind, Variable, RETURN_VAR, STARTING_BLOCK,
     },
 };
 
@@ -1941,24 +1941,65 @@ struct ArgDefiner<'cx> {
     module: ModId,
     func: DefId,
     body: Body,
+    current_arg: Variable,
 }
 
 impl Visit for ArgDefiner<'_> {
+    noop_visit_type!();
     fn visit_ident(&mut self, n: &Ident) {
         let id = n.to_id();
         let defid = self
             .res
             .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
         self.res.add_parent(defid, self.func);
-        self.body.add_arg(defid, id);
+        let var = self.body.get_or_insert_global(defid);
+        self.body.push_assign(
+            STARTING_BLOCK,
+            var.into(),
+            Rvalue::Read(Operand::Var(self.current_arg.clone().into())),
+        );
     }
 
     fn visit_object_pat_prop(&mut self, n: &ObjectPatProp) {
         match n {
-            ObjectPatProp::KeyValue(KeyValuePatProp { key, .. }) => key.visit_with(self),
-            ObjectPatProp::Assign(AssignPatProp { key, .. }) => self.visit_ident(key),
-            ObjectPatProp::Rest(_) => {}
+            ObjectPatProp::KeyValue(KeyValuePatProp { key, value }) => {
+                match key {
+                    PropName::Ident(ident) => {
+                        self.current_arg
+                            .projections
+                            .push(Projection::Known(ident.sym.clone()));
+                    }
+                    PropName::Str(str) => {
+                        self.current_arg
+                            .projections
+                            .push(Projection::Known(str.value.clone()));
+                    }
+                    PropName::Num(num) => {
+                        self.current_arg
+                            .projections
+                            .push(Projection::Known(num.value.to_string().into()));
+                    }
+                    PropName::BigInt(bigint) => {
+                        self.current_arg
+                            .projections
+                            .push(Projection::Known(bigint.value.to_string().into()));
+                    }
+                    PropName::Computed(ComputedPropName { expr, .. }) => {
+                        // TODO: handle this case
+                        return;
+                    }
+                }
+                value.visit_with(self);
+            }
+            ObjectPatProp::Assign(AssignPatProp { key, .. }) => {
+                self.current_arg
+                    .projections
+                    .push(Projection::Known(key.sym.clone()));
+                key.visit_with(self);
+            }
+            ObjectPatProp::Rest(_) => return,
         }
+        self.current_arg.projections.pop();
     }
 
     fn visit_pat(&mut self, n: &Pat) {
@@ -1966,15 +2007,39 @@ impl Visit for ArgDefiner<'_> {
             Pat::Ident(_) | Pat::Array(_) => n.visit_children_with(self),
             Pat::Object(ObjectPat { props, .. }) => props.visit_children_with(self),
             Pat::Assign(AssignPat { left, .. }) => left.visit_with(self),
-            Pat::Expr(id) => {
-                if let Expr::Ident(id) = &**id {
-                    id.visit_with(self);
-                }
-            }
+            // This is syntactically invalid in arguments
+            Pat::Expr(id) => {}
             Pat::Invalid(_) => {}
             Pat::Rest(_) => {}
-            Pat::Invalid(_) => {}
         }
+    }
+
+    fn visit_pats(&mut self, n: &[Pat]) {
+        for (pos, pat) in n.iter().enumerate() {
+            let (defid, id) = if let Some(id) = pat.as_ident().map(BindingIdent::to_id) {
+                let defid = self
+                    .res
+                    .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
+                self.res.add_parent(defid, self.func);
+                self.res.add_parent(defid, self.func);
+                continue;
+            } else {
+                //FIXME: clean up unnecessary allocations
+                let id = format!("{pos}argument");
+                let defid = self.res.add_anonymous(id, AnonType::Unknown, self.module);
+                let id = Atom::from(self.res.def_name(defid)).to_id();
+                (defid, id)
+            };
+            let var_id = self.body.add_arg(defid, id);
+            // FIXME: use clone_from once we specialize
+            self.current_arg = Variable::new(var_id);
+            self.visit_pat(pat);
+        }
+    }
+
+    fn visit_params(&mut self, n: &[Param]) {
+        let pats = n.iter().map(|param| param.pat.clone()).collect::<Vec<_>>();
+        self.visit_pats(&pats);
     }
 }
 
@@ -2127,6 +2192,7 @@ impl Visit for FunctionCollector<'_> {
                         module: self.module,
                         func: *owner,
                         body: Body::with_owner(*owner),
+                        current_arg: Default::default(),
                     };
                     n.params.visit_children_with(&mut argdef);
                     let body = argdef.body;
@@ -2174,6 +2240,7 @@ impl Visit for FunctionCollector<'_> {
                         module: self.module,
                         func: *owner,
                         body: Body::with_owner(*owner),
+                        current_arg: Default::default(),
                     };
                     n.function.params.visit_children_with(&mut argdef);
                     let body = argdef.body;
@@ -2225,6 +2292,7 @@ impl Visit for FunctionCollector<'_> {
             module: self.module,
             func: owner,
             body: Body::with_owner(owner),
+            current_arg: Default::default(),
         };
         params.visit_children_with(&mut argdef);
         let body = argdef.body;
@@ -2400,6 +2468,7 @@ impl FunctionCollector<'_> {
             module: self.module,
             func: owner,
             body: Body::with_owner(owner),
+            current_arg: Default::default(),
         };
         n.params.visit_children_with(&mut argdef);
         let body = argdef.body;
