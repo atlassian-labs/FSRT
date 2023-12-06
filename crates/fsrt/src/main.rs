@@ -76,6 +76,10 @@ struct Args {
     #[arg(long)]
     check_permissions: bool,
 
+    // Run the prototype pollution scanner
+    #[arg(long)]
+    check_prototype_pollution: bool,
+
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the source code is located in `src/`
     #[arg(name = "DIRS", value_hint = ValueHint::DirPath)]
