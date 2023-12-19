@@ -214,7 +214,7 @@ pub fn run_resolver(
         module.visit_with(&mut global_collector);
     }
     for (curr_mod, module) in modules.iter_enumerated() {
-        debug!("Running FunctionCollector in run_resolver");
+        debug!(?curr_mod, "Running FunctionCollector in run_resolver");
         let mut collector = FunctionCollector {
             res: &mut environment,
             file_resolver,
@@ -995,6 +995,12 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 // Star imports that don't have any object call to invoke function
                 // import * as atlassian_jwt from "atlassian-jwt";
                 // atlassian_jwt.encode(blah, blah);
+                debug!(
+                    ?method_name,
+                    "checking if required import is being picked up"
+                );
+                debug!(?package_name, "what is package name");
+                debug!(?import_kind, "What is import kind");
                 if import_kind == ImportKind::Star {
                     let package_found = self.secret_packages.iter().find(|&package_data| {
                         package_name == package_data.package_name
@@ -1002,8 +1008,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
                             && package_data.method.is_none()
                     });
                     if let Some(package) = package_found {
+                        debug!(?package, "returning Some!");
                         Some(Intrinsic::SecretFunction(package.clone()))
                     } else {
+                        debug!("returning NOne!");
                         None
                     }
                 } else {
@@ -1274,10 +1282,13 @@ impl<'cx> FunctionAnalyzer<'cx> {
         };
 
         let first_arg = args.first().map(|expr| &*expr.expr);
-        // let intrinsic = self.as_intrinsic(&props, first_arg);
-        // debug!("HELLO INTRINSIC!? {intrinsic:?}");
+        let intrinsic = self.as_intrinsic(&props, first_arg);
+        debug!("HELLO INTRINSIC!? {intrinsic:?}");
         let call = match self.as_intrinsic(&props, first_arg) {
-            Some(int) => Rvalue::Intrinsic(int, lowered_args),
+            Some(int) => {
+                debug!("this should be working T.T");
+                Rvalue::Intrinsic(int, lowered_args)
+            }
             None => Rvalue::Call(callee, lowered_args),
         };
 
@@ -1634,7 +1645,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 );
                 Operand::with_var(phi)
             }
-            Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
+            Expr::Call(CallExpr { callee, args, .. }) => {
+                debug!("Did this lower_call get called?");
+                self.lower_call(callee.into(), args)
+            }
             Expr::New(NewExpr { callee, args, .. }) => {
                 if let Expr::Ident(ident) = &**callee {
                     // remove the clone
@@ -1897,6 +1911,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 | Decl::TsModule(_) => {}
             },
             Stmt::Expr(ExprStmt { expr, .. }) => {
+                debug!("guessing it's getting called here? In expression statement");
                 let opnd = self.lower_expr(expr, None);
                 self.body.push_expr(self.block, Rvalue::Read(opnd));
             }
@@ -2269,11 +2284,6 @@ impl Visit for FunctionCollector<'_> {
             return;
         };
         let id = id.to_id();
-        // const res = require('foo');
-        // res = id
-        //
-
-        debug!(?id, "what is passed in id");
         match n.init.as_deref() {
             Some(Expr::Fn(f)) => {
                 let defid = self
@@ -2296,77 +2306,54 @@ impl Visit for FunctionCollector<'_> {
                 args,
                 ..
             })) => {
-                debug!("visiting var declarator for require");
-                debug!(?expr, "what is expr and how do i find the darn require");
                 if let Expr::Ident(ident) = &**expr {
                     let callee_ident = ident.to_id();
                     if callee_ident.0 == "require"
                         && self.res.sym_to_id(callee_ident, self.module).is_none()
                         && args.len() == 1
                     {
-                        debug!("caught!");
                         match args.get(0) {
                             Some(ExprOrSpread { spread, expr: lit }) => {
-                                debug!(?lit, "first match arm!");
-                                // let as_lit = expr.as_lit();
-                                // debug!(?as_lit, "trying to break outt of lit to get value");
-                                // debug!(?spread, "what is spread :O")
                                 if let Expr::Lit(Lit::Str(Str { value, .. })) = &**lit {
-                                    debug!(?value, "grabbing the value");
+                                    let package_to_check = self
+                                        .secret_packages
+                                        .iter()
+                                        .find(|package| package.package_name == &**value);
 
-                                    match self
-                                        .file_resolver
-                                        .resolve_import(self.module.into(), &"crypto-js")
-                                    {
-                                        Ok(id) => {
-                                            debug!("already exists!?!??!");
-                                        }
-                                        Err(_) => {
-                                            debug!("it worked!");
-                                            let foreign_id =
-                                                self.res.defs.foreign.push_and_get_key(
-                                                    ForeignItem {
-                                                        kind: ImportKind::Star,
-                                                        module_name: value.clone(),
-                                                    },
+                                    if let Some(package) = package_to_check {
+                                        match self.file_resolver.resolve_import(
+                                            self.module.into(),
+                                            &package.package_name,
+                                        ) {
+                                            Ok(id) => {
+                                                debug!("Imported package already tracked");
+                                            }
+                                            Err(_) => {
+                                                let foreign_id =
+                                                    self.res.defs.foreign.push_and_get_key(
+                                                        ForeignItem {
+                                                            kind: ImportKind::Star,
+                                                            module_name: value.clone(),
+                                                        },
+                                                    );
+                                                let lhs = self.res.get_or_overwrite_sym(
+                                                    id,
+                                                    self.module,
+                                                    DefKind::Foreign(foreign_id),
                                                 );
-                                            let lhs = self.res.get_or_overwrite_sym(
-                                                id,
-                                                self.module,
-                                                DefKind::Foreign(foreign_id),
-                                            );
+                                            }
                                         }
                                     }
                                 }
                             }
-                            None => debug!("Nothing exists! RAH"),
+                            None => debug!("No argument passed in"),
                         }
-
-                        // const lhs = require('foo');
-                        // Hash (identifier, modid) -> Defid
-                        // Change defkind with defid
-                        // defid
-                        // TiVec<DefId, DefKind(other identifiers)>,
-                        //
-
-                        // DefId -> DefKind
-                        // DefKind(id) foreign key SQL
-                    }
-                    // debug!(?def, "wtf is def");
-                    // debug!(?expr, "does expr still exist");
-
-                    // let helper = self.res.as_foreign_import(def);
-                    // debug!(
-                    //     ?helper,
-                    //     "What does this as_foreign_import helper function do???"
-                    // );
-                    else {
+                    } else {
                         let ident_to_id = ident.to_id();
                         let Some(def) = self.res.sym_to_id(ident_to_id, self.module) else {
                             debug!("No id found for symbol");
                             return ();
                         };
-                        debug!("merph!");
                         if matches!(self.res.is_imported_from(def, "@forge/ui"), Some(ImportKind::Named(imp)) if *imp == *"render")
                         {
                             let owner = self.res.get_or_overwrite_sym(
@@ -2461,6 +2448,7 @@ impl Visit for FunctionCollector<'_> {
 
 impl FunctionCollector<'_> {
     fn handle_function(&mut self, n: &Function, owner: Option<DefId>) {
+        debug!("When does this function get called T.T");
         let owner = self.parent.unwrap_or_else(|| {
             if let Some(defid) = owner {
                 defid
