@@ -71,10 +71,6 @@ struct Args {
     #[arg(long)]
     check_permissions: bool,
 
-    // Run the prototype pollution scanner
-    #[arg(long)]
-    check_prototype_pollution: bool,
-
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the source code is located in `src/`
     #[arg(name = "DIRS", value_hint = ValueHint::DirPath)]
@@ -354,19 +350,17 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                         warn!("error while scanning {func} in {path:?}: {err}");
                     }
                 }
-                if opts.check_prototype_pollution {
-                    pp_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                    pp_interp.value_manager.defid_to_value = defintion_analysis_interp
-                        .value_manager
-                        .defid_to_value
-                        .clone();
-                    pp_interp.run_checker(
-                        def,
-                        &mut PrototypePollutionChecker,
-                        path.clone(),
-                        func.clone(),
-                    );
-                }
+                pp_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
+                pp_interp.value_manager.defid_to_value = defintion_analysis_interp
+                    .value_manager
+                    .defid_to_value
+                    .clone();
+                pp_interp.run_checker(
+                    def,
+                    &mut PrototypePollutionChecker,
+                    path.clone(),
+                    func.clone(),
+                );
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
                 let mut runner = DefintionAnalysisRunner::new();
