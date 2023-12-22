@@ -82,7 +82,6 @@ struct Opts {
     dump_cfg: bool,
     dump_callgraph: bool,
     check_permissions: bool,
-    check_prototype_pollution: bool,
     appkey: Option<String>,
     out: Option<PathBuf>,
 }
@@ -448,7 +447,6 @@ fn main() -> Result<()> {
         dump_callgraph: args.callgraph,
         dump_cfg: args.cfg,
         check_permissions: args.check_permissions,
-        check_prototype_pollution: args.check_prototype_pollution,
         out: args.out,
         appkey: args.appkey,
     };
