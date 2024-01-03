@@ -5,6 +5,29 @@ use crate::{
     ir::{Body, VarKind},
 };
 
+impl Environment {
+    pub fn dump_function(&self, output: &mut dyn Write, func_name: &str) {
+        let Some(body) = self
+            .resolver
+            .names
+            .iter_enumerated()
+            .find_map(|(id, name)| {
+                if *func_name == *name {
+                    self.def_ref(id).to_body()
+                } else {
+                    None
+                }
+            })
+        else {
+            eprintln!("No function named {func_name}");
+            return;
+        };
+        if let Err(e) = dump_ir(output, self, body) {
+            tracing::error!("Error dumping IR: {e}");
+        }
+    }
+}
+
 pub fn dump_ir(output: &mut dyn Write, env: &Environment, body: &Body) -> io::Result<()> {
     let name = body
         .owner()

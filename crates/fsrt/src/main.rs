@@ -55,6 +55,10 @@ struct Args {
     #[arg(long)]
     cfg: bool,
 
+    /// Dump the IR for the specified function
+    #[arg(long)]
+    dump_ir: Option<String>,
+
     /// A specific function to scan. Must be an entrypoint specified in `manifest.yml`
     #[arg(short, long)]
     function: Option<String>,
@@ -77,22 +81,12 @@ struct Args {
     dirs: Vec<PathBuf>,
 }
 
-#[derive(Debug, Clone, Default)]
-struct Opts {
-    dump_cfg: bool,
-    dump_callgraph: bool,
-    check_permissions: bool,
-    appkey: Option<String>,
-    out: Option<PathBuf>,
-}
-
 struct ForgeProject {
     #[allow(dead_code)]
     sm: Arc<SourceMap>,
     ctx: AppCtx,
     env: Environment,
     funcs: Vec<FunctionTy<(String, PathBuf, ModId, DefId)>>,
-    opts: Opts,
 }
 
 impl ForgeProject {
@@ -140,7 +134,6 @@ impl ForgeProject {
             ctx,
             env,
             funcs: vec![],
-            opts: Opts::default(),
         }
     }
 
@@ -174,7 +167,7 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 }
 
 #[tracing::instrument(level = "debug")]
-fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<ForgeProject> {
+fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<ForgeProject> {
     let mut manifest_file = dir.clone();
     manifest_file.push("manifest.yaml");
     if !manifest_file.exists() {
@@ -225,9 +218,13 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     if transpiled_async {
         warn!("Unable to scan due to transpiled async");
     }
-    proj.opts = opts.clone();
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
+    if let Some(func) = opts.dump_ir.as_ref() {
+        let mut lock = std::io::stdout().lock();
+        proj.env.dump_function(&mut lock, func);
+        return Ok(proj);
+    }
 
     let permissions = Vec::from_iter(permissions_declared.iter().cloned());
 
@@ -237,7 +234,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 
     let mut defintion_analysis_interp = Interp::new(
         &proj.env,
-        true,
+        false,
         true,
         permissions.clone(),
         &jira_permission_resolver,
@@ -268,7 +265,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     );
     let mut perm_interp = Interp::new(
         &proj.env,
-        true,
+        false,
         true,
         permissions.clone(),
         &jira_permission_resolver,
@@ -279,7 +276,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     let mut reporter = Reporter::new();
     let mut secret_interp = Interp::new(
         &proj.env,
-        true,
+        false,
         false,
         permissions.clone(),
         &jira_permission_resolver,
@@ -289,7 +286,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
     );
     let mut pp_interp = Interp::new(
         &proj.env,
-        true,
+        false,
         false,
         permissions.clone(),
         &jira_permission_resolver,
@@ -297,7 +294,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
         &confluence_permission_resolver,
         &confluence_regex_map,
     );
-    reporter.add_app(opts.appkey.unwrap_or_default(), name.to_owned());
+    reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
     //let mut all_used_permissions = HashSet::default();
 
     for func in &proj.funcs {
@@ -354,12 +351,14 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
                     .value_manager
                     .defid_to_value
                     .clone();
-                pp_interp.run_checker(
+                if let Err(e) = pp_interp.run_checker(
                     def,
                     &mut PrototypePollutionChecker,
                     path.clone(),
                     func.clone(),
-                );
+                ) {
+                    warn!("error while scanning {func} in {path:?}: {e}");
+                }
             }
             FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
                 let mut runner = DefintionAnalysisRunner::new();
@@ -426,7 +425,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 
     let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
     debug!("On the debug layer: Writing Report");
-    match opts.out {
+    match &opts.out {
         Some(path) => {
             fs::write(path, report).into_diagnostic()?;
         }
@@ -437,22 +436,16 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<Fo
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
     tracing_subscriber::registry()
         .with(HierarchicalLayer::new(2))
         .with(EnvFilter::from_env("FORGE_LOG"))
         .init();
+    let dirs = std::mem::take(&mut args.dirs);
     let function = args.function.as_deref();
-    let opts = Opts {
-        dump_callgraph: args.callgraph,
-        dump_cfg: args.cfg,
-        check_permissions: args.check_permissions,
-        out: args.out,
-        appkey: args.appkey,
-    };
-    for dir in args.dirs {
+    for dir in dirs {
         debug!(?dir);
-        scan_directory(dir, function, opts.clone())?;
+        scan_directory(dir, function, &args)?;
     }
     Ok(())
 }
