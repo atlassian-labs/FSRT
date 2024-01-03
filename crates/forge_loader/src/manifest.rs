@@ -255,12 +255,13 @@ pub enum FunctionTy<T> {
     WebTrigger(T),
 }
 
-// Struct used for tracking what scan a funtion requires.
+// Struct used for tracking what scan a funtcion requires.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entrypoint<'a, S = Unresolved> {
     pub function: FunctionRef<'a, S>,
     pub invokable: bool,
     pub web_trigger: bool,
+    pub admin: bool,
 }
 
 // Helper functions that help filter out which functions are what.
@@ -388,10 +389,12 @@ impl<'a> ForgeModules<'a> {
                 .binary_search_by_key(&func.key, |trigger| &trigger.function)
                 .is_ok();
             let invokable = invokable_functions.contains(func.key);
+            let admin = false;
             Ok::<_, Error>(Entrypoint {
                 function: FunctionRef::try_from(func)?,
                 invokable,
                 web_trigger,
+                admin,
             })
         });
         self.access_import_type.iter().for_each(|access| {
