@@ -83,6 +83,7 @@ struct ResolvedEntryPoint<'a> {
     def_id: DefId,
     webtrigger: bool,
     invokable: bool,
+    admin: bool,
 }
 
 struct ForgeProject<'a> {
@@ -154,6 +155,7 @@ impl<'a> ForgeProject<'a> {
                 def_id,
                 invokable: entrypoint.invokable,
                 webtrigger: entrypoint.web_trigger,
+                admin: entrypoint.admin,
             })
         }));
     }
@@ -228,30 +230,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<()
     let mut reporter = Reporter::new();
     reporter.add_app(opts.appkey.unwrap_or_default(), name.to_owned());
     for func in &proj.funcs {
-        // TODO: Update operations in for loop to scan functions.
-        // idea: iterate over each func which should be struct that tracks the function to be scanned. And performs scans according to bool.
-        //     match *func {
-        //         FunctionTy::Invokable((ref func, ref path, _, def)) => {
-        //             let mut checker = AuthZChecker::new();
-        //             debug!("checking {func} at {path:?}");
-        //             if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
-        //             {
-        //                 warn!("error while scanning {func} in {path:?}: {err}");
-        //             }
-        //             reporter.add_vulnerabilities(checker.into_vulns());
-        //         }
-        //         FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
-        //             let mut checker = AuthenticateChecker::new();
-        //             debug!("checking webtrigger {func} at {path:?}");
-        //             if let Err(err) =
-        //                 authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
-        //             {
-        //                 warn!("error while scanning {func} in {path:?}: {err}");
-        //             }
-        //             reporter.add_vulnerabilities(checker.into_vulns());
-        //         }
-        //     }
-
         // Get entrypoint value from tuple
         // Logic for performing scans.
         // If it's invokable, then run invokable scan. If web_trigger, then trigger scan.
