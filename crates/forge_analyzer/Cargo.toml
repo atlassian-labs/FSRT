@@ -14,6 +14,7 @@ forge_utils.workspace = true
 forge_loader.workspace = true
 forge_permission_resolver.workspace = true
 itertools.workspace = true
+im-rc.workspace = true
 num-bigint.workspace = true
 once_cell.workspace = true
 petgraph.workspace = true
