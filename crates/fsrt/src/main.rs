@@ -90,6 +90,7 @@ struct ResolvedEntryPoint<'a> {
     def_id: DefId,
     webtrigger: bool,
     invokable: bool,
+    admin: bool,
 }
 
 struct ForgeProject<'a> {
@@ -161,6 +162,7 @@ impl<'a> ForgeProject<'a> {
                 def_id,
                 invokable: entrypoint.invokable,
                 webtrigger: entrypoint.web_trigger,
+                admin: entrypoint.admin,
             })
         }));
     }

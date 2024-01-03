@@ -138,6 +138,7 @@ pub struct WorkflowPostFunction<'a> {
 // Add more structs here for deserializing forge modules
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ForgeModules<'a> {
+    // deserializing non user-invocable modules
     #[serde(rename = "macro", default, borrow)]
     macros: Vec<MacroMod<'a>>,
     #[serde(rename = "function", default, borrow)]
@@ -148,7 +149,7 @@ pub struct ForgeModules<'a> {
     issue_glance: Vec<IssueGlance<'a>>,
     #[serde(rename = "jira:accessImportType", default, borrow)]
     access_import_type: Vec<AccessImportType<'a>>,
-    // deserializing non user-invocable modules
+    // deserializing user invokable module functions
     #[serde(rename = "webtrigger", default, borrow)]
     webtriggers: Vec<RawTrigger<'a>>,
     #[serde(rename = "trigger", default, borrow)]
@@ -167,9 +168,19 @@ pub struct ForgeModules<'a> {
     pub workflow_validator: Vec<WorkflowValidator<'a>>,
     #[serde(rename = "jira:workflowPostFunction", default, borrow)]
     pub workflow_post_function: Vec<WorkflowPostFunction<'a>>,
-    // deserializing user invokable module functions
+    // deserializing admin pages
+    #[serde(rename = "jira:adminPage", default, borrow)]
+    pub jira_admin: Vec<JiraAdminPage<'a>>,
     #[serde(flatten)]
     extra: FxHashMap<String, Vec<Module<'a>>>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct JiraAdminPage<'a> {
+    key: &'a str,
+    function: &'a str,
+    resource: &'a str,
+    render: &'a str,
+    title: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -335,13 +346,19 @@ impl<'a> ForgeModules<'a> {
             invokable_functions.extend(access.import_status);
         });
 
+        // TODO: create admin list and check whether function is in admin list then set admin bool to true. If not, set to false.
         self.functions.into_iter().flat_map(move |func| {
             let web_trigger = self
                 .webtriggers
                 .binary_search_by_key(&func.key, |trigger| &trigger.function)
                 .is_ok();
             let invokable = invokable_functions.contains(func.key);
-            let admin = false;
+            // this checks whether the funton being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
+            // optionally: compass:adminPage could also be considered.
+            let admin = self
+                .jira_admin
+                .iter()
+                .any(|admin_function| admin_function.function == func.key);
             Ok::<_, Error>(Entrypoint {
                 function: FunctionRef::try_from(func)?,
                 invokable,
