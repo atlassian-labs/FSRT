@@ -109,6 +109,7 @@ struct ResolvedEntryPoint<'a> {
     def_id: DefId,
     webtrigger: bool,
     invokable: bool,
+    admin: bool,
 }
 
 struct ForgeProject<'a> {
@@ -185,6 +186,7 @@ impl<'a> ForgeProject<'a> {
                 def_id,
                 invokable: entrypoint.invokable,
                 webtrigger: entrypoint.web_trigger,
+                admin: entrypoint.admin,
             })
         }));
     }
@@ -376,201 +378,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<()
     //let mut all_used_permissions = HashSet::default();
 
     for func in &proj.funcs {
-        // TODO: Update operations in for loop to scan functions.
-        // idea: iterate over each func which should be struct that tracks the function to be scanned. And performs scans according to bool.
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-        match *func {
-            FunctionTy::Invokable((ref func, ref path, _, def)) => {
-                let mut runner = DefintionAnalysisRunner::new();
-                debug!("checking Invokable {func} at {path:?}");
-                if let Err(err) = defintion_analysis_interp.run_checker(
-                    def,
-                    &mut runner,
-                    path.clone(),
-                    func.clone(),
-                ) {
-                    warn!("error while getting definition analysis {func} in {path:?}: {err}");
-                }
-                let mut checker = AuthZChecker::new();
-                debug!("Authorization Scaner on Invokable FunctionTy: checking {func} at {path:?}");
-                if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
-                {
-                    warn!("error while scanning {func} in {path:?}: {err}");
-                }
-                reporter.add_vulnerabilities(checker.into_vulns());
-
-                let mut checker2 = SecretChecker::new();
-                secret_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                secret_interp.value_manager.defid_to_value = defintion_analysis_interp
-                    .value_manager
-                    .defid_to_value
-                    .clone();
-                debug!("Secret Scanner on Invokable FunctionTy: checking {func} at {path:?}");
-                if let Err(err) =
-                    secret_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
-                {
-                    warn!("error while scanning {func} in {path:?}: {err}");
-                }
-                reporter.add_vulnerabilities(checker2.into_vulns());
-
-                debug!("Permission Scanners on Invokable FunctionTy: checking {func} at {path:?}");
-                if run_permission_checker {
-                    perm_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                    perm_interp.value_manager.defid_to_value = defintion_analysis_interp
-                        .value_manager
-                        .defid_to_value
-                        .clone();
-                    let mut checker2 = PermissionChecker::new();
-                    if let Err(err) =
-                        perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
-                    {
-                        warn!("error while scanning {func} in {path:?}: {err}");
-                    }
-                }
-                pp_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                pp_interp.value_manager.defid_to_value = defintion_analysis_interp
-                    .value_manager
-                    .defid_to_value
-                    .clone();
-                if let Err(e) = pp_interp.run_checker(
-                    def,
-                    &mut PrototypePollutionChecker,
-                    path.clone(),
-                    func.clone(),
-                ) {
-                    warn!("error while scanning {func} in {path:?}: {e}");
-                }
-            }
-            FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
-                let mut runner = DefintionAnalysisRunner::new();
-                debug!("checking Web Trigger {func} at {path:?}");
-                if let Err(err) = defintion_analysis_interp.run_checker(
-                    def,
-                    &mut runner,
-                    path.clone(),
-                    func.clone(),
-                ) {
-                    warn!("error while getting definition analysis {func} in {path:?}: {err}");
-                }
-
-                let mut checker2 = SecretChecker::new();
-                secret_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                secret_interp.value_manager.defid_to_value = defintion_analysis_interp
-                    .value_manager
-                    .defid_to_value
-                    .clone();
-                debug!("Secret Scanner on Web Triggers: checking {func} at {path:?}");
-                if let Err(err) =
-                    secret_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
-                {
-                    warn!("error while scanning {func} in {path:?}: {err}");
-                }
-                reporter.add_vulnerabilities(checker2.into_vulns());
-
-                let mut checker = AuthenticateChecker::new();
-                debug!("Authentication Checker on Web Triggers: checking webtrigger {func} at {path:?}");
-                if let Err(err) =
-                    authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
-                {
-                    warn!("error while scanning {func} in {path:?}: {err}");
-                }
-                reporter.add_vulnerabilities(checker.into_vulns());
-
-                debug!(
-                    "Permission Checker on Web Triggers: checking webtrigger {func} at {path:?}"
-                );
-                if run_permission_checker {
-                    perm_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                    perm_interp.value_manager.defid_to_value = defintion_analysis_interp
-                        .value_manager
-                        .defid_to_value
-                        .clone();
-                    let mut checker2 = PermissionChecker::new();
-                    if let Err(err) =
-                        perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
-                    {
-                        warn!("error while scanning {func} in {path:?}: {err}");
-                    }
-                }
-=======
-    //     match *func {
-    //         FunctionTy::Invokable((ref func, ref path, _, def)) => {
-    //             let mut checker = AuthZChecker::new();
-    //             debug!("checking {func} at {path:?}");
-    //             if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
-    //             {
-    //                 warn!("error while scanning {func} in {path:?}: {err}");
-    //             }
-    //             reporter.add_vulnerabilities(checker.into_vulns());
-    //         }
-    //         FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
-    //             let mut checker = AuthenticateChecker::new();
-    //             debug!("checking webtrigger {func} at {path:?}");
-    //             if let Err(err) =
-    //                 authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
-    //             {
-    //                 warn!("error while scanning {func} in {path:?}: {err}");
-    //             }
-    //             reporter.add_vulnerabilities(checker.into_vulns());
-    //         }
-    //     }
-=======
-        //     match *func {
-        //         FunctionTy::Invokable((ref func, ref path, _, def)) => {
-        //             let mut checker = AuthZChecker::new();
-        //             debug!("checking {func} at {path:?}");
-        //             if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
-        //             {
-        //                 warn!("error while scanning {func} in {path:?}: {err}");
-        //             }
-        //             reporter.add_vulnerabilities(checker.into_vulns());
-        //         }
-        //         FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
-        //             let mut checker = AuthenticateChecker::new();
-        //             debug!("checking webtrigger {func} at {path:?}");
-        //             if let Err(err) =
-        //                 authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
-        //             {
-        //                 warn!("error while scanning {func} in {path:?}: {err}");
-        //             }
-        //             reporter.add_vulnerabilities(checker.into_vulns());
-        //         }
-        //     }
->>>>>>> 29c38d6 (modified into_analyzable_functions with Josh and implementation in main.rs)
-
-        // Get entrypoint value from tuple
-        // Logic for performing scans.
-        // If it's invokable, then run invokable scan. If web_trigger, then trigger scan.
-        // And if it's both, run both scans.
-        if func.invokable {
-            let mut checker = AuthZChecker::new();
-            debug!("checking {:?} at {:?}", func.func_name, &func.path);
-            if let Err(err) = interp.run_checker(
-=======
-        //     match *func {
-        //         FunctionTy::Invokable((ref func, ref path, _, def)) => {
-        //             let mut checker = AuthZChecker::new();
-        //             debug!("checking {func} at {path:?}");
-        //             if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
-        //             {
-        //                 warn!("error while scanning {func} in {path:?}: {err}");
-        //             }
-        //             reporter.add_vulnerabilities(checker.into_vulns());
-        //         }
-        //         FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
-        //             let mut checker = AuthenticateChecker::new();
-        //             debug!("checking webtrigger {func} at {path:?}");
-        //             if let Err(err) =
-        //                 authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
-        //             {
-        //                 warn!("error while scanning {func} in {path:?}: {err}");
-        //             }
-        //             reporter.add_vulnerabilities(checker.into_vulns());
-        //         }
-        //     }
-
         // Get entrypoint value from tuple
         // Logic for performing scans.
         // If it's invokable, then run invokable scan. If web_trigger, then trigger scan.
