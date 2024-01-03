@@ -231,6 +231,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
                 function: entrypoint.function.try_resolve(&paths, &dir)?,
                 invokable: entrypoint.invokable,
                 web_trigger: entrypoint.web_trigger,
+                admin: entrypoint.admin,
             })
         });
 
