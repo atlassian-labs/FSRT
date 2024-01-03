@@ -776,10 +776,7 @@ impl<'cx> Runner<'cx> for SecretChecker {
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         match *intrinsic {
-            Intrinsic::Authorize(_) => {
-                debug!("authorize intrinsic found");
-                ControlFlow::Continue(AuthorizeState::Yes)
-            }
+            Intrinsic::Authorize(_) => ControlFlow::Continue(AuthorizeState::Yes),
             Intrinsic::Fetch => ControlFlow::Continue(*state),
             Intrinsic::ApiCall(_) if *state == AuthorizeState::No => {
                 let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
@@ -928,6 +925,8 @@ impl Default for AuthenticateChecker {
 impl<'cx> Runner<'cx> for AuthenticateChecker {
     type State = Authenticated;
     type Dataflow = AuthenticateDataflow;
+
+    const NAME: &'static str = "Authentication";
 
     fn visit_intrinsic(
         &mut self,
@@ -1189,7 +1188,7 @@ impl IntoVuln for SecretVuln {
         self.entry_func.hash(&mut hasher);
         self.stack.hash(&mut hasher);
         Vulnerability {
-            check_name: format!("Secret-{}", hasher.finish()),
+            check_name: format!("Hardcoded-Secret-{}", hasher.finish()),
             description: format!(
                 "Hardcoded secret found within codebase {} in {:?}.",
                 self.entry_func, self.file
@@ -1211,6 +1210,8 @@ impl WithCallStack for SecretVuln {
 impl<'cx> Runner<'cx> for SecretChecker {
     type State = SecretState;
     type Dataflow = SecretDataflow;
+
+    const NAME: &'static str = "Secret";
 
     fn visit_intrinsic(
         &mut self,
