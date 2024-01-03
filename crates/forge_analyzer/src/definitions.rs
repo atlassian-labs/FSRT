@@ -17,20 +17,20 @@ use swc_core::{
             AssignProp, AwaitExpr, BinExpr, BindingIdent, BlockStmt, BlockStmtOrExpr, BreakStmt,
             CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName, CondExpr,
             Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll, ExportDecl,
-            ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier, Expr, ExprOrSpread,
-            ExprStmt, FnDecl, FnExpr, ForHead, ForInStmt, ForOfStmt, ForStmt, Function, Id, Ident,
-            IfStmt, Import, ImportDecl, ImportDefaultSpecifier, ImportNamedSpecifier,
-            ImportStarAsSpecifier, JSXAttrName, JSXAttrOrSpread, JSXAttrValue, JSXElement,
-            JSXElementChild, JSXElementName, JSXExpr, JSXExprContainer, JSXFragment, JSXMemberExpr,
-            JSXNamespacedName, JSXObject, JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp,
-            LabeledStmt, Lit, MemberExpr, MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl,
-            ModuleExportName, ModuleItem, NewExpr, Number, ObjectLit, ObjectPat, ObjectPatProp,
-            OptCall, OptChainBase, OptChainExpr, Param, ParenExpr, Pat, PatOrExpr, PrivateName,
-            Prop, PropName, PropOrSpread, RestPat, ReturnStmt, SeqExpr, Stmt, Str, Super,
-            SuperProp, SuperPropExpr, SwitchStmt, TaggedTpl, ThisExpr, ThrowStmt, Tpl, TplElement,
-            TryStmt, TsAsExpr, TsConstAssertion, TsInstantiation, TsNonNullExpr, TsSatisfiesExpr,
-            TsTypeAssertion, UnaryExpr, UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclarator,
-            WhileStmt, WithStmt, YieldExpr,
+            ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier, ExportSpecifier, Expr,
+            ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForHead, ForInStmt, ForOfStmt, ForStmt,
+            Function, Id, Ident, IfStmt, Import, ImportDecl, ImportDefaultSpecifier,
+            ImportNamedSpecifier, ImportStarAsSpecifier, JSXAttrName, JSXAttrOrSpread,
+            JSXAttrValue, JSXElement, JSXElementChild, JSXElementName, JSXExpr, JSXExprContainer,
+            JSXFragment, JSXMemberExpr, JSXNamespacedName, JSXObject, JSXSpreadChild, JSXText,
+            KeyValuePatProp, KeyValueProp, LabeledStmt, Lit, MemberExpr, MemberProp, MetaPropExpr,
+            MethodProp, Module, ModuleDecl, ModuleExportName, ModuleItem, NamedExport, NewExpr,
+            Number, ObjectLit, ObjectPat, ObjectPatProp, OptCall, OptChainBase, OptChainExpr,
+            Param, ParenExpr, Pat, PatOrExpr, PrivateName, Prop, PropName, PropOrSpread, RestPat,
+            ReturnStmt, SeqExpr, Stmt, Str, Super, SuperProp, SuperPropExpr, SwitchStmt, TaggedTpl,
+            ThisExpr, ThrowStmt, Tpl, TplElement, TryStmt, TsAsExpr, TsConstAssertion,
+            TsInstantiation, TsNonNullExpr, TsSatisfiesExpr, TsTypeAssertion, UnaryExpr,
+            UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclarator, WhileStmt, WithStmt, YieldExpr,
         },
         atoms::{Atom, JsWord},
         utils::{function, ident::IdentLike},
@@ -413,6 +413,13 @@ impl<F, O, I> DefKind<F, O, I> {
     }
 
     pub fn as_body(&self) -> Option<&F> {
+        match self {
+            Self::Function(f) | Self::Closure(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    pub fn to_body(self) -> Option<F> {
         match self {
             Self::Function(f) | Self::Closure(f) => Some(f),
             _ => None,
@@ -2194,7 +2201,7 @@ impl Visit for FunctionCollector<'_> {
                         body: Body::with_owner(*owner),
                         current_arg: Default::default(),
                     };
-                    n.params.visit_children_with(&mut argdef);
+                    n.params.visit_with(&mut argdef);
                     let body = argdef.body;
                     let mut localdef = LocalDefiner {
                         res: self.res,
@@ -2242,7 +2249,7 @@ impl Visit for FunctionCollector<'_> {
                         body: Body::with_owner(*owner),
                         current_arg: Default::default(),
                     };
-                    n.function.params.visit_children_with(&mut argdef);
+                    n.function.params.visit_with(&mut argdef);
                     let body = argdef.body;
                     let mut localdef = LocalDefiner {
                         res: self.res,
@@ -2294,7 +2301,7 @@ impl Visit for FunctionCollector<'_> {
             body: Body::with_owner(owner),
             current_arg: Default::default(),
         };
-        params.visit_children_with(&mut argdef);
+        params.visit_with(&mut argdef);
         let body = argdef.body;
         let mut localdef = LocalDefiner {
             res: self.res,
@@ -2470,7 +2477,7 @@ impl FunctionCollector<'_> {
             body: Body::with_owner(owner),
             current_arg: Default::default(),
         };
-        n.params.visit_children_with(&mut argdef);
+        n.params.visit_with(&mut argdef);
         let body = argdef.body;
         let mut localdef = LocalDefiner {
             res: self.res,
@@ -3126,6 +3133,19 @@ impl Visit for ExportCollector<'_> {
         n.visit_children_with(self);
     }
 
+    fn visit_named_export(&mut self, n: &NamedExport) {
+        if n.type_only {
+            return;
+        }
+        for export in &n.specifiers {
+            match export {
+                ExportSpecifier::Namespace(_) => {}
+                ExportSpecifier::Default(_) => {}
+                ExportSpecifier::Named(n) => {}
+            }
+        }
+    }
+
     fn visit_module_item(&mut self, n: &ModuleItem) {
         match n {
             ModuleItem::ModuleDecl(decl)
@@ -3236,13 +3256,14 @@ impl Environment {
     }
 
     #[inline]
+    #[cfg_attr(debug_assertions, track_caller)]
     fn get_or_insert_sym(&mut self, id: Id, module: ModId) -> DefId {
         let def_id = self.resolver.get_or_insert_sym(id, module);
         let def_id2 = self.defs.defs.get(def_id).copied().map_or_else(
             || self.defs.defs.push_and_get_key(DefKey::default()),
             |_| def_id,
         );
-        debug_assert_eq!(def_id, def_id2);
+        debug_assert_eq!(def_id, def_id2, "resolver and defs out of sync");
         def_id
     }
 
@@ -3535,16 +3556,26 @@ impl Environment {
         }
     }
 
+    #[instrument(level = "debug", skip(self))]
     pub fn resolver_defs(&self, def: DefId) -> Vec<(JsWord, DefId)> {
-        let def = self.resolve_alias(def);
+        let def = {
+            let new_def = self.resolve_alias(def);
+            #[cfg(debug_assertions)]
+            if new_def != def {
+                debug!(new = ?new_def, old = ?def, "resolved alias");
+            }
+            new_def
+        };
         // TODO: return an iterator instead of a Vec
-        if let DefKind::Resolver(class) = self.def_ref(def) {
+        let defkind = self.def_ref(def);
+        if let DefKind::Resolver(class) = defkind {
             class
                 .pub_members
                 .iter()
                 .map(|(k, v)| (k.clone(), self.resolve_alias(*v)))
                 .collect()
         } else {
+            debug!(?defkind, "not a resolver");
             vec![]
         }
     }

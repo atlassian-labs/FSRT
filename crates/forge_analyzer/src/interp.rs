@@ -4,23 +4,19 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     fmt::{self, Display},
     hash::Hash,
-    io::{self, Write},
     iter,
     marker::PhantomData,
     ops::ControlFlow,
     path::PathBuf,
 };
 
-use forge_permission_resolver::permissions_resolver::{
-    check_url_for_permissions, get_permission_resolver_confluence, get_permission_resolver_jira,
-    PermissionHashMap, RequestType,
-};
+use forge_permission_resolver::permissions_resolver::PermissionHashMap;
 use forge_utils::{FxHashMap, FxHashSet};
 use itertools::Itertools;
 use regex::Regex;
 use smallvec::SmallVec;
 use swc_core::ecma::atoms::JsWord;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, instrument, warn};
 
 use crate::{
     checkers::IntrinsicArguments,
@@ -29,7 +25,7 @@ use crate::{
         Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Projection,
         Rvalue, Successors, VarId, Variable, STARTING_BLOCK,
     },
-    utils::{get_defid_from_varkind, get_str_from_operand, resolve_var_from_operand},
+    utils::{get_str_from_operand, resolve_var_from_operand},
     worklist::WorkList,
 };
 
@@ -85,7 +81,6 @@ pub trait Dataflow<'cx>: Sized {
         block: &'cx BasicBlock,
         callee: &'cx Operand,
         initial_state: Self::State,
-        // operands: &SmallVec<[Operand; 4]>,
         oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State;
 
@@ -355,7 +350,9 @@ pub trait Runner<'cx>: Sized {
     type State: JoinSemiLattice + Clone + fmt::Debug;
     type Dataflow: Dataflow<'cx, State = Self::State>;
 
-    const visit_all: bool = true;
+    const VISIT_ALL: bool = true;
+
+    const NAME: &'static str = "Runner";
 
     fn visit_intrinsic(
         &mut self,
@@ -808,40 +805,41 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     fn try_check_function(&mut self, def: DefId, checker: &mut C) -> Result<(), Error> {
         let resolved_def = self.env.resolve_alias(def);
         let name = self.env.def_name(resolved_def);
-        info!("Checking function: {name}");
-        let body = *self
-            .env
-            .def_ref(resolved_def)
-            .as_body()
-            .ok_or_else(|| Error::NotAFunction(name.to_owned()))?;
+        debug!(%name, "found definition");
+        let body = *self.env.def_ref(resolved_def).as_body().ok_or_else(|| {
+            debug!(%name, "unknown function");
+            Error::NotAFunction(name.to_owned())
+        })?;
         self.set_body(body);
         self.run(resolved_def);
         checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
         Ok(())
     }
 
-    #[instrument(skip(self, checker))]
+    #[instrument(level = "debug", skip(self, checker, entry_file), fields(checker = %C::NAME, file = %entry_file.display()))]
     pub fn run_checker(
         &mut self,
         def: DefId,
         checker: &mut C,
         entry_file: PathBuf,
-        fname: String,
+        function: String,
     ) -> Result<(), Error> {
         self.entry = EntryPoint {
             file: entry_file,
-            kind: EntryKind::Function(fname),
+            kind: EntryKind::Function(function),
         };
         let Err(error) = self.try_check_function(def, checker) else {
             return Ok(());
         };
+        debug!("failed to check function, trying resolver");
         let resolver = self.env.resolver_defs(def);
         if resolver.is_empty() {
+            warn!("no resolver found");
             return Err(error);
         }
-        info!("Found potential resolver");
+        debug!("found potential resolver");
         for (name, prop) in resolver {
-            debug!("Checking resolver prop: {name}");
+            debug!("checking resolver prop: {name}");
             self.entry.kind = match std::mem::take(&mut self.entry.kind) {
                 EntryKind::Function(fname) => EntryKind::Resolver(fname, name.clone()),
                 EntryKind::Resolver(res, _) => EntryKind::Resolver(res, name.clone()),
@@ -853,17 +851,4 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         }
         Ok(())
     }
-
-    // pub fn dump_results(&self, out: &mut dyn Write) -> io::Result<()> {
-    //     let vulns = &**self.vulns.borrow();
-    //     if vulns.is_empty() {
-    //         writeln!(out, "No vulnerabilities found")
-    //     } else {
-    //         writeln!(out, "Found {} vulnerabilities", vulns.len())?;
-    //         for vuln in vulns {
-    //             writeln!(out, "{vuln}")?;
-    //         }
-    //         Ok(())
-    //     }
-    // }
 }

@@ -3,8 +3,13 @@ use forge_permission_resolver::permissions_resolver::{check_url_for_permissions,
 use forge_utils::FxHashMap;
 use itertools::Itertools;
 use smallvec::SmallVec;
-use std::{cmp::max, iter, mem, ops::ControlFlow, path::PathBuf};
-use typed_index_collections::TiVec;
+use std::{
+    cmp::max,
+    iter::{self, zip},
+    mem,
+    ops::ControlFlow,
+    path::PathBuf,
+};
 
 use tracing::{debug, info, warn};
 
@@ -54,9 +59,9 @@ impl<D: JoinSemiLattice> JoinSemiLattice for Vec<D> {
     const BOTTOM: Self = vec![];
     fn join_changed(&mut self, other: &Self) -> bool {
         let mut changed = false;
-        self.iter_mut().zip(other).for_each(|(a, b)| {
-            changed |= a.join_changed(b);
-        });
+        for (l, r) in zip(self, other) {
+            changed |= l.join_changed(r);
+        }
         changed
     }
     fn join(&self, other: &Self) -> Self {
@@ -90,7 +95,6 @@ impl<'cx> Dataflow<'cx> for TaintDataflow {
         block: &'cx BasicBlock,
         callee: &'cx Operand,
         initial_state: Self::State,
-        // operands: &SmallVec<[Operand; 4]>,
         oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         initial_state
@@ -167,11 +171,13 @@ impl<'cx> Dataflow<'cx> for TaintDataflow {
             initial_state.resize(interp.body().vars.len(), Taint::Unknown);
         }
         if matches!(interp.entry.kind, EntryKind::Resolver(..)) {
-            if matches!(
-                interp.body().vars.get(VarId::from(2)),
-                Some(VarKind::Arg(_))
-            ) {
-                initial_state[2] = Taint::Yes;
+            debug!("analyzing resolver");
+            let kind = interp.body().vars.get(VarId::from(1));
+            if matches!(kind, Some(VarKind::Arg(_))) {
+                debug!("found taint start");
+                initial_state[1] = Taint::Yes;
+            } else {
+                debug!(first_var = ?kind, "no arguments read");
             }
         }
         for (idx, inst) in block.iter().enumerate() {
@@ -326,6 +332,8 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
 
     type Dataflow = TaintDataflow;
 
+    const NAME: &'static str = "PrototypePollution";
+
     fn visit_intrinsic(
         &mut self,
         interp: &Interp<'cx, Self>,
@@ -461,6 +469,8 @@ impl WithCallStack for AuthZVuln {
 impl<'cx> Runner<'cx> for AuthZChecker {
     type State = AuthorizeState;
     type Dataflow = AuthorizeDataflow;
+
+    const NAME: &'static str = "Authorization";
 
     fn visit_intrinsic(
         &mut self,
@@ -633,6 +643,8 @@ impl Default for AuthenticateChecker {
 impl<'cx> Runner<'cx> for AuthenticateChecker {
     type State = Authenticated;
     type Dataflow = AuthenticateDataflow;
+
+    const NAME: &'static str = "Authentication";
 
     fn visit_intrinsic(
         &mut self,
@@ -896,7 +908,7 @@ impl IntoVuln for SecretVuln {
         self.entry_func.hash(&mut hasher);
         self.stack.hash(&mut hasher);
         Vulnerability {
-            check_name: format!("Secret-{}", hasher.finish()),
+            check_name: format!("Hardcoded-Secret-{}", hasher.finish()),
             description: format!(
                 "Hardcoded secret found within codebase {} in {:?}.",
                 self.entry_func, self.file
@@ -918,6 +930,8 @@ impl WithCallStack for SecretVuln {
 impl<'cx> Runner<'cx> for SecretChecker {
     type State = SecretState;
     type Dataflow = SecretDataflow;
+
+    const NAME: &'static str = "Secret";
 
     fn visit_intrinsic(
         &mut self,
@@ -1269,9 +1283,11 @@ impl fmt::Display for PermissionVuln {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Default)]
 pub enum PermissionTest {
+    #[default]
     Yes,
+    No,
 }
 
 impl JoinSemiLattice for PermissionTest {
@@ -1279,8 +1295,8 @@ impl JoinSemiLattice for PermissionTest {
 
     #[inline]
     fn join_changed(&mut self, other: &Self) -> bool {
-        let old = mem::replace(self, max(*other, *self));
-        old == *self
+        let old = mem::replace(self, self.join(other));
+        old != *self
     }
 
     #[inline]
@@ -1348,6 +1364,7 @@ impl IntoVuln for PermissionVuln {
 impl<'cx> Runner<'cx> for DefintionAnalysisRunner {
     type State = PermissionTest;
     type Dataflow = DefintionAnalysisRunner;
+    const NAME: &'static str = "DefinitionAnalysis";
 
     fn visit_intrinsic(
         &mut self,
@@ -1357,7 +1374,7 @@ impl<'cx> Runner<'cx> for DefintionAnalysisRunner {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        ControlFlow::Continue(*state)
+        ControlFlow::Break(())
     }
 }
 
