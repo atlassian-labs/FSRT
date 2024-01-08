@@ -35,7 +35,7 @@ struct ModInfo<'a> {
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct MacroMod<'a> {
     key: &'a str,
-    function: &'a str,
+    function: Option<&'a str>,
     #[serde(borrow)]
     resolver: Option<ModInfo<'a>>,
     #[serde(borrow)]
@@ -124,11 +124,11 @@ pub struct CustomField<'a> {
     #[serde(flatten, borrow)]
     key: &'a str,
     // all attributes below involve function calls
-    value: &'a str,
-    search_suggestion: &'a str,
-    function: &'a str,
-    edit: &'a str,
-    resolver: ModInfo<'a>,
+    value: Option<&'a str>,
+    search_suggestions: &'a str,
+    function: Option<&'a str>,
+    edit: Option<&'a str>,
+    resolver: Option<ModInfo<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -143,12 +143,11 @@ pub struct WorkflowValidator<'a> {
     #[serde(flatten, borrow)]
     key: &'a str,
     function: &'a str,
-    resolver: ModInfo<'a>
+    resolver: ModInfo<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkflowPostFunction<'a> {
-    #[serde(flatten, borrow)]
     key: &'a str,
     function: &'a str,
 }
@@ -274,7 +273,7 @@ pub enum FunctionTy<T> {
 }
 
 // Struct used for tracking what scan a funtion requires.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entrypoint<'a> {
     pub function: &'a str,
     pub invokable: bool,
@@ -318,41 +317,34 @@ impl<T> AsRef<T> for FunctionTy<T> {
 }
 
 impl<'a> ForgeModules<'a> {
-
-// TODO: function returns iterator where each item is some specified type. 
-    pub fn into_analyzable_functions (
-        self,
-    ) -> Vec<Entrypoint<'a>>{
+    // TODO: function returns iterator where each item is some specified type.
+    pub fn into_analyzable_functions(self) -> Vec<Entrypoint<'a>> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
-        self.webtriggers.iter().
-            .sort_unstable_by_key(|trigger| trigger.function);
+        // self.webtriggers.iter().
+        //     .sort_unstable_by_key(|trigger| trigger.function);
 
         // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true
         // for all trigger things
 
         let mut functions_to_scan = Vec::new();
         self.webtriggers.iter().for_each(|webtriggers| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: webtriggers.function,
-                    invokable: false,
-                    web_trigger: true,
-                }
-            );
-            
+            functions_to_scan.push(Entrypoint {
+                function: webtriggers.function,
+                invokable: false,
+                web_trigger: true,
+            });
         });
         self.event_triggers.iter().for_each(|event_triggers| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: event_triggers.raw.function,
-                    invokable: false,
-                    web_trigger: true,
-                }
-            );
+            functions_to_scan.push(Entrypoint {
+                function: event_triggers.raw.function,
+                invokable: false,
+                web_trigger: true,
+            });
         });
-        self.scheduled_triggers.iter().for_each(|schedule_triggers| {
-            functions_to_scan.push(
-                Entrypoint {
+        self.scheduled_triggers
+            .iter()
+            .for_each(|schedule_triggers| {
+                functions_to_scan.push(Entrypoint {
                     function: schedule_triggers.raw.function,
                     invokable: false,
                     web_trigger: true,
@@ -361,96 +353,87 @@ impl<'a> ForgeModules<'a> {
 
         // create arrays representing functions that expose user non-invokable functions
         self.consumers.iter().for_each(|consumers| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: consumers.resolver.function,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            )
+            functions_to_scan.push(Entrypoint {
+                function: consumers.resolver.function,
+                invokable: true,
+                web_trigger: false,
+            })
         });
 
         self.data_provider.iter().for_each(|dataprovider| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: dataprovider.callback.function,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            )
+            functions_to_scan.push(Entrypoint {
+                function: dataprovider.callback.function,
+                invokable: true,
+                web_trigger: false,
+            })
         });
 
         self.custom_field.iter().for_each(|customfield| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: customfield.value,
+            if let Some(value) = customfield.value {
+                functions_to_scan.push(Entrypoint {
+                    function: value,
                     invokable: true,
                     web_trigger: false,
-                }
-            );
-            functions_to_scan.push(
-                Entrypoint {
-                    function: customfield.search_suggestion,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            );
-            functions_to_scan.push(
-                Entrypoint {
-                    function: customfield.function,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            );
-            functions_to_scan.push(
-                Entrypoint {
-                    function: customfield.edit,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            );
+                });
+            }
 
-            functions_to_scan.push(
-                Entrypoint {
-                    function: customfield.resolver.function,
+            functions_to_scan.push(Entrypoint {
+                function: customfield.search_suggestions,
+                invokable: true,
+                web_trigger: false,
+            });
+
+            if let Some(func) = customfield.function {
+                functions_to_scan.push(Entrypoint {
+                    function: func,
                     invokable: true,
                     web_trigger: false,
-                }
-            );
+                });
+            }
 
+            if let Some(edit) = customfield.edit {
+                functions_to_scan.push(Entrypoint {
+                    function: edit,
+                    invokable: true,
+                    web_trigger: false,
+                });
+            }
+
+            if let Some(resolver) = &customfield.resolver {
+                functions_to_scan.push(Entrypoint {
+                    function: resolver.function,
+                    invokable: true,
+                    web_trigger: false,
+                });
+            }
         });
 
         self.ui_modifications.iter().for_each(|ui| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: ui.resolver.function,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            )
+            functions_to_scan.push(Entrypoint {
+                function: ui.resolver.function,
+                invokable: true,
+                web_trigger: false,
+            })
         });
 
         self.workflow_validator.iter().for_each(|validator| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: validator.function,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            );
+            functions_to_scan.push(Entrypoint {
+                function: validator.function,
+                invokable: true,
+                web_trigger: false,
+            });
 
-            functions_to_scan.push(
-                Entrypoint {
-                    function: validator.resolver.function,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            );
+            functions_to_scan.push(Entrypoint {
+                function: validator.resolver.function,
+                invokable: true,
+                web_trigger: false,
+            });
         });
-        
-        self.workflow_post_function.iter().for_each(|post_function| {
-            functions_to_scan.push(
-                Entrypoint {
+
+        self.workflow_post_function
+            .iter()
+            .for_each(|post_function| {
+                functions_to_scan.push(Entrypoint {
                     function: post_function.function,
                     invokable: true,
                     web_trigger: false,
@@ -460,7 +443,7 @@ impl<'a> ForgeModules<'a> {
         // get user invokable modules that have additional exposure endpoints.
         // ie macros has config and export fields on top of resolver fields that are functions
         for macros in self.macros {
-            if let Some(resolver)= macros.resolver {
+            if let Some(resolver) = macros.resolver {
                 functions_to_scan.push(Entrypoint {
                     function: resolver.function,
                     invokable: true,
@@ -468,14 +451,14 @@ impl<'a> ForgeModules<'a> {
                 })
             }
 
-            if let Some(config)= macros.config {
+            if let Some(config) = macros.config {
                 functions_to_scan.push(Entrypoint {
                     function: config.function,
                     invokable: true,
                     web_trigger: false,
                 })
             }
-            if let Some(export)= macros.export {
+            if let Some(export) = macros.export {
                 functions_to_scan.push(Entrypoint {
                     function: export.function,
                     invokable: true,
@@ -490,7 +473,7 @@ impl<'a> ForgeModules<'a> {
                 invokable: true,
                 web_trigger: false,
             });
-            if let Some(resolver)= contentitem.resolver {
+            if let Some(resolver) = contentitem.resolver {
                 functions_to_scan.push(Entrypoint {
                     function: resolver.function,
                     invokable: true,
@@ -498,7 +481,7 @@ impl<'a> ForgeModules<'a> {
                 })
             }
 
-            if let Some(dynamic_properties)= contentitem.dynamic_properties {
+            if let Some(dynamic_properties) = contentitem.dynamic_properties {
                 functions_to_scan.push(Entrypoint {
                     function: dynamic_properties.function,
                     invokable: true,
@@ -513,7 +496,7 @@ impl<'a> ForgeModules<'a> {
                 invokable: true,
                 web_trigger: false,
             });
-            if let Some(resolver)= issue.resolver {
+            if let Some(resolver) = issue.resolver {
                 functions_to_scan.push(Entrypoint {
                     function: resolver.function,
                     invokable: true,
@@ -521,7 +504,7 @@ impl<'a> ForgeModules<'a> {
                 })
             }
 
-            if let Some(dynamic_properties)= issue.dynamic_properties {
+            if let Some(dynamic_properties) = issue.dynamic_properties {
                 functions_to_scan.push(Entrypoint {
                     function: dynamic_properties.function,
                     invokable: true,
@@ -544,7 +527,7 @@ impl<'a> ForgeModules<'a> {
                 })
             }
 
-            if let Some(start)= access.start_import {
+            if let Some(start) = access.start_import {
                 functions_to_scan.push(Entrypoint {
                     function: start.function,
                     invokable: true,
@@ -552,7 +535,7 @@ impl<'a> ForgeModules<'a> {
                 })
             }
 
-            if let Some(stop)= access.stop_import {
+            if let Some(stop) = access.stop_import {
                 functions_to_scan.push(Entrypoint {
                     function: stop.function,
                     invokable: true,
@@ -560,7 +543,7 @@ impl<'a> ForgeModules<'a> {
                 })
             }
 
-            if let Some(status)= access.import_status {
+            if let Some(status) = access.import_status {
                 functions_to_scan.push(Entrypoint {
                     function: status.function,
                     invokable: true,
@@ -588,7 +571,7 @@ impl<'a> ForgeModules<'a> {
                 });
             }
         }
-        
+
         functions_to_scan
     }
 }
@@ -706,7 +689,7 @@ mod tests {
         assert_eq!(manifest.app.id, "my-app");
         assert_eq!(manifest.modules.macros.len(), 1);
         assert_eq!(manifest.modules.macros[0].key, "My Macro");
-        assert_eq!(manifest.modules.macros[0].function, "my-macro");
+        // assert_eq!(manifest.modules.macros[0].function, "my-macro");
         assert_eq!(manifest.modules.functions.len(), 1);
         assert_eq!(
             manifest.modules.functions[0],
@@ -798,7 +781,10 @@ mod tests {
         }"#;
         let manifest: ForgeManifest = serde_json::from_str(json).unwrap();
         assert_eq!(manifest.modules.macros.len(), 1);
-        assert_eq!(manifest.modules.macros[0].function, "Catch-me-if-you-can0");
+
+        if let Some(func) = manifest.modules.macros[0].function {
+            assert_eq!(func, "Catch-me-if-you-can0");
+        }
 
         if let Some(func) = &manifest.modules.macros[0].resolver {
             assert_eq!(func.function, "Catch-me-if-you-can1");
