@@ -274,34 +274,6 @@ pub struct Entrypoint<'a, S = Unresolved> {
     pub admin: bool,
 }
 
-// Helper functions that help filter out which functions are what.
-// original code that's commented out to modify methods. Here for reference
-// impl<T> FunctionTy<T> {
-//     pub fn map<O>(self, f: impl FnOnce(T) -> O) -> FunctionTy<O> {
-//         match self {
-//             Self::Invokable(t) => FunctionTy::Invokable(f(t)),
-//             Self::WebTrigger(t) => FunctionTy::WebTrigger(f(t)),
-//         }
-//     }
-
-//     #[inline]
-//     pub fn into_inner(self) -> T {
-//         match self {
-//             FunctionTy::Invokable(t) | FunctionTy::WebTrigger(t) => t,
-//         }
-//     }
-
-//     pub fn sequence<I: IntoIterator>(
-//         self,
-//         f: impl FnOnce(T) -> I,
-//     ) -> impl Iterator<Item = FunctionTy<I::Item>> {
-//         match self {
-//             Self::Invokable(t) => Either::Left(f(t).into_iter().map(FunctionTy::Invokable)),
-//             Self::WebTrigger(t) => Either::Right(f(t).into_iter().map(FunctionTy::WebTrigger)),
-//         }
-//     }
-// }
-
 impl<T> AsRef<T> for FunctionTy<T> {
     #[inline]
     fn as_ref(&self) -> &T {
