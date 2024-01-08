@@ -568,4 +568,4 @@ mod tests {
             assert_eq!(func, "Catch-me-if-you-can3");
         }
     }
-}
+}}
