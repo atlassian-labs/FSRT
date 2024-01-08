@@ -263,8 +263,8 @@ impl<'a> ForgeModules<'a> {
     // TODO: function returns iterator where each item is some specified type.
     pub fn into_analyzable_functions(mut self) -> impl Iterator<Item = Entrypoint<'a>> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
-        self.webtriggers
-            .sort_unstable_by_key(|trigger| trigger.function);
+        // self.webtriggers
+        //     .sort_unstable_by_key(|trigger| trigger.function);
 
         // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true
         // for all trigger things
