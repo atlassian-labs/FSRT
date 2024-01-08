@@ -285,8 +285,6 @@ impl<T> AsRef<T> for FunctionTy<T> {
 impl<'a> ForgeModules<'a> {
     // TODO: function returns iterator where each item is some specified type.
     pub fn into_analyzable_functions(mut self) -> impl Iterator<Item = Entrypoint<'a>> {
-    // TODO: function returns iterator where each item is some specified type.
-    pub fn into_analyzable_functions(mut self) -> impl Iterator<Item = Entrypoint<'a>> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         self.webtriggers
             .sort_unstable_by_key(|trigger| trigger.function);
@@ -363,37 +361,6 @@ impl<'a> ForgeModules<'a> {
             invokable_functions.extend(access.start_import);
             invokable_functions.extend(access.import_status);
         });
-
-        // TODO: create admin list and check whether function is in admin list then set admin bool to true. If not, set to false.
-        self.functions.into_iter().flat_map(move |func| {
-            let web_trigger = self
-                .webtriggers
-                .binary_search_by_key(&func.key, |trigger| &trigger.function)
-                .is_ok();
-            let invokable = invokable_functions.contains(func.key);
-            // this checks whether the funton being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
-            // optionally: compass:adminPage could also be considered.
-            let admin = self
-                .jira_admin
-                .iter()
-                .any(|admin_function| admin_function.function == func.key);
-            Ok::<_, Error>(Entrypoint {
-                function: FunctionRef::try_from(func)?,
-                invokable,
-                web_trigger,
-                admin,
-            })
-        });
-        self.access_import_type.iter().for_each(|access| {
-            invokable_functions.insert(access.common_keys.function);
-            invokable_functions.extend(access.common_keys.resolver);
-
-            invokable_functions.extend(access.one_delete_import);
-            invokable_functions.extend(access.stop_import);
-            invokable_functions.extend(access.start_import);
-            invokable_functions.extend(access.import_status);
-        });
-
         self.functions.into_iter().flat_map(move |func| {
             let web_trigger = self
                 .webtriggers
