@@ -178,8 +178,6 @@ pub struct ForgeModules<'a> {
 pub struct JiraAdminPage<'a> {
     key: &'a str,
     function: &'a str,
-    resource: &'a str,
-    render: &'a str,
     title: &'a str,
 }
 
@@ -328,70 +326,70 @@ impl<'a> ForgeModules<'a> {
         // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true
         // for all trigger things
 
-        let mut invokable_functions = BTreeSet::new();
+        let mut non_user_invokable_mod_functions = BTreeSet::new();
 
         self.data_provider.iter().for_each(|dataprovider| {
-            invokable_functions.extend(dataprovider.callback);
+            non_user_invokable_mod_functions.extend(dataprovider.callback);
         });
 
         self.custom_field.iter().for_each(|customfield| {
-            invokable_functions.extend(customfield.value);
-            invokable_functions.extend(customfield.search_suggestions);
-            invokable_functions.extend(customfield.edit);
+            non_user_invokable_mod_functions.extend(customfield.value);
+            non_user_invokable_mod_functions.extend(customfield.search_suggestions);
+            non_user_invokable_mod_functions.extend(customfield.edit);
 
-            invokable_functions.insert(customfield.common_keys.function);
-            invokable_functions.extend(customfield.common_keys.resolver);
+            non_user_invokable_mod_functions.insert(customfield.common_keys.function);
+            non_user_invokable_mod_functions.extend(customfield.common_keys.resolver);
         });
 
         self.ui_modifications.iter().for_each(|ui| {
-            invokable_functions.insert(ui.common_keys.function);
-            invokable_functions.extend(ui.common_keys.resolver);
+            non_user_invokable_mod_functions.insert(ui.common_keys.function);
+            non_user_invokable_mod_functions.extend(ui.common_keys.resolver);
         });
 
         self.workflow_validator.iter().for_each(|validator| {
-            invokable_functions.insert(validator.common_keys.key);
+            non_user_invokable_mod_functions.insert(validator.common_keys.key);
 
-            invokable_functions.insert(validator.common_keys.function);
+            non_user_invokable_mod_functions.insert(validator.common_keys.function);
 
-            invokable_functions.extend(validator.common_keys.resolver);
+            non_user_invokable_mod_functions.extend(validator.common_keys.resolver);
         });
 
         self.workflow_post_function
             .iter()
             .for_each(|post_function| {
-                invokable_functions.insert(post_function.common_keys.key);
+                non_user_invokable_mod_functions.insert(post_function.common_keys.key);
 
-                invokable_functions.insert(post_function.common_keys.function);
+                non_user_invokable_mod_functions.insert(post_function.common_keys.function);
 
-                invokable_functions.extend(post_function.common_keys.resolver);
+                non_user_invokable_mod_functions.extend(post_function.common_keys.resolver);
             });
 
         // get user invokable modules that have additional exposure endpoints.
         // ie macros has config and export fields on top of resolver fields that are functions
         self.macros.iter().for_each(|macros| {
-            invokable_functions.insert(macros.common_keys.key);
+            non_user_invokable_mod_functions.insert(macros.common_keys.key);
 
-            invokable_functions.insert(macros.common_keys.function);
-            invokable_functions.extend(macros.common_keys.resolver);
+            non_user_invokable_mod_functions.insert(macros.common_keys.function);
+            non_user_invokable_mod_functions.extend(macros.common_keys.resolver);
 
-            invokable_functions.extend(macros.config);
-            invokable_functions.extend(macros.export);
+            non_user_invokable_mod_functions.extend(macros.config);
+            non_user_invokable_mod_functions.extend(macros.export);
         });
 
         self.issue_glance.iter().for_each(|issue| {
-            invokable_functions.insert(issue.common_keys.function);
-            invokable_functions.extend(issue.common_keys.resolver);
-            invokable_functions.extend(issue.dynamic_properties);
+            non_user_invokable_mod_functions.insert(issue.common_keys.function);
+            non_user_invokable_mod_functions.extend(issue.common_keys.resolver);
+            non_user_invokable_mod_functions.extend(issue.dynamic_properties);
         });
 
         self.access_import_type.iter().for_each(|access| {
-            invokable_functions.insert(access.common_keys.function);
-            invokable_functions.extend(access.common_keys.resolver);
+            non_user_invokable_mod_functions.insert(access.common_keys.function);
+            non_user_invokable_mod_functions.extend(access.common_keys.resolver);
 
-            invokable_functions.extend(access.one_delete_import);
-            invokable_functions.extend(access.stop_import);
-            invokable_functions.extend(access.start_import);
-            invokable_functions.extend(access.import_status);
+            non_user_invokable_mod_functions.extend(access.one_delete_import);
+            non_user_invokable_mod_functions.extend(access.stop_import);
+            non_user_invokable_mod_functions.extend(access.start_import);
+            non_user_invokable_mod_functions.extend(access.import_status);
         });
 
         // TODO: create admin list and check whether function is in admin list then set admin bool to true. If not, set to false.
@@ -400,7 +398,7 @@ impl<'a> ForgeModules<'a> {
                 .webtriggers
                 .binary_search_by_key(&func.key, |trigger| &trigger.function)
                 .is_ok();
-            let invokable = invokable_functions.contains(func.key);
+            let invokable = non_user_invokable_mod_functions.contains(func.key);
             // this checks whether the funton being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
             // optionally: compass:adminPage could also be considered.
             let admin = self
@@ -662,4 +660,102 @@ mod tests {
             assert_eq!(func, "Catch-me-if-you-can3");
         }
     }
-}}
+
+    // Test checking whether jira:adminPage gets flagged.
+    #[test]
+    fn test_deserialize_admin_check() {
+        let json = r#"{
+            "app": {
+                "name": "My App",
+                "id": "my-app"
+            },
+            "modules": {
+                "jira:adminPage": [
+                {
+                    "key": "testing-admin-tag",
+                    "function": "main1",
+                    "title": "writing-a-test-for-admin-flag"
+                }
+                ],
+                "macro": [
+                {
+                    "key": "my-macro",
+                    "function": "main2"
+                }
+                ],
+                "function": [
+                {
+                    "key": "main1",
+                    "handler": "index.run"
+                },
+                {
+                    "key": "main2",
+                    "handler": "src.run"
+                }
+                ]
+            },
+            "permissions": {
+                "scopes": [
+                    "my-scope"
+                ],
+                "content": {
+                    "scripts": [
+                        "my-script.js"
+                    ],
+                    "styles": [
+                        "my-style.css"
+                    ]
+                }
+            }
+        }"#;
+        let manifest: ForgeManifest = serde_json::from_str(json).unwrap();
+        let mut admin_func = manifest.modules.into_analyzable_functions();
+
+        assert_eq!(
+            admin_func.next(),
+            Some(Entrypoint {
+                function: FunctionRef::try_from(FunctionMod {
+                    key: "main1",
+                    handler: "index.run",
+                    providers: None,
+                })
+                .unwrap(),
+                invokable: false,
+                web_trigger: false,
+                admin: true
+            })
+        );
+
+        assert_eq!(
+            admin_func.next(),
+            Some(Entrypoint {
+                function: FunctionRef::try_from(FunctionMod {
+                    key: "main2",
+                    handler: "src.run",
+                    providers: None,
+                })
+                .unwrap(),
+                invokable: true,
+                web_trigger: false,
+                admin: false
+            })
+        );
+
+        // assert_eq!(manifest.app.name, Some("My App"));
+        // assert_eq!(manifest.app.id, "my-app");
+        // assert_eq!(manifest.modules.macros.len(), 1);
+        // assert_eq!(manifest.modules.macros[0].common_keys.key, "My Macro");
+        // // assert_eq!(manifest.modules.macros[0].function, "my-macro");
+        // assert_eq!(manifest.modules.functions.len(), 1);
+        // assert_eq!(
+        //     manifest.modules.functions[0],
+        //     FunctionMod {
+        //         key: "my-function",
+        //         handler: "my-function-handler",
+        //         providers: Some(AuthProviders {
+        //             auth: vec!["my-auth-provider"]
+        //         }),
+        //     }
+        // );
+    }
+}
