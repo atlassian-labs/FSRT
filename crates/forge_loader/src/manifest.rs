@@ -267,22 +267,21 @@ pub enum FunctionTy<T> {
 }
 
 // Struct used for tracking what scan a funtion requires.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Entrypoint<'a, S = Unresolved> {
-    pub function: FunctionRef<'a, S>,
-    pub invokable: bool,
-    pub web_trigger: bool,
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Entrypoints<'a> {
+    function: Vec<ForgeModules<'a>>,
+    invokable: bool,
+    web_trigger: bool,
 }
 
 // Helper functions that help filter out which functions are what.
-// original code that's commented out to modify methods. Here for reference
-// impl<T> FunctionTy<T> {
-//     pub fn map<O>(self, f: impl FnOnce(T) -> O) -> FunctionTy<O> {
-//         match self {
-//             Self::Invokable(t) => FunctionTy::Invokable(f(t)),
-//             Self::WebTrigger(t) => FunctionTy::WebTrigger(f(t)),
-//         }
-//     }
+impl<T> FunctionTy<T> {
+    pub fn map<O>(self, f: impl FnOnce(T) -> O) -> FunctionTy<O> {
+        match self {
+            Self::Invokable(t) => FunctionTy::Invokable(f(t)),
+            Self::WebTrigger(t) => FunctionTy::WebTrigger(f(t)),
+        }
+    }
 
 //     #[inline]
 //     pub fn into_inner(self) -> T {
