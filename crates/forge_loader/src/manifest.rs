@@ -27,7 +27,7 @@ pub struct FunctionMod<'a> {
     providers: Option<AuthProviders<'a>>,
 }
 
-// Abstracting away key, function, and resolver into a single struct for reuse whoo!
+// Modified
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct CommonKey<'a> {
     key: &'a str,
@@ -106,7 +106,6 @@ pub struct DataProvider<'a> {
 // Struct for Custom field Module. Check that search suggestion gets read in correctly.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct CustomField<'a> {
-    // all attributes below involve function calls
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
     value: Option<&'a str>,
@@ -253,9 +252,9 @@ pub enum FunctionTy<T> {
 }
 
 // Struct used for tracking what scan a funtion requires.
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Entrypoints<'a> {
-    function: Vec<ForgeModules<'a>>,
+    function: &'a str,
     invokable: bool,
     web_trigger: bool,
 }
