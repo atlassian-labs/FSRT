@@ -112,7 +112,10 @@ struct ResolvedEntryPoint<'a> {
 }
 
 struct ForgeProject<'a> {
+<<<<<<< HEAD
 >>>>>>> 7e86f46 (abstracted structs to use a CommonKeys struct that holds: key, function, and resolver for less code duplication. Updated into_analayzable method to update values based on functions specified in function mod. TODO: Update rest of non trigger modules to update mapping to  functions to scan from function mod)
+=======
+>>>>>>> refs/remotes/origin/EAS-1893
     #[allow(dead_code)]
     sm: Arc<SourceMap>,
     ctx: AppCtx,
@@ -207,10 +210,14 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 
 #[tracing::instrument(level = "debug")]
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<ForgeProject> {
 =======
 fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<()> {
 >>>>>>> 29c38d6 (modified into_analyzable_functions with Josh and implementation in main.rs)
+=======
+fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<()> {
+>>>>>>> refs/remotes/origin/EAS-1893
     let mut manifest_file = dir.clone();
     manifest_file.push("manifest.yaml");
     if !manifest_file.exists() {
@@ -260,15 +267,33 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<()
             })
         });
 
+<<<<<<< HEAD
+=======
+    let funcrefs = manifest
+        .modules
+        .into_analyzable_functions()
+        .flat_map(|entrypoint| {
+            Ok::<_, forge_loader::Error>(Entrypoint {
+                function: entrypoint.function.try_resolve(&paths, &dir)?,
+                invokable: entrypoint.invokable,
+                web_trigger: entrypoint.web_trigger,
+            })
+        });
+
+>>>>>>> refs/remotes/origin/EAS-1893
     let src_root = dir.join("src");
     let mut proj =
         ForgeProject::with_files_and_sourceroot(src_root, paths.clone(), secret_packages);
     if transpiled_async {
         warn!("Unable to scan due to transpiled async");
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         return Ok(());
 >>>>>>> 29c38d6 (modified into_analyzable_functions with Josh and implementation in main.rs)
+=======
+        return Ok(());
+>>>>>>> refs/remotes/origin/EAS-1893
     }
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
@@ -352,6 +377,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<()
     for func in &proj.funcs {
         // TODO: Update operations in for loop to scan functions.
         // idea: iterate over each func which should be struct that tracks the function to be scanned. And performs scans according to bool.
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
         match *func {
@@ -521,6 +547,37 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<()
             let mut checker = AuthZChecker::new();
             debug!("checking {:?} at {:?}", func.func_name, &func.path);
             if let Err(err) = interp.run_checker(
+=======
+        //     match *func {
+        //         FunctionTy::Invokable((ref func, ref path, _, def)) => {
+        //             let mut checker = AuthZChecker::new();
+        //             debug!("checking {func} at {path:?}");
+        //             if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
+        //             {
+        //                 warn!("error while scanning {func} in {path:?}: {err}");
+        //             }
+        //             reporter.add_vulnerabilities(checker.into_vulns());
+        //         }
+        //         FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
+        //             let mut checker = AuthenticateChecker::new();
+        //             debug!("checking webtrigger {func} at {path:?}");
+        //             if let Err(err) =
+        //                 authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
+        //             {
+        //                 warn!("error while scanning {func} in {path:?}: {err}");
+        //             }
+        //             reporter.add_vulnerabilities(checker.into_vulns());
+        //         }
+        //     }
+
+        // Get entrypoint value from tuple
+        // Logic for performing scans.
+        // If it's invokable, then run invokable scan. If web_trigger, then trigger scan.
+        // And if it's both, run both scans.
+        if func.invokable {
+            let mut checker = AuthZChecker::new();
+            debug!("checking {:?} at {:?}", func.func_name, &func.path);
+            if let Err(err) = interp.run_checker(
                 func.def_id,
                 &mut checker,
                 func.path.clone(),
@@ -539,6 +596,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<()
                 func.func_name, func.path,
             );
             if let Err(err) = authn_interp.run_checker(
+>>>>>>> refs/remotes/origin/EAS-1893
                 func.def_id,
                 &mut checker,
                 func.path.clone(),
@@ -550,6 +608,27 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<()
                 );
             }
             reporter.add_vulnerabilities(checker.into_vulns());
+<<<<<<< HEAD
+        } else if func.webtrigger {
+            let mut checker = AuthenticateChecker::new();
+            debug!(
+                "checking webtrigger {:?} at {:?}",
+                func.func_name, func.path,
+            );
+            if let Err(err) = authn_interp.run_checker(
+                func.def_id,
+                &mut checker,
+                func.path.clone(),
+                func.func_name.to_string(),
+            ) {
+                warn!(
+                    "error while scanning {:?} in {:?}: {err}",
+                    func.func_name, func.path,
+                );
+            }
+            reporter.add_vulnerabilities(checker.into_vulns());
+=======
+>>>>>>> refs/remotes/origin/EAS-1893
         }
     }
 
@@ -570,11 +649,15 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<()
         None => println!("{report}"),
     }
 <<<<<<< HEAD
+<<<<<<< HEAD
 
     Ok(proj)
 =======
     Ok(())
 >>>>>>> 29c38d6 (modified into_analyzable_functions with Josh and implementation in main.rs)
+=======
+    Ok(())
+>>>>>>> refs/remotes/origin/EAS-1893
 }
 
 fn main() -> Result<()> {

@@ -68,6 +68,36 @@ struct AccessImportType<'a> {
 }
 
 // WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES
+    common_keys: CommonKey<'a>,
+    config: Option<&'a str>,
+    export: Option<&'a str>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ContentByLineItem<'a> {
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
+    #[serde(borrow)]
+    dynamic_properties: Option<&'a str>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct IssueGlance<'a> {
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
+    dynamic_properties: Option<&'a str>,
+}
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct AccessImportType<'a> {
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
+    one_delete_import: Option<&'a str>,
+    start_import: Option<&'a str>,
+    stop_import: Option<&'a str>,
+    import_status: Option<&'a str>,
+}
+
+// WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RawTrigger<'a> {
     key: &'a str,
@@ -304,6 +334,8 @@ impl<T> AsRef<T> for FunctionTy<T> {
 impl<'a> ForgeModules<'a> {
     // TODO: function returns iterator where each item is some specified type.
     pub fn into_analyzable_functions(mut self) -> impl Iterator<Item = Entrypoint<'a>> {
+    // TODO: function returns iterator where each item is some specified type.
+    pub fn into_analyzable_functions(mut self) -> impl Iterator<Item = Entrypoint<'a>> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         self.webtriggers
             .sort_unstable_by_key(|trigger| trigger.function);
@@ -371,6 +403,27 @@ impl<'a> ForgeModules<'a> {
             invokable_functions.extend(issue.dynamic_properties);
         });
 
+        self.access_import_type.iter().for_each(|access| {
+            invokable_functions.insert(access.common_keys.function);
+            invokable_functions.extend(access.common_keys.resolver);
+
+            invokable_functions.extend(access.one_delete_import);
+            invokable_functions.extend(access.stop_import);
+            invokable_functions.extend(access.start_import);
+            invokable_functions.extend(access.import_status);
+        });
+
+        self.functions.into_iter().flat_map(move |func| {
+            let web_trigger = self
+                .webtriggers
+                .binary_search_by_key(&func.key, |trigger| &trigger.function)
+                .is_ok();
+            let invokable = invokable_functions.contains(func.key);
+            Ok::<_, Error>(Entrypoint {
+                function: FunctionRef::try_from(func)?,
+                invokable,
+                web_trigger,
+            })
         self.access_import_type.iter().for_each(|access| {
             invokable_functions.insert(access.common_keys.function);
             invokable_functions.extend(access.common_keys.resolver);
@@ -471,6 +524,7 @@ mod tests {
                 "macro": [
                 {
                     "key": "my-macro",
+                    "function": "My Macro"
                     "function": "My Macro"
                 }
                 ],
