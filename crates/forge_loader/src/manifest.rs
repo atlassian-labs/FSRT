@@ -264,12 +264,7 @@ impl<'a> ForgeModules<'a> {
     // TODO: function returns iterator where each item is some specified type.
     pub fn into_analyzable_functions(mut self) -> impl Iterator<Item = Entrypoint<'a>> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
-        self.webtriggers.iter().
-            .sort_unstable_by_key(|trigger| trigger.function);
-
-        // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true
-        // for all trigger things
-
+        self.webtriggers.iter().sort_unstable_by_key(|trigger| trigger.function);
         let mut invokable_functions = BTreeSet::new();
 
         self.data_provider.iter().for_each(|dataprovider| {
