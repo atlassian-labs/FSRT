@@ -343,8 +343,6 @@ impl<'a> ForgeModules<'a> {
             invokable_functions.extend(access.start_import);
             invokable_functions.extend(access.import_status);
         });
-
-        // TODO: create admin list and check whether function is in admin list then set admin bool to true. If not, set to false.
         self.functions.into_iter().flat_map(move |func| {
             let web_trigger = self
                 .webtriggers
@@ -363,7 +361,7 @@ impl<'a> ForgeModules<'a> {
                 web_trigger,
                 admin,
             })
-        });
+        })
     }
 }
 
