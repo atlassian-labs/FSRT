@@ -12,6 +12,13 @@ use std::{
     sync::Arc,
 };
 
+<<<<<<< HEAD
+=======
+use clap::{Parser, ValueHint};
+use miette::{IntoDiagnostic, Result};
+
+use serde_json::map::Entry;
+>>>>>>> cd2ed7b (edited main to iterate over vector of functions. TODO: edit add_funcs in main.rs and test into_analyzble_function use case in main.rs)
 use swc_core::{
     common::{Globals, Mark, SourceMap, GLOBALS},
     ecma::{
@@ -312,6 +319,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
     for func in &proj.funcs {
         // TODO: Update operations in for loop to scan functions.
         // idea: iterate over each func which should be struct that tracks the function to be scanned. And performs scans according to bool.
+<<<<<<< HEAD
         match *func {
             FunctionTy::Invokable((ref func, ref path, _, def)) => {
                 let mut runner = DefintionAnalysisRunner::new();
@@ -425,7 +433,50 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
                         warn!("error while scanning {func} in {path:?}: {err}");
                     }
                 }
+=======
+    //     match *func {
+    //         FunctionTy::Invokable((ref func, ref path, _, def)) => {
+    //             let mut checker = AuthZChecker::new();
+    //             debug!("checking {func} at {path:?}");
+    //             if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
+    //             {
+    //                 warn!("error while scanning {func} in {path:?}: {err}");
+    //             }
+    //             reporter.add_vulnerabilities(checker.into_vulns());
+    //         }
+    //         FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
+    //             let mut checker = AuthenticateChecker::new();
+    //             debug!("checking webtrigger {func} at {path:?}");
+    //             if let Err(err) =
+    //                 authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
+    //             {
+    //                 warn!("error while scanning {func} in {path:?}: {err}");
+    //             }
+    //             reporter.add_vulnerabilities(checker.into_vulns());
+    //         }
+    //     }
+
+        if func.invokable {
+            let mut checker = AuthZChecker::new();
+            debug!("checking {func} at {path:?}");
+            if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
+            {
+                warn!("error while scanning {func} in {path:?}: {err}");
             }
+            reporter.add_vulnerabilities(checker.into_vulns());
+
+        } else if func.web_trigger {
+            let mut checker = AuthenticateChecker::new();
+            debug!("checking webtrigger {func} at {path:?}");
+            if let Err(err) =
+                authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
+            {
+                warn!("error while scanning {func} in {path:?}: {err}");
+>>>>>>> cd2ed7b (edited main to iterate over vector of functions. TODO: edit add_funcs in main.rs and test into_analyzble_function use case in main.rs)
+            }
+            reporter.add_vulnerabilities(checker.into_vulns());
+            
+            
         }
     }
 
