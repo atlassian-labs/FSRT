@@ -37,37 +37,6 @@ struct CommonKey<'a> {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct MacroMod<'a> {
-    #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
-    config: Option<&'a str>,
-    export: Option<&'a str>,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct ContentByLineItem<'a> {
-    #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
-    #[serde(borrow)]
-    dynamic_properties: Option<&'a str>,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct IssueGlance<'a> {
-    #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
-    dynamic_properties: Option<&'a str>,
-}
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct AccessImportType<'a> {
-    #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
-    one_delete_import: Option<&'a str>,
-    start_import: Option<&'a str>,
-    stop_import: Option<&'a str>,
-    import_status: Option<&'a str>,
-}
-
-// WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES
     common_keys: CommonKey<'a>,
     config: Option<&'a str>,
     export: Option<&'a str>,
@@ -424,6 +393,7 @@ impl<'a> ForgeModules<'a> {
                 invokable,
                 web_trigger,
             })
+        });
         self.access_import_type.iter().for_each(|access| {
             invokable_functions.insert(access.common_keys.function);
             invokable_functions.extend(access.common_keys.resolver);
@@ -672,4 +642,4 @@ mod tests {
             assert_eq!(func, "Catch-me-if-you-can3");
         }
     }
-}
+}}
