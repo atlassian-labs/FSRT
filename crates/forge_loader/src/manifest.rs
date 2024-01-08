@@ -149,7 +149,7 @@ pub struct ForgeModules<'a> {
     issue_glance: Vec<IssueGlance<'a>>,
     #[serde(rename = "jira:accessImportType", default, borrow)]
     access_import_type: Vec<AccessImportType<'a>>,
-    // deserializing user invokable module functions
+    // deserializing non user-invocable modules
     #[serde(rename = "webtrigger", default, borrow)]
     webtriggers: Vec<RawTrigger<'a>>,
     #[serde(rename = "trigger", default, borrow)]
@@ -400,10 +400,17 @@ impl<'a> ForgeModules<'a> {
                 .binary_search_by_key(&func.key, |trigger| &trigger.function)
                 .is_ok();
             let invokable = invokable_functions.contains(func.key);
+            // this checks whether the funton being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
+            // optionally: compass:adminPage could also be considered.
+            let admin = self
+                .jira_admin
+                .iter()
+                .any(|admin_function| admin_function.function == func.key);
             Ok::<_, Error>(Entrypoint {
                 function: FunctionRef::try_from(func)?,
                 invokable,
                 web_trigger,
+                admin,
             })
         })
     }
