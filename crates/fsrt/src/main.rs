@@ -407,7 +407,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         reporter
             .add_vulnerabilities(vec![PermissionVuln::new(perm_interp.permissions)].into_iter());
     }
-
     let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
     debug!("On the debug layer: Writing Report");
     match &opts.out {
