@@ -3,14 +3,12 @@ use std::{
     collections::HashSet,
     hash::Hash,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
-use crate::{forgepermissions::ForgePermissions, Error};
+use crate::Error;
 use forge_utils::FxHashMap;
-use itertools::{Either, Itertools};
+use itertools::Itertools;
 use serde::Deserialize;
-use serde_json::map::Entry;
 use tracing::trace;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
