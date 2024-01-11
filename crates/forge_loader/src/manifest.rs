@@ -457,7 +457,6 @@ mod tests {
                 {
                     "key": "my-macro",
                     "function": "My Macro"
-                    "function": "My Macro"
                 }
                 ],
                 "function": [
