@@ -1,6 +1,6 @@
 use std::{
     borrow::Borrow,
-    collections::{BTreeSet, HashSet},
+    collections::{HashSet},
     hash::Hash,
     path::{Path, PathBuf},
     sync::Arc,
@@ -10,8 +10,7 @@ use crate::{forgepermissions::ForgePermissions, Error};
 use forge_utils::FxHashMap;
 use itertools::{Either, Itertools};
 use serde::Deserialize;
-use serde_json::map::Entry;
-use serde_json::map::Entry;
+use std::collections::BTreeMap;
 use tracing::trace;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -28,57 +27,46 @@ pub struct FunctionMod<'a> {
     providers: Option<AuthProviders<'a>>,
 }
 
-// Modified 
+// Abstracting away key, function, and resolver into a single struct for reuse whoo!
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct ModInfo<'a> {
+struct CommonKey<'a> {
+    key: &'a str,
     function: &'a str,
+    resolver: Option<&'a str>,
+
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct MacroMod<'a> { 
-    key: &'a str,
-    function: Option<&'a str>,
-    #[serde(borrow)] 
-    resolver: Option<ModInfo<'a>>,
-    #[serde(borrow)] 
-    config: Option<ModInfo<'a>>,
-    #[serde(borrow)] 
-    export: Option<ModInfo<'a>>,
+    #[serde(flatten, borrow)] 
+    common_keys: CommonKey<'a>,
+    config: Option<&'a str>,
+    export: Option<&'a str>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ContentByLineItem<'a> { 
-    key: &'a str,
-    function: &'a str,
+    #[serde(flatten, borrow)] 
+    common_keys: CommonKey<'a>,
     #[serde(borrow)] 
-    resolver: Option<ModInfo<'a>>,
-    #[serde(borrow)] 
-    dynamic_properties: Option<ModInfo<'a>>,
+    dynamic_properties: Option<&'a str>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct IssueGlance<'a> { 
-    key: &'a str,
-    function: &'a str,
-    #[serde(borrow)] 
-    resolver: Option<ModInfo<'a>>,
-    #[serde(borrow)] 
-    dynamic_properties: Option<ModInfo<'a>>,
+    #[serde(flatten, borrow)] 
+    common_keys: CommonKey<'a>,
+    dynamic_properties: Option<&'a str>,
 
 }
-
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct AccessImportType<'a> { 
-    key: &'a str,
-    function: &'a str,
-    #[serde(borrow)] 
-    one_delete_import: Option<ModInfo<'a>>,
-    #[serde(borrow)] 
-    start_import: Option<ModInfo<'a>>,
-    #[serde(borrow)] 
-    stop_import: Option<ModInfo<'a>>,
-    #[serde(borrow)] 
-    import_status: Option<ModInfo<'a>>,
+    #[serde(flatten, borrow)] 
+    common_keys: CommonKey<'a>,
+    one_delete_import: Option<&'a str>,
+    start_import: Option<&'a str>,
+    stop_import: Option<&'a str>,
+    import_status: Option<&'a str>,
 
 }
 
@@ -117,44 +105,39 @@ struct ScheduledTrigger<'a> {
 // compass DataProvider module
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct DataProvider<'a> {
-    key: &'a str,
     #[serde(flatten, borrow)]
-    callback: ModInfo<'a>,
+    key: &'a str,    
+    callback: Option<&'a str>,
 }
 
 // Struct for Custom field Module. Check that search suggestion gets read in correctly. 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct CustomField<'a> {
-    #[serde(flatten, borrow)]
-    key: &'a str,
+pub struct CustomField<'a> { 
     // all attributes below involve function calls
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
     value: Option<&'a str>,
     search_suggestions: &'a str,
-    function: Option<&'a str>,
     edit: Option<&'a str>,
-    resolver: Option<ModInfo<'a>>,
 }
 
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct UiModificatons<'a> {
-    key: &'a str,
     #[serde(flatten, borrow)]
-    resolver: ModInfo<'a>,
+    common_key: CommonKey<'a>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkflowValidator<'a> {
     #[serde(flatten, borrow)]
-    key: &'a str,
-    function: &'a str,
-    resolver: ModInfo<'a>
+    common_keys: CommonKey<'a>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkflowPostFunction<'a> {
-    key: &'a str,
-    function: &'a str,
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>
 }
 
 // Add more structs here for deserializing forge modules
@@ -297,6 +280,7 @@ pub struct Entrypoint<'a> {
     pub web_trigger: bool,
 }
 
+
 // Helper functions that help filter out which functions are what. 
 impl<T> FunctionTy<T> {
     pub fn map<O>(self, f: impl FnOnce(T) -> O) -> FunctionTy<O> {
@@ -338,43 +322,59 @@ impl<'a> ForgeModules<'a> {
 
 // TODO: function returns iterator where each item is some specified type. 
     pub fn into_analyzable_functions (
-        self,
+        &mut self,
     ) -> Vec<Entrypoint<'a>>{
         // number of webtriggers are usually low, so it's better to just sort them and reuse
-        // self.webtriggers.iter().
-        //     .sort_unstable_by_key(|trigger| trigger.function);
+        self.webtriggers.sort_unstable_by_key(|trigger| trigger.function);
 
         // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true 
         // for all trigger things 
 
-        let mut functions_to_scan = Vec::new();
-        self.webtriggers.iter().for_each(|webtriggers| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: webtriggers.function,
-                    invokable: false,
-                    web_trigger: true,
-                }
-            );
+        let mut functions_to_scan = BTreeMap::new();
+
+        // Get all functions for module from manifest.yml 
+         self.functions.iter().for_each(|func| {
+            functions_to_scan.insert(func.handler, Entrypoint {
+                function: func.handler,
+                invokable: false,
+                web_trigger: false,
+            });
             
         });
+
+
+        self.webtriggers.iter().for_each(|webtriggers| {
+            if functions_to_scan.contains_key(webtriggers.function) {
+                if let Some(entry) = functions_to_scan.get_mut(webtriggers.function) {
+                    entry.web_trigger = true;
+                }   
+            }
+            
+        });
+
+        self.webtriggers.iter().for_each(|webtriggers| {
+            if functions_to_scan.contains_key(webtriggers.function) {
+                if let Some(entry) = functions_to_scan.get_mut(webtriggers.function) {
+                    entry.web_trigger = true;
+                }   
+            }
+            
+        });
+
+
         self.event_triggers.iter().for_each(|event_triggers| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: event_triggers.raw.function,
-                    invokable: false,
-                    web_trigger: true,
-                }
-            );
+            if functions_to_scan.contains_key(event_triggers.raw.function) {
+                if let Some(entry) = functions_to_scan.get_mut(event_triggers.raw.function) {
+                    entry.web_trigger = true;
+                }   
+            }
         });
         self.scheduled_triggers.iter().for_each(|schedule_triggers| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: schedule_triggers.raw.function,
-                    invokable: false,
-                    web_trigger: true,
-                }
-            )
+            if functions_to_scan.contains_key(schedule_triggers.raw.function) {
+                if let Some(entry) = functions_to_scan.get_mut(schedule_triggers.raw.function) {
+                    entry.web_trigger = true;
+                }   
+            }
         });
 
         // create arrays representing functions that expose user non-invokable functions 
