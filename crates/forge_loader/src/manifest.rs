@@ -387,28 +387,6 @@ impl<'a> ForgeModules<'a> {
                 invokable,
                 web_trigger,
             })
-        });
-        self.access_import_type.iter().for_each(|access| {
-            invokable_functions.insert(access.common_keys.function);
-            invokable_functions.extend(access.common_keys.resolver);
-
-            invokable_functions.extend(access.one_delete_import);
-            invokable_functions.extend(access.stop_import);
-            invokable_functions.extend(access.start_import);
-            invokable_functions.extend(access.import_status);
-        });
-
-        self.functions.into_iter().flat_map(move |func| {
-            let web_trigger = self
-                .webtriggers
-                .binary_search_by_key(&func.key, |trigger| &trigger.function)
-                .is_ok();
-            let invokable = invokable_functions.contains(func.key);
-            Ok::<_, Error>(Entrypoint {
-                function: FunctionRef::try_from(func)?,
-                invokable,
-                web_trigger,
-            })
         })
     }
 }
@@ -635,4 +613,4 @@ mod tests {
             assert_eq!(func, "Catch-me-if-you-can3");
         }
     }
-}}
+}
