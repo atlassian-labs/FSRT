@@ -18,7 +18,7 @@ struct AuthProviders<'a> {
     #[serde(borrow)]
     auth: Vec<&'a str>,
 }
-// Maps the Functions Module in common Modules
+// Maps the Functions Module in common Modules 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FunctionMod<'a> {
     key: &'a str,
@@ -27,54 +27,30 @@ pub struct FunctionMod<'a> {
     providers: Option<AuthProviders<'a>>,
 }
 
-// Abstracting away key, function, and resolver into a single struct for reuse whoo!
+// Modified 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct CommonKey<'a> {
+struct ModInfo<'a> {
+    function: &'a str,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct MacroMod<'a> { 
+    #[serde(flatten, borrow)] 
     key: &'a str,
     function: &'a str,
-    resolver: Option<&'a str>,
+    resolver: ModInfo<'a>,
+    config: ModInfo<'a>,
+    export: ModInfo<'a>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct MacroMod<'a> {
-    #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
-    config: Option<&'a str>,
-    export: Option<&'a str>,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct ContentByLineItem<'a> {
-    #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
-    #[serde(borrow)]
-    dynamic_properties: Option<&'a str>,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct IssueGlance<'a> {
-    #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
-    dynamic_properties: Option<&'a str>,
-}
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct AccessImportType<'a> {
-    #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
-    one_delete_import: Option<&'a str>,
-    start_import: Option<&'a str>,
-    stop_import: Option<&'a str>,
-    import_status: Option<&'a str>,
-}
-
-// WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES
+// WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RawTrigger<'a> {
     key: &'a str,
     function: &'a str,
 }
 
-// Trigger => EventTriger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES
+// Trigger => EventTriger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct EventTrigger<'a> {
     #[serde(flatten, borrow)]
@@ -91,7 +67,7 @@ enum Interval {
     Week,
 }
 
-// Thank you to whomeever kept this one the same. T.T
+// Thank you to whomeever kept this one the same. T.T 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ScheduledTrigger<'a> {
     #[serde(flatten, borrow)]
@@ -99,6 +75,7 @@ struct ScheduledTrigger<'a> {
     interval: Interval,
 }
 
+// compass DataProvider module
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct DataProvider<'a> {
     key: &'a str,
@@ -106,6 +83,7 @@ struct DataProvider<'a> {
     callback: Callback<'a>,
 }
 
+// Struct for mapping functions defined one more level in whose value is {function: string}. Used to represent resolver types.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Callback<'a> {
     pub function: &'a str,
