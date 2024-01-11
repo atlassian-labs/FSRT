@@ -2375,6 +2375,7 @@ impl Visit for FunctionCollector<'_> {
                     {
                         match args.get(0) {
                             Some(ExprOrSpread { spread, expr: lit }) => {
+                                // TODO: handle local module imports
                                 if let Expr::Lit(Lit::Str(Str { value, .. })) = &**lit {
                                     let package_to_check = self
                                         .secret_packages
@@ -2928,8 +2929,6 @@ impl ExportCollector<'_> {
         self.res_table.owning_module.push(self.curr_mod);
         self.default = Some(defid);
     }
-
-    // fn add_default(&mut self, def: DefRes, id: Option<Id>) -> DefId {}
 }
 
 // Import collector for run_resolver
@@ -3021,14 +3020,7 @@ impl Visit for ImportCollector<'_> {
     }
 
     fn visit_import_star_as_specifier(&mut self, n: &ImportStarAsSpecifier) {
-        debug!("Does this ever get run?");
         let local = n.local.to_id();
-        // let defkind1 = self
-        //     .file_resolver
-        //     .resolve_import(self.curr_mod.into(), &*self.current_import);
-        // debug!(?defkind1, "WTF is defkind");
-
-        // debug!(?self.curr_mod, "wtf is current module T.T");
         let defkind = match self
             .file_resolver
             .resolve_import(self.curr_mod.into(), &*self.current_import)
