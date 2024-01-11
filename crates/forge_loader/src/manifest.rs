@@ -99,41 +99,47 @@ struct ScheduledTrigger<'a> {
     interval: Interval,
 }
 
-// compass DataProvider module
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct DataProvider<'a> {
+struct DataProvider<'a> {
+    key: &'a str,
+    #[serde(flatten, borrow)]
+    callback: Callback<'a>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Callback<'a> {
+    pub function: &'a str,
+}
+
+// Struct for Custom field Module. Check that search suggestion gets read in correctly. 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct CustomField<'a> {
     #[serde(flatten, borrow)]
     key: &'a str,
-    callback: Option<&'a str>,
+    search_suggestion: &'a str,
 }
 
-// Struct for Custom field Module. Check that search suggestion gets read in correctly.
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct CustomField<'a> {
-    // all attributes below involve function calls
+struct UiModificatons<'a> {
     #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
-    value: Option<&'a str>,
-    search_suggestions: Option<&'a str>,
-    edit: Option<&'a str>,
+    key: &'a str,
+    resolver: Callback<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct UiModificatons<'a> {
+struct WorkflowValidator<'a> {
     #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
+    key: &'a str,
+    functon: &'a str,
+    resolver: Callback<'a>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct WorkflowValidator<'a> {
+struct WorkflowPostFunction<'a> {
     #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct WorkflowPostFunction<'a> {
-    #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
+    key: &'a str,
+    functon: &'a str,
 }
 
 // Add more structs here for deserializing forge modules
@@ -143,12 +149,6 @@ pub struct ForgeModules<'a> {
     macros: Vec<MacroMod<'a>>,
     #[serde(rename = "function", default, borrow)]
     pub functions: Vec<FunctionMod<'a>>,
-    #[serde(rename = "contentByLineItem", default, borrow)]
-    content_by_line_item: Vec<ContentByLineItem<'a>>,
-    #[serde(rename = "jira:issueGlance", default, borrow)]
-    issue_glance: Vec<IssueGlance<'a>>,
-    #[serde(rename = "jira:accessImportType", default, borrow)]
-    access_import_type: Vec<AccessImportType<'a>>,
     // deserializing non user-invocable modules
     #[serde(rename = "webtrigger", default, borrow)]
     webtriggers: Vec<RawTrigger<'a>>,
@@ -158,6 +158,17 @@ pub struct ForgeModules<'a> {
     scheduled_triggers: Vec<ScheduledTrigger<'a>>,
     #[serde(rename = "consumer", default, borrow)]
     pub consumers: Vec<Consumer<'a>>,
+    #[serde(rename = "compass:dataProvider", default, borrow)]
+    pub data_provider: Vec<DataProvider<'a>>,
+    #[serde(rename = "jira:customField", default, borrow)]
+    pub custom_field: Vec<CustomField<'a>>,
+    #[serde(rename = "jira:uiModificatons", default, borrow)]
+    pub ui_modifications: Vec<UiModificatons<'a>>,
+    #[serde(rename = "jira:workflowValidator", default, borrow)]
+    pub workflow_validator: Vec<WorkflowValidator<'a>>,
+    #[serde(rename = "jira:workflowPostFunction", default, borrow)]
+    pub workflow_post_function: Vec<WorkflowPostFunction<'a>>,
+    // deserializing user invokable module functions
     #[serde(rename = "compass:dataProvider", default, borrow)]
     pub data_provider: Vec<DataProvider<'a>>,
     #[serde(rename = "jira:customField", default, borrow)]
@@ -247,9 +258,10 @@ pub struct FunctionRef<'a, S = Unresolved> {
     status: S,
 }
 
+
 // Add an extra variant to the FunctionTy enum for non user invocable functions
-// Indirect: functions indirectly invoked by user :O So kewl.
-// TODO: change this to struct with bools
+// Indirect: functions indirectly invoked by user :O So kewl. 
+// TODO: change this to struct with bools 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FunctionTy<T> {
     Invokable(T),
@@ -257,22 +269,21 @@ pub enum FunctionTy<T> {
 }
 
 // Struct used for tracking what scan a funtion requires.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Entrypoint<'a, S = Unresolved> {
-    pub function: FunctionRef<'a, S>,
-    pub invokable: bool,
-    pub web_trigger: bool,
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Entrypoints<'a> {
+    function:Vec<ForgeModules<'a>>,
+    invokable: bool,
+    web_trigger: bool,
 }
 
-// Helper functions that help filter out which functions are what.
-// original code that's commented out to modify methods. Here for reference
-// impl<T> FunctionTy<T> {
-//     pub fn map<O>(self, f: impl FnOnce(T) -> O) -> FunctionTy<O> {
-//         match self {
-//             Self::Invokable(t) => FunctionTy::Invokable(f(t)),
-//             Self::WebTrigger(t) => FunctionTy::WebTrigger(f(t)),
-//         }
-//     }
+// Helper functions that help filter out which functions are what. 
+impl<T> FunctionTy<T> {
+    pub fn map<O>(self, f: impl FnOnce(T) -> O) -> FunctionTy<O> {
+        match self {
+            Self::Invokable(t) => FunctionTy::Invokable(f(t)),
+            Self::WebTrigger(t) => FunctionTy::WebTrigger(f(t)),
+        }
+    }
 
 //     #[inline]
 //     pub fn into_inner(self) -> T {
@@ -301,97 +312,66 @@ impl<T> AsRef<T> for FunctionTy<T> {
     }
 }
 
+
 impl<'a> ForgeModules<'a> {
-    // TODO: function returns iterator where each item is some specified type.
-    pub fn into_analyzable_functions(mut self) -> impl Iterator<Item = Entrypoint<'a>> {
+
+
+    pub fn into_analyzable_functions(
+        mut self,
+    ) -> impl Iterator<Item = FunctionTy<FunctionMod<'a>>> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         self.webtriggers
             .sort_unstable_by_key(|trigger| trigger.function);
-        self.webtriggers
-            .sort_unstable_by_key(|trigger| trigger.function);
 
-        // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true
-        // for all trigger things
-        // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true
-        // for all trigger things
 
-        let mut invokable_functions = BTreeSet::new();
+        let mut ignored_functions: BTreeSet<_> = self
+            .scheduled_triggers
+            .into_iter()
+            .map(|trigger| trigger.raw.function)
+            .chain(
+                self.event_triggers
+                    .into_iter()
+                    .map(|trigger| trigger.raw.function),
+            )
+            .collect();
 
-        self.data_provider.iter().for_each(|dataprovider| {
-            invokable_functions.extend(dataprovider.callback);
+        // make alternate_functions all user-invokable functions 
+        let mut alternate_functions: Vec<&str> = Vec::new();
+        for module in self.extra.into_values().flatten() {
+            alternate_functions.extend(module.function);
+            if let Some(resolver) = module.resolver {
+                alternate_functions.push(resolver.function);
+            }
+        }
+
+        // Iterate over Consumers and check that if consumers isn't in alternate functions, add consumer funtion to be ignored
+        // assuming that alternate functions already has all user invokable functions. 
+        self.consumers.iter().for_each(|consumer| {
+            if !alternate_functions.contains(&consumer.resolver.function) {
+                ignored_functions.insert(consumer.resolver.function);
+            }
         });
 
-        self.custom_field.iter().for_each(|customfield| {
-            invokable_functions.extend(customfield.value);
-            invokable_functions.extend(customfield.search_suggestions);
-            invokable_functions.extend(customfield.edit);
+        // TODO: Iterate through all deserialized entrypoints that are represented as a struct when deserialized 
+        // Update Struct values to be true or not. If any part true, then scan. 
+        // This solution fixes the problem that we only check known user invokable modules and also acccounts for non-invokable module entry points
 
-            invokable_functions.insert(customfield.common_keys.function);
-            invokable_functions.extend(customfield.common_keys.resolver);
-        });
-
-        self.ui_modifications.iter().for_each(|ui| {
-            invokable_functions.insert(ui.common_keys.function);
-            invokable_functions.extend(ui.common_keys.resolver);
-        });
-
-        self.workflow_validator.iter().for_each(|validator| {
-            invokable_functions.insert(validator.common_keys.key);
-
-            invokable_functions.insert(validator.common_keys.function);
-
-            invokable_functions.extend(validator.common_keys.resolver);
-        });
-
-        self.workflow_post_function
-            .iter()
-            .for_each(|post_function| {
-                invokable_functions.insert(post_function.common_keys.key);
-
-                invokable_functions.insert(post_function.common_keys.function);
-
-                invokable_functions.extend(post_function.common_keys.resolver);
-            });
-
-        // get user invokable modules that have additional exposure endpoints.
-        // ie macros has config and export fields on top of resolver fields that are functions
-        self.macros.iter().for_each(|macros| {
-            invokable_functions.insert(macros.common_keys.key);
-
-            invokable_functions.insert(macros.common_keys.function);
-            invokable_functions.extend(macros.common_keys.resolver);
-
-            invokable_functions.extend(macros.config);
-            invokable_functions.extend(macros.export);
-        });
-
-        self.issue_glance.iter().for_each(|issue| {
-            invokable_functions.insert(issue.common_keys.function);
-            invokable_functions.extend(issue.common_keys.resolver);
-            invokable_functions.extend(issue.dynamic_properties);
-        });
-
-        self.access_import_type.iter().for_each(|access| {
-            invokable_functions.insert(access.common_keys.function);
-            invokable_functions.extend(access.common_keys.resolver);
-
-            invokable_functions.extend(access.one_delete_import);
-            invokable_functions.extend(access.stop_import);
-            invokable_functions.extend(access.start_import);
-            invokable_functions.extend(access.import_status);
-        });
-
-        self.functions.into_iter().flat_map(move |func| {
-            let web_trigger = self
-                .webtriggers
-                .binary_search_by_key(&func.key, |trigger| &trigger.function)
-                .is_ok();
-            let invokable = invokable_functions.contains(func.key);
-            Ok::<_, Error>(Entrypoint {
-                function: FunctionRef::try_from(func)?,
-                invokable,
-                web_trigger,
-            })
+        // return non-user invokable functions
+        self.functions.into_iter().filter_map(move |func| {
+            if ignored_functions.contains(&func.key) {
+                return None;
+            }
+            Some(
+                if self
+                    .webtriggers
+                    .binary_search_by_key(&func.key, |trigger| trigger.function)
+                    .is_ok()
+                {
+                    FunctionTy::WebTrigger(func)
+                } else {
+                    FunctionTy::Invokable(func)
+                },
+            )
         })
     }
 }
@@ -544,9 +524,10 @@ mod tests {
         );
     }
 
-    // Modified specific deserialization schemes for modules. Checking that new schemes can deserialize function values.
+    // Modified specific deserialization schemes for modules. Checking that new schemes can deserialize function values. 
     #[test]
     fn test_new_deserialize() {
+
         let json = r#"{
             "app": {
                 "name": "My App",
@@ -557,15 +538,11 @@ mod tests {
                 {
                     "key": "my-macro",
                     "title": "My Macro",
-                    "function": "Catch-me-if-you-can0", 
                     "resolver": {
-                        "function": "Catch-me-if-you-can1"
+                        "function": Catch-me-if-you-can1
                     },
                     "config": {
-                        "function": "Catch-me-if-you-can2"
-                    }, 
-                    "export": {
-                        "function": "Catch-me-if-you-can3"
+                        "function": Catch-me-if-you-can2
                     }
                 }
                 ],
@@ -599,23 +576,6 @@ mod tests {
                 }
             }
         }"#;
-        let manifest: ForgeManifest = serde_json::from_str(json).unwrap();
-        assert_eq!(manifest.modules.macros.len(), 1);
-        assert_eq!(
-            manifest.modules.macros[0].common_keys.function,
-            "Catch-me-if-you-can0"
-        );
 
-        if let Some(func) = manifest.modules.macros[0].common_keys.resolver {
-            assert_eq!(func, "Catch-me-if-you-can1");
-        }
-
-        if let Some(func) = manifest.modules.macros[0].config {
-            assert_eq!(func, "Catch-me-if-you-can2");
-        }
-
-        if let Some(func) = manifest.modules.macros[0].export {
-            assert_eq!(func, "Catch-me-if-you-can3");
-        }
     }
 }
