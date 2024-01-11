@@ -467,6 +467,94 @@ impl<'a> ForgeModules<'a> {
             }
 
         }
+
+        for contentitem in self.content_by_line_item {
+            functions_to_scan.push(Entrypoints {
+                function: contentitem.function,
+                invokable: true,
+                web_trigger: false
+            });
+            if let Some(resolver)= contentitem.resolver {
+                functions_to_scan.push(Entrypoints {
+                    function: resolver.function,
+                    invokable: true,
+                    web_trigger: false
+                })
+            }
+
+            if let Some(dynamic_properties)= contentitem.dynamic_properties {
+                functions_to_scan.push(Entrypoints {
+                    function: dynamic_properties.function,
+                    invokable: true,
+                    web_trigger: false
+                })
+            }
+
+        }
+
+        for issue in self.issue_glance {
+            functions_to_scan.push(Entrypoints {
+                function: issue.function,
+                invokable: true,
+                web_trigger: false
+            });
+            if let Some(resolver)= issue.resolver {
+                functions_to_scan.push(Entrypoints {
+                    function: resolver.function,
+                    invokable: true,
+                    web_trigger: false
+                })
+            }
+
+            if let Some(dynamic_properties)= issue.dynamic_properties {
+                functions_to_scan.push(Entrypoints {
+                    function: dynamic_properties.function,
+                    invokable: true,
+                    web_trigger: false
+                })
+            }
+
+        }
+
+        for access in self.access_import_type {
+            functions_to_scan.push(Entrypoints {
+                function: access.function,
+                invokable: true,
+                web_trigger: false
+            });
+            if let Some(delete) = access.one_delete_import {
+                functions_to_scan.push(Entrypoints {
+                    function: delete.function,
+                    invokable: true,
+                    web_trigger: false
+                })
+            }
+
+            if let Some(start)= access.start_import {
+                functions_to_scan.push(Entrypoints {
+                    function: start.function,
+                    invokable: true,
+                    web_trigger: false
+                })
+            }
+
+            if let Some(stop)= access.stop_import {
+                functions_to_scan.push(Entrypoints {
+                    function: stop.function,
+                    invokable: true,
+                    web_trigger: false
+                })
+            }
+
+            if let Some(status)= access.import_status {
+                functions_to_scan.push(Entrypoints {
+                    function: status.function,
+                    invokable: true,
+                    web_trigger: false
+                })
+            }
+
+        }
             
         // get array for user invokable module functions
         // make alternate_functions all user-invokable functions 
