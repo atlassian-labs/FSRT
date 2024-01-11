@@ -119,13 +119,7 @@ struct ScheduledTrigger<'a> {
 pub struct DataProvider<'a> {
     key: &'a str,
     #[serde(flatten, borrow)]
-    callback: Callback<'a>,
-}
-
-// Struct for mapping functions defined one more level in whose value is {function: string}. Used to represent resolver types.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Callback<'a> {
-    pub function: &'a str,
+    callback: ModInfo<'a>,
 }
 
 // Struct for Custom field Module. Check that search suggestion gets read in correctly. 
@@ -133,23 +127,28 @@ pub struct Callback<'a> {
 pub struct CustomField<'a> {
     #[serde(flatten, borrow)]
     key: &'a str,
+    // all attributes below involve function calls
+    value: &'a str,
     search_suggestion: &'a str,
+    function: &'a str,
+    edit: &'a str,
+    resolver: ModInfo<'a>
 }
 
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct UiModificatons<'a> {
-    #[serde(flatten, borrow)]
     key: &'a str,
-    resolver: Callback<'a>,
+    #[serde(flatten, borrow)]
+    resolver: ModInfo<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkflowValidator<'a> {
-    #[serde(flatten, borrow)]
     key: &'a str,
     functon: &'a str,
-    resolver: Callback<'a>
+    #[serde(flatten, borrow)]
+    resolver: ModInfo<'a>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -403,11 +402,41 @@ impl<'a> ForgeModules<'a> {
         self.custom_field.iter().for_each(|customfield| {
             functions_to_scan.push(
                 Entrypoints {
+                    function: customfield.value,
+                    invokable: true,
+                    web_trigger: false,
+                }
+            );
+            functions_to_scan.push(
+                Entrypoints {
                     function: customfield.search_suggestion,
                     invokable: true,
                     web_trigger: false,
                 }
-            )
+            );
+            functions_to_scan.push(
+                Entrypoints {
+                    function: customfield.function,
+                    invokable: true,
+                    web_trigger: false,
+                }
+            );
+            functions_to_scan.push(
+                Entrypoints {
+                    function: customfield.edit,
+                    invokable: true,
+                    web_trigger: false,
+                }
+            );
+
+            functions_to_scan.push(
+                Entrypoints {
+                    function: customfield.resolver.function,
+                    invokable: true,
+                    web_trigger: false,
+                }
+            );
+
         });
 
         self.ui_modifications.iter().for_each(|ui| {
