@@ -88,7 +88,19 @@ struct Args {
     dirs: Vec<PathBuf>,
 }
 
+<<<<<<< HEAD
 struct ForgeProject {
+=======
+#[derive(Debug, Clone, Default)]
+struct Opts {
+    dump_cfg: bool,
+    dump_callgraph: bool,
+    appkey: Option<String>,
+    out: Option<PathBuf>,
+}
+
+struct ForgeProject<'a> {
+>>>>>>> 7e86f46 (abstracted structs to use a CommonKeys struct that holds: key, function, and resolver for less code duplication. Updated into_analayzable method to update values based on functions specified in function mod. TODO: Update rest of non trigger modules to update mapping to  functions to scan from function mod)
     #[allow(dead_code)]
     sm: Arc<SourceMap>,
     ctx: AppCtx,
@@ -98,7 +110,7 @@ struct ForgeProject {
 >>>>>>> cd2ed7b (edited main to iterate over vector of functions. TODO: edit add_funcs in main.rs and test into_analyzble_function use case in main.rs)
 }
 
-impl ForgeProject {
+impl ForgeProject<'_> {
     #[instrument(skip(src, iter))]
     fn with_files_and_sourceroot<P: AsRef<Path>, I: IntoIterator<Item = PathBuf>>(
         src: P,
