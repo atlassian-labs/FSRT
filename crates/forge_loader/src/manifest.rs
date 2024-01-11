@@ -294,85 +294,106 @@ impl<T> AsRef<T> for FunctionTy<T> {
 
 impl<'a> ForgeModules<'a> {
 
-// TODO: fix return type whop
+// TODO: function returns iterator where each item is some specified type. 
     pub fn into_analyzable_functions(
         mut self,
-    ) -> impl Iterator<Item = Entrypoints<'a>> {
+    ) {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
-        self.webtriggers
-            .sort_unstable_by_key(|trigger| trigger.function);
+        // self.webtriggers
+        //     .sort_unstable_by_key(|trigger| trigger.function);
 
         // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true 
         // for all trigger things 
-        let web = self.webtriggers.iter().for_each(|webtriggers| {
-            Entrypoints {
-                function: webtriggers.function,
-                invokable: false,
-                web_trigger: true,
-            };
+
+        let mut functions_to_scan = Vec::new();
+        self.webtriggers.iter().for_each(|webtriggers| {
+            functions_to_scan.push(
+                Entrypoints {
+                    function: webtriggers.function,
+                    invokable: false,
+                    web_trigger: true,
+                }
+            );
+            
         });
-        let event = self.event_triggers.iter().for_each(|event_triggers| {
-            Entrypoints {
-                function: event_triggers.raw.function,
-                invokable: false,
-                web_trigger: true,
-            };
+        self.event_triggers.iter().for_each(|event_triggers| {
+            functions_to_scan.push(
+                Entrypoints {
+                    function: event_triggers.raw.function,
+                    invokable: false,
+                    web_trigger: true,
+                }
+            );
         });
-        let schedule = self.scheduled_triggers.iter().for_each(|schedule_triggers| {
-            Entrypoints {
-                function: schedule_triggers.raw.function,
-                invokable: false,
-                web_trigger: true,
-            };
+        self.scheduled_triggers.iter().for_each(|schedule_triggers| {
+            functions_to_scan.push(
+                Entrypoints {
+                    function: schedule_triggers.raw.function,
+                    invokable: false,
+                    web_trigger: true,
+                }
+            )
         });
 
         // create arrays representing functions that expose user non-invokable functions 
-        let consumer = self.consumers.iter().for_each(|consumers| {
-            Entrypoints {
-                function: consumers.resolver.function,
-                invokable: true,
-                web_trigger: false,
-            };
+        self.consumers.iter().for_each(|consumers| {
+            functions_to_scan.push(
+                Entrypoints {
+                    function: consumers.resolver.function,
+                    invokable: true,
+                    web_trigger: false,
+                }
+            )
         });
 
-        let data_provider = self.data_provider.iter().for_each(|dataprovider| {
-            Entrypoints {
-                function: dataprovider.callback.function,
-                invokable: true,
-                web_trigger: false,
-            };
+        self.data_provider.iter().for_each(|dataprovider| {
+            functions_to_scan.push(
+                Entrypoints {
+                    function: dataprovider.callback.function,
+                    invokable: true,
+                    web_trigger: false,
+                }
+            )
         });
 
-        let custom_field = self.custom_field.iter().for_each(|customfield| {
-            Entrypoints {
-                function: customfield.search_suggestion,
-                invokable: true,
-                web_trigger: false,
-            };
+        self.custom_field.iter().for_each(|customfield| {
+            functions_to_scan.push(
+                Entrypoints {
+                    function: customfield.search_suggestion,
+                    invokable: true,
+                    web_trigger: false,
+                }
+            )
         });
 
-        let ui_mod = self.ui_modifications.iter().for_each(|ui| {
-            Entrypoints {
-                function: ui.resolver.function,
-                invokable: true,
-                web_trigger: false,
-            };
+        self.ui_modifications.iter().for_each(|ui| {
+            functions_to_scan.push(
+                Entrypoints {
+                    function: ui.resolver.function,
+                    invokable: true,
+                    web_trigger: false,
+                }
+            )
         });
 
-        let workflow_validator = self.workflow_validator.iter().for_each(|validator| {
-            Entrypoints {
-                function: validator.resolver.function,
-                invokable: true,
-                web_trigger: false,
-            };
+        self.workflow_validator.iter().for_each(|validator| {
+            functions_to_scan.push(
+                Entrypoints {
+                    function: validator.resolver.function,
+                    invokable: true,
+                    web_trigger: false,
+                }
+            )
         });
-
-        let workflow_post = self.workflow_post_function.iter().for_each(|post_function| {
-            Entrypoints {
-                function: post_function.function,
-                invokable: true,
-                web_trigger: false,
-            };
+        
+        self.workflow_post_function.iter().for_each(|post_function| {
+            functions_to_scan.push(
+                Entrypoints {
+                    function: post_function.function,
+                    invokable: true,
+                    web_trigger: false,
+                }
+            )
         });
 
         
@@ -406,10 +427,10 @@ impl<'a> ForgeModules<'a> {
 
         // get array for user invokable module functions
         // make alternate_functions all user-invokable functions 
-        let mut alternate_functions = Vec::new();
+        // let mut alternate_functions = Vec::new();
         for module in self.extra.into_values().flatten() {
             if let Some(mod_function) = module.function {
-                alternate_functions.push(Entrypoints {
+                functions_to_scan.push(Entrypoints {
                     function: mod_function,
                     invokable: true,
                     web_trigger: false
@@ -417,15 +438,15 @@ impl<'a> ForgeModules<'a> {
             }
            
             if let Some(resolver) = module.resolver {
-                alternate_functions.push(Entrypoints {
+                functions_to_scan.push(Entrypoints {
                     function: resolver.function,
                     invokable: true,
                     web_trigger: false
                 });
             }
         }
-
-        workflow_post
+        functions_to_scan.into_iter();
+        // alternate_functions.into_iter();
         // Iterate over Consumers and check that if consumers isn't in alternate functions, add consumer funtion to be ignored
         // assuming that alternate functions already has all user invokable functions. 
         // self.consumers.iter().for_each(|consumer| {
