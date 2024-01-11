@@ -145,9 +145,9 @@ pub struct UiModificatons<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WorkflowValidator<'a> {
-    key: &'a str,
-    functon: &'a str,
     #[serde(flatten, borrow)]
+    key: &'a str,
+    function: &'a str,
     resolver: ModInfo<'a>
 }
 
@@ -292,7 +292,7 @@ pub enum FunctionTy<T> {
 
 // Struct used for tracking what scan a funtion requires.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Entrypoints<'a> {
+pub struct Entrypoint<'a> {
     pub function: &'a str,
     pub invokable: bool,
     pub web_trigger: bool,
@@ -340,10 +340,10 @@ impl<'a> ForgeModules<'a> {
 // TODO: function returns iterator where each item is some specified type. 
     pub fn into_analyzable_functions (
         self,
-    ) -> Vec<Entrypoints<'a>>{
+    ) -> Vec<Entrypoint<'a>>{
         // number of webtriggers are usually low, so it's better to just sort them and reuse
-        // self.webtriggers
-        //     .sort_unstable_by_key(|trigger| trigger.function);
+        self.webtriggers.iter().
+            .sort_unstable_by_key(|trigger| trigger.function);
 
         // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true 
         // for all trigger things 
@@ -351,7 +351,7 @@ impl<'a> ForgeModules<'a> {
         let mut functions_to_scan = Vec::new();
         self.webtriggers.iter().for_each(|webtriggers| {
             functions_to_scan.push(
-                Entrypoints {
+                Entrypoint {
                     function: webtriggers.function,
                     invokable: false,
                     web_trigger: true,
@@ -361,7 +361,7 @@ impl<'a> ForgeModules<'a> {
         });
         self.event_triggers.iter().for_each(|event_triggers| {
             functions_to_scan.push(
-                Entrypoints {
+                Entrypoint {
                     function: event_triggers.raw.function,
                     invokable: false,
                     web_trigger: true,
@@ -370,7 +370,7 @@ impl<'a> ForgeModules<'a> {
         });
         self.scheduled_triggers.iter().for_each(|schedule_triggers| {
             functions_to_scan.push(
-                Entrypoints {
+                Entrypoint {
                     function: schedule_triggers.raw.function,
                     invokable: false,
                     web_trigger: true,
@@ -381,7 +381,7 @@ impl<'a> ForgeModules<'a> {
         // create arrays representing functions that expose user non-invokable functions 
         self.consumers.iter().for_each(|consumers| {
             functions_to_scan.push(
-                Entrypoints {
+                Entrypoint {
                     function: consumers.resolver.function,
                     invokable: true,
                     web_trigger: false,
@@ -391,7 +391,7 @@ impl<'a> ForgeModules<'a> {
 
         self.data_provider.iter().for_each(|dataprovider| {
             functions_to_scan.push(
-                Entrypoints {
+                Entrypoint {
                     function: dataprovider.callback.function,
                     invokable: true,
                     web_trigger: false,
@@ -401,28 +401,28 @@ impl<'a> ForgeModules<'a> {
 
         self.custom_field.iter().for_each(|customfield| {
             functions_to_scan.push(
-                Entrypoints {
+                Entrypoint {
                     function: customfield.value,
                     invokable: true,
                     web_trigger: false,
                 }
             );
             functions_to_scan.push(
-                Entrypoints {
+                Entrypoint {
                     function: customfield.search_suggestion,
                     invokable: true,
                     web_trigger: false,
                 }
             );
             functions_to_scan.push(
-                Entrypoints {
+                Entrypoint {
                     function: customfield.function,
                     invokable: true,
                     web_trigger: false,
                 }
             );
             functions_to_scan.push(
-                Entrypoints {
+                Entrypoint {
                     function: customfield.edit,
                     invokable: true,
                     web_trigger: false,
@@ -430,7 +430,7 @@ impl<'a> ForgeModules<'a> {
             );
 
             functions_to_scan.push(
-                Entrypoints {
+                Entrypoint {
                     function: customfield.resolver.function,
                     invokable: true,
                     web_trigger: false,
@@ -441,7 +441,7 @@ impl<'a> ForgeModules<'a> {
 
         self.ui_modifications.iter().for_each(|ui| {
             functions_to_scan.push(
-                Entrypoints {
+                Entrypoint {
                     function: ui.resolver.function,
                     invokable: true,
                     web_trigger: false,
@@ -451,17 +451,25 @@ impl<'a> ForgeModules<'a> {
 
         self.workflow_validator.iter().for_each(|validator| {
             functions_to_scan.push(
-                Entrypoints {
+                Entrypoint {
+                    function: validator.function,
+                    invokable: true,
+                    web_trigger: false,
+                }
+            );
+
+            functions_to_scan.push(
+                Entrypoint {
                     function: validator.resolver.function,
                     invokable: true,
                     web_trigger: false,
                 }
-            )
+            );
         });
         
         self.workflow_post_function.iter().for_each(|post_function| {
             functions_to_scan.push(
-                Entrypoints {
+                Entrypoint {
                     function: post_function.function,
                     invokable: true,
                     web_trigger: false,
@@ -473,7 +481,7 @@ impl<'a> ForgeModules<'a> {
         // ie macros has config and export fields on top of resolver fields that are functions
         for macros in self.macros {
             if let Some(resolver)= macros.resolver {
-                functions_to_scan.push(Entrypoints {
+                functions_to_scan.push(Entrypoint {
                     function: resolver.function,
                     invokable: true,
                     web_trigger: false
@@ -481,14 +489,14 @@ impl<'a> ForgeModules<'a> {
             }
 
             if let Some(config)= macros.config {
-                functions_to_scan.push(Entrypoints {
+                functions_to_scan.push(Entrypoint {
                     function: config.function,
                     invokable: true,
                     web_trigger: false
                 })
             }
             if let Some(export)= macros.export {
-                functions_to_scan.push(Entrypoints {
+                functions_to_scan.push(Entrypoint {
                     function: export.function,
                     invokable: true,
                     web_trigger: false
@@ -498,13 +506,13 @@ impl<'a> ForgeModules<'a> {
         }
 
         for contentitem in self.content_by_line_item {
-            functions_to_scan.push(Entrypoints {
+            functions_to_scan.push(Entrypoint {
                 function: contentitem.function,
                 invokable: true,
                 web_trigger: false
             });
             if let Some(resolver)= contentitem.resolver {
-                functions_to_scan.push(Entrypoints {
+                functions_to_scan.push(Entrypoint {
                     function: resolver.function,
                     invokable: true,
                     web_trigger: false
@@ -512,7 +520,7 @@ impl<'a> ForgeModules<'a> {
             }
 
             if let Some(dynamic_properties)= contentitem.dynamic_properties {
-                functions_to_scan.push(Entrypoints {
+                functions_to_scan.push(Entrypoint {
                     function: dynamic_properties.function,
                     invokable: true,
                     web_trigger: false
@@ -522,13 +530,13 @@ impl<'a> ForgeModules<'a> {
         }
 
         for issue in self.issue_glance {
-            functions_to_scan.push(Entrypoints {
+            functions_to_scan.push(Entrypoint {
                 function: issue.function,
                 invokable: true,
                 web_trigger: false
             });
             if let Some(resolver)= issue.resolver {
-                functions_to_scan.push(Entrypoints {
+                functions_to_scan.push(Entrypoint {
                     function: resolver.function,
                     invokable: true,
                     web_trigger: false
@@ -536,7 +544,7 @@ impl<'a> ForgeModules<'a> {
             }
 
             if let Some(dynamic_properties)= issue.dynamic_properties {
-                functions_to_scan.push(Entrypoints {
+                functions_to_scan.push(Entrypoint {
                     function: dynamic_properties.function,
                     invokable: true,
                     web_trigger: false
@@ -546,13 +554,13 @@ impl<'a> ForgeModules<'a> {
         }
 
         for access in self.access_import_type {
-            functions_to_scan.push(Entrypoints {
+            functions_to_scan.push(Entrypoint {
                 function: access.function,
                 invokable: true,
                 web_trigger: false
             });
             if let Some(delete) = access.one_delete_import {
-                functions_to_scan.push(Entrypoints {
+                functions_to_scan.push(Entrypoint {
                     function: delete.function,
                     invokable: true,
                     web_trigger: false
@@ -560,7 +568,7 @@ impl<'a> ForgeModules<'a> {
             }
 
             if let Some(start)= access.start_import {
-                functions_to_scan.push(Entrypoints {
+                functions_to_scan.push(Entrypoint {
                     function: start.function,
                     invokable: true,
                     web_trigger: false
@@ -568,7 +576,7 @@ impl<'a> ForgeModules<'a> {
             }
 
             if let Some(stop)= access.stop_import {
-                functions_to_scan.push(Entrypoints {
+                functions_to_scan.push(Entrypoint {
                     function: stop.function,
                     invokable: true,
                     web_trigger: false
@@ -576,7 +584,7 @@ impl<'a> ForgeModules<'a> {
             }
 
             if let Some(status)= access.import_status {
-                functions_to_scan.push(Entrypoints {
+                functions_to_scan.push(Entrypoint {
                     function: status.function,
                     invokable: true,
                     web_trigger: false
@@ -589,7 +597,7 @@ impl<'a> ForgeModules<'a> {
         // make alternate_functions all user-invokable functions 
         for module in self.extra.into_values().flatten() {
             if let Some(mod_function) = module.function {
-                functions_to_scan.push(Entrypoints {
+                functions_to_scan.push(Entrypoint {
                     function: mod_function,
                     invokable: true,
                     web_trigger: false
@@ -597,7 +605,7 @@ impl<'a> ForgeModules<'a> {
             }
            
             if let Some(resolver) = module.resolver {
-                functions_to_scan.push(Entrypoints {
+                functions_to_scan.push(Entrypoint {
                     function: resolver.function,
                     invokable: true,
                     web_trigger: false
@@ -605,7 +613,7 @@ impl<'a> ForgeModules<'a> {
             } 
         }
         
-        return functions_to_scan;
+        functions_to_scan
     }
 }
 
