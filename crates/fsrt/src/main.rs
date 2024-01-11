@@ -5,7 +5,7 @@ use forge_permission_resolver::permissions_resolver::{
 };
 use miette::{IntoDiagnostic, Result};
 use std::{
-    collections::HashSet,
+    collections::{HashSet, BTreeMap, hash_map::Entry},
     convert::TryFrom,
     fs,
     os::unix::prelude::OsStrExt,
@@ -105,7 +105,7 @@ struct ForgeProject<'a> {
     sm: Arc<SourceMap>,
     ctx: AppCtx,
     env: Environment,
-    funcs: Vec<Entrypoint<'a>>,
+    funcs:BTreeMap<&'a str, Entrypoint<'a>>,
     opts: Opts,
 >>>>>>> cd2ed7b (edited main to iterate over vector of functions. TODO: edit add_funcs in main.rs and test into_analyzble_function use case in main.rs)
 }
