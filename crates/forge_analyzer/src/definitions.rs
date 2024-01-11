@@ -127,7 +127,7 @@ struct ModuleDefs {
     exports: Box<[DefId]>,
 }
 
-#[instrument(skip(modules, file_resolver))]
+#[instrument(skip(modules, file_resolver, secret_packages))]
 pub fn run_resolver(
     modules: &TiSlice<ModId, Module>,
     file_resolver: &ForgeResolver,
@@ -179,6 +179,7 @@ pub fn run_resolver(
         module.visit_with(&mut import_collector);
     }
 
+    // check for required after Definitions pass
     let defs = Definitions::new(
         environment
             .resolver
@@ -188,6 +189,7 @@ pub fn run_resolver(
         foreign,
     );
     environment.defs = defs;
+    debug!("After the Definitions Resolver");
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut lowerer = Lowerer {
             res: &mut environment,
@@ -200,8 +202,8 @@ pub fn run_resolver(
     }
 
     for (curr_mod, module) in modules.iter_enumerated() {
+        debug!("Running GlobalCollector in run_resolver");
         let global_id = environment.get_or_reserve_global_scope(curr_mod);
-
         let mut global_collector = GlobalCollector {
             res: &mut environment,
             global_id,
@@ -211,10 +213,13 @@ pub fn run_resolver(
         };
         module.visit_with(&mut global_collector);
     }
-
+    let mut foreign = TiVec::default();
     for (curr_mod, module) in modules.iter_enumerated() {
+        debug!("Running FunctionCollector in run_resolver");
         let mut collector = FunctionCollector {
             res: &mut environment,
+            file_resolver,
+            foreign_defs: &mut foreign,
             curr_class: None,
             curr_function: None,
             secret_packages: secret_packages.clone(), // remove the clone
@@ -796,7 +801,9 @@ impl ResolverTable {
 
 struct FunctionCollector<'cx> {
     res: &'cx mut Environment,
+    file_resolver: &'cx ForgeResolver,
     module: ModId,
+    foreign_defs: &'cx mut TiVec<ForeignId, ForeignItem>,
     curr_class: Option<DefId>,
     curr_function: Option<DefId>,
     secret_packages: Vec<PackageData>,
@@ -964,8 +971,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 None
             }
 
-            // Case 1: the “root” object is a star import and the Static proppath member is either identifier or method
-            // [Def, Static, Static]
             //[PropPath::Def(def), PropPath::Static(a), PropPath::Static(b)]
             // 1. Star, identifier, method
             [PropPath::Def(def), PropPath::Static(ref identifier), PropPath::Static(ref method)] => {
@@ -990,11 +995,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     None
                 }
             }
-            // import { foo } from 'foo';
-            // foo.bar.sign('what');
-            // foo.bar.bar.sign('whatever');
-            // PackageData { package: 'foo', identifier: 'bar', method: 'sign' }
-
             // [Def, Static]
             // [PropPath::Def(def), PropPath::Static(atom)]
             // 1. Star, identifier (NO METHOD)
@@ -1281,8 +1281,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
         };
 
         let first_arg = args.first().map(|expr| &*expr.expr);
-        let intrinsic = self.as_intrinsic(&props, first_arg);
-        debug!("HELLO INTRINSIC!? {intrinsic:?}");
+        // let intrinsic = self.as_intrinsic(&props, first_arg);
+        // debug!("HELLO INTRINSIC!? {intrinsic:?}");
         let call = match self.as_intrinsic(&props, first_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
@@ -1666,7 +1666,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Expr::Ident(id) => {
                 let id = id.to_id();
                 let Some(def) = self.res.sym_to_id(id.clone(), self.module) else {
-                    warn!("unknown symbol: {}", id.0);
+                    warn!("3 unknown symbol: {}", id.0);
                     return Literal::Undef.into();
                 };
                 let var = self.body.get_or_insert_global(def);
@@ -2365,11 +2365,43 @@ impl Visit for FunctionCollector<'_> {
                 args,
                 ..
             })) => {
+                debug!("visiting var declarator for require");
+                debug!(?expr, "what is expr and how do i find the darn require");
                 if let Expr::Ident(ident) = &**expr {
-                    let ident = ident.to_id();
-                    let Some(def) = self.res.sym_to_id(ident, self.module) else {
+                    let (sym, ctxt) = ident.to_id();
+                    debug!(?self.module, "what is self.module!?!");
+                    // let (sym, ctxt) = ident;
+                    if &sym == "require" {
+                        debug!("caught!");
+
+                        let defkind = self
+                            .file_resolver
+                            .resolve_import(self.module.into(), &"crypto-js");
+
+                        let foreign_id = self.foreign_defs.push_and_get_key(ForeignItem {
+                            kind: ImportKind::Default,
+                            module_name: "crypto-js".into(),
+                        });
+                        self.res.resolver.add_sym(
+                            DefRes::Foreign(foreign_id),
+                            (sym, ctxt),
+                            self.module,
+                        );
+                        return;
+                    }
+                    let (sym, ctxt) = ident.to_id();
+                    let Some(def) = self.res.sym_to_id((sym, ctxt), self.module) else {
                         return;
                     };
+                    debug!(?def, "wtf is def");
+                    debug!(?expr, "does expr still exist");
+
+                    let helper = self.res.as_foreign_import(def);
+                    debug!(
+                        ?helper,
+                        "What does this as_foreign_import helper function do???"
+                    );
+
                     if matches!(self.res.is_imported_from(def, "@forge/ui"), Some(ImportKind::Named(imp)) if *imp == *"render")
                     {
                         let owner =
@@ -2398,6 +2430,9 @@ impl Visit for FunctionCollector<'_> {
                         *self.res.def_mut(owner).expect_body() = analyzer.body;
                         self.parent = old_parent;
                     }
+                    // else if &ident.0 == "require" {
+                    //     debug!("found require!")
+                    // }
                 }
             }
             _ => {}
@@ -2415,6 +2450,7 @@ impl Visit for FunctionCollector<'_> {
                     let old_parent = self.parent.replace(def);
                     match expr {
                         Expr::Fn(f) => {
+                            debug!("visitng this one for require!");
                             f.visit_with(self);
                         }
                         Expr::Arrow(arrow) => self.visit_arrow_expr(arrow),
@@ -2669,6 +2705,7 @@ impl Visit for Lowerer<'_> {
     }
 
     fn visit_call_expr(&mut self, n: &CallExpr) {
+        debug!("checking function call~!~");
         if let Some(expr) = n.callee.as_expr() {
             if let Some((objid, ResolverDef::FnDef)) = as_resolver(expr, self.res, self.curr_mod) {
                 if let [ExprOrSpread { expr: name, .. }, ExprOrSpread { expr: args, .. }] = &*n.args
@@ -2881,6 +2918,7 @@ impl ExportCollector<'_> {
     // fn add_default(&mut self, def: DefRes, id: Option<Id>) -> DefId {}
 }
 
+// Import collector for run_resolver
 impl Visit for ImportCollector<'_> {
     noop_visit_type!();
 
@@ -2969,7 +3007,14 @@ impl Visit for ImportCollector<'_> {
     }
 
     fn visit_import_star_as_specifier(&mut self, n: &ImportStarAsSpecifier) {
+        debug!("Does this ever get run?");
         let local = n.local.to_id();
+        let defkind1 = self
+            .file_resolver
+            .resolve_import(self.curr_mod.into(), &*self.current_import);
+        debug!(?defkind1, "WTF is defkind");
+
+        debug!(?self.curr_mod, "wtf is current module T.T");
         let defkind = match self
             .file_resolver
             .resolve_import(self.curr_mod.into(), &*self.current_import)
@@ -3524,6 +3569,7 @@ impl Environment {
         }
     }
 
+    // takes in Definition ID and returns tuple with import module and type of import
     pub fn as_foreign_import(&self, def: DefId) -> Option<(JsWord, ImportKind)> {
         let DefKind::Foreign(f) = self.def_ref(def) else {
             return None;
