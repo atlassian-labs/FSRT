@@ -349,13 +349,13 @@ impl<'a> ForgeModules<'a> {
             });
 
         // create arrays representing functions that expose user non-invokable functions
-        self.consumers.iter().for_each(|consumer| {
-            if functions_to_scan.contains_key(consumer.resolver.function) {
-                if let Some(entry) = functions_to_scan.get_mut(consumer.resolver.function) {
-                    entry.invokable = true;
-                }
-            }
-        });
+        // self.consumers.iter().for_each(|consumer| {
+        //     if functions_to_scan.contains_key(consumer.resolver.function) {
+        //         if let Some(entry) = functions_to_scan.get_mut(consumer.resolver.function) {
+        //             entry.invokable = true;
+        //         }
+        //     }
+        // });
 
         self.data_provider.iter().for_each(|dataprovider| {
             if let Some(call) = dataprovider.callback {
