@@ -125,7 +125,7 @@ pub struct CustomField<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct UiModificatons<'a> {
     #[serde(flatten, borrow)]
-    common_key: CommonKey<'a>
+    common_keys: CommonKey<'a>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -323,7 +323,7 @@ impl<'a> ForgeModules<'a> {
 // TODO: function returns iterator where each item is some specified type. 
     pub fn into_analyzable_functions (
         &mut self,
-    ) -> Vec<Entrypoint<'a>>{
+    ) -> BTreeMap<&'a str, Entrypoint<'a>>{
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         self.webtriggers.sort_unstable_by_key(|trigger| trigger.function);
 
@@ -334,8 +334,8 @@ impl<'a> ForgeModules<'a> {
 
         // Get all functions for module from manifest.yml 
          self.functions.iter().for_each(|func| {
-            functions_to_scan.insert(func.handler, Entrypoint {
-                function: func.handler,
+            functions_to_scan.insert(func.key, Entrypoint {
+                function: func.key,
                 invokable: false,
                 web_trigger: false,
             });
@@ -378,249 +378,202 @@ impl<'a> ForgeModules<'a> {
         });
 
         // create arrays representing functions that expose user non-invokable functions 
-        self.consumers.iter().for_each(|consumers| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: consumers.resolver.function,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            )
+        self.consumers.iter().for_each(|consumer| {
+            if functions_to_scan.contains_key(consumer.resolver.function) {
+                if let Some(entry) = functions_to_scan.get_mut(consumer.resolver.function) {
+                    entry.invokable = true;
+                }   
+            }
         });
 
         self.data_provider.iter().for_each(|dataprovider| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: dataprovider.callback.function,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            )
+            if let Some(call) = dataprovider.callback {
+                if let Some(entry) = functions_to_scan.get_mut(call) {
+                    entry.invokable = true;
+                }  
+            }
+            
         });
 
         self.custom_field.iter().for_each(|customfield| {
-
             if let Some(value)= customfield.value {
-                functions_to_scan.push(
-                    Entrypoint {
-                        function: value,
-                        invokable: true,
-                        web_trigger: false,
-                    }
-                );
+                if let Some(entry) = functions_to_scan.get_mut(value) {
+                    entry.invokable = true;
+                }  
             }
             
-            functions_to_scan.push(
-                Entrypoint {
-                    function: customfield.search_suggestions,
-                    invokable: true,
-                    web_trigger: false,
+            if let Some(entry) = functions_to_scan.get_mut(customfield.search_suggestions) {
+                entry.invokable = true;
+            }  
+
+            if let Some(entry) = functions_to_scan.get_mut(customfield.common_keys.function) {
+                entry.invokable = true;
+            }  
+
+            if let Some(resolver) = customfield.common_keys.resolver {
+                if let Some(entry) = functions_to_scan.get_mut(resolver) {
+                    entry.invokable = true;
+                } 
+            }
+
+            if let Some(edit) = customfield.edit {
+                if let Some(entry) = functions_to_scan.get_mut(edit) {
+                    entry.invokable = true;
                 }
-            );
 
-            if let Some(func)= customfield.function {
-                functions_to_scan.push(
-                    Entrypoint {
-                        function: func,
-                        invokable: true,
-                        web_trigger: false,
-                    }
-                );
-            }
-
-            if let Some(edit)= customfield.edit{
-                functions_to_scan.push(
-                    Entrypoint {
-                        function: edit,
-                        invokable: true,
-                        web_trigger: false,
-                    }
-                );
-            }
-
-            if let Some(resolver)= &customfield.resolver {
-                functions_to_scan.push(
-                        Entrypoint {
-                            function: resolver.function,
-                            invokable: true,
-                            web_trigger: false,
-                        }
-                    );
             }
 
         });
 
         self.ui_modifications.iter().for_each(|ui| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: ui.resolver.function,
-                    invokable: true,
-                    web_trigger: false,
+            if let Some(entry) = functions_to_scan.get_mut(ui.common_keys.function) {
+                entry.invokable = true;
+            }
+
+            if let Some(resolver) = ui.common_keys.resolver {
+                if let Some(entry) = functions_to_scan.get_mut(resolver) {
+                    entry.invokable = true;
                 }
-            )
+            }
         });
 
         self.workflow_validator.iter().for_each(|validator| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: validator.function,
-                    invokable: true,
-                    web_trigger: false,
-                }
-            );
+            if let Some(entry) = functions_to_scan.get_mut(validator.common_keys.function) {
+                entry.invokable = true;
+            }
 
-            functions_to_scan.push(
-                Entrypoint {
-                    function: validator.resolver.function,
-                    invokable: true,
-                    web_trigger: false,
+            if let Some(resolver) = validator.common_keys.resolver {
+                if let Some(entry) = functions_to_scan.get_mut(resolver) {
+                    entry.invokable = true;
                 }
-            );
+            }
         });
         
         self.workflow_post_function.iter().for_each(|post_function| {
-            functions_to_scan.push(
-                Entrypoint {
-                    function: post_function.function,
-                    invokable: true,
-                    web_trigger: false,
+            if let Some(entry) = functions_to_scan.get_mut(post_function.common_keys.function) {
+                entry.invokable = true;
+            }
+
+            if let Some(resolver) = post_function.common_keys.resolver {
+                if let Some(entry) = functions_to_scan.get_mut(resolver) {
+                    entry.invokable = true;
                 }
-            )
+            }
         });
 
         // get user invokable modules that have additional exposure endpoints. 
         // ie macros has config and export fields on top of resolver fields that are functions
-        for macros in self.macros {
-            if let Some(resolver)= macros.resolver {
-                functions_to_scan.push(Entrypoint {
-                    function: resolver.function,
-                    invokable: true,
-                    web_trigger: false
-                })
+        self.macros.iter().for_each(|macros| {
+            if let Some(resolver)= macros.common_keys.resolver {
+                if let Some(entry) = functions_to_scan.get_mut(resolver) {
+                    entry.invokable = true;
+                }
             }
 
             if let Some(config)= macros.config {
-                functions_to_scan.push(Entrypoint {
-                    function: config.function,
-                    invokable: true,
-                    web_trigger: false
-                })
+                if let Some(entry) = functions_to_scan.get_mut(config) {
+                    entry.invokable = true;
+                }
             }
+
             if let Some(export)= macros.export {
-                functions_to_scan.push(Entrypoint {
-                    function: export.function,
-                    invokable: true,
-                    web_trigger: false
-                })
+                if let Some(entry) = functions_to_scan.get_mut(export) {
+                    entry.invokable = true;
+                }
             }
 
-        }
+        });
 
-        for contentitem in self.content_by_line_item {
-            functions_to_scan.push(Entrypoint {
-                function: contentitem.function,
-                invokable: true,
-                web_trigger: false
-            });
-            if let Some(resolver)= contentitem.resolver {
-                functions_to_scan.push(Entrypoint {
-                    function: resolver.function,
-                    invokable: true,
-                    web_trigger: false
-                })
+        self.content_by_line_item.iter().for_each(|contentitem| {
+            if let Some(entry) = functions_to_scan.get_mut(contentitem.common_keys.function) {
+                entry.invokable = true;
+            }
+
+
+            if let Some(resolver)= contentitem.common_keys.resolver {
+                if let Some(entry) = functions_to_scan.get_mut(resolver) {
+                    entry.invokable = true;
+                }
             }
 
             if let Some(dynamic_properties)= contentitem.dynamic_properties {
-                functions_to_scan.push(Entrypoint {
-                    function: dynamic_properties.function,
-                    invokable: true,
-                    web_trigger: false
-                })
+                if let Some(entry) = functions_to_scan.get_mut(dynamic_properties) {
+                    entry.invokable = true;
+                }
             }
 
-        }
+        });
 
-        for issue in self.issue_glance {
-            functions_to_scan.push(Entrypoint {
-                function: issue.function,
-                invokable: true,
-                web_trigger: false
-            });
-            if let Some(resolver)= issue.resolver {
-                functions_to_scan.push(Entrypoint {
-                    function: resolver.function,
-                    invokable: true,
-                    web_trigger: false
-                })
+        self.issue_glance.iter().for_each(|issue| {
+            if let Some(entry) = functions_to_scan.get_mut(issue.common_keys.function) {
+                entry.invokable = true;
+            }
+
+
+            if let Some(resolver)= issue.common_keys.resolver {
+                if let Some(entry) = functions_to_scan.get_mut(resolver) {
+                    entry.invokable = true;
+                }
             }
 
             if let Some(dynamic_properties)= issue.dynamic_properties {
-                functions_to_scan.push(Entrypoint {
-                    function: dynamic_properties.function,
-                    invokable: true,
-                    web_trigger: false
-                })
+                if let Some(entry) = functions_to_scan.get_mut(dynamic_properties) {
+                    entry.invokable = true;
+                }
             }
 
-        }
+        });
 
-        for access in self.access_import_type {
-            functions_to_scan.push(Entrypoint {
-                function: access.function,
-                invokable: true,
-                web_trigger: false
-            });
+        self.access_import_type.iter().for_each(|access| {
+            if let Some(entry) = functions_to_scan.get_mut(access.common_keys.function) {
+                entry.invokable = true;
+            }
+
+            if let Some(resolver) = access.common_keys.resolver {
+                if let Some(entry) = functions_to_scan.get_mut(resolver) {
+                    entry.invokable = true;
+                }
+            }
+
             if let Some(delete) = access.one_delete_import {
-                functions_to_scan.push(Entrypoint {
-                    function: delete.function,
-                    invokable: true,
-                    web_trigger: false
-                })
+                if let Some(entry) = functions_to_scan.get_mut(delete) {
+                    entry.invokable = true;
+                }
             }
 
-            if let Some(start)= access.start_import {
-                functions_to_scan.push(Entrypoint {
-                    function: start.function,
-                    invokable: true,
-                    web_trigger: false
-                })
+            if let Some(start) = access.start_import {
+                if let Some(entry) = functions_to_scan.get_mut(start) {
+                    entry.invokable = true;
+                }
             }
 
-            if let Some(stop)= access.stop_import {
-                functions_to_scan.push(Entrypoint {
-                    function: stop.function,
-                    invokable: true,
-                    web_trigger: false
-                })
+            if let Some(stop) = access.stop_import {
+                if let Some(entry) = functions_to_scan.get_mut(stop) {
+                    entry.invokable = true;
+                }
             }
 
             if let Some(status)= access.import_status {
-                functions_to_scan.push(Entrypoint {
-                    function: status.function,
-                    invokable: true,
-                    web_trigger: false
-                })
+                if let Some(entry) = functions_to_scan.get_mut(status) {
+                    entry.invokable = true;
+                }
             }
 
-        }
+        });
             
         // get array for user invokable module functions
         // make alternate_functions all user-invokable functions 
-        for module in self.extra.into_values().flatten() {
+        for module in self.extra.clone().into_values().flatten() {
             if let Some(mod_function) = module.function {
-                functions_to_scan.push(Entrypoint {
-                    function: mod_function,
-                    invokable: true,
-                    web_trigger: false
-                });
+                if let Some(entry) = functions_to_scan.get_mut(mod_function) {
+                    entry.invokable = true;
+                }
             }
            
             if let Some(resolver) = module.resolver {
-                functions_to_scan.push(Entrypoint {
-                    function: resolver.function,
-                    invokable: true,
-                    web_trigger: false
-                });
+                if let Some(entry) = functions_to_scan.get_mut(resolver.function) {
+                    entry.invokable = true;
+                }
             } 
         }
         
@@ -740,7 +693,7 @@ mod tests {
         assert_eq!(manifest.app.name, Some("My App"));
         assert_eq!(manifest.app.id, "my-app");
         assert_eq!(manifest.modules.macros.len(), 1);
-        assert_eq!(manifest.modules.macros[0].key, "My Macro");
+        assert_eq!(manifest.modules.macros[0].common_keys.key, "My Macro");
         // assert_eq!(manifest.modules.macros[0].function, "my-macro");
         assert_eq!(manifest.modules.functions.len(), 1);
         assert_eq!(
@@ -834,25 +787,21 @@ mod tests {
         }"#;
         let manifest: ForgeManifest = serde_json::from_str(json).unwrap();
         assert_eq!(manifest.modules.macros.len(), 1);
-
-        if let Some(func) = manifest.modules.macros[0].function {
-            assert_eq!(func, "Catch-me-if-you-can0");
-
-        }
+        assert_eq!(manifest.modules.macros[0].common_keys.function, "Catch-me-if-you-can0");
 
 
-        if let Some(func) = &manifest.modules.macros[0].resolver {
-            assert_eq!(func.function, "Catch-me-if-you-can1");
+        if let Some(func) = manifest.modules.macros[0].common_keys.resolver {
+            assert_eq!(func, "Catch-me-if-you-can1");
 
         }
 
-        if let Some(func) = &manifest.modules.macros[0].config {
-            assert_eq!(func.function, "Catch-me-if-you-can2");
+        if let Some(func) = manifest.modules.macros[0].config {
+            assert_eq!(func, "Catch-me-if-you-can2");
 
         }
 
-        if let Some(func) = &manifest.modules.macros[0].export {
-            assert_eq!(func.function, "Catch-me-if-you-can3");
+        if let Some(func) = manifest.modules.macros[0].export {
+            assert_eq!(func, "Catch-me-if-you-can3");
 
         }   
 
