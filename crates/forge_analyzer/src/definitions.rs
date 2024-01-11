@@ -127,7 +127,7 @@ struct ModuleDefs {
     exports: Box<[DefId]>,
 }
 
-#[instrument(skip(modules, file_resolver, secret_packages))]
+#[instrument(skip(modules, file_resolver))]
 pub fn run_resolver(
     modules: &TiSlice<ModId, Module>,
     file_resolver: &ForgeResolver,
