@@ -36,7 +36,6 @@ struct ModInfo<'a> {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct MacroMod<'a> { 
-    // #[serde(flatten, borrow)] 
     key: &'a str,
     function: &'a str,
     #[serde(borrow)] 
@@ -45,6 +44,42 @@ struct MacroMod<'a> {
     config: Option<ModInfo<'a>>,
     #[serde(borrow)] 
     export: Option<ModInfo<'a>>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ContentByLineItem<'a> { 
+    key: &'a str,
+    function: &'a str,
+    #[serde(borrow)] 
+    resolver: Option<ModInfo<'a>>,
+    #[serde(borrow)] 
+    dynamic_properties: Option<ModInfo<'a>>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct IssueGlance<'a> { 
+    key: &'a str,
+    function: &'a str,
+    #[serde(borrow)] 
+    resolver: Option<ModInfo<'a>>,
+    #[serde(borrow)] 
+    dynamic_properties: Option<ModInfo<'a>>,
+
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct AccessImportType<'a> { 
+    key: &'a str,
+    function: &'a str,
+    #[serde(borrow)] 
+    one_delete_import: Option<ModInfo<'a>>,
+    #[serde(borrow)] 
+    start_import: Option<ModInfo<'a>>,
+    #[serde(borrow)] 
+    stop_import: Option<ModInfo<'a>>,
+    #[serde(borrow)] 
+    import_status: Option<ModInfo<'a>>,
+
 }
 
 // WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES 
@@ -131,6 +166,12 @@ pub struct ForgeModules<'a> {
     macros: Vec<MacroMod<'a>>,
     #[serde(rename = "function", default, borrow)]
     pub functions: Vec<FunctionMod<'a>>,
+    #[serde(rename = "contentByLineItem", default, borrow)]
+    content_by_line_item: Vec<ContentByLineItem<'a>>,
+    #[serde(rename = "jira:issueGlance", default, borrow)]
+    issue_glance: Vec<IssueGlance<'a>>,
+    #[serde(rename = "jira:accessImportType", default, borrow)]
+    access_import_type: Vec<AccessImportType<'a>>,
     // deserializing non user-invocable modules
     #[serde(rename = "webtrigger", default, borrow)]
     webtriggers: Vec<RawTrigger<'a>>,
