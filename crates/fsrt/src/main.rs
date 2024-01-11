@@ -5,8 +5,7 @@ use forge_permission_resolver::permissions_resolver::{
 };
 use miette::{IntoDiagnostic, Result};
 use std::{
-    collections::{HashSet, BTreeMap, hash_map::Entry},
-    convert::TryFrom,
+    collections::HashSet,
     fs,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
@@ -18,8 +17,11 @@ use std::{
 use clap::{Parser, ValueHint};
 use miette::{IntoDiagnostic, Result};
 
+<<<<<<< HEAD
 use serde_json::map::Entry;
 >>>>>>> cd2ed7b (edited main to iterate over vector of functions. TODO: edit add_funcs in main.rs and test into_analyzble_function use case in main.rs)
+=======
+>>>>>>> 29c38d6 (modified into_analyzable_functions with Josh and implementation in main.rs)
 use swc_core::{
     common::{Globals, Mark, SourceMap, GLOBALS},
     ecma::{
@@ -45,7 +47,7 @@ use forge_analyzer::{
     resolver::resolve_calls,
 };
 
-use forge_loader::manifest::{ForgeManifest, FunctionRef, FunctionTy, Entrypoint};
+use forge_loader::manifest::{Entrypoint, ForgeManifest, Resolved};
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
@@ -99,18 +101,28 @@ struct Opts {
     out: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedEntryPoint<'a> {
+    func_name: &'a str,
+    path: PathBuf,
+    module: ModId,
+    def_id: DefId,
+    webtrigger: bool,
+    invokable: bool,
+}
+
 struct ForgeProject<'a> {
 >>>>>>> 7e86f46 (abstracted structs to use a CommonKeys struct that holds: key, function, and resolver for less code duplication. Updated into_analayzable method to update values based on functions specified in function mod. TODO: Update rest of non trigger modules to update mapping to  functions to scan from function mod)
     #[allow(dead_code)]
     sm: Arc<SourceMap>,
     ctx: AppCtx,
     env: Environment,
-    funcs:BTreeMap<&'a str, Entrypoint<'a>>,
+    funcs: Vec<ResolvedEntryPoint<'a>>,
     opts: Opts,
 >>>>>>> cd2ed7b (edited main to iterate over vector of functions. TODO: edit add_funcs in main.rs and test into_analyzble_function use case in main.rs)
 }
 
-impl ForgeProject<'_> {
+impl<'a> ForgeProject<'a> {
     #[instrument(skip(src, iter))]
     fn with_files_and_sourceroot<P: AsRef<Path>, I: IntoIterator<Item = PathBuf>>(
         src: P,
@@ -157,20 +169,23 @@ impl ForgeProject<'_> {
             funcs: vec![],
         }
     }
-// TODO: edit to work with new iterator that not FUNCTIONTY
-    fn add_funcs<'a, I: IntoIterator<Item = Entrypoint<'a>>>(&mut self, iter: I) {
-        self.funcs.extend(iter);
+    // TODO: edit to work with new iterator that not FUNCTIONTY
+    fn add_funcs<I: IntoIterator<Item = Entrypoint<'a, Resolved>>>(&mut self, iter: I) {
+        self.funcs.extend(iter.into_iter().filter_map(|entrypoint| {
+            let (func_name, path) = entrypoint.function.into_func_path();
+            let module = self.ctx.modid_from_path(&path)?;
+            let def_id = self.env.module_export(module, func_name)?;
+            Some(ResolvedEntryPoint {
+                func_name,
+                path,
+                module,
+                def_id,
+                invokable: entrypoint.invokable,
+                webtrigger: entrypoint.web_trigger,
+            })
+        }));
     }
 }
-
-
-// self.funcs.extend(iter.into_iter().flat_map(|ftype| {
-//     ftype.sequence(|(func_name, path)| {
-//         let modid = self.ctx.modid_from_path(&path)?;
-//         let func = self.env.module_export(modid, func_name)?;
-//         Some((func_name.to_owned(), path, modid, func))
-//     })
-// }));
 
 fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
     matches!(
@@ -191,7 +206,11 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 }
 
 #[tracing::instrument(level = "debug")]
+<<<<<<< HEAD
 fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<ForgeProject> {
+=======
+fn scan_directory(dir: PathBuf, function: Option<&str>, opts: Opts) -> Result<()> {
+>>>>>>> 29c38d6 (modified into_analyzable_functions with Josh and implementation in main.rs)
     let mut manifest_file = dir.clone();
     manifest_file.push("manifest.yaml");
     if !manifest_file.exists() {
@@ -230,19 +249,26 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<F
     });
     let run_permission_checker = opts.check_permissions && !transpiled_async;
 
-    let funcrefs = manifest.modules.into_analyzable_functions();
-    
-    // .flat_map(|f| {
-    //     f.sequence(|fmod| {
-    //         let resolved_func = FunctionRef::try_from(fmod)?.try_resolve(&paths, &dir)?;
-    //         Ok::<_, forge_loader::Error>(resolved_func.into_func_path())
-    //     })
-    // });
+    let funcrefs = manifest
+        .modules
+        .into_analyzable_functions()
+        .flat_map(|entrypoint| {
+            Ok::<_, forge_loader::Error>(Entrypoint {
+                function: entrypoint.function.try_resolve(&paths, &dir)?,
+                invokable: entrypoint.invokable,
+                web_trigger: entrypoint.web_trigger,
+            })
+        });
+
     let src_root = dir.join("src");
     let mut proj =
         ForgeProject::with_files_and_sourceroot(src_root, paths.clone(), secret_packages);
     if transpiled_async {
         warn!("Unable to scan due to transpiled async");
+<<<<<<< HEAD
+=======
+        return Ok(());
+>>>>>>> 29c38d6 (modified into_analyzable_functions with Josh and implementation in main.rs)
     }
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
@@ -326,6 +352,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<F
     for func in &proj.funcs {
         // TODO: Update operations in for loop to scan functions.
         // idea: iterate over each func which should be struct that tracks the function to be scanned. And performs scans according to bool.
+<<<<<<< HEAD
 <<<<<<< HEAD
         match *func {
             FunctionTy::Invokable((ref func, ref path, _, def)) => {
@@ -462,27 +489,67 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<F
     //             reporter.add_vulnerabilities(checker.into_vulns());
     //         }
     //     }
+=======
+        //     match *func {
+        //         FunctionTy::Invokable((ref func, ref path, _, def)) => {
+        //             let mut checker = AuthZChecker::new();
+        //             debug!("checking {func} at {path:?}");
+        //             if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
+        //             {
+        //                 warn!("error while scanning {func} in {path:?}: {err}");
+        //             }
+        //             reporter.add_vulnerabilities(checker.into_vulns());
+        //         }
+        //         FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
+        //             let mut checker = AuthenticateChecker::new();
+        //             debug!("checking webtrigger {func} at {path:?}");
+        //             if let Err(err) =
+        //                 authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
+        //             {
+        //                 warn!("error while scanning {func} in {path:?}: {err}");
+        //             }
+        //             reporter.add_vulnerabilities(checker.into_vulns());
+        //         }
+        //     }
+>>>>>>> 29c38d6 (modified into_analyzable_functions with Josh and implementation in main.rs)
 
+        // Get entrypoint value from tuple
+        // Logic for performing scans.
+        // If it's invokable, then run invokable scan. If web_trigger, then trigger scan.
+        // And if it's both, run both scans.
         if func.invokable {
             let mut checker = AuthZChecker::new();
-            debug!("checking {:?} at {path:?}", func.function);
-            if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.function.to_string())
-            {
-                warn!("error while scanning {:?} in {path:?}: {err}", func.function);
+            debug!("checking {:?} at {:?}", func.func_name, &func.path);
+            if let Err(err) = interp.run_checker(
+                func.def_id,
+                &mut checker,
+                func.path.clone(),
+                func.func_name.to_string(),
+            ) {
+                warn!(
+                    "error while scanning {:?} in {:?}: {err}",
+                    func.func_name, func.path,
+                );
             }
             reporter.add_vulnerabilities(checker.into_vulns());
-
-        } else if func.web_trigger {
+        } else if func.webtrigger {
             let mut checker = AuthenticateChecker::new();
-            debug!("checking webtrigger {:?} at {path:?}", func.function);
-            if let Err(err) =
-                authn_interp.run_checker(def, &mut checker, path.clone(), func.function.to_string())
-            {
-                warn!("error while scanning {:?} in {path:?}: {err}", func.function);
+            debug!(
+                "checking webtrigger {:?} at {:?}",
+                func.func_name, func.path,
+            );
+            if let Err(err) = authn_interp.run_checker(
+                func.def_id,
+                &mut checker,
+                func.path.clone(),
+                func.func_name.to_string(),
+            ) {
+                warn!(
+                    "error while scanning {:?} in {:?}: {err}",
+                    func.func_name, func.path,
+                );
             }
             reporter.add_vulnerabilities(checker.into_vulns());
-            
-            
         }
     }
 
@@ -502,8 +569,12 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<F
         }
         None => println!("{report}"),
     }
+<<<<<<< HEAD
 
     Ok(proj)
+=======
+    Ok(())
+>>>>>>> 29c38d6 (modified into_analyzable_functions with Josh and implementation in main.rs)
 }
 
 fn main() -> Result<()> {
