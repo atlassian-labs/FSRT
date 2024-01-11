@@ -146,6 +146,7 @@ impl<'a> ForgeProject<'a> {
             funcs: vec![],
         }
     }
+
     // TODO: edit to work with new iterator that not FUNCTIONTY
     fn add_funcs<I: IntoIterator<Item = Entrypoint<'a, Resolved>>>(&mut self, iter: I) {
         self.funcs.extend(iter.into_iter().filter_map(|entrypoint| {
@@ -287,6 +288,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         &confluence_permission_resolver,
         &confluence_regex_map,
     );
+
     let mut reporter = Reporter::new();
     let mut secret_interp = Interp::<SecretChecker>::new(
         &proj.env,
@@ -359,16 +361,13 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
             warn!("error while running secret checker: {err}");
         } else {
             reporter.add_vulnerabilities(checker.into_vulns());
+
         }
         definition_analysis_interp.value_manager.varid_to_value =
             secret_interp.value_manager.varid_to_value;
         definition_analysis_interp.value_manager.defid_to_value =
             secret_interp.value_manager.defid_to_value;
 
-        // Get entrypoint value from tuple
-        // Logic for performing scans.
-        // If it's invokable, then run invokable scan. If web_trigger, then trigger scan.
-        // And if it's both, run both scans.
         if func.invokable {
             let mut checker = AuthZChecker::new();
             debug!("checking {:?} at {:?}", func.func_name, &func.path);
@@ -419,6 +418,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
     }
 
     Ok(())
+
 }
 
 fn main() -> Result<()> {

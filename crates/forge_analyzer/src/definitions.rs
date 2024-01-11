@@ -201,7 +201,6 @@ pub fn run_resolver(
 
     for (curr_mod, module) in modules.iter_enumerated() {
         let global_id = environment.get_or_reserve_global_scope(curr_mod);
-
         let mut global_collector = GlobalCollector {
             res: &mut environment,
             global_id,
@@ -211,7 +210,6 @@ pub fn run_resolver(
         };
         module.visit_with(&mut global_collector);
     }
-
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut collector = FunctionCollector {
             res: &mut environment,
@@ -796,6 +794,7 @@ impl ResolverTable {
 
 struct FunctionCollector<'cx> {
     res: &'cx mut Environment,
+    file_resolver: &'cx ForgeResolver,
     module: ModId,
     curr_class: Option<DefId>,
     curr_function: Option<DefId>,
@@ -963,9 +962,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
                 None
             }
-
-            // Case 1: the “root” object is a star import and the Static proppath member is either identifier or method
-            // [Def, Static, Static]
             //[PropPath::Def(def), PropPath::Static(a), PropPath::Static(b)]
             // 1. Star, identifier, method
             [PropPath::Def(def), PropPath::Static(ref identifier), PropPath::Static(ref method)] => {
@@ -990,11 +986,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     None
                 }
             }
-            // import { foo } from 'foo';
-            // foo.bar.sign('what');
-            // foo.bar.bar.sign('whatever');
-            // PackageData { package: 'foo', identifier: 'bar', method: 'sign' }
-
             // [Def, Static]
             // [PropPath::Def(def), PropPath::Static(atom)]
             // 1. Star, identifier (NO METHOD)
@@ -1282,7 +1273,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
         let first_arg = args.first().map(|expr| &*expr.expr);
         let intrinsic = self.as_intrinsic(&props, first_arg);
-        debug!("HELLO INTRINSIC!? {intrinsic:?}");
         let call = match self.as_intrinsic(&props, first_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
@@ -2366,37 +2356,84 @@ impl Visit for FunctionCollector<'_> {
                 ..
             })) => {
                 if let Expr::Ident(ident) = &**expr {
-                    let ident = ident.to_id();
-                    let Some(def) = self.res.sym_to_id(ident, self.module) else {
-                        return;
-                    };
-                    if matches!(self.res.is_imported_from(def, "@forge/ui"), Some(ImportKind::Named(imp)) if *imp == *"render")
+                    let callee_ident = ident.to_id();
+                    if callee_ident.0 == "require"
+                        && self.res.sym_to_id(callee_ident, self.module).is_none()
+                        && args.len() == 1
                     {
-                        let owner =
-                            self.res
-                                .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
-                        let Some(ExprOrSpread { expr, .. }) = &args.first() else {
-                            return;
+                        match args.get(0) {
+                            Some(ExprOrSpread { spread, expr: lit }) => {
+                                // TODO: handle local module imports
+                                if let Expr::Lit(Lit::Str(Str { value, .. })) = &**lit {
+                                    let package_to_check = self
+                                        .secret_packages
+                                        .iter()
+                                        .find(|package| package.package_name == &**value);
+
+                                    if let Some(package) = package_to_check {
+                                        match self.file_resolver.resolve_import(
+                                            self.module.into(),
+                                            &package.package_name,
+                                        ) {
+                                            Ok(id) => {
+                                                debug!("Imported package already tracked");
+                                            }
+                                            Err(_) => {
+                                                let foreign_id =
+                                                    self.res.defs.foreign.push_and_get_key(
+                                                        ForeignItem {
+                                                            kind: ImportKind::Star,
+                                                            module_name: value.clone(),
+                                                        },
+                                                    );
+                                                let lhs = self.res.get_or_overwrite_sym(
+                                                    id,
+                                                    self.module,
+                                                    DefKind::Foreign(foreign_id),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            None => debug!("No argument passed in"),
+                        }
+                    } else {
+                        let ident_to_id = ident.to_id();
+                        let Some(def) = self.res.sym_to_id(ident_to_id, self.module) else {
+                            debug!("No id found for symbol");
+                            return ();
                         };
-                        let old_parent = self.parent.replace(owner);
-                        let mut analyzer = FunctionAnalyzer {
-                            res: self.res,
-                            module: self.module,
-                            current_def: owner,
-                            assigning_to: None,
-                            secret_packages: self.secret_packages.clone(),
-                            body: Body::with_owner(owner),
-                            block: BasicBlockId::default(),
-                            operand_stack: vec![],
-                            in_lhs: false,
-                        };
-                        let opnd = analyzer.lower_expr(expr, None);
-                        analyzer.body.push_inst(
-                            analyzer.block,
-                            Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)),
-                        );
-                        *self.res.def_mut(owner).expect_body() = analyzer.body;
-                        self.parent = old_parent;
+                        if matches!(self.res.is_imported_from(def, "@forge/ui"), Some(ImportKind::Named(imp)) if *imp == *"render")
+                        {
+                            let owner = self.res.get_or_overwrite_sym(
+                                id,
+                                self.module,
+                                DefKind::Function(()),
+                            );
+                            let Some(ExprOrSpread { expr, .. }) = &args.first() else {
+                                return;
+                            };
+                            let old_parent = self.parent.replace(owner);
+                            let mut analyzer = FunctionAnalyzer {
+                                res: self.res,
+                                module: self.module,
+                                current_def: owner,
+                                assigning_to: None,
+                                secret_packages: self.secret_packages.clone(),
+                                body: Body::with_owner(owner),
+                                block: BasicBlockId::default(),
+                                operand_stack: vec![],
+                                in_lhs: false,
+                            };
+                            let opnd = analyzer.lower_expr(expr, None);
+                            analyzer.body.push_inst(
+                                analyzer.block,
+                                Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)),
+                            );
+                            *self.res.def_mut(owner).expect_body() = analyzer.body;
+                            self.parent = old_parent;
+                        }
                     }
                 }
             }
@@ -2878,9 +2915,9 @@ impl ExportCollector<'_> {
         self.default = Some(defid);
     }
 
-    // fn add_default(&mut self, def: DefRes, id: Option<Id>) -> DefId {}
 }
 
+// Import collector for run_resolver
 impl Visit for ImportCollector<'_> {
     noop_visit_type!();
 

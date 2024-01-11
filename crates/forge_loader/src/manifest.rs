@@ -5,9 +5,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::Error;
+
+use crate::{forgepermissions::ForgePermissions, Error};
 use forge_utils::FxHashMap;
-use itertools::Itertools;
+use itertools::{Either, Itertools};
 use serde::Deserialize;
 use tracing::trace;
 
@@ -134,6 +135,7 @@ pub struct WorkflowPostFunction<'a> {
 }
 
 // Add more structs here for deserializing forge modules
+
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ForgeModules<'a> {
     // deserializing non user-invocable modules
@@ -172,6 +174,7 @@ pub struct ForgeModules<'a> {
     #[serde(flatten)]
     extra: FxHashMap<String, Vec<Module<'a>>>,
 }
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct JiraAdminPage<'a> {
     key: &'a str,
@@ -286,13 +289,6 @@ impl<'a> ForgeModules<'a> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         self.webtriggers
             .sort_unstable_by_key(|trigger| trigger.function);
-        self.webtriggers
-            .sort_unstable_by_key(|trigger| trigger.function);
-
-        // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true
-        // for all trigger things
-        // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true
-        // for all trigger things
 
         let mut invokable_functions = BTreeSet::new();
 
@@ -377,6 +373,7 @@ impl<'a> ForgeModules<'a> {
                 web_trigger,
                 admin,
             })
+        
         })
     }
 }
