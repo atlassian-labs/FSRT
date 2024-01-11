@@ -33,12 +33,7 @@ struct ModInfo<'a> {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-<<<<<<< HEAD
 struct MacroMod<'a> {
-    // #[serde(flatten, borrow)]
-=======
-struct MacroMod<'a> { 
->>>>>>> 31a3048 (added new modules for additional endpoints in user invokable modules)
     key: &'a str,
     function: &'a str,
     #[serde(borrow)]
@@ -49,47 +44,41 @@ struct MacroMod<'a> {
     export: Option<ModInfo<'a>>,
 }
 
-<<<<<<< HEAD
-// WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES
-=======
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct ContentByLineItem<'a> { 
+struct ContentByLineItem<'a> {
     key: &'a str,
     function: &'a str,
-    #[serde(borrow)] 
+    #[serde(borrow)]
     resolver: Option<ModInfo<'a>>,
-    #[serde(borrow)] 
+    #[serde(borrow)]
     dynamic_properties: Option<ModInfo<'a>>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct IssueGlance<'a> { 
+struct IssueGlance<'a> {
     key: &'a str,
     function: &'a str,
-    #[serde(borrow)] 
+    #[serde(borrow)]
     resolver: Option<ModInfo<'a>>,
-    #[serde(borrow)] 
+    #[serde(borrow)]
     dynamic_properties: Option<ModInfo<'a>>,
-
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct AccessImportType<'a> { 
+struct AccessImportType<'a> {
     key: &'a str,
     function: &'a str,
-    #[serde(borrow)] 
+    #[serde(borrow)]
     one_delete_import: Option<ModInfo<'a>>,
-    #[serde(borrow)] 
+    #[serde(borrow)]
     start_import: Option<ModInfo<'a>>,
-    #[serde(borrow)] 
+    #[serde(borrow)]
     stop_import: Option<ModInfo<'a>>,
-    #[serde(borrow)] 
+    #[serde(borrow)]
     import_status: Option<ModInfo<'a>>,
-
 }
 
-// WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES 
->>>>>>> 31a3048 (added new modules for additional endpoints in user invokable modules)
+// WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RawTrigger<'a> {
     key: &'a str,
@@ -436,6 +425,91 @@ impl<'a> ForgeModules<'a> {
             if let Some(export) = macros.export {
                 functions_to_scan.push(Entrypoints {
                     function: export.function,
+                    invokable: true,
+                    web_trigger: false,
+                })
+            }
+        }
+
+        for contentitem in self.content_by_line_item {
+            functions_to_scan.push(Entrypoints {
+                function: contentitem.function,
+                invokable: true,
+                web_trigger: false,
+            });
+            if let Some(resolver) = contentitem.resolver {
+                functions_to_scan.push(Entrypoints {
+                    function: resolver.function,
+                    invokable: true,
+                    web_trigger: false,
+                })
+            }
+
+            if let Some(dynamic_properties) = contentitem.dynamic_properties {
+                functions_to_scan.push(Entrypoints {
+                    function: dynamic_properties.function,
+                    invokable: true,
+                    web_trigger: false,
+                })
+            }
+        }
+
+        for issue in self.issue_glance {
+            functions_to_scan.push(Entrypoints {
+                function: issue.function,
+                invokable: true,
+                web_trigger: false,
+            });
+            if let Some(resolver) = issue.resolver {
+                functions_to_scan.push(Entrypoints {
+                    function: resolver.function,
+                    invokable: true,
+                    web_trigger: false,
+                })
+            }
+
+            if let Some(dynamic_properties) = issue.dynamic_properties {
+                functions_to_scan.push(Entrypoints {
+                    function: dynamic_properties.function,
+                    invokable: true,
+                    web_trigger: false,
+                })
+            }
+        }
+
+        for access in self.access_import_type {
+            functions_to_scan.push(Entrypoints {
+                function: access.function,
+                invokable: true,
+                web_trigger: false,
+            });
+            if let Some(delete) = access.one_delete_import {
+                functions_to_scan.push(Entrypoints {
+                    function: delete.function,
+                    invokable: true,
+                    web_trigger: false,
+                })
+            }
+
+            if let Some(start) = access.start_import {
+                functions_to_scan.push(Entrypoints {
+                    function: start.function,
+                    invokable: true,
+                    web_trigger: false,
+                })
+            }
+
+            if let Some(stop) = access.stop_import {
+                functions_to_scan.push(Entrypoints {
+                    function: stop.function,
+                    invokable: true,
+                    web_trigger: false,
+                })
+            }
+
+            if let Some(status) = access.import_status {
+                functions_to_scan.push(Entrypoints {
+                    function: status.function,
                     invokable: true,
                     web_trigger: false,
                 })
