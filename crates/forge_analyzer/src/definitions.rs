@@ -189,7 +189,6 @@ pub fn run_resolver(
         foreign,
     );
     environment.defs = defs;
-    debug!("After the Definitions Resolver");
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut lowerer = Lowerer {
             res: &mut environment,
@@ -202,7 +201,6 @@ pub fn run_resolver(
     }
 
     for (curr_mod, module) in modules.iter_enumerated() {
-        debug!("Running GlobalCollector in run_resolver");
         let global_id = environment.get_or_reserve_global_scope(curr_mod);
         let mut global_collector = GlobalCollector {
             res: &mut environment,
@@ -214,7 +212,6 @@ pub fn run_resolver(
         module.visit_with(&mut global_collector);
     }
     for (curr_mod, module) in modules.iter_enumerated() {
-        debug!(?curr_mod, "Running FunctionCollector in run_resolver");
         let mut collector = FunctionCollector {
             res: &mut environment,
             file_resolver,
@@ -1002,12 +999,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 // Star imports that don't have any object call to invoke function
                 // import * as atlassian_jwt from "atlassian-jwt";
                 // atlassian_jwt.encode(blah, blah);
-                debug!(
-                    ?method_name,
-                    "checking if required import is being picked up"
-                );
-                debug!(?package_name, "what is package name");
-                debug!(?import_kind, "What is import kind");
                 if import_kind == ImportKind::Star {
                     let package_found = self.secret_packages.iter().find(|&package_data| {
                         package_name == package_data.package_name
@@ -1015,10 +1006,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                             && package_data.method.is_none()
                     });
                     if let Some(package) = package_found {
-                        debug!(?package, "returning Some!");
                         Some(Intrinsic::SecretFunction(package.clone()))
                     } else {
-                        debug!("returning NOne!");
                         None
                     }
                 } else {
