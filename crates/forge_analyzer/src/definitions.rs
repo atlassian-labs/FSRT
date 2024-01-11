@@ -213,13 +213,11 @@ pub fn run_resolver(
         };
         module.visit_with(&mut global_collector);
     }
-    let mut foreign = TiVec::default();
     for (curr_mod, module) in modules.iter_enumerated() {
         debug!("Running FunctionCollector in run_resolver");
         let mut collector = FunctionCollector {
             res: &mut environment,
             file_resolver,
-            foreign_defs: &mut foreign,
             curr_class: None,
             curr_function: None,
             secret_packages: secret_packages.clone(), // remove the clone
@@ -392,6 +390,7 @@ pub enum DefKind<F, O, I> {
     ResolverDef(DefId),
     Closure(F),
     // Example: `module` in import * as 'foo' from 'module'
+    // Local modules only.
     ModuleNs(ModId),
     Undefined,
 }
@@ -803,7 +802,6 @@ struct FunctionCollector<'cx> {
     res: &'cx mut Environment,
     file_resolver: &'cx ForgeResolver,
     module: ModId,
-    foreign_defs: &'cx mut TiVec<ForeignId, ForeignItem>,
     curr_class: Option<DefId>,
     curr_function: Option<DefId>,
     secret_packages: Vec<PackageData>,
@@ -2343,6 +2341,11 @@ impl Visit for FunctionCollector<'_> {
             return;
         };
         let id = id.to_id();
+        // const res = require('foo');
+        // res = id
+        //
+
+        debug!(?id, "what is passed in id");
         match n.init.as_deref() {
             Some(Expr::Fn(f)) => {
                 let defid = self
@@ -2368,71 +2371,105 @@ impl Visit for FunctionCollector<'_> {
                 debug!("visiting var declarator for require");
                 debug!(?expr, "what is expr and how do i find the darn require");
                 if let Expr::Ident(ident) = &**expr {
-                    let (sym, ctxt) = ident.to_id();
-                    debug!(?self.module, "what is self.module!?!");
-                    // let (sym, ctxt) = ident;
-                    if &sym == "require" {
-                        debug!("caught!");
-
-                        let defkind = self
-                            .file_resolver
-                            .resolve_import(self.module.into(), &"crypto-js");
-
-                        let foreign_id = self.foreign_defs.push_and_get_key(ForeignItem {
-                            kind: ImportKind::Default,
-                            module_name: "crypto-js".into(),
-                        });
-                        self.res.resolver.add_sym(
-                            DefRes::Foreign(foreign_id),
-                            (sym, ctxt),
-                            self.module,
-                        );
-                        return;
-                    }
-                    let (sym, ctxt) = ident.to_id();
-                    let Some(def) = self.res.sym_to_id((sym, ctxt), self.module) else {
-                        return;
-                    };
-                    debug!(?def, "wtf is def");
-                    debug!(?expr, "does expr still exist");
-
-                    let helper = self.res.as_foreign_import(def);
-                    debug!(
-                        ?helper,
-                        "What does this as_foreign_import helper function do???"
-                    );
-
-                    if matches!(self.res.is_imported_from(def, "@forge/ui"), Some(ImportKind::Named(imp)) if *imp == *"render")
+                    let callee_ident = ident.to_id();
+                    if callee_ident.0 == "require"
+                        && self.res.sym_to_id(callee_ident, self.module).is_none()
+                        && args.len() == 1
                     {
-                        let owner =
-                            self.res
-                                .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
-                        let Some(ExprOrSpread { expr, .. }) = &args.first() else {
-                            return;
-                        };
-                        let old_parent = self.parent.replace(owner);
-                        let mut analyzer = FunctionAnalyzer {
-                            res: self.res,
-                            module: self.module,
-                            current_def: owner,
-                            assigning_to: None,
-                            secret_packages: self.secret_packages.clone(),
-                            body: Body::with_owner(owner),
-                            block: BasicBlockId::default(),
-                            operand_stack: vec![],
-                            in_lhs: false,
-                        };
-                        let opnd = analyzer.lower_expr(expr, None);
-                        analyzer.body.push_inst(
-                            analyzer.block,
-                            Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)),
-                        );
-                        *self.res.def_mut(owner).expect_body() = analyzer.body;
-                        self.parent = old_parent;
+                        debug!("caught!");
+                        match args.get(0) {
+                            Some(ExprOrSpread { spread, expr: lit }) => {
+                                debug!(?lit, "first match arm!");
+                                // let as_lit = expr.as_lit();
+                                // debug!(?as_lit, "trying to break outt of lit to get value");
+                                // debug!(?spread, "what is spread :O")
+                                if let Expr::Lit(Lit::Str(Str { value, .. })) = &**lit {
+                                    debug!(?value, "grabbing the value");
+
+                                    match self
+                                        .file_resolver
+                                        .resolve_import(self.module.into(), &"crypto-js")
+                                    {
+                                        Ok(id) => {
+                                            debug!("already exists!?!??!");
+                                        }
+                                        Err(_) => {
+                                            debug!("it worked!");
+                                            let foreign_id =
+                                                self.res.defs.foreign.push_and_get_key(
+                                                    ForeignItem {
+                                                        kind: ImportKind::Star,
+                                                        module_name: value.clone(),
+                                                    },
+                                                );
+                                            let lhs = self.res.get_or_overwrite_sym(
+                                                id,
+                                                self.module,
+                                                DefKind::Foreign(foreign_id),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            None => debug!("Nothing exists! RAH"),
+                        }
+
+                        // const lhs = require('foo');
+                        // Hash (identifier, modid) -> Defid
+                        // Change defkind with defid
+                        // defid
+                        // TiVec<DefId, DefKind(other identifiers)>,
+                        //
+
+                        // DefId -> DefKind
+                        // DefKind(id) foreign key SQL
                     }
-                    // else if &ident.0 == "require" {
-                    //     debug!("found require!")
-                    // }
+                    // debug!(?def, "wtf is def");
+                    // debug!(?expr, "does expr still exist");
+
+                    // let helper = self.res.as_foreign_import(def);
+                    // debug!(
+                    //     ?helper,
+                    //     "What does this as_foreign_import helper function do???"
+                    // );
+                    else {
+                        let ident_to_id = ident.to_id();
+                        let Some(def) = self.res.sym_to_id(ident_to_id, self.module) else {
+                            debug!("No id found for symbol");
+                            return ();
+                        };
+                        debug!("merph!");
+                        if matches!(self.res.is_imported_from(def, "@forge/ui"), Some(ImportKind::Named(imp)) if *imp == *"render")
+                        {
+                            let owner = self.res.get_or_overwrite_sym(
+                                id,
+                                self.module,
+                                DefKind::Function(()),
+                            );
+                            let Some(ExprOrSpread { expr, .. }) = &args.first() else {
+                                return;
+                            };
+                            let old_parent = self.parent.replace(owner);
+                            let mut analyzer = FunctionAnalyzer {
+                                res: self.res,
+                                module: self.module,
+                                current_def: owner,
+                                assigning_to: None,
+                                secret_packages: self.secret_packages.clone(),
+                                body: Body::with_owner(owner),
+                                block: BasicBlockId::default(),
+                                operand_stack: vec![],
+                                in_lhs: false,
+                            };
+                            let opnd = analyzer.lower_expr(expr, None);
+                            analyzer.body.push_inst(
+                                analyzer.block,
+                                Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)),
+                            );
+                            *self.res.def_mut(owner).expect_body() = analyzer.body;
+                            self.parent = old_parent;
+                        }
+                    }
                 }
             }
             _ => {}
@@ -3009,12 +3046,12 @@ impl Visit for ImportCollector<'_> {
     fn visit_import_star_as_specifier(&mut self, n: &ImportStarAsSpecifier) {
         debug!("Does this ever get run?");
         let local = n.local.to_id();
-        let defkind1 = self
-            .file_resolver
-            .resolve_import(self.curr_mod.into(), &*self.current_import);
-        debug!(?defkind1, "WTF is defkind");
+        // let defkind1 = self
+        //     .file_resolver
+        //     .resolve_import(self.curr_mod.into(), &*self.current_import);
+        // debug!(?defkind1, "WTF is defkind");
 
-        debug!(?self.curr_mod, "wtf is current module T.T");
+        // debug!(?self.curr_mod, "wtf is current module T.T");
         let defkind = match self
             .file_resolver
             .resolve_import(self.curr_mod.into(), &*self.current_import)
