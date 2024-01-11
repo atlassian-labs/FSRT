@@ -168,17 +168,6 @@ pub struct ForgeModules<'a> {
     #[serde(rename = "jira:workflowPostFunction", default, borrow)]
     pub workflow_post_function: Vec<WorkflowPostFunction<'a>>,
     // deserializing user invokable module functions
-    #[serde(rename = "compass:dataProvider", default, borrow)]
-    pub data_provider: Vec<DataProvider<'a>>,
-    #[serde(rename = "jira:customField", default, borrow)]
-    pub custom_field: Vec<CustomField<'a>>,
-    #[serde(rename = "jira:uiModificatons", default, borrow)]
-    pub ui_modifications: Vec<UiModificatons<'a>>,
-    #[serde(rename = "jira:workflowValidator", default, borrow)]
-    pub workflow_validator: Vec<WorkflowValidator<'a>>,
-    #[serde(rename = "jira:workflowPostFunction", default, borrow)]
-    pub workflow_post_function: Vec<WorkflowPostFunction<'a>>,
-    // deserializing user invokable module functions
     #[serde(flatten)]
     extra: FxHashMap<String, Vec<Module<'a>>>,
 }
@@ -284,12 +273,6 @@ pub struct Entrypoint<'a, S = Unresolved> {
 //         }
 //     }
 
-//     #[inline]
-//     pub fn into_inner(self) -> T {
-//         match self {
-//             FunctionTy::Invokable(t) | FunctionTy::WebTrigger(t) => t,
-//         }
-//     }
 //     #[inline]
 //     pub fn into_inner(self) -> T {
 //         match self {
