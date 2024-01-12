@@ -361,7 +361,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
             warn!("error while running secret checker: {err}");
         } else {
             reporter.add_vulnerabilities(checker.into_vulns());
-
         }
         definition_analysis_interp.value_manager.varid_to_value =
             secret_interp.value_manager.varid_to_value;
@@ -418,7 +417,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
     }
 
     Ok(())
-
 }
 
 fn main() -> Result<()> {
