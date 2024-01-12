@@ -213,6 +213,7 @@ pub fn run_resolver(
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut collector = FunctionCollector {
             res: &mut environment,
+            file_resolver,
             curr_class: None,
             curr_function: None,
             secret_packages: secret_packages.clone(), // remove the clone
@@ -2914,7 +2915,6 @@ impl ExportCollector<'_> {
         self.res_table.owning_module.push(self.curr_mod);
         self.default = Some(defid);
     }
-
 }
 
 // Import collector for run_resolver

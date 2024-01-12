@@ -5,10 +5,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-
-use crate::{forgepermissions::ForgePermissions, Error};
+use crate::Error;
 use forge_utils::FxHashMap;
-use itertools::{Either, Itertools};
+use itertools::Itertools;
 use serde::Deserialize;
 use tracing::trace;
 
@@ -36,6 +35,7 @@ struct CommonKey<'a> {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct MacroMod<'a> {
+    #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
     config: Option<&'a str>,
     export: Option<&'a str>,
@@ -135,7 +135,6 @@ pub struct WorkflowPostFunction<'a> {
 }
 
 // Add more structs here for deserializing forge modules
-
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ForgeModules<'a> {
     // deserializing non user-invocable modules
@@ -174,7 +173,6 @@ pub struct ForgeModules<'a> {
     #[serde(flatten)]
     extra: FxHashMap<String, Vec<Module<'a>>>,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct JiraAdminPage<'a> {
     key: &'a str,
@@ -289,6 +287,13 @@ impl<'a> ForgeModules<'a> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         self.webtriggers
             .sort_unstable_by_key(|trigger| trigger.function);
+        self.webtriggers
+            .sort_unstable_by_key(|trigger| trigger.function);
+
+        // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true
+        // for all trigger things
+        // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true
+        // for all trigger things
 
         let mut invokable_functions = BTreeSet::new();
 
@@ -373,7 +378,6 @@ impl<'a> ForgeModules<'a> {
                 web_trigger,
                 admin,
             })
-        
         })
     }
 }
@@ -490,7 +494,7 @@ mod tests {
         assert_eq!(manifest.app.name, Some("My App"));
         assert_eq!(manifest.app.id, "my-app");
         assert_eq!(manifest.modules.macros.len(), 1);
-        assert_eq!(manifest.modules.macros[0].common_keys.key, "My Macro");
+        assert_eq!(manifest.modules.macros[0].common_keys.key, "my-macro");
         // assert_eq!(manifest.modules.macros[0].function, "my-macro");
         assert_eq!(manifest.modules.functions.len(), 1);
         assert_eq!(
@@ -540,15 +544,9 @@ mod tests {
                     "key": "my-macro",
                     "title": "My Macro",
                     "function": "Catch-me-if-you-can0", 
-                    "resolver": {
-                        "function": "Catch-me-if-you-can1"
-                    },
-                    "config": {
-                        "function": "Catch-me-if-you-can2"
-                    }, 
-                    "export": {
-                        "function": "Catch-me-if-you-can3"
-                    }
+                    "resolver": "Catch-me-if-you-can1",
+                    "config": "Catch-me-if-you-can2",
+                    "export": "Catch-me-if-you-can3"
                 }
                 ],
                 "function": [
@@ -588,7 +586,12 @@ mod tests {
             "Catch-me-if-you-can0"
         );
 
+        let Some(func_test) = manifest.modules.macros[0].common_keys.resolver else {
+            panic!("No dice!")
+        };
+        println!("what is func? {}", func_test);
         if let Some(func) = manifest.modules.macros[0].common_keys.resolver {
+            println!("what is func? {}", func);
             assert_eq!(func, "Catch-me-if-you-can1");
         }
 
@@ -680,22 +683,5 @@ mod tests {
                 admin: false
             })
         );
-
-        // assert_eq!(manifest.app.name, Some("My App"));
-        // assert_eq!(manifest.app.id, "my-app");
-        // assert_eq!(manifest.modules.macros.len(), 1);
-        // assert_eq!(manifest.modules.macros[0].common_keys.key, "My Macro");
-        // // assert_eq!(manifest.modules.macros[0].function, "my-macro");
-        // assert_eq!(manifest.modules.functions.len(), 1);
-        // assert_eq!(
-        //     manifest.modules.functions[0],
-        //     FunctionMod {
-        //         key: "my-function",
-        //         handler: "my-function-handler",
-        //         providers: Some(AuthProviders {
-        //             auth: vec!["my-auth-provider"]
-        //         }),
-        //     }
-        // );
     }
 }
