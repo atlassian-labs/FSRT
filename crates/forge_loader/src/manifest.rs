@@ -35,6 +35,7 @@ struct CommonKey<'a> {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct MacroMod<'a> {
+    #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
     config: Option<&'a str>,
     export: Option<&'a str>,
@@ -475,7 +476,7 @@ mod tests {
         assert_eq!(manifest.app.name, Some("My App"));
         assert_eq!(manifest.app.id, "my-app");
         assert_eq!(manifest.modules.macros.len(), 1);
-        assert_eq!(manifest.modules.macros[0].common_keys.key, "My Macro");
+        assert_eq!(manifest.modules.macros[0].common_keys.key, "my-macro");
         // assert_eq!(manifest.modules.macros[0].function, "my-macro");
         assert_eq!(manifest.modules.functions.len(), 1);
         assert_eq!(
@@ -525,15 +526,9 @@ mod tests {
                     "key": "my-macro",
                     "title": "My Macro",
                     "function": "Catch-me-if-you-can0", 
-                    "resolver": {
-                        "function": "Catch-me-if-you-can1"
-                    },
-                    "config": {
-                        "function": "Catch-me-if-you-can2"
-                    }, 
-                    "export": {
-                        "function": "Catch-me-if-you-can3"
-                    }
+                    "resolver": "Catch-me-if-you-can1",
+                    "config": "Catch-me-if-you-can2",
+                    "export": "Catch-me-if-you-can3"
                 }
                 ],
                 "function": [
@@ -573,7 +568,12 @@ mod tests {
             "Catch-me-if-you-can0"
         );
 
+        let Some(func_test) = manifest.modules.macros[0].common_keys.resolver else {
+            panic!("No dice!")
+        };
+        println!("what is func? {}", func_test);
         if let Some(func) = manifest.modules.macros[0].common_keys.resolver {
+            println!("what is func? {}", func);
             assert_eq!(func, "Catch-me-if-you-can1");
         }
 
@@ -665,22 +665,5 @@ mod tests {
                 admin: false
             })
         );
-
-        // assert_eq!(manifest.app.name, Some("My App"));
-        // assert_eq!(manifest.app.id, "my-app");
-        // assert_eq!(manifest.modules.macros.len(), 1);
-        // assert_eq!(manifest.modules.macros[0].common_keys.key, "My Macro");
-        // // assert_eq!(manifest.modules.macros[0].function, "my-macro");
-        // assert_eq!(manifest.modules.functions.len(), 1);
-        // assert_eq!(
-        //     manifest.modules.functions[0],
-        //     FunctionMod {
-        //         key: "my-function",
-        //         handler: "my-function-handler",
-        //         providers: Some(AuthProviders {
-        //             auth: vec!["my-auth-provider"]
-        //         }),
-        //     }
-        // );
     }
 }

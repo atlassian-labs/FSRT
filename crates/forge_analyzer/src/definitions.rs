@@ -2994,8 +2994,6 @@ impl ExportCollector<'_> {
         self.res_table.owning_module.push(self.curr_mod);
         self.default = Some(defid);
     }
-
-    // fn add_default(&mut self, def: DefRes, id: Option<Id>) -> DefId {}
 }
 
 // Import collector for run_resolver
