@@ -77,7 +77,7 @@ struct Args {
 
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the source code is located in `src/`
-    #[arg(name = "DIRS", value_hint = ValueHint::DirPath)]
+    #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
 }
 
