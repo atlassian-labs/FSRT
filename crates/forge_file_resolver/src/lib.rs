@@ -1,5 +1,7 @@
 use std::{
-    error, fmt,
+    error,
+    ffi::OsStr,
+    fmt,
     hash::Hash,
     path::{Component, Path, PathBuf},
     result::Result,
@@ -98,6 +100,12 @@ fn normalize_path(p: &Path) -> PathBuf {
     normalized
 }
 
+fn is_jslike(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| matches!(ext, "js" | "ts" | "jsx" | "tsx"))
+}
+
 impl ForgeResolver {
     fn add_module_inner(&mut self, path: &Path) -> usize {
         let path = normalize_path(path);
@@ -108,11 +116,16 @@ impl ForgeResolver {
 
     fn search_normalized(&self, path: &Path) -> Option<usize> {
         let path = normalize_path(path);
-        let path_no_extension = path.with_extension("");
-        self.modules
-            .iter()
-            .zip(&self.no_ext)
-            .position(|(modpath, no_ext)| (*modpath == path || *no_ext == path_no_extension))
+        // only resolve files with no extension if the import doesn't have one or is a [jt]sx? file
+        if path.extension().is_none() || is_jslike(&path) {
+            let path_no_extension = path.with_extension("");
+            self.modules
+                .iter()
+                .zip(&self.no_ext)
+                .position(|(modpath, no_ext)| (*modpath == path || *no_ext == path_no_extension))
+        } else {
+            self.modules.iter().position(|modpath| *modpath == path)
+        }
     }
 
     fn resolve_import_path(&self, module: usize, import: &Path) -> Result<usize, Error> {
