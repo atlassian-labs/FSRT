@@ -16,7 +16,39 @@ struct AuthProviders<'a> {
     #[serde(borrow)]
     auth: Vec<&'a str>,
 }
-// Maps the Functions Module in common Modules
+
+// Abstracting away key, function, and resolver into a single struct for reuse whoo!
+// And helper functions for ease of use
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct CommonKey<'a> {
+    key: &'a str,
+    resolver: Option<Resolver<'a>>,
+}
+
+impl<'a> CommonKey<'a> {
+    fn append_functions<I: IntoIterator<Item = &'a str, IntoIter = I> + Extend<I>>(
+        &self,
+        funcs: &mut I,
+    ) {
+        funcs.extend(self.key);
+        if let Some(Resolver {
+            function,
+            method,
+            endpoint,
+        }) = self.resolver
+        {
+            funcs.extend(function);
+        }
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Resolver<'a> {
+    pub function: Option<&'a str>,
+    pub method: Option<&'a str>,
+    pub endpoint: Option<&'a str>,
+}
+
+// Common Modules
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FunctionMod<'a> {
     key: &'a str,
@@ -25,14 +57,45 @@ pub struct FunctionMod<'a> {
     providers: Option<AuthProviders<'a>>,
 }
 
-// Abstracting away key, function, and resolver into a single struct for reuse whoo!
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct CommonKey<'a> {
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Consumer<'a> {
     key: &'a str,
-    function: &'a str,
-    resolver: Option<&'a str>,
+    queue: &'a str,
+    #[serde(borrow)]
+    pub resolver: Resolver<'a>,
 }
 
+// Trigger Modules
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Interval {
+    Hour,
+    Day,
+    Week,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ScheduledTrigger<'a> {
+    #[serde(flatten, borrow)]
+    raw: RawTrigger<'a>,
+    interval: Interval,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct RawTrigger<'a> {
+    key: &'a str,
+    function: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct EventTrigger<'a> {
+    #[serde(flatten, borrow)]
+    raw: RawTrigger<'a>,
+    #[serde(borrow)]
+    events: Vec<&'a str>,
+}
+
+// Confluence Modules
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct MacroMod<'a> {
     #[serde(flatten, borrow)]
@@ -49,66 +112,23 @@ struct ContentByLineItem<'a> {
     dynamic_properties: Option<&'a str>,
 }
 
+// Jira Modules
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct JiraAdminPage<'a> {
+    key: &'a str,
+    function: &'a str,
+    title: &'a str,
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct IssueGlance<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
     dynamic_properties: Option<&'a str>,
 }
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct AccessImportType<'a> {
-    #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
-    one_delete_import: Option<&'a str>,
-    start_import: Option<&'a str>,
-    stop_import: Option<&'a str>,
-    import_status: Option<&'a str>,
-}
 
-// WebTrigger => RawTrigger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct RawTrigger<'a> {
-    key: &'a str,
-    function: &'a str,
-}
-
-// Trigger => EventTriger; WHY IS THIS NAMED DIFFERENTLY !? WHO CHANGED NAMES
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct EventTrigger<'a> {
-    #[serde(flatten, borrow)]
-    raw: RawTrigger<'a>,
-    #[serde(borrow)]
-    events: Vec<&'a str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum Interval {
-    Hour,
-    Day,
-    Week,
-}
-
-// Thank you to whomeever kept this one the same. T.T
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct ScheduledTrigger<'a> {
-    #[serde(flatten, borrow)]
-    raw: RawTrigger<'a>,
-    interval: Interval,
-}
-
-// compass DataProvider module
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct DataProvider<'a> {
-    #[serde(flatten, borrow)]
-    key: &'a str,
-    callback: Option<&'a str>,
-}
-
-// Struct for Custom field Module. Check that search suggestion gets read in correctly.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct CustomField<'a> {
-    // all attributes below involve function calls
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
     value: Option<&'a str>,
@@ -133,13 +153,32 @@ pub struct WorkflowPostFunction<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
 }
+// Jira Service Management Modules
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct AccessImportType<'a> {
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
+    one_delete_import: Option<&'a str>,
+    start_import: Option<&'a str>,
+    stop_import: Option<&'a str>,
+    import_status: Option<&'a str>,
+}
+
+// Compass Modules
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DataProvider<'a> {
+    #[serde(flatten, borrow)]
+    key: &'a str,
+    callback: Option<&'a str>,
+}
 
 // Add more structs here for deserializing forge modules
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ForgeModules<'a> {
     // deserializing non user-invocable modules
-    #[serde(rename = "macro", default, borrow)]
-    macros: Vec<MacroMod<'a>>,
+    // Common Modules including triggers
+    #[serde(rename = "consumer", default, borrow)]
+    pub consumers: Vec<Consumer<'a>>,
     #[serde(rename = "function", default, borrow)]
     pub functions: Vec<FunctionMod<'a>>,
     #[serde(rename = "contentByLineItem", default, borrow)]
@@ -155,43 +194,32 @@ pub struct ForgeModules<'a> {
     event_triggers: Vec<EventTrigger<'a>>,
     #[serde(rename = "scheduledTrigger", default, borrow)]
     scheduled_triggers: Vec<ScheduledTrigger<'a>>,
-    #[serde(rename = "consumer", default, borrow)]
-    pub consumers: Vec<Consumer<'a>>,
-    #[serde(rename = "compass:dataProvider", default, borrow)]
-    pub data_provider: Vec<DataProvider<'a>>,
+    // confluence Modules
+    #[serde(rename = "contentByLineItem", default, borrow)]
+    content_by_line_item: Vec<ContentByLineItem<'a>>,
+    #[serde(rename = "macro", default, borrow)]
+    macros: Vec<MacroMod<'a>>,
+    // jira modules
     #[serde(rename = "jira:customField", default, borrow)]
     pub custom_field: Vec<CustomField<'a>>,
+    #[serde(rename = "jira:issueGlance", default, borrow)]
+    issue_glance: Vec<IssueGlance<'a>>,
+    #[serde(rename = "jira:accessImportType", default, borrow)]
+    access_import_type: Vec<AccessImportType<'a>>,
     #[serde(rename = "jira:uiModificatons", default, borrow)]
     pub ui_modifications: Vec<UiModificatons<'a>>,
     #[serde(rename = "jira:workflowValidator", default, borrow)]
     pub workflow_validator: Vec<WorkflowValidator<'a>>,
     #[serde(rename = "jira:workflowPostFunction", default, borrow)]
     pub workflow_post_function: Vec<WorkflowPostFunction<'a>>,
+    // Compass Modules
+    #[serde(rename = "compass:dataProvider", default, borrow)]
+    pub data_provider: Vec<DataProvider<'a>>,
     // deserializing admin pages
     #[serde(rename = "jira:adminPage", default, borrow)]
     pub jira_admin: Vec<JiraAdminPage<'a>>,
     #[serde(flatten)]
     extra: FxHashMap<String, Vec<Module<'a>>>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct JiraAdminPage<'a> {
-    key: &'a str,
-    function: &'a str,
-    title: &'a str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Consumer<'a> {
-    key: &'a str,
-    queue: &'a str,
-    #[serde(borrow)]
-    pub resolver: Resolver<'a>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Resolver<'a> {
-    pub function: &'a str,
-    method: Option<&'a str>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -288,21 +316,21 @@ impl<'a> ForgeModules<'a> {
             invokable_functions.extend(customfield.search_suggestions);
             invokable_functions.extend(customfield.edit);
 
-            invokable_functions.insert(customfield.common_keys.function);
-            invokable_functions.extend(customfield.common_keys.resolver);
+            invokable_functions.extend(customfield.common_keys.function);
+            invokable_functions.extend(customfield.common_keys.function);
         });
 
         self.ui_modifications.iter().for_each(|ui| {
-            invokable_functions.insert(ui.common_keys.function);
+            invokable_functions.extend(ui.common_keys.function);
             invokable_functions.extend(ui.common_keys.resolver);
         });
 
         self.workflow_validator.iter().for_each(|validator| {
             invokable_functions.insert(validator.common_keys.key);
 
-            invokable_functions.insert(validator.common_keys.function);
+            invokable_functions.extend(validator.common_keys.function);
 
-            invokable_functions.extend(validator.common_keys.resolver);
+            invokable_functions.extend(validator.common_keys.endpoint);
         });
 
         self.workflow_post_function
@@ -310,9 +338,9 @@ impl<'a> ForgeModules<'a> {
             .for_each(|post_function| {
                 invokable_functions.insert(post_function.common_keys.key);
 
-                invokable_functions.insert(post_function.common_keys.function);
+                invokable_functions.extend(post_function.common_keys.resolver.function);
 
-                invokable_functions.extend(post_function.common_keys.resolver);
+                // invokable_functions.extend(post_function.common_keys.function);
             });
 
         // get user invokable modules that have additional exposure endpoints.
@@ -320,7 +348,7 @@ impl<'a> ForgeModules<'a> {
         self.macros.iter().for_each(|macros| {
             invokable_functions.insert(macros.common_keys.key);
 
-            invokable_functions.insert(macros.common_keys.function);
+            invokable_functions.extend(macros.common_keys.function);
             invokable_functions.extend(macros.common_keys.resolver);
 
             invokable_functions.extend(macros.config);
@@ -328,13 +356,13 @@ impl<'a> ForgeModules<'a> {
         });
 
         self.issue_glance.iter().for_each(|issue| {
-            invokable_functions.insert(issue.common_keys.function);
+            invokable_functions.extend(issue.common_keys.function);
             invokable_functions.extend(issue.common_keys.resolver);
             invokable_functions.extend(issue.dynamic_properties);
         });
 
         self.access_import_type.iter().for_each(|access| {
-            invokable_functions.insert(access.common_keys.function);
+            invokable_functions.extend(access.common_keys.function);
             invokable_functions.extend(access.common_keys.resolver);
 
             invokable_functions.extend(access.one_delete_import);
@@ -526,7 +554,9 @@ mod tests {
                     "key": "my-macro",
                     "title": "My Macro",
                     "function": "Catch-me-if-you-can0", 
-                    "resolver": "Catch-me-if-you-can1",
+                    "resolver": [
+                        "function": "Catch-me-if-you-can1", 
+                    ]
                     "config": "Catch-me-if-you-can2",
                     "export": "Catch-me-if-you-can3"
                 }
