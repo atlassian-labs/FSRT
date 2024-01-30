@@ -918,7 +918,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 };
                 let first_arg = first_arg?;
                 let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
-                let api_call = classify_api_call(first_arg);
                 match classify_api_call(first_arg) {
                     ApiCallKind::Unknown => {
                         if is_as_app {
@@ -960,8 +959,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 {
                     if *name == *"authorize" {
                         return Some(Intrinsic::Authorize(IntrinsicName::Other));
-                    } else {
-                        return None;
                     }
                 }
                 None
