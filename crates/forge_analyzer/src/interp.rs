@@ -146,7 +146,7 @@ pub trait Dataflow<'cx>: Sized {
         bb: BasicBlockId,
         block: &'cx BasicBlock,
         initial_state: Self::State,
-        arguments: Option<Vec<Value>>,
+        _arguments: Option<Vec<Value>>,
     ) -> Self::State {
         let mut state = initial_state;
         for (stmt, inst) in block.iter().enumerate() {
@@ -158,22 +158,22 @@ pub trait Dataflow<'cx>: Sized {
 
     fn add_variable<C: Runner<'cx, State = Self::State>>(
         &mut self,
-        interp: &mut Interp<'cx, C>,
-        lval: &Variable,
-        varid: &VarId,
-        def: DefId,
-        rvalue: &Rvalue,
+        _interp: &mut Interp<'cx, C>,
+        _lval: &Variable,
+        _varid: &VarId,
+        _def: DefId,
+        _rvalue: &Rvalue,
     ) {
     }
 
     fn insert_value<C: Runner<'cx, State = Self::State>>(
         &mut self,
-        interp: &mut Interp<'cx, C>,
-        operand: &Operand,
-        lval: &Variable,
-        varid: &VarId,
-        def: DefId,
-        prev_values: Option<Vec<Const>>,
+        _interp: &mut Interp<'cx, C>,
+        _operand: &Operand,
+        _lval: &Variable,
+        _varid: &VarId,
+        _def: DefId,
+        _prev_values: Option<Vec<Const>>,
     ) {
     }
 
@@ -233,7 +233,7 @@ pub trait Dataflow<'cx>: Sized {
     fn read_class_from_variable<C: Runner<'cx, State = Self::State>>(
         &mut self,
         _interp: &Interp<'cx, C>,
-        defid: DefId,
+        _defid: DefId,
     ) -> Option<Class> {
         None
     }
@@ -241,7 +241,7 @@ pub trait Dataflow<'cx>: Sized {
     fn read_class_from_object<C: Runner<'cx, State = Self::State>>(
         &mut self,
         _interp: &Interp<'cx, C>,
-        defid: DefId,
+        _defid: DefId,
     ) -> Option<Class> {
         None
     }
@@ -250,18 +250,18 @@ pub trait Dataflow<'cx>: Sized {
         &self,
         _interp: &Interp<'cx, C>,
         _def: DefId,
-        const_var: Const,
+        _const_var: Const,
     ) -> Option<&Value> {
         None
     }
 
     fn insert_with_existing_value<C: Runner<'cx, State = Self::State>>(
         &mut self,
-        operand: &Operand,
-        value: &Value,
-        varid: &VarId,
-        def: DefId,
-        interp: &Interp<'cx, C>,
+        _operand: &Operand,
+        _value: &Value,
+        _varid: &VarId,
+        _def: DefId,
+        _interp: &Interp<'cx, C>,
     ) {
     }
 
@@ -269,7 +269,7 @@ pub trait Dataflow<'cx>: Sized {
         &self,
         _interp: &Interp<'cx, C>,
         _def: DefId,
-        obj: Class,
+        _obj: Class,
     ) -> Option<&Value> {
         None
     }
@@ -316,7 +316,7 @@ pub trait Dataflow<'cx>: Sized {
         &self,
         _interp: &Interp<'cx, C>,
         _def: DefId,
-        defid: DefId,
+        _defid: DefId,
     ) -> Option<&Value> {
         None
     }
@@ -340,8 +340,8 @@ pub trait Dataflow<'cx>: Sized {
         &self,
         _interp: &Interp<'cx, C>,
         _def: DefId,
-        const_var: Const,
-        intrinsic_argument: &mut IntrinsicArguments,
+        _const_var: Const,
+        _intrinsic_argument: &mut IntrinsicArguments,
     ) {
     }
 }

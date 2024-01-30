@@ -73,42 +73,38 @@ impl<D: JoinSemiLattice> JoinSemiLattice for Vec<D> {
 }
 
 pub struct TaintDataflow {
-    needs_call: Vec<DefId>,
     started: bool,
 }
 
 impl<'cx> Dataflow<'cx> for TaintDataflow {
     type State = Vec<Taint>;
 
-    fn with_interp<C: Runner<'cx, State = Self::State>>(interp: &Interp<'cx, C>) -> Self {
-        Self {
-            needs_call: vec![],
-            started: false,
-        }
+    fn with_interp<C: Runner<'cx, State = Self::State>>(_interp: &Interp<'cx, C>) -> Self {
+        Self { started: false }
     }
 
     fn transfer_call<C: Runner<'cx, State = Self::State>>(
         &mut self,
-        interp: &Interp<'cx, C>,
-        def: DefId,
-        loc: Location,
-        block: &'cx BasicBlock,
-        callee: &'cx Operand,
+        _interp: &Interp<'cx, C>,
+        _def: DefId,
+        _loc: Location,
+        _block: &'cx BasicBlock,
+        _callee: &'cx Operand,
         initial_state: Self::State,
-        oprands: SmallVec<[crate::ir::Operand; 4]>,
+        _oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         initial_state
     }
 
     fn transfer_intrinsic<C: Runner<'cx, State = Self::State>>(
         &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        loc: Location,
-        block: &'cx BasicBlock,
-        intrinsic: &'cx Intrinsic,
+        _interp: &mut Interp<'cx, C>,
+        _def: DefId,
+        _loc: Location,
+        _block: &'cx BasicBlock,
+        _intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
+        _operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         initial_state
     }
@@ -165,7 +161,7 @@ impl<'cx> Dataflow<'cx> for TaintDataflow {
         bb: BasicBlockId,
         block: &'cx BasicBlock,
         mut initial_state: Self::State,
-        arguments: Option<Vec<Value>>,
+        _arguments: Option<Vec<Value>>,
     ) -> Self::State {
         if initial_state.len() < interp.body().vars.len() {
             initial_state.resize(interp.body().vars.len(), Taint::Unknown);
@@ -336,24 +332,24 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
 
     fn visit_intrinsic(
         &mut self,
-        interp: &Interp<'cx, Self>,
-        intrinsic: &'cx Intrinsic,
-        def: DefId,
+        _interp: &Interp<'cx, Self>,
+        _intrinsic: &'cx Intrinsic,
+        _def: DefId,
         state: &Self::State,
-        operands: Option<SmallVec<[Operand; 4]>>,
+        _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         ControlFlow::Continue(state.clone())
     }
     fn visit_block(
         &mut self,
-        interp: &Interp<'cx, Self>,
-        def: DefId,
-        id: BasicBlockId,
+        _interp: &Interp<'cx, Self>,
+        _def: DefId,
+        _id: BasicBlockId,
         block: &'cx BasicBlock,
         curr_state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
         for inst in &block.insts {
-            if let Inst::Assign(l, r) = inst {
+            if let Inst::Assign(l, _r) = inst {
                 if let [Projection::Computed(Base::Var(fst)), Projection::Computed(Base::Var(snd)), ..] =
                     *l.projections
                 {
@@ -371,16 +367,12 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
 }
 
 pub struct AuthZChecker {
-    visit: bool,
     vulns: Vec<AuthZVuln>,
 }
 
 impl AuthZChecker {
     pub fn new() -> Self {
-        Self {
-            visit: true,
-            vulns: vec![],
-        }
+        Self { vulns: vec![] }
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthZVuln> {
@@ -476,9 +468,9 @@ impl<'cx> Runner<'cx> for AuthZChecker {
         &mut self,
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
-        def: DefId,
+        _def: DefId,
         state: &Self::State,
-        operands: Option<SmallVec<[Operand; 4]>>,
+        _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         match *intrinsic {
             Intrinsic::Authorize(_) => {
@@ -555,7 +547,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         _block: &'cx BasicBlock,
         intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
+        _operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         match *intrinsic {
             Intrinsic::Authorize(_) => initial_state,
@@ -579,7 +571,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
+        _operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
             return initial_state;
@@ -617,16 +609,12 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
 }
 
 pub struct AuthenticateChecker {
-    visit: bool,
     vulns: Vec<AuthNVuln>,
 }
 
 impl AuthenticateChecker {
     pub fn new() -> Self {
-        Self {
-            visit: false,
-            vulns: vec![],
-        }
+        Self { vulns: vec![] }
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthNVuln> {
@@ -650,9 +638,9 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
         &mut self,
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
-        def: DefId,
+        _def: DefId,
         state: &Self::State,
-        operands: Option<SmallVec<[Operand; 4]>>,
+        _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         match *intrinsic {
             Intrinsic::Authorize(_) => ControlFlow::Continue(*state),
@@ -789,9 +777,9 @@ impl<'cx> Dataflow<'cx> for SecretDataflow {
         _def: DefId,
         _loc: Location,
         _block: &'cx BasicBlock,
-        intrinsic: &'cx Intrinsic,
+        _intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
+        _operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         initial_state
     }
@@ -799,12 +787,12 @@ impl<'cx> Dataflow<'cx> for SecretDataflow {
     fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
-        def: DefId,
-        loc: Location,
+        _def: DefId,
+        _loc: Location,
         _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
+        _operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
             return initial_state;
@@ -829,16 +817,12 @@ impl<'cx> Dataflow<'cx> for SecretDataflow {
 }
 
 pub struct SecretChecker {
-    visit: bool,
     vulns: Vec<SecretVuln>,
 }
 
 impl SecretChecker {
     pub fn new() -> Self {
-        Self {
-            visit: true,
-            vulns: vec![],
-        }
+        Self { vulns: vec![] }
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = SecretVuln> {
@@ -1197,7 +1181,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
-        loc: Location,
+        _loc: Location,
         _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
@@ -1221,7 +1205,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         bb: BasicBlockId,
         block: &'cx BasicBlock,
         initial_state: Self::State,
-        arguments: Option<Vec<Value>>,
+        _arguments: Option<Vec<Value>>,
     ) -> Self::State {
         let mut state = initial_state;
 
@@ -1241,7 +1225,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         self.super_join_term(interp, def, block, state, worklist);
-        for (def, arguments) in self.needs_call.drain(..) {
+        for (def, _arguments) in self.needs_call.drain(..) {
             worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
     }
@@ -1326,11 +1310,11 @@ impl<'cx> Runner<'cx> for PermissionChecker {
 
     fn visit_intrinsic(
         &mut self,
-        interp: &Interp<'cx, Self>,
-        intrinsic: &'cx Intrinsic,
-        def: DefId,
+        _interp: &Interp<'cx, Self>,
+        _intrinsic: &'cx Intrinsic,
+        _def: DefId,
         state: &Self::State,
-        operands: Option<SmallVec<[Operand; 4]>>,
+        _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         ControlFlow::Continue(*state)
     }
@@ -1368,11 +1352,11 @@ impl<'cx> Runner<'cx> for DefintionAnalysisRunner {
 
     fn visit_intrinsic(
         &mut self,
-        interp: &Interp<'cx, Self>,
-        intrinsic: &'cx Intrinsic,
-        def: DefId,
-        state: &Self::State,
-        operands: Option<SmallVec<[Operand; 4]>>,
+        _interp: &Interp<'cx, Self>,
+        _intrinsic: &'cx Intrinsic,
+        _def: DefId,
+        _state: &Self::State,
+        _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         ControlFlow::Break(())
     }
@@ -1401,9 +1385,9 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         _def: DefId,
         _loc: Location,
         _block: &'cx BasicBlock,
-        intrinsic: &'cx Intrinsic,
+        _intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
+        _operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         initial_state
     }
@@ -1412,7 +1396,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
-        loc: Location,
+        _loc: Location,
         _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
@@ -1488,7 +1472,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                 }
                             }
                         }
-                        Rvalue::Read(operand) => {
+                        Rvalue::Read(_operand) => {
                             if let Rvalue::Read(read) = rvalue {
                                 match read {
                                     Operand::Lit(lit) => {
@@ -1530,7 +1514,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                     Operand::Var(var) => {
                                         // println!("{var}");
                                         if let Base::Var(varid) = var.base {
-                                            let values = interp
+                                            let _values = interp
                                                 .value_manager
                                                 .varid_to_value
                                                 .get(&(def, varid, None));
@@ -1635,7 +1619,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                 if let Operand::Var(variable) = operand {
                     if let Base::Var(varid_rval) = variable.base {
                         interp.value_manager.varid_to_value.clone().iter().for_each(
-                            |((defid, varid_rval_potential, projection), value)| {
+                            |((_defid, varid_rval_potential, projection), value)| {
                                 if varid_rval_potential == &varid_rval {
                                     interp.add_value(def, *varid, value.clone(), projection.clone())
                                 }
