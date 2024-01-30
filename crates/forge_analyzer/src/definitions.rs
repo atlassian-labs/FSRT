@@ -903,6 +903,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
         fn is_storage_read(prop: &JsWord) -> bool {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
+
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
@@ -958,7 +959,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     self.res.is_imported_from(def, "@forge/api")
                 {
                     if *name == *"authorize" {
-                        let block = self.block;
                         return Some(Intrinsic::Authorize(IntrinsicName::Other));
                     } else {
                         return None;
