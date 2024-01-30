@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{forgepermissions::ForgePermissions, Error};
+use crate::Error;
 use forge_utils::FxHashMap;
 use itertools::{Either, Itertools};
 use serde::Deserialize;
