@@ -917,6 +917,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 };
                 let first_arg = first_arg?;
                 let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
+                let api_call = classify_api_call(first_arg);
                 match classify_api_call(first_arg) {
                     ApiCallKind::Unknown => {
                         if is_as_app {
@@ -952,20 +953,19 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     _ => None,
                 }
             }
-
             [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/api").is_some() => {
                 if let Some(ImportKind::Named(ref name)) =
                     self.res.is_imported_from(def, "@forge/api")
                 {
                     if *name == *"authorize" {
-                        Some(Intrinsic::Authorize(IntrinsicName::Other));
+                        let block = self.block;
+                        return Some(Intrinsic::Authorize(IntrinsicName::Other));
                     } else {
                         return None;
                     }
                 }
                 None
             }
-
             //[PropPath::Def(def), PropPath::Static(a), PropPath::Static(b)]
             // 1. Star, identifier, method
             [PropPath::Def(def), PropPath::Static(ref identifier), PropPath::Static(ref method)] => {
@@ -1225,6 +1225,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
+        // debug!("in da lower call");
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first() {
             if self.res.is_imported_from(id, "@forge/ui").map_or(
@@ -1237,7 +1238,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 || calls_method(callee, "catch")
             {
                 if let [ExprOrSpread { expr, .. }] = args {
-                    debug!("found useState/then/map/foreach/filter");
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, .. }) => match &**body {
                             BlockStmtOrExpr::BlockStmt(stmt) => {
@@ -1277,15 +1277,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
         let first_arg = args.first().map(|expr| &*expr.expr);
         let intrinsic = self.as_intrinsic(&props, first_arg);
-        debug!("HELLO INTRINSIC!? {intrinsic:?}");
-        let call = match self.as_intrinsic(&props, first_arg) {
-            Some(int) => {
-                debug!("this should be working T.T");
-                Rvalue::Intrinsic(int, lowered_args)
-            }
+        let call = match intrinsic {
+            Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
         };
-
         let res = self.body.push_tmp(self.block, call, None);
         Operand::with_var(res)
     }
@@ -1638,10 +1633,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 );
                 Operand::with_var(phi)
             }
-            Expr::Call(CallExpr { callee, args, .. }) => {
-                debug!("Did this lower_call get called?");
-                self.lower_call(callee.into(), args)
-            }
+            Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
             Expr::New(NewExpr { callee, args, .. }) => {
                 if let Expr::Ident(ident) = &**callee {
                     // remove the clone
@@ -1904,7 +1896,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 | Decl::TsModule(_) => {}
             },
             Stmt::Expr(ExprStmt { expr, .. }) => {
-                debug!("guessing it's getting called here? In expression statement");
                 let opnd = self.lower_expr(expr, None);
                 self.body.push_expr(self.block, Rvalue::Read(opnd));
             }
@@ -2510,7 +2501,6 @@ impl Visit for FunctionCollector<'_> {
 
 impl FunctionCollector<'_> {
     fn handle_function(&mut self, n: &Function, owner: Option<DefId>) {
-        debug!("When does this function get called T.T");
         let owner = self.parent.unwrap_or_else(|| {
             if let Some(defid) = owner {
                 defid
@@ -2720,7 +2710,6 @@ impl Visit for Lowerer<'_> {
     }
 
     fn visit_call_expr(&mut self, n: &CallExpr) {
-        debug!("checking function call~!~");
         if let Some(expr) = n.callee.as_expr() {
             if let Some((objid, ResolverDef::FnDef)) = as_resolver(expr, self.res, self.curr_mod) {
                 if let [ExprOrSpread { expr: name, .. }, ExprOrSpread { expr: args, .. }] = &*n.args
