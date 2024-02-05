@@ -41,11 +41,18 @@ impl<'a> CommonKey<'a> {
         }
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Resolver<'a> {
     pub function: Option<&'a str>,
     pub method: Option<&'a str>,
     pub endpoint: Option<&'a str>,
+}
+
+// Implementing a struct for structs with 1 value (function)
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct JustFunc<'a> {
+    pub function: Option<&'a str>,
 }
 
 // Common Modules
@@ -74,6 +81,7 @@ enum Interval {
     Week,
 }
 
+// Maps to Scheduled Trigger under Common Modules
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ScheduledTrigger<'a> {
     #[serde(flatten, borrow)]
@@ -81,12 +89,14 @@ struct ScheduledTrigger<'a> {
     interval: Interval,
 }
 
+// Maps to Web Trigger under Common Modules
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RawTrigger<'a> {
     key: &'a str,
     function: &'a str,
 }
 
+// maps to Trigger under Common Modules
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct EventTrigger<'a> {
     #[serde(flatten, borrow)]
@@ -95,21 +105,57 @@ struct EventTrigger<'a> {
     events: Vec<&'a str>,
 }
 
-// Confluence Modules
+// Compass Modules
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct MacroMod<'a> {
+pub struct CompassAdminPage<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
-    config: Option<&'a str>,
-    export: Option<&'a str>,
 }
 
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ComponentPage<'a> {
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
+}
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DataProvider<'a> {
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
+    callback: JustFunc<'a>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CompassGlobalPage<'a> {
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TeamPage<'a> {
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
+}
+
+// Confluence Modules
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ContentAction<'a> {
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
+}
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ContentByLineItem<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
     #[serde(borrow)]
-    dynamic_properties: Option<&'a str>,
+    dynamic_properties: JustFunc<'a>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct MacroMod<'a> {
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
+    config: JustFunc<'a>,
+    export: JustFunc<'a>,
 }
 
 // Jira Modules
@@ -118,13 +164,7 @@ pub struct JiraAdminPage<'a> {
     key: &'a str,
     function: &'a str,
     title: &'a str,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct IssueGlance<'a> {
-    #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
-    dynamic_properties: Option<&'a str>,
+    resolver: Resolver<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -134,6 +174,13 @@ pub struct CustomField<'a> {
     value: Option<&'a str>,
     search_suggestions: Option<&'a str>,
     edit: Option<&'a str>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct IssueGlance<'a> {
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
+    dynamic_properties: JustFunc<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -155,21 +202,13 @@ pub struct WorkflowPostFunction<'a> {
 }
 // Jira Service Management Modules
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct AccessImportType<'a> {
+struct AssetsImportType<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
-    one_delete_import: Option<&'a str>,
-    start_import: Option<&'a str>,
-    stop_import: Option<&'a str>,
-    import_status: Option<&'a str>,
-}
-
-// Compass Modules
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct DataProvider<'a> {
-    #[serde(flatten, borrow)]
-    key: &'a str,
-    callback: Option<&'a str>,
+    one_delete_import: JustFunc<'a>,
+    start_import: JustFunc<'a>,
+    stop_import: JustFunc<'a>,
+    import_status: JustFunc<'a>,
 }
 
 // Add more structs here for deserializing forge modules
@@ -194,9 +233,32 @@ pub struct ForgeModules<'a> {
     event_triggers: Vec<EventTrigger<'a>>,
     #[serde(rename = "scheduledTrigger", default, borrow)]
     scheduled_triggers: Vec<ScheduledTrigger<'a>>,
+    // Compass Modules
+    #[serde(rename = "compass:adminPage", default, borrow)]
+    compass_admin_page: Vec<CommonKey<'a>>,
+    #[serde(rename = "compass:componentPage", default, borrow)]
+    component_page: Vec<CommonKey<'a>>,
+    #[serde(rename = "compass:dataProvider", default, borrow)]
+    pub data_provider: Vec<DataProvider<'a>>,
+    #[serde(rename = "compass:globalPage", default, borrow)]
+    compass_global_page: Vec<CommonKey<'a>>,
+    #[serde(rename = "compass:teamPage", default, borrow)]
+    team_page: Vec<CommonKey<'a>>,
     // confluence Modules
-    #[serde(rename = "contentByLineItem", default, borrow)]
+    #[serde(rename = "confluence:contentAction", default, borrow)]
+    content_action: Vec<CommonKey<'a>>,
+    #[serde(rename = "confluence:contentByLineItem", default, borrow)]
     content_by_line_item: Vec<ContentByLineItem<'a>>,
+    #[serde(rename = "confluence:contextMenu", default, borrow)]
+    context_action: Vec<CommonKey<'a>>,
+    #[serde(rename = "confluence:globalPage", default, borrow)]
+    confluence_global_page: Vec<CommonKey<'a>>,
+    #[serde(rename = "confluence:homepageFeed", default, borrow)]
+    homepage_feed: Vec<CommonKey<'a>>,
+    #[serde(rename = "confluence:spacePage", default, borrow)]
+    space_page: Vec<CommonKey<'a>>,
+    #[serde(rename = "confluence:spaceSettings", default, borrow)]
+    space_settings: Vec<CommonKey<'a>>,
     #[serde(rename = "macro", default, borrow)]
     macros: Vec<MacroMod<'a>>,
     // jira modules
@@ -204,20 +266,18 @@ pub struct ForgeModules<'a> {
     pub custom_field: Vec<CustomField<'a>>,
     #[serde(rename = "jira:issueGlance", default, borrow)]
     issue_glance: Vec<IssueGlance<'a>>,
-    #[serde(rename = "jira:accessImportType", default, borrow)]
-    access_import_type: Vec<AccessImportType<'a>>,
     #[serde(rename = "jira:uiModificatons", default, borrow)]
     pub ui_modifications: Vec<UiModificatons<'a>>,
     #[serde(rename = "jira:workflowValidator", default, borrow)]
     pub workflow_validator: Vec<WorkflowValidator<'a>>,
     #[serde(rename = "jira:workflowPostFunction", default, borrow)]
     pub workflow_post_function: Vec<WorkflowPostFunction<'a>>,
-    // Compass Modules
-    #[serde(rename = "compass:dataProvider", default, borrow)]
-    pub data_provider: Vec<DataProvider<'a>>,
+    // Jira Service Management Modules
+    #[serde(rename = "jiraServiceManagement:assetsImportType", default, borrow)]
+    access_import_type: Vec<AssetsImportType<'a>>,
     // deserializing admin pages
     #[serde(rename = "jira:adminPage", default, borrow)]
-    pub jira_admin: Vec<JiraAdminPage<'a>>,
+    pub jira_admin_page: Vec<JiraAdminPage<'a>>,
     #[serde(flatten)]
     extra: FxHashMap<String, Vec<Module<'a>>>,
 }
@@ -307,10 +367,61 @@ impl<'a> ForgeModules<'a> {
             .sort_unstable_by_key(|trigger| trigger.function);
         let mut invokable_functions = BTreeSet::new();
 
+        // Compass Module Functions
+        self.compass_admin_page
+            .iter()
+            .for_each(|compass_admin| compass_admin.append_functions(&mut invokable_functions));
+
+        self.component_page
+            .iter()
+            .for_each(|component_page| component_page.append_functions(&mut invokable_functions));
+
         self.data_provider.iter().for_each(|dataprovider| {
-            invokable_functions.extend(dataprovider.callback);
+            invokable_functions.extend(dataprovider.callback.function);
         });
 
+        self.compass_global_page
+            .iter()
+            .for_each(|global_page| global_page.append_functions(&mut invokable_functions));
+
+        self.team_page
+            .iter()
+            .for_each(|team_page| team_page.append_functions(&mut invokable_functions));
+
+        // Confluence Module Functions
+        // get user invokable modules that have additional exposure endpoints.
+        // ie macros has config and export fields on top of resolver fields that are functions
+        self.content_action
+            .iter()
+            .for_each(|content_action| content_action.append_functions(&mut invokable_functions));
+
+        self.content_by_line_item.iter().for_each(|by_line_item| {
+            by_line_item
+                .common_keys
+                .append_functions(&mut invokable_functions);
+            invokable_functions.extend(by_line_item.dynamic_properties.function)
+        });
+
+        self.macros.iter().for_each(|macros| {
+            macros
+                .common_keys
+                .append_functions(&mut invokable_functions);
+
+            invokable_functions.extend(macros.config.function);
+            invokable_functions.extend(macros.export.function);
+        });
+
+        self.access_import_type.iter().for_each(|access| {
+            access
+                .common_keys
+                .append_functions(&mut invokable_functions);
+            invokable_functions.extend(access.one_delete_import.function);
+            invokable_functions.extend(access.stop_import.function);
+            invokable_functions.extend(access.start_import.function);
+            invokable_functions.extend(access.import_status.function);
+        });
+
+        // Jira module functons
         self.custom_field.iter().for_each(|customfield| {
             invokable_functions.extend(customfield.value);
             invokable_functions.extend(customfield.search_suggestions);
@@ -318,6 +429,10 @@ impl<'a> ForgeModules<'a> {
             customfield
                 .common_keys
                 .append_functions(&mut invokable_functions);
+        });
+        self.issue_glance.iter().for_each(|issue| {
+            issue.common_keys.append_functions(&mut invokable_functions);
+            invokable_functions.extend(issue.dynamic_properties.function);
         });
 
         self.ui_modifications.iter().for_each(|ui| {
@@ -338,32 +453,6 @@ impl<'a> ForgeModules<'a> {
                     .append_functions(&mut invokable_functions);
             });
 
-        // get user invokable modules that have additional exposure endpoints.
-        // ie macros has config and export fields on top of resolver fields that are functions
-        self.macros.iter().for_each(|macros| {
-            invokable_functions.insert(macros.common_keys.key);
-            macros
-                .common_keys
-                .append_functions(&mut invokable_functions);
-
-            invokable_functions.extend(macros.config);
-            invokable_functions.extend(macros.export);
-        });
-
-        self.issue_glance.iter().for_each(|issue| {
-            issue.common_keys.append_functions(&mut invokable_functions);
-            invokable_functions.extend(issue.dynamic_properties);
-        });
-
-        self.access_import_type.iter().for_each(|access| {
-            access
-                .common_keys
-                .append_functions(&mut invokable_functions);
-            invokable_functions.extend(access.one_delete_import);
-            invokable_functions.extend(access.stop_import);
-            invokable_functions.extend(access.start_import);
-            invokable_functions.extend(access.import_status);
-        });
         self.functions.into_iter().flat_map(move |func| {
             let web_trigger = self
                 .webtriggers
@@ -373,7 +462,7 @@ impl<'a> ForgeModules<'a> {
             // this checks whether the funton being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
             // optionally: compass:adminPage could also be considered.
             let admin = self
-                .jira_admin
+                .jira_admin_page
                 .iter()
                 .any(|admin_function| admin_function.function == func.key);
             Ok::<_, Error>(Entrypoint {
