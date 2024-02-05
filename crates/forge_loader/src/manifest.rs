@@ -9,7 +9,8 @@ use crate::Error;
 use forge_utils::FxHashMap;
 use itertools::Itertools;
 use serde::Deserialize;
-use tracing::trace;
+use serde_json::map::Iter;
+use tracing::{info, trace};
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct AuthProviders<'a> {
@@ -22,15 +23,14 @@ struct AuthProviders<'a> {
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct CommonKey<'a> {
     key: &'a str,
+    function: Option<&'a str>,
     resolver: Option<Resolver<'a>>,
 }
 
 impl<'a> CommonKey<'a> {
-    fn append_functions<I: IntoIterator<Item = &'a str, IntoIter = I> + Extend<I>>(
-        &self,
-        funcs: &mut I,
-    ) {
-        funcs.extend(self.key);
+    fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
+        funcs.extend(self.function);
+
         if let Some(Resolver {
             function,
             method,
@@ -315,56 +315,50 @@ impl<'a> ForgeModules<'a> {
             invokable_functions.extend(customfield.value);
             invokable_functions.extend(customfield.search_suggestions);
             invokable_functions.extend(customfield.edit);
-
-            invokable_functions.extend(customfield.common_keys.function);
-            invokable_functions.extend(customfield.common_keys.function);
+            customfield
+                .common_keys
+                .append_functions(&mut invokable_functions);
         });
 
         self.ui_modifications.iter().for_each(|ui| {
-            invokable_functions.extend(ui.common_keys.function);
-            invokable_functions.extend(ui.common_keys.resolver);
+            ui.common_keys.append_functions(&mut invokable_functions);
         });
 
         self.workflow_validator.iter().for_each(|validator| {
-            invokable_functions.insert(validator.common_keys.key);
-
-            invokable_functions.extend(validator.common_keys.function);
-
-            invokable_functions.extend(validator.common_keys.endpoint);
+            validator
+                .common_keys
+                .append_functions(&mut invokable_functions)
         });
 
         self.workflow_post_function
             .iter()
             .for_each(|post_function| {
-                invokable_functions.insert(post_function.common_keys.key);
-
-                invokable_functions.extend(post_function.common_keys.resolver.function);
-
-                // invokable_functions.extend(post_function.common_keys.function);
+                post_function
+                    .common_keys
+                    .append_functions(&mut invokable_functions);
             });
 
         // get user invokable modules that have additional exposure endpoints.
         // ie macros has config and export fields on top of resolver fields that are functions
         self.macros.iter().for_each(|macros| {
             invokable_functions.insert(macros.common_keys.key);
-
-            invokable_functions.extend(macros.common_keys.function);
-            invokable_functions.extend(macros.common_keys.resolver);
+            macros
+                .common_keys
+                .append_functions(&mut invokable_functions);
 
             invokable_functions.extend(macros.config);
             invokable_functions.extend(macros.export);
         });
 
         self.issue_glance.iter().for_each(|issue| {
-            invokable_functions.extend(issue.common_keys.function);
-            invokable_functions.extend(issue.common_keys.resolver);
+            issue.common_keys.append_functions(&mut invokable_functions);
             invokable_functions.extend(issue.dynamic_properties);
         });
 
         self.access_import_type.iter().for_each(|access| {
-            invokable_functions.extend(access.common_keys.function);
-            invokable_functions.extend(access.common_keys.resolver);
-
+            access
+                .common_keys
+                .append_functions(&mut invokable_functions);
             invokable_functions.extend(access.one_delete_import);
             invokable_functions.extend(access.stop_import);
             invokable_functions.extend(access.start_import);
@@ -593,20 +587,17 @@ mod tests {
         }"#;
         let manifest: ForgeManifest = serde_json::from_str(json).unwrap();
         assert_eq!(manifest.modules.macros.len(), 1);
-        assert_eq!(
-            manifest.modules.macros[0].common_keys.function,
-            "Catch-me-if-you-can0"
-        );
-
-        let Some(func_test) = manifest.modules.macros[0].common_keys.resolver else {
-            panic!("No dice!")
-        };
-        println!("what is func? {}", func_test);
-        if let Some(func) = manifest.modules.macros[0].common_keys.resolver {
-            println!("what is func? {}", func);
-            assert_eq!(func, "Catch-me-if-you-can1");
+        if let Some(string) = manifest.modules.macros[0].common_keys.function {
+            assert_eq!(string, "Catch-me-if-you-can0");
         }
 
+        let Some(ref resolver) = manifest.modules.macros[0].common_keys.resolver else {
+            panic!("No dice!")
+        };
+
+        if let Some(string) = resolver.function {
+            assert_eq!(string, "Catch-me-if-you-can1");
+        }
         if let Some(func) = manifest.modules.macros[0].config {
             assert_eq!(func, "Catch-me-if-you-can2");
         }
