@@ -399,68 +399,109 @@ pub struct Entrypoint<'a> {
 
 impl<'a> ForgeModules<'a> {
     // TODO: function returns iterator where each item is some specified type.
-    pub fn into_analyzable_functions(mut self) -> impl Iterator<Item = Entrypoint<'a>> {
+    pub fn into_analyzable_functions(self) -> impl Iterator<Item = Entrypoint<'a>> {
+        // destructuring ForgeModules to remember to add new modules to this
+        let Self {
+            mut webtriggers,
+            custom_field,
+            consumers: _,
+            functions,
+            event_triggers: _,
+            scheduled_triggers: _,
+            compass_admin_page,
+            component_page,
+            data_provider,
+            compass_global_page,
+            team_page,
+            content_action,
+            content_by_line_item,
+            context_menu,
+            confluence_global_page,
+            homepage_feed,
+            space_page,
+            space_settings,
+            macros,
+            jira_admin_page,
+            custom_field_type,
+            dashboard_background_script,
+            dashboard_gadget,
+            jira_global_page,
+            issue_action,
+            issue_context,
+            issue_glance,
+            issue_panel,
+            issue_view_background_script,
+            jql_function,
+            project_page,
+            project_settings_page,
+            ui_modifications,
+            workflow_validator,
+            workflow_post_function,
+            assets_import_type,
+            extra: _,
+        } = self;
+
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         self.webtriggers
             .sort_unstable_by_key(|trigger| trigger.function);
         let mut invokable_functions = BTreeSet::new();
 
         // Compass Module Functions
-        self.compass_admin_page
+        compass_admin_page
             .iter()
             .for_each(|compass_admin| compass_admin.append_functions(&mut invokable_functions));
 
-        self.component_page
+        component_page
             .iter()
             .for_each(|component_page| component_page.append_functions(&mut invokable_functions));
 
-        self.data_provider.iter().for_each(|dataprovider| {
+        data_provider.iter().for_each(|dataprovider| {
             invokable_functions.extend(dataprovider.callback.function);
         });
 
-        self.compass_global_page
+        compass_global_page
             .iter()
             .for_each(|global_page| global_page.append_functions(&mut invokable_functions));
 
-        self.team_page
+        team_page
             .iter()
             .for_each(|team_page| team_page.append_functions(&mut invokable_functions));
 
         // Confluence Module Functions
         // get user invokable modules that have additional exposure endpoints.
         // ie macros has config and export fields on top of resolver fields that are functions
-        self.content_action
+        content_action
             .iter()
             .for_each(|content_action| content_action.append_functions(&mut invokable_functions));
 
-        self.content_by_line_item.iter().for_each(|by_line_item| {
+        content_by_line_item.iter().for_each(|by_line_item| {
             by_line_item
                 .common_keys
                 .append_functions(&mut invokable_functions);
             invokable_functions.extend(by_line_item.dynamic_properties.function)
         });
 
-        self.context_menu
+        context_menu
             .iter()
             .for_each(|context_menu| context_menu.append_functions(&mut invokable_functions));
 
-        self.confluence_global_page
+        confluence_global_page
             .iter()
             .for_each(|global_page| global_page.append_functions(&mut invokable_functions));
 
-        self.homepage_feed
+        homepage_feed
             .iter()
             .for_each(|homepage_feed| homepage_feed.append_functions(&mut invokable_functions));
 
-        self.space_page
+        space_page
             .iter()
             .for_each(|space_page| space_page.append_functions(&mut invokable_functions));
 
-        self.space_settings
+        space_settings
             .iter()
             .for_each(|space_settings| space_settings.append_functions(&mut invokable_functions));
 
-        self.macros.iter().for_each(|macros| {
+        macros.iter().for_each(|macros| {
             macros
                 .common_keys
                 .append_functions(&mut invokable_functions);
@@ -470,7 +511,7 @@ impl<'a> ForgeModules<'a> {
         });
 
         // Jira module functons
-        self.custom_field.iter().for_each(|customfield| {
+        custom_field.iter().for_each(|customfield| {
             invokable_functions.extend(customfield.value);
             invokable_functions.extend(customfield.search_suggestions);
             invokable_functions.extend(customfield.edit);
@@ -479,7 +520,7 @@ impl<'a> ForgeModules<'a> {
                 .append_functions(&mut invokable_functions);
         });
 
-        self.custom_field_type.iter().for_each(|custom_field_type| {
+        custom_field_type.iter().for_each(|custom_field_type| {
             invokable_functions.extend(custom_field_type.value);
             invokable_functions.extend(custom_field_type.edit);
             invokable_functions.extend(custom_field_type.context_config);
@@ -489,75 +530,73 @@ impl<'a> ForgeModules<'a> {
                 .append_functions(&mut invokable_functions);
         });
 
-        self.dashboard_background_script
+        dashboard_background_script
             .iter()
             .for_each(|dbs| dbs.append_functions(&mut invokable_functions));
 
-        self.dashboard_gadget.iter().for_each(|gadget| {
+        dashboard_gadget.iter().for_each(|gadget| {
             invokable_functions.extend(gadget.edit);
             gadget
                 .common_keys
                 .append_functions(&mut invokable_functions)
         });
 
-        self.jira_global_page
+        jira_global_page
             .iter()
             .for_each(|global_page| global_page.append_functions(&mut invokable_functions));
 
-        self.issue_action
+        issue_action
             .iter()
             .for_each(|issue| issue.append_functions(&mut invokable_functions));
 
-        self.issue_context.iter().for_each(|issue| {
+        issue_context.iter().for_each(|issue| {
             invokable_functions.extend(issue.dynamic_properties.function);
             issue.common_keys.append_functions(&mut invokable_functions)
         });
 
-        self.issue_glance.iter().for_each(|issue| {
+        issue_glance.iter().for_each(|issue| {
             issue.common_keys.append_functions(&mut invokable_functions);
             invokable_functions.extend(issue.dynamic_properties.function);
         });
 
-        self.issue_panel
+        issue_panel
             .iter()
             .for_each(|issue| issue.append_functions(&mut invokable_functions));
 
-        self.issue_view_background_script
+        issue_view_background_script
             .iter()
             .for_each(|issue| issue.append_functions(&mut invokable_functions));
 
-        self.jql_function
+        jql_function
             .iter()
             .for_each(|item| item.append_functions(&mut invokable_functions));
 
-        self.project_page
+        project_page
             .iter()
             .for_each(|item| item.append_functions(&mut invokable_functions));
 
-        self.project_settings_page
+        project_settings_page
             .iter()
             .for_each(|item| item.append_functions(&mut invokable_functions));
 
-        self.ui_modifications.iter().for_each(|ui| {
+        ui_modifications.iter().for_each(|ui| {
             ui.common_keys.append_functions(&mut invokable_functions);
         });
 
-        self.workflow_validator.iter().for_each(|validator| {
+        workflow_validator.iter().for_each(|validator| {
             validator
                 .common_keys
                 .append_functions(&mut invokable_functions)
         });
 
-        self.workflow_post_function
-            .iter()
-            .for_each(|post_function| {
-                post_function
-                    .common_keys
-                    .append_functions(&mut invokable_functions);
-            });
+        workflow_post_function.iter().for_each(|post_function| {
+            post_function
+                .common_keys
+                .append_functions(&mut invokable_functions);
+        });
 
         // JSM modules
-        self.assets_import_type.iter().for_each(|access| {
+        assets_import_type.iter().for_each(|access| {
             access
                 .common_keys
                 .append_functions(&mut invokable_functions);
@@ -567,18 +606,23 @@ impl<'a> ForgeModules<'a> {
             invokable_functions.extend(access.import_status.function);
         });
 
-        self.functions.into_iter().flat_map(move |func| {
-            let web_trigger = self
-                .webtriggers
+        functions.into_iter().flat_map(move |func| {
+            let web_trigger = webtriggers
                 .binary_search_by_key(&func.key, |trigger| &trigger.function)
                 .is_ok();
             let invokable = invokable_functions.contains(func.key);
             // this checks whether the funton being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
             // optionally: compass:adminPage could also be considered.
-            let admin = self
-                .jira_admin_page
+            let admin = jira_admin_page
                 .iter()
-                .any(|admin_function| admin_function.function == func.key);
+                .any(|admin_function| admin_function.function == func.key)
+                || compass_admin_page.iter().any(|admin_function| {
+                    let Some(string) = admin_function.function else {
+                        return false;
+                    };
+                    return string == func.key;
+                });
+
             Ok::<_, Error>(Entrypoint {
                 function: FunctionRef::try_from(func)?,
                 invokable,
