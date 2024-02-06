@@ -20,7 +20,7 @@ struct AuthProviders<'a> {
 
 // Abstracting away key, function, and resolver into a single struct for reuse whoo!
 // And helper functions for ease of use
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 struct CommonKey<'a> {
     key: &'a str,
     function: Option<&'a str>,
@@ -41,7 +41,7 @@ impl<'a> CommonKey<'a> {
         }
     }
 }
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 pub struct Resolver<'a> {
     pub function: Option<&'a str>,
     pub method: Option<&'a str>,
@@ -50,7 +50,7 @@ pub struct Resolver<'a> {
 
 // Implementing a struct for structs with 1 value (function)
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 pub struct JustFunc<'a> {
     pub function: Option<&'a str>,
 }
@@ -117,12 +117,12 @@ pub struct ComponentPage<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
 }
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct DataProvider<'a> {
-    #[serde(flatten, borrow)]
-    common_keys: CommonKey<'a>,
-    callback: JustFunc<'a>,
-}
+// #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+// pub struct DataProvider<'a> {
+//     #[serde(flatten, borrow)]
+//     common_keys: CommonKey<'a>,
+//     callback: Option<JustFunc<'a>>,
+// }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct CompassGlobalPage<'a> {
@@ -146,7 +146,7 @@ struct ContentAction<'a> {
 struct ContentByLineItem<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
-    #[serde(borrow)]
+    #[serde(borrow, rename = "dynamicProperties")]
     dynamic_properties: JustFunc<'a>,
 }
 
@@ -154,49 +154,48 @@ struct ContentByLineItem<'a> {
 struct MacroMod<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
-    config: JustFunc<'a>,
-    export: JustFunc<'a>,
+    config: Option<JustFunc<'a>>,
+    export: Option<JustFunc<'a>>,
 }
 
 // Jira Modules
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct JiraAdminPage<'a> {
-    key: &'a str,
-    function: &'a str,
     title: &'a str,
-    resolver: Resolver<'a>,
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct CustomField<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
-    value: Option<&'a str>,
-    search_suggestions: Option<&'a str>,
-    edit: Option<&'a str>,
+    value: Option<JustFunc<'a>>,
+    edit: Option<JustFunc<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct CustomFieldType<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
-    value: Option<&'a str>,
-    edit: Option<&'a str>,
-    context_config: Option<&'a str>,
+    value: Option<JustFunc<'a>>,
+    edit: Option<JustFunc<'a>>,
+    context_config: Option<JustFunc<'a>>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct DashboardGadget<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
-    edit: Option<&'a str>,
+    edit: Option<JustFunc<'a>>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct IssueClass<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
-    dynamic_properties: JustFunc<'a>,
+    dynamic_properties: Option<JustFunc<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -217,11 +216,12 @@ pub struct WorkflowPostFunction<'a> {
     common_keys: CommonKey<'a>,
 }
 // Jira Service Management Modules
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
+#[serde(rename_all = "camelCase")]
 struct AssetsImportType<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
-    one_delete_import: JustFunc<'a>,
+    on_delete_import: Option<JustFunc<'a>>,
     start_import: JustFunc<'a>,
     stop_import: JustFunc<'a>,
     import_status: JustFunc<'a>,
@@ -247,8 +247,6 @@ pub struct ForgeModules<'a> {
     compass_admin_page: Vec<CommonKey<'a>>,
     #[serde(rename = "compass:componentPage", default, borrow)]
     component_page: Vec<CommonKey<'a>>,
-    #[serde(rename = "compass:dataProvider", default, borrow)]
-    pub data_provider: Vec<DataProvider<'a>>,
     #[serde(rename = "compass:globalPage", default, borrow)]
     compass_global_page: Vec<CommonKey<'a>>,
     #[serde(rename = "compass:teamPage", default, borrow)]
@@ -413,7 +411,6 @@ impl<'a> ForgeModules<'a> {
             scheduled_triggers: _,
             compass_admin_page,
             component_page,
-            data_provider,
             compass_global_page,
             team_page,
             content_action,
@@ -460,10 +457,6 @@ impl<'a> ForgeModules<'a> {
             .iter()
             .for_each(|component_page| component_page.append_functions(&mut invokable_functions));
 
-        data_provider.iter().for_each(|dataprovider| {
-            invokable_functions.extend(dataprovider.callback.function);
-        });
-
         compass_global_page
             .iter()
             .for_each(|global_page| global_page.append_functions(&mut invokable_functions));
@@ -506,29 +499,43 @@ impl<'a> ForgeModules<'a> {
             .iter()
             .for_each(|space_settings| space_settings.append_functions(&mut invokable_functions));
 
-        macros.iter().for_each(|macros| {
-            macros
-                .common_keys
-                .append_functions(&mut invokable_functions);
-
-            invokable_functions.extend(macros.config.function);
-            invokable_functions.extend(macros.export.function);
+        macros.iter().for_each(|mac| {
+            mac.common_keys.append_functions(&mut invokable_functions);
+            self.clone()
+                .add_optional(mac.config, &mut invokable_functions);
+            self.clone()
+                .add_optional(mac.export, &mut invokable_functions);
         });
 
         // Jira module functons
         custom_field.iter().for_each(|customfield| {
-            invokable_functions.extend(customfield.value);
-            invokable_functions.extend(customfield.search_suggestions);
-            invokable_functions.extend(customfield.edit);
+            // let Some(func) = customfield.value;
+            // invokable_functions.extend(func.function);
+            self.clone()
+                .add_optional(customfield.value, &mut invokable_functions);
+
+            // let Some(func) = customfield.edit;
+            // invokable_functions.extend(func.function);
+            self.clone()
+                .add_optional(customfield.edit, &mut invokable_functions);
+
             customfield
                 .common_keys
                 .append_functions(&mut invokable_functions);
         });
 
         custom_field_type.iter().for_each(|custom_field_type| {
-            invokable_functions.extend(custom_field_type.value);
-            invokable_functions.extend(custom_field_type.edit);
-            invokable_functions.extend(custom_field_type.context_config);
+            // invokable_functions.extend(custom_field_type.value);
+            self.clone()
+                .add_optional(custom_field_type.value, &mut invokable_functions);
+
+            // invokable_functions.extend(custom_field_type.edit);
+            self.clone()
+                .add_optional(custom_field_type.edit, &mut invokable_functions);
+
+            // invokable_functions.extend(custom_field_type.context_config);
+            self.clone()
+                .add_optional(custom_field_type.context_config, &mut invokable_functions);
 
             custom_field_type
                 .common_keys
@@ -540,7 +547,10 @@ impl<'a> ForgeModules<'a> {
             .for_each(|dbs| dbs.append_functions(&mut invokable_functions));
 
         dashboard_gadget.iter().for_each(|gadget| {
-            invokable_functions.extend(gadget.edit);
+            // invokable_functions.extend(gadget.edit);
+            self.clone()
+                .add_optional(gadget.edit, &mut invokable_functions);
+
             gadget
                 .common_keys
                 .append_functions(&mut invokable_functions)
@@ -555,13 +565,20 @@ impl<'a> ForgeModules<'a> {
             .for_each(|issue| issue.append_functions(&mut invokable_functions));
 
         issue_context.iter().for_each(|issue| {
-            invokable_functions.extend(issue.dynamic_properties.function);
+            // let Some(func) = issue.dynamic_properties;
+            // invokable_functions.extend(func.function);
+            self.clone()
+                .add_optional(issue.dynamic_properties, &mut invokable_functions);
+
             issue.common_keys.append_functions(&mut invokable_functions)
         });
 
         issue_glance.iter().for_each(|issue| {
             issue.common_keys.append_functions(&mut invokable_functions);
-            invokable_functions.extend(issue.dynamic_properties.function);
+            // let Some(func) = issue.dynamic_properties;
+            // invokable_functions.extend(func.function);
+            self.clone()
+                .add_optional(issue.dynamic_properties, &mut invokable_functions);
         });
 
         issue_panel
@@ -605,7 +622,11 @@ impl<'a> ForgeModules<'a> {
             access
                 .common_keys
                 .append_functions(&mut invokable_functions);
-            invokable_functions.extend(access.one_delete_import.function);
+            // let Some(func) = access.on_delete_import;
+            // invokable_functions.extend(func.function);
+            self.clone()
+                .add_optional(access.on_delete_import, &mut invokable_functions);
+
             invokable_functions.extend(access.stop_import.function);
             invokable_functions.extend(access.start_import.function);
             invokable_functions.extend(access.import_status.function);
@@ -618,15 +639,17 @@ impl<'a> ForgeModules<'a> {
             let invokable = invokable_functions.contains(func.key);
             // this checks whether the funton being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
             // optionally: compass:adminPage could also be considered.
-            let admin = jira_admin_page
-                .iter()
-                .any(|admin_function| admin_function.function == func.key)
-                || compass_admin_page.iter().any(|admin_function| {
-                    let Some(string) = admin_function.function else {
-                        return false;
-                    };
-                    return string == func.key;
-                });
+            let admin = jira_admin_page.iter().any(|admin_function| {
+                let Some(string) = admin_function.common_keys.function else {
+                    return false;
+                };
+                return string == func.key;
+            }) || compass_admin_page.iter().any(|admin_function| {
+                let Some(string) = admin_function.function else {
+                    return false;
+                };
+                return string == func.key;
+            });
 
             Ok::<_, Error>(Entrypoint {
                 function: FunctionRef::try_from(func)?,
@@ -635,6 +658,11 @@ impl<'a> ForgeModules<'a> {
                 admin,
             })
         })
+    }
+
+    pub fn add_optional(self, optional: Option<JustFunc<'a>>, iter: &mut BTreeSet<&str>) {
+        let Some(func) = optional;
+        iter.extend(func.function);
     }
 }
 
@@ -850,11 +878,13 @@ mod tests {
         if let Some(string) = resolver.function {
             assert_eq!(string, "Catch-me-if-you-can1");
         }
-        if let Some(func) = manifest.modules.macros[0].config.function {
+        if let Some(justfunc) = manifest.modules.macros[0].config {
+            let Some(func) = justfunc.function;
             assert_eq!(func, "Catch-me-if-you-can2");
         }
 
-        if let Some(func) = manifest.modules.macros[0].export.function {
+        if let Some(justfunc) = manifest.modules.macros[0].export {
+            let Some(func) = justfunc.function;
             assert_eq!(func, "Catch-me-if-you-can3");
         }
     }
