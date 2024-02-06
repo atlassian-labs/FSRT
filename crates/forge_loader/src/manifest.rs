@@ -176,8 +176,24 @@ pub struct CustomField<'a> {
     edit: Option<&'a str>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CustomFieldType<'a> {
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
+    value: Option<&'a str>,
+    edit: Option<&'a str>,
+    context_config: Option<&'a str>,
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct IssueGlance<'a> {
+pub struct DashboardGadget<'a> {
+    #[serde(flatten, borrow)]
+    common_keys: CommonKey<'a>,
+    edit: Option<&'a str>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct IssueClass<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
     dynamic_properties: JustFunc<'a>,
@@ -250,7 +266,7 @@ pub struct ForgeModules<'a> {
     #[serde(rename = "confluence:contentByLineItem", default, borrow)]
     content_by_line_item: Vec<ContentByLineItem<'a>>,
     #[serde(rename = "confluence:contextMenu", default, borrow)]
-    context_action: Vec<CommonKey<'a>>,
+    context_menu: Vec<CommonKey<'a>>,
     #[serde(rename = "confluence:globalPage", default, borrow)]
     confluence_global_page: Vec<CommonKey<'a>>,
     #[serde(rename = "confluence:homepageFeed", default, borrow)]
@@ -262,10 +278,34 @@ pub struct ForgeModules<'a> {
     #[serde(rename = "macro", default, borrow)]
     macros: Vec<MacroMod<'a>>,
     // jira modules
+    #[serde(rename = "jira:adminPage", default, borrow)]
+    pub jira_admin_page: Vec<JiraAdminPage<'a>>,
     #[serde(rename = "jira:customField", default, borrow)]
     pub custom_field: Vec<CustomField<'a>>,
+    #[serde(rename = "jira:customFieldType", default, borrow)]
+    custom_field_type: Vec<CustomFieldType<'a>>,
+    #[serde(rename = "jira:dashboardBackgroundScript", default, borrow)]
+    dashboard_background_script: Vec<CommonKey<'a>>,
+    #[serde(rename = "jira:dashboardGadget", default, borrow)]
+    dashboard_gadget: Vec<DashboardGadget<'a>>,
+    #[serde(rename = "jira:globalPage", default, borrow)]
+    jira_global_page: Vec<CommonKey<'a>>,
+    #[serde(rename = "jira:issueAction", default, borrow)]
+    issue_action: Vec<CommonKey<'a>>,
+    #[serde(rename = "jira:issueContext", default, borrow)]
+    issue_context: Vec<IssueClass<'a>>,
     #[serde(rename = "jira:issueGlance", default, borrow)]
-    issue_glance: Vec<IssueGlance<'a>>,
+    issue_glance: Vec<IssueClass<'a>>,
+    #[serde(rename = "jira:issuePanel", default, borrow)]
+    issue_panel: Vec<CommonKey<'a>>,
+    #[serde(rename = "jira:issueViewBackgroundScript", default, borrow)]
+    issue_view_background_script: Vec<CommonKey<'a>>,
+    #[serde(rename = "jira:jqlFunction", default, borrow)]
+    jql_function: Vec<CommonKey<'a>>,
+    #[serde(rename = "jira:projectPage", default, borrow)]
+    project_page: Vec<CommonKey<'a>>,
+    #[serde(rename = "jira:projectSettingsPage", default, borrow)]
+    project_settings_page: Vec<CommonKey<'a>>,
     #[serde(rename = "jira:uiModificatons", default, borrow)]
     pub ui_modifications: Vec<UiModificatons<'a>>,
     #[serde(rename = "jira:workflowValidator", default, borrow)]
@@ -274,10 +314,8 @@ pub struct ForgeModules<'a> {
     pub workflow_post_function: Vec<WorkflowPostFunction<'a>>,
     // Jira Service Management Modules
     #[serde(rename = "jiraServiceManagement:assetsImportType", default, borrow)]
-    access_import_type: Vec<AssetsImportType<'a>>,
+    assets_import_type: Vec<AssetsImportType<'a>>,
     // deserializing admin pages
-    #[serde(rename = "jira:adminPage", default, borrow)]
-    pub jira_admin_page: Vec<JiraAdminPage<'a>>,
     #[serde(flatten)]
     extra: FxHashMap<String, Vec<Module<'a>>>,
 }
@@ -402,6 +440,26 @@ impl<'a> ForgeModules<'a> {
             invokable_functions.extend(by_line_item.dynamic_properties.function)
         });
 
+        self.context_menu
+            .iter()
+            .for_each(|context_menu| context_menu.append_functions(&mut invokable_functions));
+
+        self.confluence_global_page
+            .iter()
+            .for_each(|global_page| global_page.append_functions(&mut invokable_functions));
+
+        self.homepage_feed
+            .iter()
+            .for_each(|homepage_feed| homepage_feed.append_functions(&mut invokable_functions));
+
+        self.space_page
+            .iter()
+            .for_each(|space_page| space_page.append_functions(&mut invokable_functions));
+
+        self.space_settings
+            .iter()
+            .for_each(|space_settings| space_settings.append_functions(&mut invokable_functions));
+
         self.macros.iter().for_each(|macros| {
             macros
                 .common_keys
@@ -409,16 +467,6 @@ impl<'a> ForgeModules<'a> {
 
             invokable_functions.extend(macros.config.function);
             invokable_functions.extend(macros.export.function);
-        });
-
-        self.access_import_type.iter().for_each(|access| {
-            access
-                .common_keys
-                .append_functions(&mut invokable_functions);
-            invokable_functions.extend(access.one_delete_import.function);
-            invokable_functions.extend(access.stop_import.function);
-            invokable_functions.extend(access.start_import.function);
-            invokable_functions.extend(access.import_status.function);
         });
 
         // Jira module functons
@@ -430,10 +478,65 @@ impl<'a> ForgeModules<'a> {
                 .common_keys
                 .append_functions(&mut invokable_functions);
         });
+
+        self.custom_field_type.iter().for_each(|custom_field_type| {
+            invokable_functions.extend(custom_field_type.value);
+            invokable_functions.extend(custom_field_type.edit);
+            invokable_functions.extend(custom_field_type.context_config);
+
+            custom_field_type
+                .common_keys
+                .append_functions(&mut invokable_functions);
+        });
+
+        self.dashboard_background_script
+            .iter()
+            .for_each(|dbs| dbs.append_functions(&mut invokable_functions));
+
+        self.dashboard_gadget.iter().for_each(|gadget| {
+            invokable_functions.extend(gadget.edit);
+            gadget
+                .common_keys
+                .append_functions(&mut invokable_functions)
+        });
+
+        self.jira_global_page
+            .iter()
+            .for_each(|global_page| global_page.append_functions(&mut invokable_functions));
+
+        self.issue_action
+            .iter()
+            .for_each(|issue| issue.append_functions(&mut invokable_functions));
+
+        self.issue_context.iter().for_each(|issue| {
+            invokable_functions.extend(issue.dynamic_properties.function);
+            issue.common_keys.append_functions(&mut invokable_functions)
+        });
+
         self.issue_glance.iter().for_each(|issue| {
             issue.common_keys.append_functions(&mut invokable_functions);
             invokable_functions.extend(issue.dynamic_properties.function);
         });
+
+        self.issue_panel
+            .iter()
+            .for_each(|issue| issue.append_functions(&mut invokable_functions));
+
+        self.issue_view_background_script
+            .iter()
+            .for_each(|issue| issue.append_functions(&mut invokable_functions));
+
+        self.jql_function
+            .iter()
+            .for_each(|item| item.append_functions(&mut invokable_functions));
+
+        self.project_page
+            .iter()
+            .for_each(|item| item.append_functions(&mut invokable_functions));
+
+        self.project_settings_page
+            .iter()
+            .for_each(|item| item.append_functions(&mut invokable_functions));
 
         self.ui_modifications.iter().for_each(|ui| {
             ui.common_keys.append_functions(&mut invokable_functions);
@@ -452,6 +555,17 @@ impl<'a> ForgeModules<'a> {
                     .common_keys
                     .append_functions(&mut invokable_functions);
             });
+
+        // JSM modules
+        self.assets_import_type.iter().for_each(|access| {
+            access
+                .common_keys
+                .append_functions(&mut invokable_functions);
+            invokable_functions.extend(access.one_delete_import.function);
+            invokable_functions.extend(access.stop_import.function);
+            invokable_functions.extend(access.start_import.function);
+            invokable_functions.extend(access.import_status.function);
+        });
 
         self.functions.into_iter().flat_map(move |func| {
             let web_trigger = self
@@ -687,11 +801,11 @@ mod tests {
         if let Some(string) = resolver.function {
             assert_eq!(string, "Catch-me-if-you-can1");
         }
-        if let Some(func) = manifest.modules.macros[0].config {
+        if let Some(func) = manifest.modules.macros[0].config.function {
             assert_eq!(func, "Catch-me-if-you-can2");
         }
 
-        if let Some(func) = manifest.modules.macros[0].export {
+        if let Some(func) = manifest.modules.macros[0].export.function {
             assert_eq!(func, "Catch-me-if-you-can3");
         }
     }
