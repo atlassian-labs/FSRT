@@ -20,7 +20,7 @@ struct AuthProviders<'a> {
 
 // Abstracting away key, function, and resolver into a single struct for reuse whoo!
 // And helper functions for ease of use
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct CommonKey<'a> {
     key: &'a str,
     function: Option<&'a str>,
@@ -41,7 +41,7 @@ impl<'a> CommonKey<'a> {
         }
     }
 }
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Resolver<'a> {
     pub function: Option<&'a str>,
     pub method: Option<&'a str>,
@@ -50,7 +50,7 @@ pub struct Resolver<'a> {
 
 // Implementing a struct for structs with 1 value (function)
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct JustFunc<'a> {
     pub function: Option<&'a str>,
 }
@@ -151,7 +151,7 @@ struct ContentByLineItem<'a> {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct MacroMod<'a> {
+pub struct MacroMod<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
     config: Option<JustFunc<'a>>,
@@ -216,7 +216,7 @@ pub struct WorkflowPostFunction<'a> {
     common_keys: CommonKey<'a>,
 }
 // Jira Service Management Modules
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AssetsImportType<'a> {
     #[serde(flatten, borrow)]
@@ -313,6 +313,41 @@ pub struct ForgeModules<'a> {
     // Jira Service Management Modules
     #[serde(rename = "jiraServiceManagement:assetsImportType", default, borrow)]
     assets_import_type: Vec<AssetsImportType<'a>>,
+    #[serde(rename = "jiraServiceManagement:organizationPanel", default, borrow)]
+    org_panel: Vec<CommonKey<'a>>,
+    #[serde(rename = "jiraServiceManagement:portalFooter", default, borrow)]
+    portal_footer: Vec<CommonKey<'a>>,
+    #[serde(rename = "jiraServiceManagement:portalHeader", default, borrow)]
+    portal_header: Vec<CommonKey<'a>>,
+    #[serde(rename = "jiraServiceManagement:portalProfilePanel", default, borrow)]
+    portal_profile_panel: Vec<CommonKey<'a>>,
+    #[serde(
+        rename = "jiraServiceManagement:portalRequestCreatePropertyPanel",
+        default,
+        borrow
+    )]
+    portal_req: Vec<CommonKey<'a>>,
+    #[serde(rename = "jiraServiceManagement:portalRequestDetail", default, borrow)]
+    portal_request_detail: Vec<CommonKey<'a>>,
+    #[serde(
+        rename = "jiraServiceManagement:portalRequestDetailPanel",
+        default,
+        borrow
+    )]
+    portal_request_detail_panel: Vec<CommonKey<'a>>,
+    #[serde(
+        rename = "jiraServiceManagement:portalRequestViewAction",
+        default,
+        borrow
+    )]
+    portal_request_view_action: Vec<CommonKey<'a>>,
+    #[serde(rename = "jiraServiceManagement:portalSubheader", default, borrow)]
+    portal_subheader: Vec<CommonKey<'a>>,
+    #[serde(rename = "jiraServiceManagement:portalUserMenuAction", default, borrow)]
+    portal_header_menu_action: Vec<CommonKey<'a>>,
+    #[serde(rename = "jiraServiceManagement:queuePage", default, borrow)]
+    queue_page: Vec<CommonKey<'a>>,
+
     // deserializing admin pages
     #[serde(flatten)]
     extra: FxHashMap<String, Vec<Module<'a>>>,
@@ -401,41 +436,52 @@ impl<'a> ForgeModules<'a> {
         // destructuring ForgeModules to remember to add new modules to this
         let Self {
             mut webtriggers,
-            custom_field,
+            ref custom_field,
             consumers: _,
-            functions,
+            ref functions,
             event_triggers: _,
             scheduled_triggers: _,
-            compass_admin_page,
-            component_page,
-            compass_global_page,
-            team_page,
-            content_action,
-            content_by_line_item,
-            context_menu,
-            confluence_global_page,
-            homepage_feed,
-            space_page,
-            space_settings,
-            macros,
-            jira_admin_page,
-            custom_field_type,
-            dashboard_background_script,
-            dashboard_gadget,
-            jira_global_page,
-            issue_action,
-            issue_context,
-            issue_glance,
-            issue_panel,
-            issue_view_background_script,
-            jql_function,
-            project_page,
-            project_settings_page,
-            ui_modifications,
-            workflow_validator,
-            workflow_post_function,
-            assets_import_type,
+            ref compass_admin_page,
+            ref component_page,
+            ref compass_global_page,
+            ref team_page,
+            ref content_action,
+            ref content_by_line_item,
+            ref context_menu,
+            ref confluence_global_page,
+            ref homepage_feed,
+            ref space_page,
+            ref space_settings,
+            ref macros,
+            ref jira_admin_page,
+            ref custom_field_type,
+            ref dashboard_background_script,
+            ref dashboard_gadget,
+            ref jira_global_page,
+            ref issue_action,
+            ref issue_context,
+            ref issue_glance,
+            ref issue_panel,
+            ref issue_view_background_script,
+            ref jql_function,
+            ref project_page,
+            ref project_settings_page,
+            ref ui_modifications,
+            ref workflow_validator,
+            ref workflow_post_function,
+            ref assets_import_type,
             extra: _,
+            ref org_panel,
+            ref portal_footer,
+            ref portal_header,
+            ref portal_profile_panel,
+            ref portal_req,
+            ref portal_request_detail,
+            ref portal_request_detail_panel,
+            ref portal_request_view_action,
+            ref portal_subheader,
+            ref queue_page,
+            ref portal_header_menu_action,
         } = self;
 
         // number of webtriggers are usually low, so it's better to just sort them and reuse
@@ -494,23 +540,19 @@ impl<'a> ForgeModules<'a> {
             .iter()
             .for_each(|space_settings| space_settings.append_functions(&mut invokable_functions));
 
-        macros.iter().for_each(|mac| {
-            mac.common_keys.append_functions(&mut invokable_functions);
+        macros.clone().iter().for_each(|mac| {
             self.clone()
                 .add_optional(mac.config, &mut invokable_functions);
             self.clone()
                 .add_optional(mac.export, &mut invokable_functions);
+            mac.common_keys.append_functions(&mut invokable_functions);
         });
 
         // Jira module functons
         custom_field.iter().for_each(|customfield| {
-            // let Some(func) = customfield.value;
-            // invokable_functions.extend(func.function);
             self.clone()
                 .add_optional(customfield.value, &mut invokable_functions);
 
-            // let Some(func) = customfield.edit;
-            // invokable_functions.extend(func.function);
             self.clone()
                 .add_optional(customfield.edit, &mut invokable_functions);
 
@@ -560,8 +602,6 @@ impl<'a> ForgeModules<'a> {
             .for_each(|issue| issue.append_functions(&mut invokable_functions));
 
         issue_context.iter().for_each(|issue| {
-            // let Some(func) = issue.dynamic_properties;
-            // invokable_functions.extend(func.function);
             self.clone()
                 .add_optional(issue.dynamic_properties, &mut invokable_functions);
 
@@ -570,8 +610,6 @@ impl<'a> ForgeModules<'a> {
 
         issue_glance.iter().for_each(|issue| {
             issue.common_keys.append_functions(&mut invokable_functions);
-            // let Some(func) = issue.dynamic_properties;
-            // invokable_functions.extend(func.function);
             self.clone()
                 .add_optional(issue.dynamic_properties, &mut invokable_functions);
         });
@@ -626,6 +664,48 @@ impl<'a> ForgeModules<'a> {
             invokable_functions.extend(access.start_import.function);
             invokable_functions.extend(access.import_status.function);
         });
+        org_panel
+            .iter()
+            .for_each(|panel| panel.append_functions(&mut invokable_functions));
+
+        portal_footer
+            .iter()
+            .for_each(|footer| footer.append_functions(&mut invokable_functions));
+
+        portal_header
+            .iter()
+            .for_each(|header| header.append_functions(&mut invokable_functions));
+
+        portal_profile_panel
+            .iter()
+            .for_each(|profile| profile.append_functions(&mut invokable_functions));
+
+        portal_req
+            .iter()
+            .for_each(|req| req.append_functions(&mut invokable_functions));
+
+        portal_request_detail
+            .iter()
+            .for_each(|req| req.append_functions(&mut invokable_functions));
+
+        portal_request_detail_panel
+            .iter()
+            .for_each(|req| req.append_functions(&mut invokable_functions));
+
+        portal_request_view_action
+            .iter()
+            .for_each(|req| req.append_functions(&mut invokable_functions));
+
+        portal_subheader
+            .iter()
+            .for_each(|subheader| subheader.append_functions(&mut invokable_functions));
+        portal_header_menu_action
+            .iter()
+            .for_each(|action| action.append_functions(&mut invokable_functions));
+
+        queue_page
+            .iter()
+            .for_each(|page| page.append_functions(&mut invokable_functions));
 
         functions.into_iter().flat_map(move |func| {
             let web_trigger = webtriggers
@@ -700,7 +780,7 @@ impl<'a, Resolved> FunctionRef<'a, Resolved> {
     }
 }
 
-impl<'a> TryFrom<FunctionMod<'a>> for FunctionRef<'a> {
+impl<'a> TryFrom<FunctionMod<'a>> for &'a FunctionRef<'a> {
     type Error = Error;
 
     fn try_from(func_handler: FunctionMod<'a>) -> Result<Self, Self::Error> {
