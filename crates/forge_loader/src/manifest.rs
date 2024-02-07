@@ -20,14 +20,18 @@ struct AuthProviders<'a> {
 
 // Abstracting away key, function, and resolver into a single struct for reuse whoo!
 // And helper functions for ease of use
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 struct CommonKey<'a> {
     key: &'a str,
     function: Option<&'a str>,
     resolver: Option<Resolver<'a>>,
 }
 
-impl<'a> CommonKey<'a> {
+trait HasFunctions<'a> {
+    fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I);
+}
+
+impl<'a> HasFunctions<'a> for CommonKey<'a> {
     fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
         funcs.extend(self.function);
 
@@ -41,7 +45,25 @@ impl<'a> CommonKey<'a> {
         }
     }
 }
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+
+impl<'a> HasFunctions<'a> for JustFunc<'a> {
+    fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
+        funcs.extend(self.function);
+    }
+}
+
+impl<'a, I, E: HasFunctions<'a>> HasFunctions<'a> for I
+where
+    for<'c> &'c I: IntoIterator<Item = &'c E>,
+{
+    fn append_functions<B: Extend<&'a str>>(&self, funcs: &mut B) {
+        // iterating over &I
+        for e in self {
+            e.append_functions(funcs);
+        }
+    }
+}
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 pub struct Resolver<'a> {
     pub function: Option<&'a str>,
     pub method: Option<&'a str>,
@@ -50,7 +72,7 @@ pub struct Resolver<'a> {
 
 // Implementing a struct for structs with 1 value (function)
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 pub struct JustFunc<'a> {
     pub function: Option<&'a str>,
 }
@@ -90,7 +112,7 @@ struct ScheduledTrigger<'a> {
 }
 
 // Maps to Web Trigger under Common Modules
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 struct RawTrigger<'a> {
     key: &'a str,
     function: &'a str,
@@ -150,7 +172,7 @@ struct ContentByLineItem<'a> {
     dynamic_properties: JustFunc<'a>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 pub struct MacroMod<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
@@ -159,7 +181,7 @@ pub struct MacroMod<'a> {
 }
 
 // Jira Modules
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 pub struct JiraAdminPage<'a> {
     title: &'a str,
     #[serde(flatten, borrow)]
@@ -439,52 +461,52 @@ impl<'a> ForgeModules<'a> {
         // destructuring ForgeModules to remember to add new modules to this
         let Self {
             mut webtriggers,
-            ref custom_field,
+            custom_field,
             consumers: _,
-            ref functions,
+            functions,
             event_triggers: _,
             scheduled_triggers: _,
-            ref compass_admin_page,
-            ref component_page,
-            ref compass_global_page,
-            ref team_page,
-            ref content_action,
-            ref content_by_line_item,
-            ref context_menu,
-            ref confluence_global_page,
-            ref homepage_feed,
-            ref space_page,
-            ref space_settings,
-            ref macros,
-            ref jira_admin_page,
-            ref custom_field_type,
-            ref dashboard_background_script,
-            ref dashboard_gadget,
-            ref jira_global_page,
-            ref issue_action,
-            ref issue_context,
-            ref issue_glance,
-            ref issue_panel,
-            ref issue_view_background_script,
-            ref jql_function,
-            ref project_page,
-            ref project_settings_page,
-            ref ui_modifications,
-            ref workflow_validator,
-            ref workflow_post_function,
-            ref assets_import_type,
+            compass_admin_page,
+            component_page,
+            compass_global_page,
+            team_page,
+            content_action,
+            content_by_line_item,
+            context_menu,
+            confluence_global_page,
+            homepage_feed,
+            space_page,
+            space_settings,
+            macros,
+            jira_admin_page,
+            custom_field_type,
+            dashboard_background_script,
+            dashboard_gadget,
+            jira_global_page,
+            issue_action,
+            issue_context,
+            issue_glance,
+            issue_panel,
+            issue_view_background_script,
+            jql_function,
+            project_page,
+            project_settings_page,
+            ui_modifications,
+            workflow_validator,
+            workflow_post_function,
+            assets_import_type,
             extra: _,
-            ref org_panel,
-            ref portal_footer,
-            ref portal_header,
-            ref portal_profile_panel,
-            ref portal_req,
-            ref portal_request_detail,
-            ref portal_request_detail_panel,
-            ref portal_request_view_action,
-            ref portal_subheader,
-            ref queue_page,
-            ref portal_header_menu_action,
+            org_panel,
+            portal_footer,
+            portal_header,
+            portal_profile_panel,
+            portal_req,
+            portal_request_detail,
+            portal_request_detail_panel,
+            portal_request_view_action,
+            portal_subheader,
+            queue_page,
+            portal_header_menu_action,
         } = self;
 
         // number of webtriggers are usually low, so it's better to just sort them and reuse
@@ -495,21 +517,12 @@ impl<'a> ForgeModules<'a> {
         let mut invokable_functions = BTreeSet::new();
 
         // Compass Module Functions
-        compass_admin_page
-            .iter()
-            .for_each(|compass_admin| compass_admin.append_functions(&mut invokable_functions));
+        compass_admin_page.append_functions(&mut invokable_functions);
 
-        component_page
-            .iter()
-            .for_each(|component_page| component_page.append_functions(&mut invokable_functions));
+        component_page.append_functions(&mut invokable_functions);
 
-        compass_global_page
-            .iter()
-            .for_each(|global_page| global_page.append_functions(&mut invokable_functions));
-
-        team_page
-            .iter()
-            .for_each(|team_page| team_page.append_functions(&mut invokable_functions));
+        compass_global_page.append_functions(&mut invokable_functions);
+        team_page.append_functions(&mut invokable_functions);
 
         // Confluence Module Functions
         // get user invokable modules that have additional exposure endpoints.
@@ -525,206 +538,157 @@ impl<'a> ForgeModules<'a> {
             invokable_functions.extend(by_line_item.dynamic_properties.function)
         });
 
-        context_menu
-            .iter()
-            .for_each(|context_menu| context_menu.append_functions(&mut invokable_functions));
+        context_menu.append_functions(&mut invokable_functions);
 
-        confluence_global_page
-            .iter()
-            .for_each(|global_page| global_page.append_functions(&mut invokable_functions));
+        confluence_global_page.append_functions(&mut invokable_functions);
 
-        homepage_feed
-            .iter()
-            .for_each(|homepage_feed| homepage_feed.append_functions(&mut invokable_functions));
+        homepage_feed.append_functions(&mut invokable_functions);
 
-        space_page
-            .iter()
-            .for_each(|space_page| space_page.append_functions(&mut invokable_functions));
+        space_page.append_functions(&mut invokable_functions);
 
-        space_settings
-            .iter()
-            .for_each(|space_settings| space_settings.append_functions(&mut invokable_functions));
+        space_settings.append_functions(&mut invokable_functions);
 
-        macros.clone().iter().for_each(|mac| {
-            self.clone()
-                .add_optional(mac.config, &mut invokable_functions);
-            self.clone()
-                .add_optional(mac.export, &mut invokable_functions);
-            mac.common_keys.append_functions(&mut invokable_functions);
-        });
+        for m in macros {
+            m.common_keys.append_functions(&mut invokable_functions);
+            m.config.append_functions(&mut invokable_functions);
+            m.export.append_functions(&mut invokable_functions);
+        }
 
         // Jira module functons
-        custom_field.iter().for_each(|customfield| {
-            self.clone()
-                .add_optional(customfield.value, &mut invokable_functions);
+        custom_field.into_iter().for_each(|customfield| {
+            customfield.value.append_functions(&mut invokable_functions);
 
-            self.clone()
-                .add_optional(customfield.edit, &mut invokable_functions);
-
+            customfield.value.append_functions(&mut invokable_functions);
             customfield
                 .common_keys
                 .append_functions(&mut invokable_functions);
         });
 
-        custom_field_type.iter().for_each(|custom_field_type| {
-            // invokable_functions.extend(custom_field_type.value);
-            self.clone()
-                .add_optional(custom_field_type.value, &mut invokable_functions);
-
-            // invokable_functions.extend(custom_field_type.edit);
-            self.clone()
-                .add_optional(custom_field_type.edit, &mut invokable_functions);
-
-            // invokable_functions.extend(custom_field_type.context_config);
-            self.clone()
-                .add_optional(custom_field_type.context_config, &mut invokable_functions);
-
+        custom_field_type.into_iter().for_each(|custom_field_type| {
             custom_field_type
                 .common_keys
                 .append_functions(&mut invokable_functions);
+
+            custom_field_type
+                .edit
+                .append_functions(&mut invokable_functions);
+            custom_field_type
+                .context_config
+                .append_functions(&mut invokable_functions);
+
+            custom_field_type
+                .value
+                .append_functions(&mut invokable_functions);
         });
 
-        dashboard_background_script
-            .iter()
-            .for_each(|dbs| dbs.append_functions(&mut invokable_functions));
+        dashboard_background_script.append_functions(&mut invokable_functions);
 
-        dashboard_gadget.iter().for_each(|gadget| {
-            // invokable_functions.extend(gadget.edit);
-            self.clone()
-                .add_optional(gadget.edit, &mut invokable_functions);
-
+        for gadget in dashboard_gadget {
             gadget
                 .common_keys
-                .append_functions(&mut invokable_functions)
-        });
-
-        jira_global_page
-            .iter()
-            .for_each(|global_page| global_page.append_functions(&mut invokable_functions));
-
-        issue_action
-            .iter()
-            .for_each(|issue| issue.append_functions(&mut invokable_functions));
-
-        issue_context.iter().for_each(|issue| {
-            self.clone()
-                .add_optional(issue.dynamic_properties, &mut invokable_functions);
-
-            issue.common_keys.append_functions(&mut invokable_functions)
-        });
-
-        issue_glance.iter().for_each(|issue| {
-            issue.common_keys.append_functions(&mut invokable_functions);
-            self.clone()
-                .add_optional(issue.dynamic_properties, &mut invokable_functions);
-        });
-
-        issue_panel
-            .iter()
-            .for_each(|issue| issue.append_functions(&mut invokable_functions));
-
-        issue_view_background_script
-            .iter()
-            .for_each(|issue| issue.append_functions(&mut invokable_functions));
-
-        jql_function
-            .iter()
-            .for_each(|item| item.append_functions(&mut invokable_functions));
-
-        project_page
-            .iter()
-            .for_each(|item| item.append_functions(&mut invokable_functions));
-
-        project_settings_page
-            .iter()
-            .for_each(|item| item.append_functions(&mut invokable_functions));
-
-        ui_modifications.iter().for_each(|ui| {
-            ui.common_keys.append_functions(&mut invokable_functions);
-        });
-
-        workflow_validator.iter().for_each(|validator| {
-            validator
-                .common_keys
-                .append_functions(&mut invokable_functions)
-        });
-
-        workflow_post_function.iter().for_each(|post_function| {
-            post_function
-                .common_keys
                 .append_functions(&mut invokable_functions);
-        });
+            gadget.edit.append_functions(&mut invokable_functions);
+        }
+
+        jira_global_page.append_functions(&mut invokable_functions);
+
+        issue_action.append_functions(&mut invokable_functions);
+
+        for issue in issue_context {
+            issue.common_keys.append_functions(&mut invokable_functions);
+            issue
+                .dynamic_properties
+                .append_functions(&mut invokable_functions);
+        }
+
+        for issue in issue_glance {
+            issue.common_keys.append_functions(&mut invokable_functions);
+            issue
+                .dynamic_properties
+                .append_functions(&mut invokable_functions);
+        }
+
+        issue_panel.append_functions(&mut invokable_functions);
+
+        issue_view_background_script.append_functions(&mut invokable_functions);
+
+        jql_function.append_functions(&mut invokable_functions);
+
+        project_page.append_functions(&mut invokable_functions);
+
+        project_settings_page.append_functions(&mut invokable_functions);
+
+        for ui in ui_modifications {
+            ui.common_keys.append_functions(&mut invokable_functions);
+        }
+
+        for valid in workflow_validator {
+            valid.common_keys.append_functions(&mut invokable_functions);
+        }
+
+        for post in workflow_post_function {
+            post.common_keys.append_functions(&mut invokable_functions);
+        }
 
         // JSM modules
-        assets_import_type.iter().for_each(|access| {
-            access
+        for assets in assets_import_type {
+            assets
                 .common_keys
                 .append_functions(&mut invokable_functions);
-            // let Some(func) = access.on_delete_import;
-            // invokable_functions.extend(func.function);
-            self.clone()
-                .add_optional(access.on_delete_import, &mut invokable_functions);
 
-            invokable_functions.extend(access.stop_import.function);
-            invokable_functions.extend(access.start_import.function);
-            invokable_functions.extend(access.import_status.function);
-        });
+            assets
+                .on_delete_import
+                .append_functions(&mut invokable_functions);
+
+            assets
+                .stop_import
+                .append_functions(&mut invokable_functions);
+
+            assets
+                .start_import
+                .append_functions(&mut invokable_functions);
+
+            assets
+                .import_status
+                .append_functions(&mut invokable_functions);
+        }
         org_panel
             .iter()
             .for_each(|panel| panel.append_functions(&mut invokable_functions));
 
-        portal_footer
-            .iter()
-            .for_each(|footer| footer.append_functions(&mut invokable_functions));
+        org_panel.append_functions(&mut invokable_functions);
 
-        portal_header
-            .iter()
-            .for_each(|header| header.append_functions(&mut invokable_functions));
+        portal_footer.append_functions(&mut invokable_functions);
+        portal_header.append_functions(&mut invokable_functions);
+        portal_profile_panel.append_functions(&mut invokable_functions);
 
-        portal_profile_panel
-            .iter()
-            .for_each(|profile| profile.append_functions(&mut invokable_functions));
+        portal_req.append_functions(&mut invokable_functions);
 
-        portal_req
-            .iter()
-            .for_each(|req| req.append_functions(&mut invokable_functions));
+        portal_request_detail.append_functions(&mut invokable_functions);
 
-        portal_request_detail
-            .iter()
-            .for_each(|req| req.append_functions(&mut invokable_functions));
+        portal_request_detail_panel.append_functions(&mut invokable_functions);
 
-        portal_request_detail_panel
-            .iter()
-            .for_each(|req| req.append_functions(&mut invokable_functions));
+        portal_request_view_action.append_functions(&mut invokable_functions);
 
-        portal_request_view_action
-            .iter()
-            .for_each(|req| req.append_functions(&mut invokable_functions));
+        portal_subheader.append_functions(&mut invokable_functions);
 
-        portal_subheader
-            .iter()
-            .for_each(|subheader| subheader.append_functions(&mut invokable_functions));
-        portal_header_menu_action
-            .iter()
-            .for_each(|action| action.append_functions(&mut invokable_functions));
+        portal_header_menu_action.append_functions(&mut invokable_functions);
 
-        queue_page
-            .iter()
-            .for_each(|page| page.append_functions(&mut invokable_functions));
+        queue_page.append_functions(&mut invokable_functions);
 
-        functions.into_iter().flat_map(move |func| {
+        functions.clone().into_iter().flat_map(move |func| {
             let web_trigger = webtriggers
                 .binary_search_by_key(&func.key, |trigger| &trigger.function)
                 .is_ok();
             let invokable = invokable_functions.contains(func.key);
             // this checks whether the funton being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
             // optionally: compass:adminPage could also be considered.
-            let admin = jira_admin_page.iter().any(|admin_function| {
+            let admin = jira_admin_page.clone().iter().any(|admin_function| {
                 let Some(string) = admin_function.common_keys.function else {
                     return false;
                 };
                 return string == func.key;
-            }) || compass_admin_page.iter().any(|admin_function| {
+            }) || compass_admin_page.clone().iter().any(|admin_function| {
                 let Some(string) = admin_function.function else {
                     return false;
                 };
@@ -738,11 +702,6 @@ impl<'a> ForgeModules<'a> {
                 admin,
             })
         })
-    }
-
-    pub fn add_optional(self, optional: Option<JustFunc<'a>>, iter: &mut BTreeSet<&str>) {
-        let Some(func) = optional;
-        iter.extend(func.function);
     }
 }
 
@@ -785,7 +744,7 @@ impl<'a, Resolved> FunctionRef<'a, Resolved> {
     }
 }
 
-impl<'a> TryFrom<FunctionMod<'a>> for &'a FunctionRef<'a> {
+impl<'a> TryFrom<FunctionMod<'a>> for FunctionRef<'a> {
     type Error = Error;
 
     fn try_from(func_handler: FunctionMod<'a>) -> Result<Self, Self::Error> {
@@ -882,7 +841,7 @@ mod tests {
                 auth: vec!["my-auth-provider"],
             }),
         };
-        let func_ref: FunctionRef = func_handler.try_into().unwrap();
+        let func_ref: FunctionRef = FunctionRef::try_from(func_handler).unwrap();
         assert_eq!(
             func_ref,
             FunctionRef {
@@ -908,11 +867,15 @@ mod tests {
                     "key": "my-macro",
                     "title": "My Macro",
                     "function": "Catch-me-if-you-can0", 
-                    "resolver": [
-                        "function": "Catch-me-if-you-can1", 
-                    ]
-                    "config": "Catch-me-if-you-can2",
-                    "export": "Catch-me-if-you-can3"
+                    "resolver": {
+                        "function": "Catch-me-if-you-can1"
+                    },
+                    "config": {
+                        "function": "Catch-me-if-you-can2"
+                    },
+                    "export": {
+                        "function": "Catch-me-if-you-can3"
+                    }
                 }
                 ],
                 "function": [
@@ -959,12 +922,12 @@ mod tests {
             assert_eq!(string, "Catch-me-if-you-can1");
         }
         if let Some(justfunc) = manifest.modules.macros[0].config {
-            let Some(func) = justfunc.function;
+            let func = justfunc.function.unwrap();
             assert_eq!(func, "Catch-me-if-you-can2");
         }
 
         if let Some(justfunc) = manifest.modules.macros[0].export {
-            let Some(func) = justfunc.function;
+            let func = justfunc.function.unwrap();
             assert_eq!(func, "Catch-me-if-you-can3");
         }
     }
