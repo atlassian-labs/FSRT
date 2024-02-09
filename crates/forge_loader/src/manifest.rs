@@ -253,7 +253,7 @@ pub enum FunctionTy<T> {
 
 // Struct used for tracking what scan a funtion requires.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Entrypoint<'a> {
+pub struct Entrypoints<'a> {
     function: &'a str,
     invokable: bool,
     web_trigger: bool,
@@ -261,7 +261,7 @@ pub struct Entrypoint<'a> {
 
 impl<'a> ForgeModules<'a> {
     // TODO: function returns iterator where each item is some specified type.
-    pub fn into_analyzable_functions(mut self) -> impl Iterator<Item = Entrypoint<'a>> {
+    pub fn into_analyzable_functions(self) {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         self.webtriggers
             .sort_unstable_by_key(|trigger| trigger.function);
@@ -305,44 +305,82 @@ impl<'a> ForgeModules<'a> {
 
         // get user invokable modules that have additional exposure endpoints.
         // ie macros has config and export fields on top of resolver fields that are functions
-        self.macros.iter().for_each(|macros| {
-            invokable_functions.insert(macros.common_keys.key);
+        for macros in self.macros {
+            if let Some(resolver) = macros.resolver {
+                functions_to_scan.push(Entrypoints {
+                    function: resolver.function,
+                    invokable: true,
+                    web_trigger: false,
+                })
+            }
 
-            invokable_functions.insert(macros.common_keys.function);
-            invokable_functions.extend(macros.common_keys.resolver);
+            if let Some(config) = macros.config {
+                functions_to_scan.push(Entrypoints {
+                    function: config.function,
+                    invokable: true,
+                    web_trigger: false,
+                })
+            }
+            if let Some(export) = macros.export {
+                functions_to_scan.push(Entrypoints {
+                    function: export.function,
+                    invokable: true,
+                    web_trigger: false,
+                })
+            }
+        }
 
-            invokable_functions.extend(macros.config);
-            invokable_functions.extend(macros.export);
-        });
+        // get array for user invokable module functions
+        // make alternate_functions all user-invokable functions
+        // let mut alternate_functions = Vec::new();
+        for module in self.extra.into_values().flatten() {
+            if let Some(mod_function) = module.function {
+                functions_to_scan.push(Entrypoints {
+                    function: mod_function,
+                    invokable: true,
+                    web_trigger: false,
+                });
+            }
 
-        self.issue_glance.iter().for_each(|issue| {
-            invokable_functions.insert(issue.common_keys.function);
-            invokable_functions.extend(issue.common_keys.resolver);
-            invokable_functions.extend(issue.dynamic_properties);
-        });
+            if let Some(resolver) = module.resolver {
+                functions_to_scan.push(Entrypoints {
+                    function: resolver.function,
+                    invokable: true,
+                    web_trigger: false,
+                });
+            }
+        }
+        functions_to_scan.into_iter();
+        // alternate_functions.into_iter();
+        // Iterate over Consumers and check that if consumers isn't in alternate functions, add consumer funtion to be ignored
+        // assuming that alternate functions already has all user invokable functions.
+        // self.consumers.iter().for_each(|consumer| {
+        //     if !alternate_functions.contains(&consumer.resolver.function) {
+        //         ignored_functions.insert(consumer.resolver.function);
+        //     }
+        // });
 
-        self.access_import_type.iter().for_each(|access| {
-            invokable_functions.insert(access.common_keys.function);
-            invokable_functions.extend(access.common_keys.resolver);
+        // TODO: Iterate through all deserialized entrypoints that are represented as a struct when deserialized
+        // Update Struct values to be true or not. If any part true, then scan.
+        // This solution fixes the problem that we only check known user invokable modules and also acccounts for non-invokable module entry points
 
-            invokable_functions.extend(access.one_delete_import);
-            invokable_functions.extend(access.stop_import);
-            invokable_functions.extend(access.start_import);
-            invokable_functions.extend(access.import_status);
-        });
-
-        self.functions.into_iter().flat_map(move |func| {
-            let web_trigger = self
-                .webtriggers
-                .binary_search_by_key(&func.key, |trigger| &trigger.function)
-                .is_ok();
-            let invokable = invokable_functions.contains(func.key);
-            Ok::<_, Error>(Entrypoint {
-                function: FunctionRef::try_from(func)?,
-                invokable,
-                web_trigger,
-            })
-        });
+        // return non-user invokable functions
+        // self.functions.into_iter().filter_map(move |func| {
+        //     if ignored_functions.contains(&func.key) {
+        //         return None;
+        //     }
+        //     Some(
+        //         if self
+        //             .webtriggers
+        //             .binary_search_by_key(&func.key, |trigger| trigger.function)
+        //             .is_ok()
+        //         {
+        //             FunctionTy::WebTrigger(func)
+        //         } else {
+        //             FunctionTy::Invokable(func)
+        //         },
+        //     )
+        // })
     }
 }
 
