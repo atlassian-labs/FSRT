@@ -1,6 +1,6 @@
 use std::{
     borrow::Borrow,
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     hash::Hash,
     path::{Path, PathBuf},
     sync::Arc,
@@ -10,7 +10,7 @@ use crate::{forgepermissions::ForgePermissions, Error};
 use forge_utils::FxHashMap;
 use itertools::{Either, Itertools};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use serde_json::map::Entry;
 use tracing::trace;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -253,7 +253,7 @@ pub enum FunctionTy<T> {
 
 // Struct used for tracking what scan a funtion requires.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Entrypoints<'a> {
+pub struct Entrypoint<'a> {
     function: &'a str,
     invokable: bool,
     web_trigger: bool,
@@ -263,7 +263,8 @@ impl<'a> ForgeModules<'a> {
     // TODO: function returns iterator where each item is some specified type.
     pub fn into_analyzable_functions(mut self) -> impl Iterator<Item = Entrypoint<'a>> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
-        self.webtriggers.iter().sort_unstable_by_key(|trigger| trigger.function);
+        self.webtriggers
+            .sort_unstable_by_key(|trigger| trigger.function);
         let mut invokable_functions = BTreeSet::new();
 
         self.data_provider.iter().for_each(|dataprovider| {
@@ -342,28 +343,6 @@ impl<'a> ForgeModules<'a> {
                 web_trigger,
             })
         });
-        self.access_import_type.iter().for_each(|access| {
-            invokable_functions.insert(access.common_keys.function);
-            invokable_functions.extend(access.common_keys.resolver);
-
-            invokable_functions.extend(access.one_delete_import);
-            invokable_functions.extend(access.stop_import);
-            invokable_functions.extend(access.start_import);
-            invokable_functions.extend(access.import_status);
-        });
-
-        self.functions.into_iter().flat_map(move |func| {
-            let web_trigger = self
-                .webtriggers
-                .binary_search_by_key(&func.key, |trigger| &trigger.function)
-                .is_ok();
-            let invokable = invokable_functions.contains(func.key);
-            Ok::<_, Error>(Entrypoint {
-                function: FunctionRef::try_from(func)?,
-                invokable,
-                web_trigger,
-            })
-        })
     }
 }
 
@@ -589,4 +568,4 @@ mod tests {
             assert_eq!(func, "Catch-me-if-you-can3");
         }
     }
-}}
+}

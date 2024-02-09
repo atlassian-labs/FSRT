@@ -90,6 +90,16 @@ struct ResolvedEntryPoint<'a> {
     invokable: bool,
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedEntryPoint<'a> {
+    func_name: &'a str,
+    path: PathBuf,
+    module: ModId,
+    def_id: DefId,
+    webtrigger: bool,
+    invokable: bool,
+}
+
 struct ForgeProject<'a> {
     #[allow(dead_code)]
     sm: Arc<SourceMap>,
@@ -143,7 +153,6 @@ impl<'a> ForgeProject<'a> {
             ctx,
             env,
             funcs: vec![],
-            opts: Opts::default(),
         }
     }
     // TODO: edit to work with new iterator that not FUNCTIONTY
