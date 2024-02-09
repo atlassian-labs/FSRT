@@ -97,8 +97,7 @@ struct ForgeProject<'a> {
     sm: Arc<SourceMap>,
     ctx: AppCtx,
     env: Environment,
-    funcs: BTreeMap<&'a str, Entrypoint<'a>>,
-    opts: Opts,
+    funcs: Vec<ResolvedEntryPoint<'a>>,
 }
 
 impl<'a> ForgeProject<'a> {
@@ -146,6 +145,7 @@ impl<'a> ForgeProject<'a> {
             ctx,
             env,
             funcs: vec![],
+            opts: Opts::default(),
         }
     }
     // TODO: edit to work with new iterator that not FUNCTIONTY
@@ -312,30 +312,63 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         &confluence_regex_map,
     );
     for func in &proj.funcs {
-        // TODO: Update operations in for loop to scan functions.
-        // idea: iterate over each func which should be struct that tracks the function to be scanned. And performs scans according to bool.
-        //     match *func {
-        //         FunctionTy::Invokable((ref func, ref path, _, def)) => {
-        //             let mut checker = AuthZChecker::new();
-        //             debug!("checking {func} at {path:?}");
-        //             if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
-        //             {
-        //                 warn!("error while scanning {func} in {path:?}: {err}");
-        //             }
-        //             reporter.add_vulnerabilities(checker.into_vulns());
-        //         }
-        //         FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
-        //             let mut checker = AuthenticateChecker::new();
-        //             debug!("checking webtrigger {func} at {path:?}");
-        //             if let Err(err) =
-        //                 authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
-        //             {
-        //                 warn!("error while scanning {func} in {path:?}: {err}");
-        //             }
-        //             reporter.add_vulnerabilities(checker.into_vulns());
-        //         }
-        //     }
+        let mut def_checker = DefintionAnalysisRunner::new();
+        if let Err(err) = definition_analysis_interp.run_checker(
+            func.def_id,
+            &mut def_checker,
+            func.path.clone(),
+            func.func_name.to_string(),
+        ) {
+            warn!(
+                "error while scanning {:?} in {:?}: {err}",
+                func.func_name, func.path,
+            );
+        }
 
+        if run_permission_checker {
+            let mut checker = PermissionChecker::new();
+            perm_interp.value_manager.varid_to_value =
+                definition_analysis_interp.value_manager.varid_to_value;
+            perm_interp.value_manager.defid_to_value =
+                definition_analysis_interp.value_manager.defid_to_value;
+            if let Err(err) = perm_interp.run_checker(
+                func.def_id,
+                &mut checker,
+                func.path.clone(),
+                func.func_name.to_owned(),
+            ) {
+                warn!("error while running permission checker: {err}");
+            }
+            definition_analysis_interp.value_manager.varid_to_value =
+                perm_interp.value_manager.varid_to_value;
+            definition_analysis_interp.value_manager.defid_to_value =
+                perm_interp.value_manager.defid_to_value;
+        }
+
+        let mut checker = SecretChecker::new();
+        secret_interp.value_manager.varid_to_value =
+            definition_analysis_interp.value_manager.varid_to_value;
+        secret_interp.value_manager.defid_to_value =
+            definition_analysis_interp.value_manager.defid_to_value;
+        if let Err(err) = secret_interp.run_checker(
+            func.def_id,
+            &mut checker,
+            func.path.clone(),
+            func.func_name.to_owned(),
+        ) {
+            warn!("error while running secret checker: {err}");
+        } else {
+            reporter.add_vulnerabilities(checker.into_vulns());
+        }
+        definition_analysis_interp.value_manager.varid_to_value =
+            secret_interp.value_manager.varid_to_value;
+        definition_analysis_interp.value_manager.defid_to_value =
+            secret_interp.value_manager.defid_to_value;
+
+        // Get entrypoint value from tuple
+        // Logic for performing scans.
+        // If it's invokable, then run invokable scan. If web_trigger, then trigger scan.
+        // And if it's both, run both scans.
         if func.invokable {
             let mut checker = AuthZChecker::new();
             debug!("checking {:?} at {:?}", func.func_name, &func.path);

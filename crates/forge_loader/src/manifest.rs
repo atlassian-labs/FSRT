@@ -109,6 +109,7 @@ pub struct DataProvider<'a> {
 // Struct for Custom field Module. Check that search suggestion gets read in correctly.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct CustomField<'a> {
+    // all attributes below involve function calls
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
     value: Option<&'a str>,
@@ -245,6 +246,9 @@ pub struct FunctionRef<'a, S = Unresolved> {
     status: S,
 }
 
+// Add an extra variant to the FunctionTy enum for non user invocable functions
+// Indirect: functions indirectly invoked by user :O So kewl.
+// TODO: change this to struct with bools
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FunctionTy<T> {
     Invokable(T),
@@ -261,7 +265,7 @@ pub struct Entrypoint<'a> {
 
 impl<'a> ForgeModules<'a> {
     // TODO: function returns iterator where each item is some specified type.
-    pub fn into_analyzable_functions(self) {
+    pub fn into_analyzable_functions(mut self) -> impl Iterator<Item = Entrypoint<'a>> {
         // number of webtriggers are usually low, so it's better to just sort them and reuse
         self.webtriggers
             .sort_unstable_by_key(|trigger| trigger.function);
