@@ -38,7 +38,7 @@ use forge_analyzer::{
     resolver::resolve_calls,
 };
 
-use forge_loader::manifest::{ForgeManifest, FunctionRef, FunctionTy};
+use forge_loader::manifest::{Entrypoint, ForgeManifest, Resolved};
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
@@ -81,15 +81,26 @@ struct Args {
     dirs: Vec<PathBuf>,
 }
 
-struct ForgeProject {
+#[derive(Debug, Clone)]
+struct ResolvedEntryPoint<'a> {
+    func_name: &'a str,
+    path: PathBuf,
+    module: ModId,
+    def_id: DefId,
+    webtrigger: bool,
+    invokable: bool,
+    admin: bool,
+}
+
+struct ForgeProject<'a> {
     #[allow(dead_code)]
     sm: Arc<SourceMap>,
     ctx: AppCtx,
     env: Environment,
-    funcs: Vec<FunctionTy<(String, PathBuf, ModId, DefId)>>,
+    funcs: Vec<ResolvedEntryPoint<'a>>,
 }
 
-impl ForgeProject {
+impl<'a> ForgeProject<'a> {
     #[instrument(skip(src, iter))]
     fn with_files_and_sourceroot<P: AsRef<Path>, I: IntoIterator<Item = PathBuf>>(
         src: P,
@@ -137,12 +148,20 @@ impl ForgeProject {
         }
     }
 
-    fn add_funcs<'a, I: IntoIterator<Item = FunctionTy<(&'a str, PathBuf)>>>(&mut self, iter: I) {
-        self.funcs.extend(iter.into_iter().flat_map(|ftype| {
-            ftype.sequence(|(func_name, path)| {
-                let modid = self.ctx.modid_from_path(&path)?;
-                let func = self.env.module_export(modid, func_name)?;
-                Some((func_name.to_owned(), path, modid, func))
+    // TODO: edit to work with new iterator that not FUNCTIONTY
+    fn add_funcs<I: IntoIterator<Item = Entrypoint<'a, Resolved>>>(&mut self, iter: I) {
+        self.funcs.extend(iter.into_iter().filter_map(|entrypoint| {
+            let (func_name, path) = entrypoint.function.into_func_path();
+            let module = self.ctx.modid_from_path(&path)?;
+            let def_id = self.env.module_export(module, func_name)?;
+            Some(ResolvedEntryPoint {
+                func_name,
+                path,
+                module,
+                def_id,
+                invokable: entrypoint.invokable,
+                webtrigger: entrypoint.web_trigger,
+                admin: entrypoint.admin,
             })
         }));
     }
@@ -167,7 +186,7 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 }
 
 #[tracing::instrument(level = "debug")]
-fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<ForgeProject> {
+fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<()> {
     let mut manifest_file = dir.clone();
     manifest_file.push("manifest.yaml");
     if !manifest_file.exists() {
@@ -206,24 +225,31 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<F
     });
     let run_permission_checker = opts.check_permissions && !transpiled_async;
 
-    let funcrefs = manifest.modules.into_analyzable_functions().flat_map(|f| {
-        f.sequence(|fmod| {
-            let resolved_func = FunctionRef::try_from(fmod)?.try_resolve(&paths, &dir)?;
-            Ok::<_, forge_loader::Error>(resolved_func.into_func_path())
-        })
-    });
+    let funcrefs = manifest
+        .modules
+        .into_analyzable_functions()
+        .flat_map(|entrypoint| {
+            Ok::<_, forge_loader::Error>(Entrypoint {
+                function: entrypoint.function.try_resolve(&paths, &dir)?,
+                invokable: entrypoint.invokable,
+                web_trigger: entrypoint.web_trigger,
+                admin: entrypoint.admin,
+            })
+        });
+
     let src_root = dir.join("src");
     let mut proj =
         ForgeProject::with_files_and_sourceroot(src_root, paths.clone(), secret_packages);
     if transpiled_async {
         warn!("Unable to scan due to transpiled async");
+        return Ok(());
     }
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
     if let Some(func) = opts.dump_ir.as_ref() {
         let mut lock = std::io::stdout().lock();
         proj.env.dump_function(&mut lock, func);
-        return Ok(proj);
+        return Ok(());
     }
 
     let permissions = Vec::from_iter(permissions_declared.iter().cloned());
@@ -232,7 +258,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<F
     let (confluence_permission_resolver, confluence_regex_map) =
         get_permission_resolver_confluence();
 
-    let mut defintion_analysis_interp = Interp::new(
+    let mut definition_analysis_interp = Interp::<DefintionAnalysisRunner>::new(
         &proj.env,
         false,
         true,
@@ -263,28 +289,9 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<F
         &confluence_permission_resolver,
         &confluence_regex_map,
     );
-    let mut perm_interp = Interp::new(
-        &proj.env,
-        false,
-        true,
-        permissions.clone(),
-        &jira_permission_resolver,
-        &jira_regex_map,
-        &confluence_permission_resolver,
-        &confluence_regex_map,
-    );
+
     let mut reporter = Reporter::new();
-    let mut secret_interp = Interp::new(
-        &proj.env,
-        false,
-        false,
-        permissions.clone(),
-        &jira_permission_resolver,
-        &jira_regex_map,
-        &confluence_permission_resolver,
-        &confluence_regex_map,
-    );
-    let mut pp_interp = Interp::new(
+    let mut secret_interp = Interp::<SecretChecker>::new(
         &proj.env,
         false,
         false,
@@ -297,132 +304,110 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<F
     reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
     //let mut all_used_permissions = HashSet::default();
 
+    let mut perm_interp = Interp::<PermissionChecker>::new(
+        &proj.env,
+        false,
+        true,
+        permissions.clone(),
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+    );
     for func in &proj.funcs {
-        match *func {
-            FunctionTy::Invokable((ref func, ref path, _, def)) => {
-                let mut runner = DefintionAnalysisRunner::new();
-                debug!("checking Invokable {func} at {path:?}");
-                if let Err(err) = defintion_analysis_interp.run_checker(
-                    def,
-                    &mut runner,
-                    path.clone(),
-                    func.clone(),
-                ) {
-                    warn!("error while getting definition analysis {func} in {path:?}: {err}");
-                }
-                let mut checker = AuthZChecker::new();
-                debug!("Authorization Scaner on Invokable FunctionTy: checking {func} at {path:?}");
-                if let Err(err) = interp.run_checker(def, &mut checker, path.clone(), func.clone())
-                {
-                    warn!("error while scanning {func} in {path:?}: {err}");
-                }
-                reporter.add_vulnerabilities(checker.into_vulns());
-
-                let mut checker2 = SecretChecker::new();
-                secret_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                secret_interp.value_manager.defid_to_value = defintion_analysis_interp
-                    .value_manager
-                    .defid_to_value
-                    .clone();
-                debug!("Secret Scanner on Invokable FunctionTy: checking {func} at {path:?}");
-                if let Err(err) =
-                    secret_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
-                {
-                    warn!("error while scanning {func} in {path:?}: {err}");
-                }
-                reporter.add_vulnerabilities(checker2.into_vulns());
-
-                debug!("Permission Scanners on Invokable FunctionTy: checking {func} at {path:?}");
-                if run_permission_checker {
-                    perm_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                    perm_interp.value_manager.defid_to_value = defintion_analysis_interp
-                        .value_manager
-                        .defid_to_value
-                        .clone();
-                    let mut checker2 = PermissionChecker::new();
-                    if let Err(err) =
-                        perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
-                    {
-                        warn!("error while scanning {func} in {path:?}: {err}");
-                    }
-                }
-                pp_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                pp_interp.value_manager.defid_to_value = defintion_analysis_interp
-                    .value_manager
-                    .defid_to_value
-                    .clone();
-                if let Err(e) = pp_interp.run_checker(
-                    def,
-                    &mut PrototypePollutionChecker,
-                    path.clone(),
-                    func.clone(),
-                ) {
-                    warn!("error while scanning {func} in {path:?}: {e}");
-                }
-            }
-            FunctionTy::WebTrigger((ref func, ref path, _, def)) => {
-                let mut runner = DefintionAnalysisRunner::new();
-                debug!("checking Web Trigger {func} at {path:?}");
-                if let Err(err) = defintion_analysis_interp.run_checker(
-                    def,
-                    &mut runner,
-                    path.clone(),
-                    func.clone(),
-                ) {
-                    warn!("error while getting definition analysis {func} in {path:?}: {err}");
-                }
-
-                let mut checker2 = SecretChecker::new();
-                secret_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                secret_interp.value_manager.defid_to_value = defintion_analysis_interp
-                    .value_manager
-                    .defid_to_value
-                    .clone();
-                debug!("Secret Scanner on Web Triggers: checking {func} at {path:?}");
-                if let Err(err) =
-                    secret_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
-                {
-                    warn!("error while scanning {func} in {path:?}: {err}");
-                }
-                reporter.add_vulnerabilities(checker2.into_vulns());
-
-                let mut checker = AuthenticateChecker::new();
-                debug!("Authentication Checker on Web Triggers: checking webtrigger {func} at {path:?}");
-                if let Err(err) =
-                    authn_interp.run_checker(def, &mut checker, path.clone(), func.clone())
-                {
-                    warn!("error while scanning {func} in {path:?}: {err}");
-                }
-                reporter.add_vulnerabilities(checker.into_vulns());
-
-                debug!(
-                    "Permission Checker on Web Triggers: checking webtrigger {func} at {path:?}"
-                );
-                if run_permission_checker {
-                    perm_interp.value_manager.varid_to_value = defintion_analysis_interp.get_defs();
-                    perm_interp.value_manager.defid_to_value = defintion_analysis_interp
-                        .value_manager
-                        .defid_to_value
-                        .clone();
-                    let mut checker2 = PermissionChecker::new();
-                    if let Err(err) =
-                        perm_interp.run_checker(def, &mut checker2, path.clone(), func.clone())
-                    {
-                        warn!("error while scanning {func} in {path:?}: {err}");
-                    }
-                }
-            }
-        }
-    }
-
-    if run_permission_checker {
-        if perm_interp.permissions.len() > 0 {
-            reporter.add_vulnerabilities(
-                vec![PermissionVuln::new(perm_interp.permissions)].into_iter(),
+        let mut def_checker = DefintionAnalysisRunner::new();
+        if let Err(err) = definition_analysis_interp.run_checker(
+            func.def_id,
+            &mut def_checker,
+            func.path.clone(),
+            func.func_name.to_string(),
+        ) {
+            warn!(
+                "error while scanning {:?} in {:?}: {err}",
+                func.func_name, func.path,
             );
         }
+
+        if run_permission_checker {
+            let mut checker = PermissionChecker::new();
+            perm_interp.value_manager.varid_to_value =
+                definition_analysis_interp.value_manager.varid_to_value;
+            perm_interp.value_manager.defid_to_value =
+                definition_analysis_interp.value_manager.defid_to_value;
+            if let Err(err) = perm_interp.run_checker(
+                func.def_id,
+                &mut checker,
+                func.path.clone(),
+                func.func_name.to_owned(),
+            ) {
+                warn!("error while running permission checker: {err}");
+            }
+            definition_analysis_interp.value_manager.varid_to_value =
+                perm_interp.value_manager.varid_to_value;
+            definition_analysis_interp.value_manager.defid_to_value =
+                perm_interp.value_manager.defid_to_value;
+        }
+
+        let mut checker = SecretChecker::new();
+        secret_interp.value_manager.varid_to_value =
+            definition_analysis_interp.value_manager.varid_to_value;
+        secret_interp.value_manager.defid_to_value =
+            definition_analysis_interp.value_manager.defid_to_value;
+        if let Err(err) = secret_interp.run_checker(
+            func.def_id,
+            &mut checker,
+            func.path.clone(),
+            func.func_name.to_owned(),
+        ) {
+            warn!("error while running secret checker: {err}");
+        } else {
+            reporter.add_vulnerabilities(checker.into_vulns());
+        }
+        definition_analysis_interp.value_manager.varid_to_value =
+            secret_interp.value_manager.varid_to_value;
+        definition_analysis_interp.value_manager.defid_to_value =
+            secret_interp.value_manager.defid_to_value;
+
+        if func.invokable {
+            let mut checker = AuthZChecker::new();
+            debug!("checking {:?} at {:?}", func.func_name, &func.path);
+            if let Err(err) = interp.run_checker(
+                func.def_id,
+                &mut checker,
+                func.path.clone(),
+                func.func_name.to_string(),
+            ) {
+                warn!(
+                    "error while scanning {:?} in {:?}: {err}",
+                    func.func_name, func.path,
+                );
+            }
+            reporter.add_vulnerabilities(checker.into_vulns());
+        } else if func.webtrigger {
+            let mut checker = AuthenticateChecker::new();
+            debug!(
+                "checking webtrigger {:?} at {:?}",
+                func.func_name, func.path,
+            );
+            if let Err(err) = authn_interp.run_checker(
+                func.def_id,
+                &mut checker,
+                func.path.clone(),
+                func.func_name.to_string(),
+            ) {
+                warn!(
+                    "error while scanning {:?} in {:?}: {err}",
+                    func.func_name, func.path,
+                );
+            }
+            reporter.add_vulnerabilities(checker.into_vulns());
+        }
     }
 
+    if perm_interp.permissions.len() > 0 {
+        reporter
+            .add_vulnerabilities(vec![PermissionVuln::new(perm_interp.permissions)].into_iter());
+    }
     let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
     debug!("On the debug layer: Writing Report");
     match &opts.out {
@@ -432,7 +417,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<F
         None => println!("{report}"),
     }
 
-    Ok(proj)
+    Ok(())
 }
 
 fn main() -> Result<()> {
