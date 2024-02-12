@@ -180,7 +180,6 @@ pub fn run_resolver(
         module.visit_with(&mut import_collector);
     }
 
-    // check for required after Definitions pass
     let defs = Definitions::new(
         environment
             .resolver
@@ -389,7 +388,6 @@ pub enum DefKind<F, O, I> {
     ResolverDef(DefId),
     Closure(F),
     // Example: `module` in import * as 'foo' from 'module'
-    // Local modules only.
     ModuleNs(ModId),
     Undefined,
 }
@@ -1275,7 +1273,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
         let first_arg = args.first().map(|expr| &*expr.expr);
         let intrinsic = self.as_intrinsic(&props, first_arg);
-        let call = match intrinsic {
+        let call = match self.as_intrinsic(&props, first_arg) {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
         };
@@ -1658,7 +1656,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Expr::Ident(id) => {
                 let id = id.to_id();
                 let Some(def) = self.res.sym_to_id(id.clone(), self.module) else {
-                    warn!("3 unknown symbol: {}", id.0);
+                    warn!("unknown symbol: {}", id.0);
                     return Literal::Undef.into();
                 };
                 let var = self.body.get_or_insert_global(def);
@@ -2530,7 +2528,6 @@ impl Visit for FunctionCollector<'_> {
                     let old_parent = self.parent.replace(def);
                     match expr {
                         Expr::Fn(f) => {
-                            debug!("visitng this one for require!");
                             f.visit_with(self);
                         }
                         Expr::Arrow(arrow) => self.visit_arrow_expr(arrow),
@@ -3758,7 +3755,6 @@ impl Environment {
         }
     }
 
-    // takes in Definition ID and returns tuple with import module and type of import
     pub fn as_foreign_import(&self, def: DefId) -> Option<(JsWord, ImportKind)> {
         let DefKind::Foreign(f) = self.def_ref(def) else {
             return None;
