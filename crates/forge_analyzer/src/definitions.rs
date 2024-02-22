@@ -2830,7 +2830,7 @@ impl Visit for Lowerer<'_> {
                                 Prop::Method(MethodProp { key, function }) => {
                                     function.body.visit_with(self);
                                     if let Some(sym) = key.as_symbol() {
-                                        let def_id = self.res.add_anonymous(
+                                        let def_id_function = self.res.add_anonymous(
                                             sym.clone(),
                                             AnonType::Closure,
                                             self.curr_mod,
@@ -2839,7 +2839,7 @@ impl Visit for Lowerer<'_> {
                                             .def_mut(def_id)
                                             .expect_class()
                                             .pub_members
-                                            .push((sym, def_id));
+                                            .push((sym, def_id_function));
                                     }
                                 }
                             },

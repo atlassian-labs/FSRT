@@ -27,7 +27,13 @@ resolver.define('getText' /* getText */, async (req) => {
   console.log('called getText()');
   await requireAccess({ req });
   const accountId = requireAccountId(req);
-  //const payload = getTextSchema.parse(req.payload);
+
+  const someObject = {
+    someFunction() {
+      console.log('Hello World!')
+    },
+  }
+
   const payload = { text: 'hi' };
   console.log('accessed getText()');
   return getText({ ...payload, accountId });
