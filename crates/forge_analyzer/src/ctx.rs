@@ -281,15 +281,13 @@ impl AppCtx {
         &self,
         func: &ModItem,
         block: BasicBlockId,
-    ) -> Option<impl Iterator<Item = BasicBlockId> + DoubleEndedIterator + '_> {
+    ) -> Option<impl DoubleEndedIterator<Item = BasicBlockId> + '_> {
         self.func(func)
             .and_then(|f| Some(f.succ.get(&block)?.into_iter().copied()))
     }
 
     #[inline]
-    pub fn module_ids(
-        &self,
-    ) -> impl Iterator<Item = ModId> + DoubleEndedIterator + ExactSizeIterator + '_ {
+    pub fn module_ids(&self) -> impl DoubleEndedIterator<Item = ModId> + ExactSizeIterator + '_ {
         self.modules.keys()
     }
 

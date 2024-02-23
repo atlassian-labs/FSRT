@@ -14,23 +14,24 @@ use swc_core::{
     ecma::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
-            AssignProp, AwaitExpr, BinExpr, BindingIdent, BlockStmt, BlockStmtOrExpr, BreakStmt,
-            CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName, CondExpr,
-            Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll, ExportDecl,
-            ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier, ExportSpecifier, Expr,
-            ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForHead, ForInStmt, ForOfStmt, ForStmt,
-            Function, Id, Ident, IfStmt, Import, ImportDecl, ImportDefaultSpecifier,
-            ImportNamedSpecifier, ImportStarAsSpecifier, JSXAttrName, JSXAttrOrSpread,
-            JSXAttrValue, JSXElement, JSXElementChild, JSXElementName, JSXExpr, JSXExprContainer,
-            JSXFragment, JSXMemberExpr, JSXNamespacedName, JSXObject, JSXSpreadChild, JSXText,
-            KeyValuePatProp, KeyValueProp, LabeledStmt, Lit, MemberExpr, MemberProp, MetaPropExpr,
-            MethodProp, Module, ModuleDecl, ModuleExportName, ModuleItem, NamedExport, NewExpr,
-            Number, ObjectLit, ObjectPat, ObjectPatProp, OptCall, OptChainBase, OptChainExpr,
-            Param, ParenExpr, Pat, PatOrExpr, PrivateName, Prop, PropName, PropOrSpread, RestPat,
-            ReturnStmt, SeqExpr, Stmt, Str, Super, SuperProp, SuperPropExpr, SwitchStmt, TaggedTpl,
-            ThisExpr, ThrowStmt, Tpl, TplElement, TryStmt, TsAsExpr, TsConstAssertion,
-            TsInstantiation, TsNonNullExpr, TsSatisfiesExpr, TsTypeAssertion, UnaryExpr,
-            UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclarator, WhileStmt, WithStmt, YieldExpr,
+            AssignProp, AssignTarget, AwaitExpr, BinExpr, BindingIdent, BlockStmt, BlockStmtOrExpr,
+            BreakStmt, CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName,
+            CondExpr, Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll,
+            ExportDecl, ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier,
+            ExportSpecifier, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForHead, ForInStmt,
+            ForOfStmt, ForStmt, Function, Id, Ident, IfStmt, Import, ImportDecl,
+            ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, JSXAttrName,
+            JSXAttrOrSpread, JSXAttrValue, JSXElement, JSXElementChild, JSXElementName, JSXExpr,
+            JSXExprContainer, JSXFragment, JSXMemberExpr, JSXNamespacedName, JSXObject,
+            JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp, LabeledStmt, Lit, MemberExpr,
+            MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl, ModuleExportName, ModuleItem,
+            NamedExport, NewExpr, Number, ObjectLit, ObjectPat, ObjectPatProp, OptCall,
+            OptChainBase, OptChainExpr, Param, ParenExpr, Pat, PrivateName, Prop, PropName,
+            PropOrSpread, RestPat, ReturnStmt, SeqExpr, SimpleAssignTarget, Stmt, Str, Super,
+            SuperProp, SuperPropExpr, SwitchStmt, TaggedTpl, ThisExpr, ThrowStmt, Tpl, TplElement,
+            TryStmt, TsAsExpr, TsConstAssertion, TsInstantiation, TsNonNullExpr, TsSatisfiesExpr,
+            TsTypeAssertion, UnaryExpr, UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclarator,
+            WhileStmt, WithStmt, YieldExpr,
         },
         atoms::{Atom, JsWord},
         utils::{function, ident::IdentLike},
@@ -911,7 +912,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     && Some(&ImportKind::Default)
                         == self.res.is_imported_from(def, "@forge/api") =>
             {
-                let function_name = if *last == String::from("requestJira") {
+                let function_name = if *last == "requestJira" {
                     IntrinsicName::RequestJira
                 } else {
                     IntrinsicName::RequestConfluence
@@ -972,20 +973,16 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let (package_name, import_kind) = self.res.as_foreign_import(def)?;
                 let package_found = self.secret_packages.iter().find(|&package_data| {
                     if let Some(package_method) = &package_data.method {
-                        return package_name == package_data.package_name
+                        package_name == package_data.package_name
                             && import_kind == ImportKind::Star
                             && identifier == &package_data.identifier
-                            && *method == *package_method;
+                            && *method == *package_method
                     } else {
                         false
                     }
                 });
 
-                if let Some(package) = package_found {
-                    Some(Intrinsic::SecretFunction(package.clone()))
-                } else {
-                    None
-                }
+                package_found.map(|package| Intrinsic::SecretFunction(package.clone()))
             }
             // [Def, Static]
             // [PropPath::Def(def), PropPath::Static(atom)]
@@ -1002,11 +999,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                             && *method_name == package_data.identifier
                             && package_data.method.is_none()
                     });
-                    if let Some(package) = package_found {
-                        Some(Intrinsic::SecretFunction(package.clone()))
-                    } else {
-                        None
-                    }
+                    package_found.map(|package| Intrinsic::SecretFunction(package.clone()))
                 } else {
                     // Named or default imports that
                     // import AES from "crypto-js";
@@ -1021,11 +1014,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                             false
                         }
                     });
-                    if let Some(package) = package_found {
-                        Some(Intrinsic::SecretFunction(package.clone()))
-                    } else {
-                        None
-                    }
+                    package_found.map(|package| Intrinsic::SecretFunction(package.clone()))
                 }
             }
             // [Def, .., Static] star
@@ -1163,8 +1152,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
     fn lower_jsx_member(&mut self, n: &JSXMemberExpr) -> Operand {
         let mut var = match &n.obj {
-            JSXObject::JSXMemberExpr(obj) => self.lower_jsx_member(&obj),
-            JSXObject::Ident(ident) => self.lower_ident(&ident),
+            JSXObject::JSXMemberExpr(obj) => self.lower_jsx_member(obj),
+            JSXObject::Ident(ident) => self.lower_ident(ident),
         };
         if let Operand::Var(var) = &mut var {
             var.projections.push(Projection::Known(n.prop.sym.clone()));
@@ -1173,13 +1162,12 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn resolve_class_prop(&self, obj: &Expr) -> Option<&Class> {
-        if let Expr::Ident(ident) = &*obj {
+        if let Expr::Ident(ident) = obj {
             if let Some(defid) = self.res.sym_to_id(ident.to_id(), self.module) {
                 if let Some(potential_class) = self.body.class_instantiations.get(&defid) {
-                    if let Some(DefKind::Class(class_id)) =
-                        self.res.defs.defs.get(potential_class.clone())
+                    if let Some(DefKind::Class(class_id)) = self.res.defs.defs.get(*potential_class)
                     {
-                        return self.res.defs.classes.get(class_id.clone());
+                        return self.res.defs.classes.get(*class_id);
                     }
                 }
             }
@@ -1194,12 +1182,12 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 // let Some(def) = self.res.sym_to_id(id.clone(), self.module) else {
                 //     return Literal::Undef.into();
                 // };
-                if let Some((_, def_constructor)) =
-                    class.pub_members.iter().find(|(name, defid)| {
-                        return name == "constructor";
-                    })
+                if let Some((_, def_constructor)) = class
+                    .pub_members
+                    .iter()
+                    .find(|(name, defid)| name == "constructor")
                 {
-                    let var = self.body.get_or_insert_global(def_constructor.clone());
+                    let var = self.body.get_or_insert_global(*def_constructor);
                     return Operand::with_var(var);
                 }
             }
@@ -1207,12 +1195,12 @@ impl<'cx> FunctionAnalyzer<'cx> {
         if let Expr::Member(MemberExpr { obj, prop, .. }) = expr {
             if let Some(class) = self.resolve_class_prop(obj) {
                 if let MemberProp::Ident(ident) = prop {
-                    if let Some((_, def_constructor)) =
-                        class.pub_members.iter().find(|(name, defid)| {
-                            return name == &ident.sym;
-                        })
+                    if let Some((_, def_constructor)) = class
+                        .pub_members
+                        .iter()
+                        .find(|(name, defid)| name == &ident.sym)
                     {
-                        let var = self.body.get_or_insert_global(def_constructor.clone());
+                        let var = self.body.get_or_insert_global(*def_constructor);
                         return Operand::with_var(var);
                     }
                 }
@@ -1242,7 +1230,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                 return Operand::UNDEF;
                             }
                             BlockStmtOrExpr::Expr(expr) => {
-                                return self.lower_expr(&expr, None);
+                                return self.lower_expr(expr, None);
                             }
                         },
                         Expr::Fn(FnExpr { ident: _, function }) => {
@@ -1334,7 +1322,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             JSXAttrOrSpread::JSXAttr(jsx_attr) => {
                 if let JSXAttrName::Ident(ident_value) = &jsx_attr.name {
                     if let Some(JSXAttrValue::JSXExprContainer(jsx_expr)) = &jsx_attr.value {
-                        self.lower_jsx_handler(&jsx_expr, ident_value);
+                        self.lower_jsx_handler(jsx_expr, ident_value);
                     }
                 }
             }
@@ -1345,13 +1333,13 @@ impl<'cx> FunctionAnalyzer<'cx> {
     fn lower_jsx_handler(&mut self, n: &JSXExprContainer, ident_value: &Ident) {
         if let JSXExpr::Expr(expr) = &n.expr {
             // FIXME: Add entry point for the functions that are called as part of the handlers
-            self.lower_expr(&expr, None);
+            self.lower_expr(expr, None);
             if let Some(second_char) = ident_value.sym.chars().nth(2) {
                 if ident_value.sym.starts_with("on") && second_char.is_uppercase() {
                     match &**expr {
                         Expr::Arrow(arrow_expr) => {
                             if let BlockStmtOrExpr::Expr(expr) = &*arrow_expr.body {
-                                self.lower_expr(&**expr, None);
+                                self.lower_expr(expr, None);
                             }
                         }
                         Expr::Ident(ident) => {
@@ -1427,7 +1415,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let var = self.body.get_or_insert_global(def);
                 Operand::with_var(var)
             }
-            JSXElementName::JSXMemberExpr(mem) => self.lower_jsx_member(&mem),
+            JSXElementName::JSXMemberExpr(mem) => self.lower_jsx_member(mem),
             JSXElementName::JSXNamespacedName(JSXNamespacedName { ns, name }) => {
                 let ns = ns.to_id();
                 let Some(def) = self.res.sym_to_id(ns.clone(), self.module) else {
@@ -1464,7 +1452,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let def_id = self
                     .res
                     .add_anonymous("__UNKNOWN", AnonType::Obj, self.module);
-                let class_var_id = self.body.add_var(VarKind::LocalDef((def_id)));
+                let class_var_id = self.body.add_var(VarKind::LocalDef(def_id));
                 if let DefKind::GlobalObj(class_id) = self.res.defs.defs[def_id] {
                     props.iter().for_each(|prop_or_spread| {
                         let mut var = Variable::new(class_var_id);
@@ -1487,7 +1475,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                     );
                                 }
                                 Prop::KeyValue(KeyValueProp { key, value }) => {
-                                    let lowered_value = self.lower_expr(&value, None);
+                                    let lowered_value = self.lower_expr(value, None);
                                     let lowered_var = self.body.coerce_to_lval(
                                         self.block,
                                         lowered_value.clone(),
@@ -1589,14 +1577,55 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }) => {
                 let rhs = self.lower_expr(right, None);
                 match left {
-                    PatOrExpr::Expr(expr) => {
-                        let opnd = self.lower_expr(expr, None);
-                        let lval = self.body.coerce_to_lval(self.block, opnd, None);
-                        self.push_curr_inst(Inst::Assign(lval, Rvalue::Read(rhs.clone())));
+                    AssignTarget::Pat(pat) => {
+                        self.bind_pats(&pat.clone().into(), Rvalue::Read(rhs.clone()));
                     }
-                    PatOrExpr::Pat(pat) => {
-                        self.bind_pats(pat, Rvalue::Read(rhs.clone()));
-                    }
+                    AssignTarget::Simple(expr) => match expr {
+                        SimpleAssignTarget::Ident(BindingIdent { id, .. }) => {
+                            let lval = self.lower_ident(id);
+                            let lval = self.body.coerce_to_lval(self.block, lval, None);
+                            self.push_curr_inst(Inst::Assign(lval, Rvalue::Read(rhs.clone())));
+                        }
+                        SimpleAssignTarget::Member(MemberExpr { obj, prop, .. }) => {
+                            let lval = self.lower_member(obj, prop);
+                            let lval = self.body.coerce_to_lval(self.block, lval, None);
+                            self.push_curr_inst(Inst::Assign(lval, Rvalue::Read(rhs.clone())));
+                        }
+                        SimpleAssignTarget::SuperProp(_) => {
+                            // FIXME: handle super assignees
+                        }
+                        SimpleAssignTarget::Paren(ParenExpr { expr, .. }) => {
+                            let lval = self.lower_expr(expr, None);
+                            let lval = self.body.coerce_to_lval(self.block, lval, None);
+                            self.push_curr_inst(Inst::Assign(lval, Rvalue::Read(rhs.clone())));
+                        }
+                        SimpleAssignTarget::OptChain(OptChainExpr { optional, base, .. }) => {
+                            match &**base {
+                                OptChainBase::Call(OptCall { callee, args, .. }) => {
+                                    let callee = self.lower_call(callee.as_ref().into(), args);
+                                    let lval = self.body.coerce_to_lval(self.block, callee, None);
+                                    self.push_curr_inst(Inst::Assign(
+                                        lval,
+                                        Rvalue::Read(rhs.clone()),
+                                    ));
+                                }
+                                OptChainBase::Member(MemberExpr { obj, prop, .. }) => {
+                                    let lval = self.lower_member(obj, prop);
+                                    let lval = self.body.coerce_to_lval(self.block, lval, None);
+                                    self.push_curr_inst(Inst::Assign(
+                                        lval,
+                                        Rvalue::Read(rhs.clone()),
+                                    ));
+                                }
+                            }
+                        }
+                        SimpleAssignTarget::TsAs(_)
+                        | SimpleAssignTarget::TsSatisfies(_)
+                        | SimpleAssignTarget::TsNonNull(_)
+                        | SimpleAssignTarget::TsTypeAssertion(_)
+                        | SimpleAssignTarget::TsInstantiation(_)
+                        | SimpleAssignTarget::Invalid(_) => {}
+                    },
                 };
                 rhs
             }
@@ -1689,16 +1718,16 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Expr::MetaProp(_) => Operand::UNDEF,
             Expr::Await(AwaitExpr { arg, .. }) => self.lower_expr(arg, None),
             Expr::Paren(ParenExpr { expr, .. }) => self.lower_expr(expr, None),
-            Expr::JSXMember(mem) => self.lower_jsx_member(&mem),
+            Expr::JSXMember(mem) => self.lower_jsx_member(mem),
             Expr::JSXNamespacedName(JSXNamespacedName { ns, name, .. }) => {
-                let mut ident = self.lower_ident(&ns);
+                let mut ident = self.lower_ident(ns);
                 if let Operand::Var(var) = &mut ident {
                     var.projections.push(Projection::Known(name.sym.clone()));
                 }
                 ident
             }
             Expr::JSXEmpty(_) => Operand::UNDEF,
-            Expr::JSXElement(elem) => self.lower_jsx_elem(&elem),
+            Expr::JSXElement(elem) => self.lower_jsx_elem(elem),
             Expr::JSXFragment(JSXFragment {
                 opening,
                 children,
@@ -1903,7 +1932,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
         // FIXME: don't assume loops are infinite
         let opnd = self.lower_expr(right, None);
         match left {
-            ForHead::VarDecl(var) => self.lower_var_decl(&*var),
+            ForHead::VarDecl(var) => self.lower_var_decl(var),
             ForHead::Pat(pat) => self.bind_pats(pat, Rvalue::Read(opnd)),
             ForHead::UsingDecl(_) => {
                 //FIXME: investigate this case
@@ -1953,7 +1982,7 @@ impl Visit for ArgDefiner<'_> {
         self.body.push_assign(
             STARTING_BLOCK,
             var.into(),
-            Rvalue::Read(Operand::Var(self.current_arg.clone().into())),
+            Rvalue::Read(Operand::Var(self.current_arg.clone())),
         );
     }
 
@@ -2119,7 +2148,7 @@ impl Visit for FunctionCollector<'_> {
                         if ident_property.sym == "exports" {
                             match &*n.right {
                                 Expr::Fn(FnExpr { ident, function }) => self.handle_function(
-                                    &**&function,
+                                    function,
                                     self.res.default_export(self.module),
                                 ),
                                 Expr::Class(ClassExpr { ident, class }) => {
@@ -2139,7 +2168,7 @@ impl Visit for FunctionCollector<'_> {
                                 if let Some(defid) =
                                     self.res.get_sym(ident_property.to_id(), self.module)
                                 {
-                                    self.handle_function(&*n.function, Some(defid));
+                                    self.handle_function(&n.function, Some(defid));
                                 }
                             }
                             Expr::Class(class) => {
@@ -2361,14 +2390,14 @@ impl Visit for FunctionCollector<'_> {
                         && self.res.sym_to_id(callee_ident, self.module).is_none()
                         && args.len() == 1
                     {
-                        match args.get(0) {
+                        match args.first() {
                             Some(ExprOrSpread { spread, expr: lit }) => {
                                 // TODO: handle local module imports
                                 if let Expr::Lit(Lit::Str(Str { value, .. })) = &**lit {
                                     let package_to_check = self
                                         .secret_packages
                                         .iter()
-                                        .find(|package| package.package_name == &**value);
+                                        .find(|package| package.package_name == **value);
 
                                     if let Some(package) = package_to_check {
                                         match self.file_resolver.resolve_import(
@@ -2402,7 +2431,7 @@ impl Visit for FunctionCollector<'_> {
                         let ident_to_id = ident.to_id();
                         let Some(def) = self.res.sym_to_id(ident_to_id, self.module) else {
                             debug!("No id found for symbol");
-                            return ();
+                            return;
                         };
                         if matches!(self.res.is_imported_from(def, "@forge/ui"), Some(ImportKind::Named(imp)) if *imp == *"render")
                         {
@@ -2479,7 +2508,7 @@ impl Visit for FunctionCollector<'_> {
             self.res.resolver.defs[defid] = DefRes::Function(());
             self.res.overwrite_def(defid, DefRes::Function(()));
             self.curr_function = Some(defid);
-            self.handle_function(&*n.function, Some(defid.clone()));
+            self.handle_function(&n.function, Some(defid));
         } else {
             let def = self
                 .res
@@ -3255,10 +3284,7 @@ fn ident_from_assign_expr(n: &AssignExpr) -> Option<Ident> {
 }
 
 fn mem_expr_from_assign(n: &AssignExpr) -> Option<&MemberExpr> {
-    if let Some(Expr::Member(mem_expr)) = n.left.as_expr() {
-        return Some(mem_expr);
-    }
-    None
+    n.left.as_simple()?.as_member()
 }
 
 impl Environment {
@@ -3329,9 +3355,10 @@ impl Environment {
     #[inline]
     fn get_or_reserve_global_scope(&mut self, module: ModId) -> DefId {
         if let Some(defid) = self.global.get(module) {
-            return defid.clone();
+            *defid
+        } else {
+            self.reserve_global_scope(module)
         }
-        self.reserve_global_scope(module)
     }
 
     fn new_key_from_res(&mut self, id: DefId, res: DefRes) -> DefKey {
@@ -3387,9 +3414,7 @@ impl Environment {
             }
             AnonType::Closure => {
                 let name = name.into();
-                let id = self
-                    .resolver
-                    .add_anon(DefRes::Closure(()), name.into(), module);
+                let id = self.resolver.add_anon(DefRes::Closure(()), name, module);
                 let func_id = self.defs.funcs.push_and_get_key(Body::with_owner(id));
                 let id2 = self.defs.defs.push_and_get_key(DefKind::Closure(func_id));
                 debug_assert_eq!(id, id2);

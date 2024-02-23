@@ -6,7 +6,6 @@ use forge_permission_resolver::permissions_resolver::{
 use miette::{IntoDiagnostic, Result};
 use std::{
     collections::HashSet,
-    convert::TryFrom,
     fs,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
@@ -29,7 +28,7 @@ use tracing_tree::HierarchicalLayer;
 use forge_analyzer::{
     checkers::{
         AuthZChecker, AuthenticateChecker, DefintionAnalysisRunner, PermissionChecker,
-        PermissionVuln, PrototypePollutionChecker, SecretChecker,
+        PermissionVuln, SecretChecker,
     },
     ctx::{AppCtx, ModId},
     definitions::{run_resolver, DefId, Environment, PackageData},
@@ -81,6 +80,7 @@ struct Args {
     dirs: Vec<PathBuf>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ResolvedEntryPoint<'a> {
     func_name: &'a str,
@@ -148,7 +148,6 @@ impl<'a> ForgeProject<'a> {
         }
     }
 
-    // TODO: edit to work with new iterator that not FUNCTIONTY
     fn add_funcs<I: IntoIterator<Item = Entrypoint<'a, Resolved>>>(&mut self, iter: I) {
         self.funcs.extend(iter.into_iter().filter_map(|entrypoint| {
             let (func_name, path) = entrypoint.function.into_func_path();
@@ -201,7 +200,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
     let requested_permissions = manifest.permissions;
     let permission_scopes = requested_permissions.scopes;
     let permissions_declared: HashSet<String> =
-        HashSet::from_iter(permission_scopes.iter().map(|s| s.replace("\"", "")));
+        HashSet::from_iter(permission_scopes.iter().map(|s| s.replace('\"', "")));
 
     let secret_packages: Vec<PackageData> =
         if let Result::Ok(f) = std::fs::File::open("secretdata.yaml") {
@@ -404,9 +403,8 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         }
     }
 
-    if perm_interp.permissions.len() > 0 {
-        reporter
-            .add_vulnerabilities(vec![PermissionVuln::new(perm_interp.permissions)].into_iter());
+    if run_permission_checker && !perm_interp.permissions.is_empty() {
+        reporter.add_vulnerabilities([PermissionVuln::new(perm_interp.permissions)]);
     }
     let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
     debug!("On the debug layer: Writing Report");

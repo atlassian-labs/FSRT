@@ -69,7 +69,7 @@ pub fn check_url_for_permissions(
     // sort by the length of regex
     let mut length_of_regex = endpoint_regex
         .iter()
-        .map(|(string, regex)| (regex.as_str().len(), &*string))
+        .map(|(string, regex)| (regex.as_str().len(), string))
         .collect::<Vec<_>>();
     length_of_regex.sort_by_key(|k| Reverse(k.0));
 
@@ -87,12 +87,12 @@ pub fn check_url_for_permissions(
 
 pub fn get_permission_resolver_jira() -> (PermissionHashMap, HashMap<String, Regex>) {
     let jira_url = "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json";
-    return get_permission_resolver(jira_url);
+    get_permission_resolver(jira_url)
 }
 
 pub fn get_permission_resolver_confluence() -> (PermissionHashMap, HashMap<String, Regex>) {
     let confluence_url = "https://developer.atlassian.com/cloud/confluence/swagger.v3.json";
-    return get_permission_resolver(confluence_url);
+    get_permission_resolver(confluence_url)
 }
 
 pub fn get_permission_resolver(url: &str) -> (PermissionHashMap, HashMap<String, Regex>) {
@@ -101,7 +101,7 @@ pub fn get_permission_resolver(url: &str) -> (PermissionHashMap, HashMap<String,
 
     get_permisions_for(url, &mut endpoint_map, &mut endpoint_regex);
 
-    return (endpoint_map, endpoint_regex);
+    (endpoint_map, endpoint_regex)
 }
 
 pub fn get_permisions_for(
@@ -183,17 +183,16 @@ fn get_request_type(
         all_methods.push((key.to_string(), RequestType::Get, get_scopes(endpoint_data)));
     }
 
-    return all_methods;
+    all_methods
 }
 
 fn get_scopes(endpoint_data: &RequestDetails) -> Vec<String> {
-    return endpoint_data
+    endpoint_data
         .permission
-        .clone()
-        .into_iter()
-        .map(|data| data.scopes)
-        .flatten()
-        .collect();
+        .iter()
+        .flat_map(|data| &*data.scopes)
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
