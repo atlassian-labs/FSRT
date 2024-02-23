@@ -243,7 +243,7 @@ impl Exports {
         match self {
             Exports::Named(exports) => exports
                 .iter()
-                .find_map(|(orig, exported)| (&exported.0 == lookup).then(|| orig.clone())),
+                .find_map(|(orig, exported)| (exported.0 == lookup).then(|| orig.clone())),
         }
     }
 
@@ -259,7 +259,7 @@ impl Exports {
 impl ImportKind {
     pub(crate) fn equal_funcname(&self, func: &str) -> bool {
         match self {
-            ImportKind::Renamed(id) | ImportKind::Same(id) => &id.0 == func,
+            ImportKind::Renamed(id) | ImportKind::Same(id) => id.0 == func,
             ImportKind::Star(_) => false,
             ImportKind::Default => false,
         }

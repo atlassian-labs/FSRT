@@ -9,8 +9,7 @@ use crate::Error;
 use forge_utils::FxHashMap;
 use itertools::Itertools;
 use serde::Deserialize;
-use serde_json::map::Iter;
-use tracing::{info, trace};
+use tracing::trace;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct AuthProviders<'a> {
@@ -37,8 +36,8 @@ impl<'a> HasFunctions<'a> for CommonKey<'a> {
 
         if let Some(Resolver {
             function,
-            method,
-            endpoint,
+            method: _,
+            endpoint: _,
         }) = self.resolver
         {
             funcs.extend(function);
@@ -676,24 +675,19 @@ impl<'a> ForgeModules<'a> {
 
         queue_page.append_functions(&mut invokable_functions);
 
-        functions.clone().into_iter().flat_map(move |func| {
+        functions.into_iter().flat_map(move |func| {
             let web_trigger = webtriggers
-                .binary_search_by_key(&func.key, |trigger| &trigger.function)
+                .binary_search_by_key(&func.key, |trigger| trigger.function)
                 .is_ok();
             let invokable = invokable_functions.contains(func.key);
             // this checks whether the funton being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
             // optionally: compass:adminPage could also be considered.
-            let admin = jira_admin_page.clone().iter().any(|admin_function| {
-                let Some(string) = admin_function.common_keys.function else {
-                    return false;
-                };
-                return string == func.key;
-            }) || compass_admin_page.clone().iter().any(|admin_function| {
-                let Some(string) = admin_function.function else {
-                    return false;
-                };
-                return string == func.key;
-            });
+            let admin = jira_admin_page
+                .iter()
+                .any(|admin_function| admin_function.common_keys.function == Some(func.key))
+                || compass_admin_page
+                    .iter()
+                    .any(|admin_function| admin_function.function == Some(func.key));
 
             Ok::<_, Error>(Entrypoint {
                 function: FunctionRef::try_from(func)?,

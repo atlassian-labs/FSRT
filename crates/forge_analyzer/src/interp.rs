@@ -330,7 +330,7 @@ pub trait Dataflow<'cx>: Sized {
     ) -> Option<Value> {
         if let Some((var, varid)) = resolve_var_from_operand(operand) {
             return _interp
-                .get_value(_def, varid, var.projections.get(0).cloned())
+                .get_value(_def, varid, var.projections.first().cloned())
                 .cloned();
         }
         None

@@ -41,12 +41,12 @@ pub fn add_const_to_val_vec(val: &Value, const_val: &Const, vals: &mut Vec<Strin
 }
 
 pub fn get_defid_from_varkind(varkind: &VarKind) -> Option<DefId> {
-    match varkind {
-        VarKind::GlobalRef(defid) => Some(defid.clone()),
-        VarKind::LocalDef(defid) => Some(defid.clone()),
-        VarKind::Arg(defid) => Some(defid.clone()),
-        VarKind::AnonClosure(defid) => Some(defid.clone()),
-        VarKind::Temp { parent } => parent.clone(),
+    match *varkind {
+        VarKind::GlobalRef(defid) => Some(defid),
+        VarKind::LocalDef(defid) => Some(defid),
+        VarKind::Arg(defid) => Some(defid),
+        VarKind::AnonClosure(defid) => Some(defid),
+        VarKind::Temp { parent } => parent,
         _ => None,
     }
 }
@@ -78,7 +78,7 @@ pub fn translate_request_type(request_type: Option<&str>) -> RequestType {
             _ => RequestType::Get,
         }
     } else {
-        return RequestType::Get;
+        RequestType::Get
     }
 }
 
@@ -120,17 +120,17 @@ pub fn get_prev_value(value: Option<&Value>) -> Option<Vec<Const>> {
     None
 }
 
-pub fn return_value_from_string(values: Vec<String>) -> Value {
+pub fn return_value_from_string(mut values: Vec<String>) -> Value {
     // assert!(values.len() > 0);
     if values.len() == 1 {
-        return Value::Const(Const::Literal(values.get(0).unwrap().clone()));
+        Value::Const(Const::Literal(values.pop().unwrap()))
     } else {
-        return Value::Phi(
+        Value::Phi(
             values
                 .iter()
                 .map(|val_string| Const::Literal(val_string.clone()))
                 .collect_vec(),
-        );
+        )
     }
 }
 
@@ -144,7 +144,7 @@ pub fn trnaslate_request_type(request_type: Option<&str>) -> RequestType {
             _ => RequestType::Get,
         }
     } else {
-        return RequestType::Get;
+        RequestType::Get
     }
 }
 

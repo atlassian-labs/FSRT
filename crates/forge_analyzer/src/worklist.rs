@@ -56,6 +56,15 @@ where
     }
 }
 
+impl<V, W> Default for WorkList<V, W>
+where
+    V: Eq + Hash,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<V, W> WorkList<V, W>
 where
     V: Eq + Hash + Copy,

@@ -130,7 +130,7 @@ impl<'cx> Dataflow<'cx> for TaintDataflow {
                     };
                     let taint = initial_state[var_id.0 as usize];
                     if !self.started && taint == Taint::Yes {
-                        let Some(Projection::Known(s)) = var.projections.get(0) else {
+                        let Some(Projection::Known(s)) = var.projections.first() else {
                             return initial_state;
                         };
                         if *s == "payload" {
@@ -942,7 +942,7 @@ impl<'cx> Runner<'cx> for SecretChecker {
                     Operand::Var(var) => {
                         if let Base::Var(varid) = var.base {
                             if let Some(value) =
-                                interp.get_value(def, varid, var.projections.get(0).cloned())
+                                interp.get_value(def, varid, var.projections.first().cloned())
                             {
                                 match value {
                                     Value::Const(_) | Value::Phi(_) => {
@@ -956,24 +956,22 @@ impl<'cx> Runner<'cx> for SecretChecker {
                                     }
                                     _ => {}
                                 }
-                            } else if let Some(value) = interp.body().vars.get(varid) {
-                                if let VarKind::GlobalRef(def) = value {
-                                    if let Some(value) =
-                                        interp.value_manager.defid_to_value.get(def)
-                                    {
-                                        println!("value [] {value:?}");
-                                        match value {
-                                            Value::Const(_) | Value::Phi(_) => {
-                                                let vuln = SecretVuln::new(
-                                                    interp.callstack(),
-                                                    interp.env(),
-                                                    interp.entry(),
-                                                );
-                                                info!("Found a vuln!");
-                                                self.vulns.push(vuln);
-                                            }
-                                            _ => {}
+                            } else if let Some(VarKind::GlobalRef(def)) =
+                                interp.body().vars.get(varid)
+                            {
+                                if let Some(value) = interp.value_manager.defid_to_value.get(def) {
+                                    println!("value [] {value:?}");
+                                    match value {
+                                        Value::Const(_) | Value::Phi(_) => {
+                                            let vuln = SecretVuln::new(
+                                                interp.callstack(),
+                                                interp.env(),
+                                                interp.entry(),
+                                            );
+                                            info!("Found a vuln!");
+                                            self.vulns.push(vuln);
                                         }
+                                        _ => {}
                                     }
                                 }
                             }
@@ -1000,21 +998,19 @@ impl PermissionDataflow {
     fn handle_second_arg(&self, value: &Value, intrinsic_argument: &mut IntrinsicArguments) {
         match value {
             Value::Const(Const::Literal(lit)) => {
-                intrinsic_argument.second_arg = Some(vec![lit.to_string()]);
+                intrinsic_argument.second_arg = Some(vec![lit.clone()]);
             }
             Value::Phi(phi_val) => {
                 intrinsic_argument.second_arg = Some(
                     phi_val
                         .iter()
-                        .map(|data| {
+                        .filter_map(|data| {
                             if let Const::Literal(lit) = data {
-                                return Some(lit.to_string());
+                                Some(lit.clone())
                             } else {
                                 None
                             }
                         })
-                        .filter(|const_val| const_val != &None)
-                        .map(|f| f.unwrap())
                         .collect_vec(),
                 )
             }
@@ -1049,7 +1045,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
 
     fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
         &mut self,
-        _interp: &mut Interp<'cx, C>,
+        interp: &mut Interp<'cx, C>,
         _def: DefId,
         _loc: Location,
         _block: &'cx BasicBlock,
@@ -1061,8 +1057,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         if let Intrinsic::ApiCall(name) | Intrinsic::SafeCall(name) | Intrinsic::Authorize(name) =
             intrinsic
         {
-            intrinsic_argument.name = Some(name.clone());
-            let (first, second) = (operands.get(0), operands.get(1));
+            intrinsic_argument.name = Some(*name);
+            let (first, second) = (operands.first(), operands.get(1));
             if let Some(operand) = first {
                 match operand {
                     Operand::Lit(lit) => {
@@ -1072,23 +1068,23 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     }
                     Operand::Var(var) => {
                         if let Base::Var(varid) = var.base {
-                            if let Some(value) = _interp.get_value(_def, varid, None) {
+                            if let Some(value) = interp.get_value(_def, varid, None) {
                                 intrinsic_argument.first_arg = Some(vec![]);
                                 add_elements_to_intrinsic_struct(
                                     value,
                                     &mut intrinsic_argument.first_arg,
                                 );
-                            } else if let Some(value) = _interp.body().vars.get(varid) {
-                                if let VarKind::GlobalRef(def) = value {
-                                    if let Some(Value::Const(value)) =
-                                        _interp.value_manager.defid_to_value.get(def)
-                                    {
-                                        intrinsic_argument.first_arg = Some(vec![]);
-                                        add_elements_to_intrinsic_struct(
-                                            &Value::Const(value.clone()),
-                                            &mut intrinsic_argument.first_arg,
-                                        );
-                                    }
+                            } else if let Some(VarKind::GlobalRef(def)) =
+                                interp.body().vars.get(varid)
+                            {
+                                if let Some(Value::Const(value)) =
+                                    interp.value_manager.defid_to_value.get(def)
+                                {
+                                    intrinsic_argument.first_arg = Some(vec![]);
+                                    add_elements_to_intrinsic_struct(
+                                        &Value::Const(value.clone()),
+                                        &mut intrinsic_argument.first_arg,
+                                    );
                                 }
                             }
                         }
@@ -1098,7 +1094,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             if let Some(Operand::Var(variable)) = second {
                 if let Base::Var(varid) = variable.base {
                     if let Some(value) =
-                        _interp.get_value(_def, varid, Some(Projection::Known("method".into())))
+                        interp.get_value(_def, varid, Some(Projection::Known("method".into())))
                     {
                         self.handle_second_arg(value, &mut intrinsic_argument);
                     }
@@ -1108,8 +1104,8 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             let mut permissions_within_call: Vec<String> = vec![];
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
 
-            if intrinsic_argument.first_arg == None {
-                _interp.permissions.drain(..);
+            if intrinsic_argument.first_arg.is_none() {
+                interp.permissions.drain(..);
             } else {
                 intrinsic_argument
                     .first_arg
@@ -1121,16 +1117,16 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                 second_arg_vec.iter().for_each(|second_arg| {
                                     if intrinsic_func_type == IntrinsicName::RequestConfluence {
                                         let permissions = check_url_for_permissions(
-                                            &_interp.confluence_permission_resolver,
-                                            &_interp.confluence_regex_map,
+                                            interp.confluence_permission_resolver,
+                                            interp.confluence_regex_map,
                                             translate_request_type(Some(second_arg)),
                                             &first_arg,
                                         );
                                         permissions_within_call.extend_from_slice(&permissions)
                                     } else if intrinsic_func_type == IntrinsicName::RequestJira {
                                         let permissions = check_url_for_permissions(
-                                            &_interp.jira_permission_resolver,
-                                            &_interp.jira_regex_map,
+                                            interp.jira_permission_resolver,
+                                            interp.jira_regex_map,
                                             translate_request_type(Some(second_arg)),
                                             &first_arg,
                                         );
@@ -1143,16 +1139,16 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                 let first_arg = first_arg.replace(&['\"'][..], "");
                                 if intrinsic_func_type == IntrinsicName::RequestConfluence {
                                     let permissions = check_url_for_permissions(
-                                        &_interp.confluence_permission_resolver,
-                                        &_interp.confluence_regex_map,
+                                        interp.confluence_permission_resolver,
+                                        interp.confluence_regex_map,
                                         RequestType::Get,
                                         &first_arg,
                                     );
                                     permissions_within_call.extend_from_slice(&permissions)
                                 } else if intrinsic_func_type == IntrinsicName::RequestJira {
                                     let permissions = check_url_for_permissions(
-                                        &_interp.jira_permission_resolver,
-                                        &_interp.jira_regex_map,
+                                        interp.jira_permission_resolver,
+                                        interp.jira_regex_map,
                                         RequestType::Get,
                                         &first_arg,
                                     );
@@ -1162,14 +1158,9 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         }
                     });
 
-                //println!("permissions within call {permissions_within_call:?}");
-
-                _interp.permissions = _interp
+                interp
                     .permissions
-                    .iter()
-                    .cloned()
-                    .filter(|permissions| !permissions_within_call.contains(permissions))
-                    .collect_vec();
+                    .retain(|permissions| !permissions_within_call.contains(permissions));
             }
 
             // remvove all permissions that it finds
@@ -1244,14 +1235,14 @@ impl PermissionChecker {
         }
     }
 
-    pub fn into_vulns(self, permissions: Vec<String>) -> impl IntoIterator<Item = PermissionVuln> {
-        if permissions.len() > 0 {
-            return Vec::from([PermissionVuln {
-                unused_permissions: permissions.clone(),
-            }])
-            .into_iter();
+    pub fn into_vulns(
+        mut self,
+        permissions: Vec<String>,
+    ) -> impl IntoIterator<Item = PermissionVuln> {
+        if !permissions.is_empty() {
+            self.vulns.resize(1, PermissionVuln::new(permissions));
         }
-        self.vulns.into_iter()
+        self.vulns
     }
 }
 
@@ -1289,7 +1280,7 @@ impl JoinSemiLattice for PermissionTest {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PermissionVuln {
     unused_permissions: Vec<String>,
 }
@@ -1327,7 +1318,7 @@ impl<'cx> Checker<'cx> for PermissionChecker {
 impl IntoVuln for PermissionVuln {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
         Vulnerability {
-            check_name: format!("Least-Privilege"),
+            check_name: "Least-Privilege".to_owned(),
             description: format!(
                 "Unused permissions listed in manifest file: {:?}",
                 self.unused_permissions
@@ -1367,6 +1358,12 @@ impl DefintionAnalysisRunner {
         Self {
             needs_call: Vec::default(),
         }
+    }
+}
+
+impl Default for DefintionAnalysisRunner {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1424,7 +1421,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                 Operand::Var(var) => match var.base {
                     Base::Var(varid) => {
                         if let Some(value) =
-                            interp.get_value(def, varid, var.projections.get(0).cloned())
+                            interp.get_value(def, varid, var.projections.first().cloned())
                         {
                             all_values_to_be_pushed.push(value.clone());
                         } else {
@@ -1626,23 +1623,19 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                             },
                         );
                     }
+                } else if let Some(value) =
+                    get_prev_value(interp.get_value(def, *varid, lval.projections.first().cloned()))
+                {
+                    self.insert_value(interp, operand, lval, varid, def, Some(value));
                 } else {
-                    if let Some(value) = get_prev_value(interp.get_value(
-                        def,
-                        *varid,
-                        lval.projections.get(0).cloned(),
-                    )) {
-                        self.insert_value(interp, operand, lval, varid, def, Some(value));
-                    } else {
-                        self.insert_value(interp, operand, lval, varid, def, None);
-                    }
+                    self.insert_value(interp, operand, lval, varid, def, None);
                 }
             }
             Rvalue::Template(template) => {
                 let quasis_joined: String =
                     template.quasis.iter().map(ToString::to_string).collect();
                 let mut all_potential_values = vec![String::from("")];
-                if template.exprs.len() == 0 {
+                if template.exprs.is_empty() {
                     all_potential_values.push(quasis_joined.clone());
                 } else if template.exprs.len() <= 3 {
                     let mut all_values = vec![String::from("")];
@@ -1657,7 +1650,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                         let mut new_values = vec![];
 
                         let values = self.get_str_from_expr(interp, expr, def);
-                        if values.len() > 0 {
+                        if !values.is_empty() {
                             for str_value in values {
                                 for value in &all_values {
                                     if let Some(str) = &str_value {
@@ -1693,7 +1686,9 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                     interp.add_value(
                         def,
                         *varid,
-                        Value::Const(Const::Literal(all_potential_values.get(0).unwrap().clone())),
+                        Value::Const(Const::Literal(
+                            all_potential_values.first().unwrap().clone(),
+                        )),
                         None,
                     );
                 }
@@ -1718,7 +1713,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                             }
                             Value::Phi(phi_val) => phi_val
                                 .iter()
-                                .for_each(|val1| add_const_to_val_vec(&val2, &val1, &mut new_vals)),
+                                .for_each(|val1| add_const_to_val_vec(&val2, val1, &mut new_vals)),
                             _ => {}
                         }
                         interp
@@ -1754,13 +1749,11 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                             let mut all_values = prev_values.clone();
                             all_values.push(const_value);
                             let value = Value::Phi(all_values);
-                            interp.add_value(def, *varid, value, lval.projections.get(0).cloned());
+                            interp.add_value(def, *varid, value, lval.projections.first().cloned());
                         }
-                    } else {
-                        if let Some(lit_value) = convert_operand_to_raw(operand) {
-                            let value = Value::Const(Const::Literal(lit_value));
-                            interp.add_value(def, *varid, value, lval.projections.get(0).cloned());
-                        }
+                    } else if let Some(lit_value) = convert_operand_to_raw(operand) {
+                        let value = Value::Const(Const::Literal(lit_value));
+                        interp.add_value(def, *varid, value, lval.projections.first().cloned());
                     }
                 }
             }
@@ -1768,9 +1761,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                 if let Base::Var(prev_varid) = var.base {
                     let potential_varkind = &interp.curr_body.get().unwrap().vars.get(prev_varid);
                     if let Some(VarKind::LocalDef(local_defid)) = potential_varkind {
-                        if let Some(class) =
-                            self.read_class_from_object(interp, local_defid.clone())
-                        {
+                        if let Some(class) = self.read_class_from_object(interp, *local_defid) {
                             if let Some(prev_values) = prev_values {
                                 let const_value = Const::Object(class.clone());
                                 let mut all_values = prev_values.clone();
@@ -1780,7 +1771,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                     def,
                                     *varid,
                                     value,
-                                    lval.projections.get(0).cloned(),
+                                    lval.projections.first().cloned(),
                                 );
                             } else {
                                 let value = Value::Const(Const::Object(class));
@@ -1788,17 +1779,15 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                     def,
                                     *varid,
                                     value,
-                                    lval.projections.get(0).cloned(),
+                                    lval.projections.first().cloned(),
                                 );
                             }
                         }
-                    } else {
-                        if let Some(potential_value) = interp.get_value(def, prev_varid, None) {
-                            interp.value_manager.varid_to_value.insert(
-                                (def, *varid, var.projections.get(0).cloned()),
-                                potential_value.clone(),
-                            );
-                        }
+                    } else if let Some(potential_value) = interp.get_value(def, prev_varid, None) {
+                        interp.value_manager.varid_to_value.insert(
+                            (def, *varid, var.projections.first().cloned()),
+                            potential_value.clone(),
+                        );
                     }
                 }
             }
