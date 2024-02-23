@@ -5,20 +5,15 @@
   "private": true,
   "license": "MIT",
   "scripts": {
-    "validate": "tsc --noEmit --project ./tsconfig.json",
-    "lint": "./node_modules/.bin/eslint src/**/* || npm run --silent hook-errors",
-    "hook-errors": "echo '\\x1b[31mThe build failed because a Forge UI hook is being used incorrectly. Forge UI hooks follow the same rules as React Hooks but have their own API definitions. See the Forge documentation for details on how to use Forge UI hooks.\n' && exit 1"
+    "validate": "tsc --noEmit --project ./tsconfig.json"
   },
   "devDependencies": {
-    "@types/node": "^12.12.63",
-    "@types/react": "^17.0.38",
-    "@typescript-eslint/parser": "^2.10.0",
-    "eslint": "^7.32.0",
-    "eslint-plugin-react-hooks": "^4.2.0",
-    "typescript": "^3.9.7"
+    "@types/node": "20.11.20",
+    "@types/react": "18.2.57",
+    "typescript": "5.3.3"
   },
   "dependencies": {
-    "@forge/api": "^2.7.0",
-    "@forge/ui": "1.4.0"
+    "@forge/api": "3.2.0",
+    "@forge/ui": "1.11.0"
   }
 }
