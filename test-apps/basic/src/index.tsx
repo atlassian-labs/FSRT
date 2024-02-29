@@ -14,9 +14,27 @@ let test_function = (word) => {
 }
 
 const App = () => {
-  foo();
-  test_function("test_word");
-  testFn();
+
+    let testObjectOther = {
+        someFunction(): any {
+            let a = "b";
+        }
+    }
+
+  let testObject = {
+    someFunction() {
+      const res = api.asApp().requestConfluence(route`/rest/api/3/test`);
+      test_function("hi")
+      return res;
+    }
+  }
+
+    testObject.someFunction();
+
+
+  // foo();
+  // test_function("test_word");
+  // testFn();
   return (
     <Fragment>
       <Text>Hello world!</Text>
