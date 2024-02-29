@@ -9,6 +9,7 @@ use forge_utils::{create_newtype, FxHashMap};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use smallvec::{smallvec, SmallVec};
+use swc_core::ecma::ast::{MethodKind, PrivateMethod};
 use swc_core::{
     common::{Span, SyntaxContext, DUMMY_SP},
     ecma::{
@@ -200,7 +201,6 @@ pub fn run_resolver(
         };
         module.visit_with(&mut lowerer);
     }
-
     for (curr_mod, module) in modules.iter_enumerated() {
         let global_id = environment.get_or_reserve_global_scope(curr_mod);
         let mut global_collector = GlobalCollector {
@@ -1057,8 +1057,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
             )));
         }
 
-        // defid_
-
         let obj = self.lower_expr(obj, None);
         let Operand::Var(mut var) = obj else {
             // FIXME: handle literals
@@ -1161,14 +1159,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
         var
     }
 
-    fn resolve_class_prop(&self, obj: &Expr) -> Option<&Class> {
-        if let Expr::Ident(ident) = obj {
-            if let Some(defid) = self.res.sym_to_id(ident.to_id(), self.module) {
-                if let Some(potential_class) = self.body.class_instantiations.get(&defid) {
-                    if let Some(DefKind::Class(class_id)) = self.res.defs.defs.get(*potential_class)
-                    {
-                        return self.res.defs.classes.get(*class_id);
-                    }
+    fn resolve_class_prop(&self, ident: &Ident) -> Option<&Class> {
+        if let Some(defid) = self.res.sym_to_id(ident.to_id(), self.module) {
+            if let Some(potential_class) = self.body.class_instantiations.get(&defid) {
+                if let Some(DefKind::Class(class_id)) = self.res.defs.defs.get(*potential_class) {
+                    return self.res.defs.classes.get(*class_id);
                 }
             }
         }
@@ -1179,9 +1174,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
         if let Expr::Ident(ident) = expr {
             if let Some(DefKind::Class(class)) = self.res.sym_to_def(ident.to_id(), self.module) {
                 let id = ident.to_id();
-                // let Some(def) = self.res.sym_to_id(id.clone(), self.module) else {
-                //     return Literal::Undef.into();
-                // };
                 if let Some((_, def_constructor)) = class
                     .pub_members
                     .iter()
@@ -1193,15 +1185,17 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }
         }
         if let Expr::Member(MemberExpr { obj, prop, .. }) = expr {
-            if let Some(class) = self.resolve_class_prop(obj) {
-                if let MemberProp::Ident(ident) = prop {
-                    if let Some((_, def_constructor)) = class
-                        .pub_members
-                        .iter()
-                        .find(|(name, defid)| name == &ident.sym)
-                    {
-                        let var = self.body.get_or_insert_global(*def_constructor);
-                        return Operand::with_var(var);
+            if let Expr::Ident(ident) = &**obj {
+                if let Some(class) = self.resolve_class_prop(ident) {
+                    if let MemberProp::Ident(ident) = prop {
+                        if let Some((_, def_constructor)) = class
+                            .pub_members
+                            .iter()
+                            .find(|(name, defid)| name == &ident.sym)
+                        {
+                            let var = self.body.get_or_insert_global(*def_constructor);
+                            return Operand::with_var(var);
+                        }
                     }
                 }
             }
@@ -1254,12 +1248,12 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 self.lower_expr(&arg.expr, Some(defid))
             })
             .collect();
+
         let callee = match callee {
             CalleeRef::Super => Operand::Var(Variable::SUPER),
             CalleeRef::Import => Operand::UNDEF,
             CalleeRef::Expr(expr) => self.get_operand_for_call(expr),
         };
-
         let first_arg = args.first().map(|expr| &*expr.expr);
         let intrinsic = self.as_intrinsic(&props, first_arg);
         let call = match intrinsic {
@@ -2205,7 +2199,6 @@ impl Visit for FunctionCollector<'_> {
     }
 
     fn visit_constructor(&mut self, n: &Constructor) {
-        //n.visit_children_with(self);
         if let Some(class_def) = self.curr_class {
             if let DefKind::Class(class) = self.res.clone().def_ref(class_def) {
                 if let Some((_, owner)) = &class
@@ -2252,7 +2245,6 @@ impl Visit for FunctionCollector<'_> {
     }
 
     fn visit_class_method(&mut self, n: &ClassMethod) {
-        //n.visit_children_with(self);
         if let Some(class_def) = self.curr_class {
             if let DefKind::Class(class) = self.res.clone().def_ref(class_def) {
                 if let Some((_, owner)) = &class.pub_members.iter().find(|(name, defid)| {
@@ -2466,6 +2458,24 @@ impl Visit for FunctionCollector<'_> {
                     }
                 }
             }
+            Some(Expr::Object(object_lit)) => {
+                object_lit.props.iter().for_each(|prop| {
+                    if let PropOrSpread::Prop(prop) = prop {
+                        if let Prop::Method(MethodProp { key, function }) = &**prop {
+                            if let Some(key_ident) = key.as_ident() {
+                                let former_parent = self.parent;
+                                self.parent = self.res.get_prop_from_ident(
+                                    self.module,
+                                    id.to_id(),
+                                    key_ident,
+                                );
+                                self.handle_function(&function, None);
+                                self.parent = former_parent;
+                            }
+                        }
+                    }
+                });
+            }
             _ => {}
         }
     }
@@ -2513,9 +2523,11 @@ impl Visit for FunctionCollector<'_> {
             let def = self
                 .res
                 .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
+
+            let former_parent = self.parent;
             self.parent = Some(def);
             n.function.visit_with(self);
-            self.parent = None;
+            self.parent = former_parent;
         }
     }
 
@@ -2528,10 +2540,10 @@ impl Visit for FunctionCollector<'_> {
 impl FunctionCollector<'_> {
     fn handle_function(&mut self, n: &Function, owner: Option<DefId>) {
         let owner = self.parent.unwrap_or_else(|| {
-            if let Some(defid) = owner {
-                defid
-            } else if let Some(defid) = self.curr_function {
-                defid
+            if let Some(def_id) = owner {
+                def_id
+            } else if let Some(def_id) = self.curr_function {
+                def_id
             } else {
                 self.res
                     .add_anonymous("__UNKNOWN", AnonType::Closure, self.module)
@@ -2857,7 +2869,6 @@ impl Visit for Lowerer<'_> {
                                 /// TODO: track these
                                 Prop::Getter(_) | Prop::Setter(_) => {}
                                 Prop::Method(MethodProp { key, function }) => {
-                                    function.body.visit_with(self);
                                     if let Some(sym) = key.as_symbol() {
                                         let def_id_function = self.res.add_anonymous(
                                             sym.clone(),
@@ -2870,6 +2881,7 @@ impl Visit for Lowerer<'_> {
                                             .pub_members
                                             .push((sym, def_id_function));
                                     }
+                                    self.visit_function(function);
                                 }
                             },
                         }
@@ -3316,6 +3328,35 @@ impl Environment {
     #[inline]
     pub fn bodies(&self) -> impl Iterator<Item = &Body> + '_ {
         self.defs.funcs.iter()
+    }
+
+    #[inline]
+    pub fn get_object(&self, mod_id: ModId, object_id: Id) -> Option<&Class> {
+        let def_id = self.get_sym(object_id, mod_id)?;
+        let def_key = self.defs.defs[def_id];
+        if let DefKey::Class(class) = def_key {
+            return Some(&self.defs.classes[class]);
+        } else if let DefKind::GlobalObj(global_obj) = def_key {
+            return Some(&self.defs.classes[global_obj]);
+        }
+        None
+    }
+
+    #[inline]
+    pub fn get_prop_from_ident(
+        &self,
+        mod_id: ModId,
+        class_id: Id,
+        method_name_ident: &Ident,
+    ) -> Option<DefId> {
+        let class = self.get_object(mod_id, class_id.to_id())?;
+        Some(
+            class
+                .pub_members
+                .iter()
+                .find(|(name, defid)| *name == method_name_ident.sym)?
+                .1,
+        )
     }
 
     #[inline]
