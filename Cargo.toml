@@ -54,6 +54,15 @@ forge_file_resolver = { path = "crates/forge_file_resolver" }
 forge_utils = { path = "crates/forge_utils" }
 forge_permission_resolver = { path = "crates/forge_permission_resolver" }
 
+[workspace.lints.rust]
+rust_2018_idioms = "warn"
+meta_variable_misuse = "warn"
+missing_abi = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+
 # enable a small amount of optimization in debug mode
 [profile.dev]
 opt-level = 1
