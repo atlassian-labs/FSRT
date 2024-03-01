@@ -1,4 +1,4 @@
-use serde::{self, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Hash)]
 pub enum ForgePermissions {

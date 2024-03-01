@@ -807,7 +807,7 @@ mod tests {
                 }
             }
         }"#;
-        let manifest: ForgeManifest = serde_json::from_str(json).unwrap();
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
         assert_eq!(manifest.app.name, Some("My App"));
         assert_eq!(manifest.app.id, "my-app");
         assert_eq!(manifest.modules.macros.len(), 1);
@@ -835,7 +835,7 @@ mod tests {
                 auth: vec!["my-auth-provider"],
             }),
         };
-        let func_ref: FunctionRef = FunctionRef::try_from(func_handler).unwrap();
+        let func_ref: FunctionRef<'_> = FunctionRef::try_from(func_handler).unwrap();
         assert_eq!(
             func_ref,
             FunctionRef {
@@ -902,7 +902,7 @@ mod tests {
                 }
             }
         }"#;
-        let manifest: ForgeManifest = serde_json::from_str(json).unwrap();
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
         assert_eq!(manifest.modules.macros.len(), 1);
         if let Some(string) = manifest.modules.macros[0].common_keys.function {
             assert_eq!(string, "Catch-me-if-you-can0");
@@ -973,7 +973,7 @@ mod tests {
                 }
             }
         }"#;
-        let manifest: ForgeManifest = serde_json::from_str(json).unwrap();
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
         let mut admin_func = manifest.modules.into_analyzable_functions();
 
         assert_eq!(

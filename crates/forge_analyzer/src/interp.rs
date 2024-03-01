@@ -282,15 +282,14 @@ pub trait Dataflow<'cx>: Sized {
     ) -> Vec<Option<String>> {
         if let Some(str) = get_str_from_operand(expr) {
             return vec![Some(str)];
-        } else if let Operand::Var(var) = expr {
+        }
+        if let Operand::Var(var) = expr {
             if let Base::Var(varid) = var.base {
                 let value = _interp.get_value(def, varid, None);
                 if let Some(value) = value {
                     match value {
-                        Value::Const(const_val) => {
-                            if let Const::Literal(str) = const_val {
-                                return vec![Some(str.clone())];
-                            }
+                        Value::Const(Const::Literal(str)) => {
+                            return vec![Some(str.clone())];
                         }
                         Value::Phi(phi_val) => {
                             return phi_val

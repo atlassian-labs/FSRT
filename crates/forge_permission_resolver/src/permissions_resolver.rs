@@ -1,8 +1,7 @@
 use regex::Regex;
 use serde::Deserialize;
-use std::{cmp::Reverse, collections::HashMap, hash::Hash, vec};
+use std::{cmp::Reverse, collections::HashMap, hash::Hash};
 use tracing::warn;
-use ureq;
 
 pub type PermissionHashMap = HashMap<(String, RequestType), Vec<String>>;
 
@@ -45,7 +44,7 @@ struct PermissionData {
     scopes: Vec<String>,
 }
 
-#[derive(Hash, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
 pub enum RequestType {
     Get,
     Patch,
@@ -72,10 +71,11 @@ pub fn check_url_for_permissions(
         .map(|(string, regex)| (regex.as_str().len(), string))
         .collect::<Vec<_>>();
     length_of_regex.sort_by_key(|k| Reverse(k.0));
+    let url_prefix = format!("{url}-");
 
     for (_, endpoint) in length_of_regex {
         let regex = endpoint_regex.get(endpoint).unwrap();
-        if regex.is_match(&(url.to_owned() + "-")) {
+        if regex.is_match(&url_prefix) {
             return permission_map
                 .get(&(endpoint.to_owned(), request))
                 .cloned()

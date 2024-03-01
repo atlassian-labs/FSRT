@@ -1477,44 +1477,33 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                     );
 
                                     let rval = Rvalue::Read(lowered_value);
-                                    match lowered_var.base {
-                                        Base::Var(var_id) => {
-                                            match key {
-                                                PropName::Str(str) => {
-                                                    let def_id_prop = self.res.add_anonymous(
-                                                        str.value.clone(),
-                                                        AnonType::Unknown,
-                                                        self.module,
-                                                    );
-                                                    let cls =
-                                                        self.res.def_mut(def_id).expect_class();
-                                                    cls.pub_members.push((
-                                                        key.as_symbol().unwrap(),
-                                                        def_id_prop,
-                                                    ));
-                                                    var.projections
-                                                        .push(Projection::Known(str.value.clone()));
-                                                }
-                                                PropName::Ident(ident) => {
-                                                    let def_id_prop = self.res.get_or_insert_sym(
-                                                        ident.to_id(),
-                                                        self.module,
-                                                    );
-                                                    let cls =
-                                                        self.res.def_mut(def_id).expect_class();
-                                                    cls.pub_members.push((
-                                                        key.as_symbol().unwrap(),
-                                                        def_id_prop,
-                                                    ));
-                                                    var.projections
-                                                        .push(Projection::Known(ident.sym.clone()));
-                                                }
-                                                _ => {}
+                                    if let Base::Var(var_id) = lowered_var.base {
+                                        match key {
+                                            PropName::Str(str) => {
+                                                let def_id_prop = self.res.add_anonymous(
+                                                    str.value.clone(),
+                                                    AnonType::Unknown,
+                                                    self.module,
+                                                );
+                                                let cls = self.res.def_mut(def_id).expect_class();
+                                                cls.pub_members
+                                                    .push((key.as_symbol().unwrap(), def_id_prop));
+                                                var.projections
+                                                    .push(Projection::Known(str.value.clone()));
                                             }
-                                            self.body
-                                                .push_inst(self.block, Inst::Assign(var, rval));
+                                            PropName::Ident(ident) => {
+                                                let def_id_prop = self
+                                                    .res
+                                                    .get_or_insert_sym(ident.to_id(), self.module);
+                                                let cls = self.res.def_mut(def_id).expect_class();
+                                                cls.pub_members
+                                                    .push((key.as_symbol().unwrap(), def_id_prop));
+                                                var.projections
+                                                    .push(Projection::Known(ident.sym.clone()));
+                                            }
+                                            _ => {}
                                         }
-                                        _ => {}
+                                        self.body.push_inst(self.block, Inst::Assign(var, rval));
                                     }
                                 }
                                 _ => {}
@@ -2469,7 +2458,7 @@ impl Visit for FunctionCollector<'_> {
                                     id.to_id(),
                                     key_ident,
                                 );
-                                self.handle_function(&function, None);
+                                self.handle_function(function, None);
                                 self.parent = former_parent;
                             }
                         }
@@ -3222,25 +3211,6 @@ impl Visit for ExportCollector<'_> {
                 ExportSpecifier::Named(n) => {}
             }
         }
-    }
-
-    fn visit_module_item(&mut self, n: &ModuleItem) {
-        match n {
-            ModuleItem::ModuleDecl(decl)
-                if matches!(
-                    decl,
-                    ModuleDecl::ExportDecl(_)
-                        | ModuleDecl::ExportDefaultDecl(_)
-                        | ModuleDecl::ExportDefaultExpr(_)
-                        | ModuleDecl::ExportAll(_)
-                        | ModuleDecl::ExportNamed(_)
-                ) =>
-            {
-                //decl.visit_children_with(self)
-            }
-            _ => {}
-        }
-        n.visit_children_with(self);
     }
 
     fn visit_export_all(&mut self, _: &ExportAll) {}
