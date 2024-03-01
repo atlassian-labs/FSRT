@@ -3,7 +3,6 @@ use crate::{
     ir::{Base, Literal, Operand, VarId, VarKind, Variable},
 };
 use forge_permission_resolver::permissions_resolver::RequestType;
-use itertools::Itertools;
 use swc_core::ecma::ast::{Expr, Lit, MemberProp};
 
 pub fn calls_method(n: CalleeRef<'_>, name: &str) -> bool {
@@ -42,12 +41,12 @@ pub fn add_const_to_val_vec(val: &Value, const_val: &Const, vals: &mut Vec<Strin
 
 pub fn get_defid_from_varkind(varkind: &VarKind) -> Option<DefId> {
     match *varkind {
-        VarKind::GlobalRef(defid) => Some(defid),
-        VarKind::LocalDef(defid) => Some(defid),
-        VarKind::Arg(defid) => Some(defid),
-        VarKind::AnonClosure(defid) => Some(defid),
+        VarKind::GlobalRef(defid)
+        | VarKind::LocalDef(defid)
+        | VarKind::Arg(defid)
+        | VarKind::AnonClosure(defid) => Some(defid),
         VarKind::Temp { parent } => parent,
-        _ => None,
+        VarKind::Ret => None,
     }
 }
 
@@ -83,27 +82,26 @@ pub fn translate_request_type(request_type: Option<&str>) -> RequestType {
 }
 
 pub fn get_str_from_operand(operand: &Operand) -> Option<String> {
-    if let Operand::Lit(lit) = operand {
-        if let Literal::Str(str) = lit {
-            return Some(str.to_string());
-        }
+    if let Operand::Lit(Literal::Str(str)) = operand {
+        Some(str.to_string())
+    } else {
+        None
     }
-    None
 }
 
-pub fn add_elements_to_intrinsic_struct(value: &Value, args: &mut Option<Vec<String>>) {
+pub fn add_elements_to_intrinsic_struct(value: &Value, args: &mut Vec<String>) {
     match value {
-        Value::Const(const_value) => {
-            if let Const::Literal(literal) = const_value {
-                args.as_mut().unwrap().push(literal.clone());
-            }
+        Value::Const(Const::Literal(literal)) => {
+            args.push(literal.clone());
         }
         Value::Phi(phi_value) => {
-            for value in phi_value {
-                if let Const::Literal(literal) = value {
-                    args.as_mut().unwrap().push(literal.clone());
+            args.extend(phi_value.iter().filter_map(|val| {
+                if let Const::Literal(literal) = val {
+                    Some(literal.clone())
+                } else {
+                    None
                 }
-            }
+            }));
         }
         _ => {}
     }
@@ -120,17 +118,10 @@ pub fn get_prev_value(value: Option<&Value>) -> Option<Vec<Const>> {
     None
 }
 
-pub fn return_value_from_string(mut values: Vec<String>) -> Value {
-    // assert!(values.len() > 0);
-    if values.len() == 1 {
-        Value::Const(Const::Literal(values.pop().unwrap()))
-    } else {
-        Value::Phi(
-            values
-                .iter()
-                .map(|val_string| Const::Literal(val_string.clone()))
-                .collect_vec(),
-        )
+pub fn return_value_from_string(values: Vec<String>) -> Value {
+    match <[_; 1]>::try_from(values) {
+        Ok([lit]) => Value::Const(Const::Literal(lit)),
+        Err(values) => Value::Phi(values.into_iter().map(Const::Literal).collect()),
     }
 }
 

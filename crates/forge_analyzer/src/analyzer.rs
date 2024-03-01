@@ -55,9 +55,24 @@ where
     body.visit_children_with(&mut analyzer);
     analyzer.meta
 }
-
 struct CheckApiCalls {
     perms_related: bool,
+}
+//TODO: these substrings seems to cover all the permissions related APIs, however, we might
+// want to make it more granular in the future.
+// could also use regex, but this isn't hot enough to matter
+impl Visit for CheckApiCalls {
+    fn visit_str(&mut self, n: &Str) {
+        if n.value.contains("perm") || n.value.contains("user") {
+            self.perms_related = true;
+        }
+    }
+
+    fn visit_tpl_element(&mut self, n: &TplElement) {
+        if n.raw.contains("perm") || n.raw.contains("user") {
+            self.perms_related = true;
+        }
+    }
 }
 
 fn contains_perms_check<N: VisitWith<CheckApiCalls>>(node: &N) -> bool {
@@ -65,24 +80,7 @@ fn contains_perms_check<N: VisitWith<CheckApiCalls>>(node: &N) -> bool {
         perms_related: false,
     };
     node.visit_with(&mut perms_checker);
-    return perms_checker.perms_related;
-
-    //TODO: these substrings seems to cover all the permissions related APIs, however, we might
-    // want to make it more granular in the future.
-    // could also use regex, but this isn't hot enough to matter
-    impl Visit for CheckApiCalls {
-        fn visit_str(&mut self, n: &Str) {
-            if n.value.contains("perm") || n.value.contains("user") {
-                self.perms_related = true;
-            }
-        }
-
-        fn visit_tpl_element(&mut self, n: &TplElement) {
-            if n.raw.contains("perm") || n.raw.contains("user") {
-                self.perms_related = true;
-            }
-        }
-    }
+    perms_checker.perms_related
 }
 
 impl<'ctx> FunctionCollector<'ctx> {

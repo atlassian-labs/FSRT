@@ -194,7 +194,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
     debug!(?manifest_file);
 
     let manifest = fs::read_to_string(&manifest_file).into_diagnostic()?;
-    let manifest: ForgeManifest = serde_yaml::from_str(&manifest).into_diagnostic()?;
+    let manifest: ForgeManifest<'_> = serde_yaml::from_str(&manifest).into_diagnostic()?;
     let name = manifest.app.name.unwrap_or_default();
 
     let requested_permissions = manifest.permissions;

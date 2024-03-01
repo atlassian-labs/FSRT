@@ -4,7 +4,6 @@ use std::{
     fmt,
     hash::Hash,
     path::{Component, Path, PathBuf},
-    result::Result,
 };
 
 pub trait FileResolver: Sized {

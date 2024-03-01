@@ -1069,21 +1069,19 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     Operand::Var(var) => {
                         if let Base::Var(varid) = var.base {
                             if let Some(value) = interp.get_value(_def, varid, None) {
-                                intrinsic_argument.first_arg = Some(vec![]);
                                 add_elements_to_intrinsic_struct(
                                     value,
-                                    &mut intrinsic_argument.first_arg,
+                                    intrinsic_argument.first_arg.insert(vec![]),
                                 );
                             } else if let Some(VarKind::GlobalRef(def)) =
                                 interp.body().vars.get(varid)
                             {
-                                if let Some(Value::Const(value)) =
+                                if let Some(value @ Value::Const(_)) =
                                     interp.value_manager.defid_to_value.get(def)
                                 {
-                                    intrinsic_argument.first_arg = Some(vec![]);
                                     add_elements_to_intrinsic_struct(
-                                        &Value::Const(value.clone()),
-                                        &mut intrinsic_argument.first_arg,
+                                        value,
+                                        intrinsic_argument.first_arg.insert(vec![]),
                                     );
                                 }
                             }
@@ -1451,20 +1449,18 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
             Inst::Assign(var, rvalue) => {
-                match var.base {
-                    Base::Var(varid) => match rvalue {
-                        Rvalue::Call(operand, _) => {
-                            if let Operand::Var(variable) = operand {
-                                if let Base::Var(varid) = variable.base {
-                                    if let Some(VarKind::GlobalRef(defid)) =
-                                        interp.body().vars.get(varid)
-                                    {
-                                        if let Base::Var(varid_to_assign) = var.base {
-                                            interp
-                                                .value_manager
-                                                .expected_return_values
-                                                .insert(*defid, (def, varid_to_assign));
-                                        }
+                if let Base::Var(varid) = var.base {
+                    match rvalue {
+                        Rvalue::Call(Operand::Var(variable), _) => {
+                            if let Base::Var(varid) = variable.base {
+                                if let Some(VarKind::GlobalRef(defid)) =
+                                    interp.body().vars.get(varid)
+                                {
+                                    if let Base::Var(varid_to_assign) = var.base {
+                                        interp
+                                            .value_manager
+                                            .expected_return_values
+                                            .insert(*defid, (def, varid_to_assign));
                                     }
                                 }
                             }
@@ -1493,17 +1489,16 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                                             str.to_string(),
                                                         )),
                                                     );
-                                                } else if let Some(VarKind::Temp { parent }) =
-                                                    interp.body().vars.get(varid)
+                                                } else if let Some(&VarKind::Temp {
+                                                    parent: Some(defid_parent),
+                                                }) = interp.body().vars.get(varid)
                                                 {
-                                                    if let Some(defid_parent) = parent {
-                                                        interp.value_manager.defid_to_value.insert(
-                                                            *defid_parent,
-                                                            Value::Const(Const::Literal(
-                                                                str.to_string(),
-                                                            )),
-                                                        );
-                                                    }
+                                                    interp.value_manager.defid_to_value.insert(
+                                                        defid_parent,
+                                                        Value::Const(Const::Literal(
+                                                            str.to_string(),
+                                                        )),
+                                                    );
                                                 }
                                             }
                                         }
@@ -1528,8 +1523,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                             self.add_variable(interp, var, &varid, def, rvalue);
                         }
                         _ => {}
-                    },
-                    _ => {}
+                    }
                 }
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
@@ -1674,23 +1668,20 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
 
                     all_potential_values = all_values;
                 }
-                if all_potential_values.len() > 1 {
-                    let consts = all_potential_values
-                        .clone()
-                        .into_iter()
-                        .map(|value| Const::Literal(value.clone()))
-                        .collect::<Vec<_>>();
-                    let value = Value::Phi(consts);
-                    interp.add_value(def, *varid, value.clone(), None);
-                } else if all_potential_values.len() == 1 {
-                    interp.add_value(
-                        def,
-                        *varid,
-                        Value::Const(Const::Literal(
-                            all_potential_values.first().unwrap().clone(),
-                        )),
-                        None,
-                    );
+                match <[_; 1]>::try_from(all_potential_values) {
+                    Ok([value]) => {
+                        interp.add_value(def, *varid, Value::Const(Const::Literal(value)), None);
+                    }
+                    Err(all_potential_values) if !all_potential_values.is_empty() => {
+                        let value = Value::Phi(
+                            all_potential_values
+                                .into_iter()
+                                .map(Const::Literal)
+                                .collect(),
+                        );
+                        interp.add_value(def, *varid, value, None);
+                    }
+                    Err(_) => {}
                 }
             }
             Rvalue::Bin(binop, op1, op2) => {
