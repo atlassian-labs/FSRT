@@ -29,7 +29,8 @@ use crate::{
     worklist::WorkList,
 };
 
-pub type DefinitionAnalysisMap = FxHashMap<(DefId, VarId, Option<Projection>), Value>;
+pub type DefinitionAnalysisMap = FxHashMap<(DefId, VarId, ProjectionVec), Value>;
+pub type ProjectionVec = SmallVec<[Projection; 1]>;
 
 pub trait JoinSemiLattice: Sized + Ord {
     const BOTTOM: Self;
@@ -277,37 +278,36 @@ pub trait Dataflow<'cx>: Sized {
     fn get_str_from_expr<C: Runner<'cx, State = Self::State>>(
         &self,
         _interp: &Interp<'cx, C>,
-        expr: &Operand,
+        expr: Operand,
         def: DefId,
     ) -> Vec<Option<String>> {
-        if let Some(str) = get_str_from_operand(expr) {
+        if let Some(str) = get_str_from_operand(&expr) {
             return vec![Some(str)];
-        }
-        if let Operand::Var(var) = expr {
-            if let Base::Var(varid) = var.base {
-                let value = _interp.get_value(def, varid, None);
-                if let Some(value) = value {
-                    match value {
-                        Value::Const(Const::Literal(str)) => {
-                            return vec![Some(str.clone())];
-                        }
-                        Value::Phi(phi_val) => {
-                            return phi_val
-                                .iter()
-                                .map(|const_val| {
-                                    if let Const::Literal(str) = const_val {
-                                        Some(str.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect_vec();
-                        }
-                        _ => {}
-                    }
+        } else if let Operand::Var(Variable {
+            base: Base::Var(varid),
+            projections,
+        }) = expr
+        {
+            match _interp.get_value(def, varid, Some(projections)) {
+                Some(Value::Const(Const::Literal(str))) => {
+                    return vec![Some(str.clone())];
                 }
+                Some(Value::Phi(phi_val)) => {
+                    return phi_val
+                        .iter()
+                        .map(|const_val| {
+                            if let Const::Literal(str) = const_val {
+                                Some(str.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect_vec();
+                }
+                _ => {}
             }
         }
+
         vec![None]
     }
 
@@ -329,7 +329,7 @@ pub trait Dataflow<'cx>: Sized {
     ) -> Option<Value> {
         if let Some((var, varid)) = resolve_var_from_operand(operand) {
             return _interp
-                .get_value(_def, varid, var.projections.first().cloned())
+                .get_value(_def, varid, Some(var.projections))
                 .cloned();
         }
         None
@@ -512,10 +512,28 @@ pub struct Interp<'cx, C: Runner<'cx>> {
 
 #[derive(Debug)]
 pub struct ValueManager {
-    pub varid_to_value: FxHashMap<(DefId, VarId, Option<Projection>), Value>,
+    pub varid_to_value: DefinitionAnalysisMap,
     pub defid_to_value: FxHashMap<DefId, Value>,
     pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
     pub expected_return_values: HashMap<DefId, (DefId, VarId)>,
+}
+
+impl ValueManager {
+    pub fn insert_var(&mut self, def_id_func: DefId, var_id: VarId, value: Value) {
+        let projection_vec = ProjectionVec::new();
+        self.insert_var_with_projection(def_id_func, var_id, projection_vec, value);
+    }
+
+    pub fn insert_var_with_projection(
+        &mut self,
+        def_id_func: DefId,
+        var_id: VarId,
+        projection_vec: ProjectionVec,
+        value: Value,
+    ) {
+        self.varid_to_value
+            .insert((def_id_func, var_id, projection_vec), value);
+    }
 }
 
 #[derive(Debug)]
@@ -600,7 +618,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             checker_visited: RefCell::new(FxHashSet::default()),
             callstack_arguments: Vec::new(),
             callstack: RefCell::new(Vec::new()),
-            // vulns: RefCell::new(Vec::new()),
             value_manager: ValueManager {
                 varid_to_value: DefinitionAnalysisMap::default(),
                 defid_to_value: FxHashMap::default(),
@@ -647,28 +664,32 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    pub(crate) fn add_value(
+    pub(crate) fn add_value(&mut self, defid_block: DefId, varid: VarId, value: Value) {
+        self.value_manager.insert_var(defid_block, varid, value);
+    }
+
+    #[inline]
+    pub(crate) fn add_value_with_projection(
         &mut self,
         defid_block: DefId,
         varid: VarId,
         value: Value,
-        projection: Option<Projection>,
+        projections: ProjectionVec,
     ) {
         self.value_manager
-            .varid_to_value
-            .insert((defid_block, varid, projection), value);
+            .insert_var_with_projection(defid_block, varid, projections, value);
     }
-
     #[inline]
     pub(crate) fn get_value(
         &self,
         defid_block: DefId,
         varid: VarId,
-        projection: Option<Projection>,
+        projection: Option<ProjectionVec>,
     ) -> Option<&Value> {
+        let projections = projection.unwrap_or_default();
         self.value_manager
             .varid_to_value
-            .get(&(defid_block, varid, projection))
+            .get(&(defid_block, varid, projections))
     }
 
     #[inline]
