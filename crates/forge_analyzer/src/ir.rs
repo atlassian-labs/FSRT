@@ -38,6 +38,7 @@ use crate::definitions::Environment;
 use crate::definitions::IntrinsicName;
 use crate::definitions::PackageData;
 use crate::definitions::Value;
+use crate::interp::ProjectionVec;
 
 pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
 
@@ -235,7 +236,7 @@ create_newtype! {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub struct Variable {
     pub(crate) base: Base,
-    pub(crate) projections: SmallVec<[Projection; 1]>,
+    pub(crate) projections: ProjectionVec,
 }
 
 impl From<VarId> for Variable {

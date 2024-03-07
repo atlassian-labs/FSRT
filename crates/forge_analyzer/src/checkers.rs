@@ -13,6 +13,7 @@ use std::{
 
 use tracing::{debug, info, warn};
 
+use crate::interp::ProjectionVec;
 use crate::{
     definitions::{Const, DefId, Environment, IntrinsicName, Value},
     interp::{
@@ -942,7 +943,7 @@ impl<'cx> Runner<'cx> for SecretChecker {
                     Operand::Var(var) => {
                         if let Base::Var(varid) = var.base {
                             if let Some(value) =
-                                interp.get_value(def, varid, var.projections.first().cloned())
+                                interp.get_value(def, varid, Some(var.projections.clone()))
                             {
                                 match value {
                                     Value::Const(_) | Value::Phi(_) => {
@@ -1051,7 +1052,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         _block: &'cx BasicBlock,
         intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
+        operands: SmallVec<[Operand; 4]>,
     ) -> Self::State {
         let mut intrinsic_argument = IntrinsicArguments::default();
         if let Intrinsic::ApiCall(name) | Intrinsic::SafeCall(name) | Intrinsic::Authorize(name) =
@@ -1091,9 +1092,9 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             }
             if let Some(Operand::Var(variable)) = second {
                 if let Base::Var(varid) = variable.base {
-                    if let Some(value) =
-                        interp.get_value(_def, varid, Some(Projection::Known("method".into())))
-                    {
+                    let mut method_vec = ProjectionVec::new();
+                    method_vec.push(Projection::Known("method".into()));
+                    if let Some(value) = interp.get_value(_def, varid, Some(method_vec)) {
                         self.handle_second_arg(value, &mut intrinsic_argument);
                     }
                 }
@@ -1418,9 +1419,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                 }
                 Operand::Var(var) => match var.base {
                     Base::Var(varid) => {
-                        if let Some(value) =
-                            interp.get_value(def, varid, var.projections.first().cloned())
-                        {
+                        if let Some(value) = interp.get_value(def, varid, Some(var.projections)) {
                             all_values_to_be_pushed.push(value.clone());
                         } else {
                             all_values_to_be_pushed.push(Value::Unknown)
@@ -1466,52 +1465,30 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                             }
                         }
                         Rvalue::Read(_operand) => {
-                            if let Rvalue::Read(read) = rvalue {
-                                match read {
-                                    Operand::Lit(lit) => {
-                                        if let Literal::Str(str) = lit {
-                                            if let Base::Var(varid) = var.base {
-                                                if let Some(VarKind::GlobalRef(def)) =
-                                                    interp.body().vars.get(varid)
-                                                {
-                                                    interp.value_manager.defid_to_value.insert(
-                                                        *def,
-                                                        Value::Const(Const::Literal(
-                                                            str.to_string(),
-                                                        )),
-                                                    );
-                                                } else if let Some(VarKind::LocalDef(def)) =
-                                                    interp.body().vars.get(varid)
-                                                {
-                                                    interp.value_manager.defid_to_value.insert(
-                                                        *def,
-                                                        Value::Const(Const::Literal(
-                                                            str.to_string(),
-                                                        )),
-                                                    );
-                                                } else if let Some(&VarKind::Temp {
-                                                    parent: Some(defid_parent),
-                                                }) = interp.body().vars.get(varid)
-                                                {
-                                                    interp.value_manager.defid_to_value.insert(
-                                                        defid_parent,
-                                                        Value::Const(Const::Literal(
-                                                            str.to_string(),
-                                                        )),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Operand::Var(var) => {
-                                        // println!("{var}");
-                                        if let Base::Var(varid) = var.base {
-                                            let _values = interp
-                                                .value_manager
-                                                .varid_to_value
-                                                .get(&(def, varid, None));
-                                            // println!("values: {values:?}")
-                                        }
+                            if let Rvalue::Read(Operand::Lit(Literal::Str(str))) = rvalue {
+                                if let Base::Var(varid) = var.base {
+                                    if let Some(VarKind::GlobalRef(def)) =
+                                        interp.body().vars.get(varid)
+                                    {
+                                        interp.value_manager.defid_to_value.insert(
+                                            *def,
+                                            Value::Const(Const::Literal(str.to_string())),
+                                        );
+                                    } else if let Some(VarKind::LocalDef(def)) =
+                                        interp.body().vars.get(varid)
+                                    {
+                                        interp.value_manager.defid_to_value.insert(
+                                            *def,
+                                            Value::Const(Const::Literal(str.to_string())),
+                                        );
+                                    } else if let Some(&VarKind::Temp {
+                                        parent: Some(defid_parent),
+                                    }) = interp.body().vars.get(varid)
+                                    {
+                                        interp.value_manager.defid_to_value.insert(
+                                            defid_parent,
+                                            Value::Const(Const::Literal(str.to_string())),
+                                        );
                                     }
                                 }
                             }
@@ -1548,21 +1525,25 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
             for (varid, varkind) in function_var.iter_enumerated() {
                 if let VarKind::Arg(_) = varkind {
                     if let Some(operand) = args.pop() {
-                        interp.add_value(def, varid, operand.clone(), None);
+                        interp.add_value(def, varid, operand.clone());
                         interp
                             .body()
                             .vars
                             .iter_enumerated()
                             .for_each(|(varid_alt, varkind_alt)| {
+                                let defult_projections = Variable::from(varid_alt);
+
                                 if let (Some(defid_alt), Some(defid)) = (
                                     get_defid_from_varkind(varkind_alt),
                                     get_defid_from_varkind(varkind),
                                 ) {
                                     if defid == defid_alt && varid_alt != varid {
-                                        interp
-                                            .value_manager
-                                            .varid_to_value
-                                            .insert((def, varid_alt, None), operand.clone());
+                                        interp.add_value_with_projection(
+                                            def,
+                                            varid_alt,
+                                            operand.clone(),
+                                            defult_projections.projections,
+                                        );
                                     }
                                 }
                             })
@@ -1582,12 +1563,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                     interp.value_manager.expected_return_values.get(&def)
                 {
                     if let Some(value) = interp.get_value(def, varid, None) {
-                        interp.add_value(
-                            *defid_calling_func,
-                            *varid_calling_func,
-                            value.clone(),
-                            None,
-                        );
+                        interp.add_value(*defid_calling_func, *varid_calling_func, value.clone());
                     }
                 }
             }
@@ -1612,13 +1588,18 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                         interp.value_manager.varid_to_value.clone().iter().for_each(
                             |((_defid, varid_rval_potential, projection), value)| {
                                 if varid_rval_potential == &varid_rval {
-                                    interp.add_value(def, *varid, value.clone(), projection.clone())
+                                    interp.add_value_with_projection(
+                                        def,
+                                        *varid,
+                                        value.clone(),
+                                        projection.clone(),
+                                    )
                                 }
                             },
                         );
                     }
                 } else if let Some(value) =
-                    get_prev_value(interp.get_value(def, *varid, lval.projections.first().cloned()))
+                    get_prev_value(interp.get_value(def, *varid, Some(lval.projections.clone())))
                 {
                     self.insert_value(interp, operand, lval, varid, def, Some(value));
                 } else {
@@ -1643,7 +1624,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                         }
                         let mut new_values = vec![];
 
-                        let values = self.get_str_from_expr(interp, expr, def);
+                        let values = self.get_str_from_expr(interp, expr.clone(), def);
                         if !values.is_empty() {
                             for str_value in values {
                                 for value in &all_values {
@@ -1670,7 +1651,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                 }
                 match <[_; 1]>::try_from(all_potential_values) {
                     Ok([value]) => {
-                        interp.add_value(def, *varid, Value::Const(Const::Literal(value)), None);
+                        interp.add_value(def, *varid, Value::Const(Const::Literal(value)));
                     }
                     Err(all_potential_values) if !all_potential_values.is_empty() => {
                         let value = Value::Phi(
@@ -1679,7 +1660,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                 .map(Const::Literal)
                                 .collect(),
                         );
-                        interp.add_value(def, *varid, value, None);
+                        interp.add_value(def, *varid, value);
                     }
                     Err(_) => {}
                 }
@@ -1707,14 +1688,16 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                 .for_each(|val1| add_const_to_val_vec(&val2, val1, &mut new_vals)),
                             _ => {}
                         }
-                        interp
-                            .value_manager
-                            .varid_to_value
-                            .insert((def, *varid, None), return_value_from_string(new_vals));
+                        interp.add_value_with_projection(
+                            def,
+                            *varid,
+                            return_value_from_string(new_vals),
+                            Variable::from(*varid).projections,
+                        )
                     } else if let Some(val1) = val1 {
-                        interp.add_value(def, *varid, val1, None);
+                        interp.add_value(def, *varid, val1);
                     } else if let Some(val2) = val2 {
-                        interp.add_value(def, *varid, val2, None);
+                        interp.add_value(def, *varid, val2);
                     }
                 }
             }
@@ -1740,11 +1723,21 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                             let mut all_values = prev_values.clone();
                             all_values.push(const_value);
                             let value = Value::Phi(all_values);
-                            interp.add_value(def, *varid, value, lval.projections.first().cloned());
+                            interp.add_value_with_projection(
+                                def,
+                                *varid,
+                                value,
+                                lval.projections.clone(),
+                            );
                         }
                     } else if let Some(lit_value) = convert_operand_to_raw(operand) {
                         let value = Value::Const(Const::Literal(lit_value));
-                        interp.add_value(def, *varid, value, lval.projections.first().cloned());
+                        interp.add_value_with_projection(
+                            def,
+                            *varid,
+                            value,
+                            lval.projections.clone(),
+                        );
                     }
                 }
             }
@@ -1758,26 +1751,28 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                 let mut all_values = prev_values.clone();
                                 all_values.push(const_value);
                                 let value = Value::Phi(all_values);
-                                interp.add_value(
+                                interp.add_value_with_projection(
                                     def,
                                     *varid,
                                     value,
-                                    lval.projections.first().cloned(),
+                                    lval.projections.clone(),
                                 );
                             } else {
                                 let value = Value::Const(Const::Object(class));
-                                interp.add_value(
+                                interp.add_value_with_projection(
                                     def,
                                     *varid,
                                     value,
-                                    lval.projections.first().cloned(),
+                                    lval.projections.clone(),
                                 );
                             }
                         }
                     } else if let Some(potential_value) = interp.get_value(def, prev_varid, None) {
-                        interp.value_manager.varid_to_value.insert(
-                            (def, *varid, var.projections.first().cloned()),
+                        interp.add_value_with_projection(
+                            def,
+                            *varid,
                             potential_value.clone(),
+                            var.projections.clone(),
                         );
                     }
                 }
@@ -1785,7 +1780,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         }
     }
 
-    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
+    fn join_term<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -1798,41 +1793,5 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
             worklist.push_front_blocks(interp.env(), def, interp.call_all);
             interp.callstack_arguments.push(values.clone());
         }
-    }
-
-    fn get_str_from_expr<C: crate::interp::Runner<'cx, State = Self::State>>(
-        &self,
-        _interp: &Interp<'cx, C>,
-        expr: &Operand,
-        def: DefId,
-    ) -> Vec<Option<String>> {
-        if let Some(str) = get_str_from_operand(expr) {
-            return vec![Some(str)];
-        } else if let Operand::Var(var) = expr {
-            if let Base::Var(varid) = var.base {
-                let value = _interp.get_value(def, varid, None);
-                if let Some(value) = value {
-                    match value {
-                        Value::Const(Const::Literal(str)) => {
-                            return vec![Some(str.clone())];
-                        }
-                        Value::Phi(phi_val) => {
-                            return phi_val
-                                .iter()
-                                .map(|const_val| {
-                                    if let Const::Literal(str) = const_val {
-                                        Some(str.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect_vec();
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        vec![None]
     }
 }
