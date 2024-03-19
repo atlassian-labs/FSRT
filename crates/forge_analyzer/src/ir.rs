@@ -217,7 +217,7 @@ pub enum Operand {
     Lit(Literal),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Ord, PartialOrd)]
 pub enum Base {
     #[default]
     This,
@@ -248,7 +248,7 @@ impl From<VarId> for Variable {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum Projection {
     Known(JsWord),
     Computed(Base),
@@ -339,6 +339,18 @@ impl Body {
     #[inline]
     pub(crate) fn add_var(&mut self, kind: VarKind) -> VarId {
         self.vars.push_and_get_key(kind)
+    }
+
+    #[inline]
+    pub(crate) fn get_defid_from_var(&self, varid: VarId) -> Option<DefId> {
+        match self.vars.get(varid)? {
+            VarKind::AnonClosure(def)
+            | VarKind::Arg(def)
+            | VarKind::GlobalRef(def)
+            | VarKind::LocalDef(def) => Some(*def),
+            VarKind::Temp { parent } => *parent,
+            VarKind::Ret => None,
+        }
     }
 
     #[inline]
