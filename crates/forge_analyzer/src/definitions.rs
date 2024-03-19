@@ -42,6 +42,7 @@ use swc_core::{
 use tracing::{debug, field::debug, info, instrument, warn};
 use typed_index_collections::{TiSlice, TiVec};
 
+use crate::ir::VarId;
 use crate::{
     ctx::ModId,
     ir::{
@@ -62,16 +63,16 @@ create_newtype! {
     pub struct DefId(u32);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Const {
     Literal(String),
-    Object(Class),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Uninit,
     Unknown,
+    Object(VarId),
     Const(Const),
     Phi(Vec<Const>),
 }
@@ -241,7 +242,7 @@ pub fn run_resolver(
 ///   f1, f2, f3
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Class {
     def: DefId,
     pub pub_members: Vec<(JsWord, DefId)>,
@@ -960,6 +961,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 {
                     if *name == *"authorize" {
                         return Some(Intrinsic::Authorize(IntrinsicName::Other));
+                    } else if *name == *"fetch" {
+                        return Some(Intrinsic::Fetch);
                     }
                 }
                 None

@@ -27,7 +27,7 @@ use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
     checkers::{
-        AuthZChecker, AuthenticateChecker, DefintionAnalysisRunner, PermissionChecker,
+        AuthZChecker, AuthenticateChecker, DefinitionAnalysisRunner, PermissionChecker,
         PermissionVuln, SecretChecker,
     },
     ctx::{AppCtx, ModId},
@@ -257,7 +257,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
     let (confluence_permission_resolver, confluence_regex_map) =
         get_permission_resolver_confluence();
 
-    let mut definition_analysis_interp = Interp::<DefintionAnalysisRunner>::new(
+    let mut definition_analysis_interp = Interp::<DefinitionAnalysisRunner>::new(
         &proj.env,
         false,
         true,
@@ -314,7 +314,7 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         &confluence_regex_map,
     );
     for func in &proj.funcs {
-        let mut def_checker = DefintionAnalysisRunner::new();
+        let mut def_checker = DefinitionAnalysisRunner::new();
         if let Err(err) = definition_analysis_interp.run_checker(
             func.def_id,
             &mut def_checker,
