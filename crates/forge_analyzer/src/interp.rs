@@ -301,7 +301,6 @@ pub trait Runner<'cx>: Sized {
         }
     }
 
-    #[instrument(skip(self, interp, block))]
     fn visit_block(
         &mut self,
         interp: &Interp<'cx, Self>,
@@ -310,6 +309,7 @@ pub trait Runner<'cx>: Sized {
         block: &'cx BasicBlock,
         curr_state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
+        interp.runner_visited.borrow_mut().insert((def, id));
         let mut curr_state = interp.block_state(def, id).join(curr_state);
         for stmt in block {
             match stmt {
@@ -327,9 +327,15 @@ pub trait Runner<'cx>: Sized {
             }
             Successors::Two(succ1, succ2) => {
                 let bb = interp.body().block(succ1);
-                self.visit_block(interp, def, succ1, bb, &curr_state)?;
+                if !interp.runner_visited.borrow().contains(&(def, succ1)) {
+                    self.visit_block(interp, def, succ1, bb, &curr_state)?;
+                }
                 let bb = interp.body().block(succ2);
-                self.visit_block(interp, def, succ2, bb, &curr_state)
+                if !interp.runner_visited.borrow().contains(&(def, succ2)) {
+                    self.visit_block(interp, def, succ2, bb, &curr_state)
+                } else {
+                    ControlFlow::Continue(curr_state)
+                }
             }
         }
     }
@@ -377,6 +383,7 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     dataflow_visited: FxHashSet<DefId>,
     checker_visited: RefCell<FxHashSet<DefId>>,
     callstack: RefCell<Vec<Frame>>,
+    pub(crate) runner_visited: RefCell<FxHashSet<(DefId, BasicBlockId)>>,
     pub callstack_arguments: Vec<Vec<Value>>,
     pub value_manager: ValueManager,
     pub permissions: Vec<String>,
@@ -507,6 +514,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             jira_regex_map,
             confluence_regex_map,
             _checker: PhantomData,
+            runner_visited: RefCell::new(FxHashSet::default()),
         }
     }
 
@@ -944,10 +952,11 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.set_body(body);
         self.run(resolved_def);
         checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
+        self.runner_visited.borrow_mut().clear();
         Ok(())
     }
 
-    #[instrument(level = "debug", skip(self, checker, entry_file), fields(checker = %C::NAME, file = %entry_file.display()))]
+    #[instrument(level = "info", skip(self, checker, entry_file), fields(checker = %C::NAME, file = %entry_file.display()))]
     pub fn run_checker(
         &mut self,
         def: DefId,
