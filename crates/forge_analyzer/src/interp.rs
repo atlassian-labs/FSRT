@@ -18,18 +18,20 @@ use smallvec::SmallVec;
 use swc_core::ecma::atoms::JsWord;
 use tracing::{debug, instrument, warn};
 
+use crate::definitions::DefKind;
+use crate::ir::{BinOp, Literal, VarKind};
+use crate::utils::{convert_lit_to_raw, projvec_from_projvec, return_combinations_phi};
 use crate::{
     checkers::IntrinsicArguments,
-    definitions::{Class, Const, DefId, Environment, Value},
+    definitions::{Const, DefId, Environment, Value},
     ir::{
         Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Projection,
         Rvalue, Successors, VarId, Variable, STARTING_BLOCK,
     },
-    utils::{get_str_from_operand, resolve_var_from_operand},
     worklist::WorkList,
 };
 
-pub type DefinitionAnalysisMap = FxHashMap<(DefId, VarId, ProjectionVec), Value>;
+pub type DefinitionAnalysisMap = BTreeMap<(DefId, VarId, ProjectionVec), Value>;
 pub type ProjectionVec = SmallVec<[Projection; 1]>;
 
 pub trait JoinSemiLattice: Sized + Ord {
@@ -157,27 +159,6 @@ pub trait Dataflow<'cx>: Sized {
         state
     }
 
-    fn add_variable<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        _interp: &mut Interp<'cx, C>,
-        _lval: &Variable,
-        _varid: &VarId,
-        _def: DefId,
-        _rvalue: &Rvalue,
-    ) {
-    }
-
-    fn insert_value<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        _interp: &mut Interp<'cx, C>,
-        _operand: &Operand,
-        _lval: &Variable,
-        _varid: &VarId,
-        _def: DefId,
-        _prev_values: Option<Vec<Const>>,
-    ) {
-    }
-
     fn join_term<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
@@ -229,110 +210,6 @@ pub trait Dataflow<'cx>: Sized {
                 }
             }
         }
-    }
-
-    fn read_class_from_variable<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        _interp: &Interp<'cx, C>,
-        _defid: DefId,
-    ) -> Option<Class> {
-        None
-    }
-
-    fn read_class_from_object<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        _interp: &Interp<'cx, C>,
-        _defid: DefId,
-    ) -> Option<Class> {
-        None
-    }
-
-    fn try_read_mem_from_object<C: Runner<'cx, State = Self::State>>(
-        &self,
-        _interp: &Interp<'cx, C>,
-        _def: DefId,
-        _const_var: Const,
-    ) -> Option<&Value> {
-        None
-    }
-
-    fn insert_with_existing_value<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        _operand: &Operand,
-        _value: &Value,
-        _varid: &VarId,
-        _def: DefId,
-        _interp: &Interp<'cx, C>,
-    ) {
-    }
-
-    fn read_mem_from_object<C: Runner<'cx, State = Self::State>>(
-        &self,
-        _interp: &Interp<'cx, C>,
-        _def: DefId,
-        _obj: Class,
-    ) -> Option<&Value> {
-        None
-    }
-
-    fn get_str_from_expr<C: Runner<'cx, State = Self::State>>(
-        &self,
-        _interp: &Interp<'cx, C>,
-        expr: Operand,
-        def: DefId,
-    ) -> Vec<Option<String>> {
-        if let Some(str) = get_str_from_operand(&expr) {
-            return vec![Some(str)];
-        } else if let Operand::Var(Variable {
-            base: Base::Var(varid),
-            projections,
-        }) = expr
-        {
-            match _interp.get_value(def, varid, Some(projections)) {
-                Some(Value::Const(Const::Literal(str))) => {
-                    return vec![Some(str.clone())];
-                }
-                Some(Value::Phi(phi_val)) => {
-                    return phi_val
-                        .iter()
-                        .map(|const_val| {
-                            if let Const::Literal(str) = const_val {
-                                Some(str.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect_vec();
-                }
-                _ => {}
-            }
-        }
-
-        vec![None]
-    }
-
-    fn def_to_class_property<C: Runner<'cx, State = Self::State>>(
-        &self,
-        _interp: &Interp<'cx, C>,
-        _def: DefId,
-        _defid: DefId,
-    ) -> Option<&Value> {
-        None
-    }
-
-    #[inline]
-    fn get_values_from_operand<C: Runner<'cx, State = Self::State>>(
-        &self,
-        _interp: &mut Interp<'cx, C>,
-        _def: DefId,
-        operand: &Operand,
-    ) -> Option<Value> {
-        if let Some((var, varid)) = resolve_var_from_operand(operand) {
-            return _interp
-                .get_value(_def, varid, Some(var.projections))
-                .cloned();
-        }
-        None
     }
 
     fn try_insert<C: crate::interp::Runner<'cx, State = Self::State>>(
@@ -639,6 +516,17 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
+    pub(crate) fn is_obj(&self, varid: VarId) -> bool {
+        if let Some(defid) = self.body().get_defid_from_var(varid) {
+            return matches!(
+                self.env.defs.defs[defid],
+                DefKind::GlobalObj(_) | DefKind::Class(_)
+            );
+        }
+        false
+    }
+
+    #[inline]
     pub(crate) fn env(&self) -> &'cx Environment {
         self.env
     }
@@ -676,9 +564,212 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         value: Value,
         projections: ProjectionVec,
     ) {
+        let (varid, projections) = self.get_farthest_obj(defid_block, varid, projections);
         self.value_manager
             .insert_var_with_projection(defid_block, varid, projections, value);
     }
+
+    // this function takes in an operand checks for previous values and returns a value optional
+    #[inline]
+    pub fn add_value_to_definition(&mut self, defid_block: DefId, lval: Variable, rvalue: Rvalue) {
+        if let Variable {
+            base: Base::Var(varid),
+            projections,
+        } = lval
+        {
+            let (varid, projections) = self.get_farthest_obj(defid_block, varid, projections);
+            let rval_value = self.value_from_rval(defid_block, rvalue);
+            if let Some(existing_lval) = self
+                .get_value(defid_block, varid, Some(projections.clone()))
+                .cloned()
+            {
+                // if there is an existing value...
+                match (existing_lval, rval_value) {
+                    // return unknown if either values are unknown
+                    (Value::Unknown, _)
+                    | (_, Value::Unknown)
+                    | (Value::Const(_), Value::Object(_))
+                    | (Value::Phi(_), Value::Object(_))
+                    | (Value::Object(_), Value::Phi(_))
+                    | (Value::Object(_), Value::Const(_)) => self.add_value_with_projection(
+                        defid_block,
+                        varid,
+                        Value::Unknown,
+                        projections,
+                    ),
+                    // push other const onto phi vec if either are const and phi
+                    (Value::Const(const_value), Value::Phi(phi_value))
+                    | (Value::Phi(phi_value), Value::Const(const_value)) => {
+                        let mut new_phi = phi_value;
+                        new_phi.push(const_value);
+                        self.add_value_with_projection(
+                            defid_block,
+                            varid,
+                            Value::Phi(new_phi),
+                            projections,
+                        )
+                    }
+                    // push consts into vec if both are consts
+                    (Value::Const(const_value1), Value::Const(const_value2)) => self
+                        .add_value_with_projection(
+                            defid_block,
+                            varid,
+                            Value::Phi(vec![const_value1, const_value2]),
+                            projections,
+                        ),
+                    (Value::Object(exist_var), Value::Object(new_var)) => {
+                        // store projection values that are transferred
+                        let mut projections_transferred = vec![];
+
+                        // transfer all projection values from the new_var into the existing var
+                        let start_new = (defid_block, new_var, ProjectionVec::new());
+                        let query_new = match new_var.0.checked_add(1) {
+                            Some(end) => self
+                                .value_manager
+                                .varid_to_value
+                                .range(start_new..(defid_block, VarId(end), ProjectionVec::new())),
+                            None => self.value_manager.varid_to_value.range(start_new..),
+                        };
+
+                        let vals = query_new
+                            .map(|((_, _, projections), value)| {
+                                (projections.clone(), value.clone())
+                            })
+                            .collect_vec();
+                        for (projections, value) in vals {
+                            projections_transferred.push(projections.clone());
+                            self.add_value_with_projection(
+                                defid_block,
+                                exist_var,
+                                value,
+                                projections,
+                            )
+                        }
+
+                        // clear remaining vars
+                        let start_exists = (defid_block, exist_var, ProjectionVec::new());
+                        let query_exists = match exist_var.0.checked_add(1) {
+                            Some(end) => self.value_manager.varid_to_value.range_mut(
+                                start_exists..(defid_block, VarId(end), ProjectionVec::new()),
+                            ),
+                            None => self.value_manager.varid_to_value.range_mut(start_exists..),
+                        };
+
+                        for (_, value) in query_exists.filter(|((_, _, projections), _)| {
+                            !projections_transferred.contains(projections)
+                        }) {
+                            *value = Value::Unknown
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                // push the rval if no existing value
+                self.add_value_with_projection(defid_block, varid, rval_value, projections)
+            }
+        }
+    }
+
+    // this function takes in any operands and returns a value optional
+    #[inline]
+    fn value_from_rval(&self, defid_block: DefId, rvalue: Rvalue) -> Value {
+        match rvalue {
+            Rvalue::Read(operand) => self.value_from_operand(defid_block, operand),
+            Rvalue::Template(template) => {
+                let all_values = template
+                    .exprs
+                    .iter()
+                    .map(|expr| self.value_from_operand(defid_block, expr.clone()))
+                    .collect_vec();
+                if all_values.contains(&Value::Unknown) {
+                    return Value::Unknown;
+                }
+
+                let quasis_as_values: Vec<Value> = template
+                    .quasis
+                    .iter()
+                    .map(|quasis| Value::Const(Const::Literal(quasis.to_string())))
+                    .collect_vec();
+
+                let values_joined = quasis_as_values
+                    .iter()
+                    .zip(all_values.iter())
+                    .flat_map(|(a, b)| vec![a.clone(), b.clone()])
+                    .chain(quasis_as_values.iter().skip(all_values.len()).cloned())
+                    .chain(all_values.iter().skip(quasis_as_values.len()).cloned())
+                    .collect_vec();
+
+                return_combinations_phi(values_joined)
+            }
+            Rvalue::Bin(BinOp::Add, op1, op2) => {
+                let value_op1 = self.value_from_operand(defid_block, op1);
+                let value_op2 = self.value_from_operand(defid_block, op2);
+                if value_op1 == Value::Unknown || value_op2 == Value::Unknown {
+                    return Value::Unknown;
+                }
+                return_combinations_phi(vec![value_op1, value_op2])
+            }
+            _ => Value::Unknown,
+        }
+    }
+
+    #[inline]
+    fn value_from_operand(&self, defid_block: DefId, operand: Operand) -> Value {
+        match operand {
+            Operand::Var(Variable {
+                base: Base::Var(varid),
+                projections,
+            }) => {
+                let (varid, projections) = self.get_farthest_obj(defid_block, varid, projections);
+                if self.is_obj(varid) {
+                    return Value::Object(varid);
+                }
+                match self.get_value(defid_block, varid, Some(projections)) {
+                    Some(value) => value.clone(),
+                    None => Value::Unknown,
+                }
+            }
+            Operand::Lit(str) => {
+                if let Some(value) = convert_lit_to_raw(&str) {
+                    Value::Const(Const::Literal(value))
+                } else {
+                    Value::Unknown
+                }
+            }
+            _ => Value::Unknown,
+        }
+    }
+
+    #[inline]
+    fn get_farthest_obj(
+        &self,
+        defid_block: DefId,
+        varid: VarId,
+        mut projections: ProjectionVec,
+    ) -> (VarId, ProjectionVec) {
+        let mut current_var_id = varid;
+        for i in 0..projections.len() {
+            if let Some(Value::Object(varid)) = self.get_value(
+                defid_block,
+                current_var_id,
+                Some(projvec_from_projvec(&projections[..i])),
+            ) {
+                current_var_id = *varid;
+                projections = projvec_from_projvec(&projections[i..]);
+            }
+        }
+
+        while let Some(Value::Object(varid)) =
+            self.get_value(defid_block, current_var_id, Some(ProjectionVec::new()))
+        {
+            if current_var_id == *varid {
+                break;
+            }
+            current_var_id = *varid;
+        }
+        (current_var_id, projections)
+    }
+
     #[inline]
     pub(crate) fn get_value(
         &self,
@@ -731,6 +822,26 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             block,
             inst_idx: 0,
         });
+    }
+
+    #[inline]
+    pub fn check_for_const(&self, operand: &Operand, def: DefId) -> bool {
+        match operand {
+            Operand::Lit(Literal::Str(_)) => true,
+            Operand::Var(var) => {
+                if let Base::Var(varid) = var.base {
+                    if let Some(value) = self.get_value(def, varid, Some(var.projections.clone())) {
+                        return matches!(value, Value::Const(_) | Value::Phi(_));
+                    } else if let Some(VarKind::GlobalRef(def)) = self.body().vars.get(varid) {
+                        if let Some(value) = self.value_manager.defid_to_value.get(def) {
+                            return matches!(value, Value::Const(_) | Value::Phi(_));
+                        }
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
     }
 
     #[inline]

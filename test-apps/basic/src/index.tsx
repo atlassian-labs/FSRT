@@ -1,5 +1,5 @@
 import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
-import api, { route } from '@forge/api';
+import api, { route, fetch } from '@forge/api';
 import { testFn } from './test';
 
 const foo = () => {
@@ -29,12 +29,18 @@ const App = () => {
     }
   }
 
-    testObject.someFunction();
+    let value = "value"
+
+    let h = { headers: { authorization: "test" } }
+    h.headers.authorization = process.env.SECRET
+    h.headers.authorization = `test ${value}`
 
 
-  // foo();
-  // test_function("test_word");
-  // testFn();
+    fetch("url", h)
+
+  foo();
+  test_function("test_word");
+  testFn();
   return (
     <Fragment>
       <Text>Hello world!</Text>

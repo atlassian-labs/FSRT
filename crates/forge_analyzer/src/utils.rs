@@ -1,8 +1,11 @@
+use crate::interp::ProjectionVec;
+use crate::ir::Projection;
 use crate::{
     definitions::{CalleeRef, Const, DefId, Value},
-    ir::{Base, Literal, Operand, VarId, VarKind, Variable},
+    ir::{Literal, Operand, VarKind},
 };
 use forge_permission_resolver::permissions_resolver::RequestType;
+use itertools::Itertools;
 use swc_core::ecma::ast::{Expr, Lit, MemberProp};
 
 pub fn calls_method(n: CalleeRef<'_>, name: &str) -> bool {
@@ -12,31 +15,6 @@ pub fn calls_method(n: CalleeRef<'_>, name: &str) -> bool {
         }
     }
     false
-}
-
-pub fn resolve_var_from_operand(operand: &Operand) -> Option<(Variable, VarId)> {
-    if let Operand::Var(var) = operand {
-        if let Base::Var(varid) = var.base {
-            return Some((var.clone(), varid));
-        }
-    }
-    None
-}
-
-pub fn add_const_to_val_vec(val: &Value, const_val: &Const, vals: &mut Vec<String>) {
-    match val {
-        Value::Const(Const::Literal(lit)) => {
-            if let Const::Literal(lit2) = const_val {
-                vals.push(format!("{lit}{lit2}"));
-            }
-        }
-        Value::Phi(phi_val2) => phi_val2.iter().for_each(|val2| {
-            if let (Const::Literal(lit1), Const::Literal(lit2)) = (&const_val, val2) {
-                vals.push(format!("{lit1}{lit2}"));
-            }
-        }),
-        _ => {}
-    }
 }
 
 pub fn get_defid_from_varkind(varkind: &VarKind) -> Option<DefId> {
@@ -56,6 +34,18 @@ pub fn convert_operand_to_raw(operand: &Operand) -> Option<String> {
     } else {
         None
     }
+}
+
+pub fn projvec_from_str(str: &str) -> ProjectionVec {
+    ProjectionVec::from([Projection::Known(str.into())])
+}
+
+pub fn projvec_from_proj(proj: Projection) -> ProjectionVec {
+    ProjectionVec::from([proj])
+}
+
+pub fn projvec_from_projvec(projs: &[Projection]) -> ProjectionVec {
+    ProjectionVec::from(projs)
 }
 
 pub fn convert_lit_to_raw(lit: &Literal) -> Option<String> {
@@ -95,33 +85,13 @@ pub fn add_elements_to_intrinsic_struct(value: &Value, args: &mut Vec<String>) {
             args.push(literal.clone());
         }
         Value::Phi(phi_value) => {
-            args.extend(phi_value.iter().filter_map(|val| {
-                if let Const::Literal(literal) = val {
-                    Some(literal.clone())
-                } else {
-                    None
-                }
-            }));
+            args.extend(
+                phi_value
+                    .iter()
+                    .map(|Const::Literal(literal)| literal.clone()),
+            );
         }
         _ => {}
-    }
-}
-
-pub fn get_prev_value(value: Option<&Value>) -> Option<Vec<Const>> {
-    if let Some(value) = value {
-        return match value {
-            Value::Const(const_value) => Some(vec![const_value.clone()]),
-            Value::Phi(phi_value) => Some(phi_value.clone()),
-            _ => None,
-        };
-    }
-    None
-}
-
-pub fn return_value_from_string(values: Vec<String>) -> Value {
-    match <[_; 1]>::try_from(values) {
-        Ok([lit]) => Value::Const(Const::Literal(lit)),
-        Err(values) => Value::Phi(values.into_iter().map(Const::Literal).collect()),
     }
 }
 
@@ -137,6 +107,39 @@ pub fn trnaslate_request_type(request_type: Option<&str>) -> RequestType {
     } else {
         RequestType::Get
     }
+}
+
+pub fn return_combinations_phi(exprs: Vec<Value>) -> Value {
+    let exprs: Vec<Vec<String>> = exprs
+        .iter()
+        .map(|expr| match expr {
+            Value::Phi(value_vec) => value_vec
+                .iter()
+                .map(|Const::Literal(string)| string.clone())
+                .collect(),
+            Value::Const(Const::Literal(string)) => vec![string.clone()],
+            _ => vec![],
+        })
+        .collect();
+
+    let mut combinations = vec![String::new()];
+
+    for list in exprs {
+        let mut new_combinations = Vec::new();
+        for combo in &combinations {
+            for item in &list {
+                new_combinations.push(format!("{}{}", combo, item));
+            }
+        }
+        combinations = new_combinations;
+    }
+
+    return Value::Phi(
+        combinations
+            .iter()
+            .map(|value| Const::Literal(value.clone()))
+            .collect_vec(),
+    );
 }
 
 pub fn eq_prop_name(n: &MemberProp, name: &str) -> bool {
