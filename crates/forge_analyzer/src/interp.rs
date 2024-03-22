@@ -31,7 +31,10 @@ use crate::{
     worklist::WorkList,
 };
 
-pub type DefinitionAnalysisMap = BTreeMap<(DefId, VarId, ProjectionVec), Value>;
+pub type DefinitionAnalysisMapProjection = BTreeMap<(DefId, VarId, ProjectionVec), Value>;
+
+pub type DefinitionAnalysisMap = FxHashMap<(DefId, VarId), Value>;
+
 pub type ProjectionVec = SmallVec<[Projection; 1]>;
 
 pub trait JoinSemiLattice: Sized + Ord {
@@ -396,6 +399,7 @@ pub struct Interp<'cx, C: Runner<'cx>> {
 
 #[derive(Debug)]
 pub struct ValueManager {
+    pub varid_to_value_with_proj: DefinitionAnalysisMapProjection,
     pub varid_to_value: DefinitionAnalysisMap,
     pub defid_to_value: FxHashMap<DefId, Value>,
     pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
@@ -404,8 +408,7 @@ pub struct ValueManager {
 
 impl ValueManager {
     pub fn insert_var(&mut self, def_id_func: DefId, var_id: VarId, value: Value) {
-        let projection_vec = ProjectionVec::new();
-        self.insert_var_with_projection(def_id_func, var_id, projection_vec, value);
+        self.varid_to_value.insert((def_id_func, var_id), value);
     }
 
     pub fn insert_var_with_projection(
@@ -415,8 +418,12 @@ impl ValueManager {
         projection_vec: ProjectionVec,
         value: Value,
     ) {
-        self.varid_to_value
-            .insert((def_id_func, var_id, projection_vec), value);
+        if projection_vec.is_empty() {
+            self.varid_to_value.insert((def_id_func, var_id), value);
+        } else {
+            self.varid_to_value_with_proj
+                .insert((def_id_func, var_id, projection_vec), value);
+        }
     }
 }
 
@@ -504,6 +511,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             callstack: RefCell::new(Vec::new()),
             value_manager: ValueManager {
                 varid_to_value: DefinitionAnalysisMap::default(),
+                varid_to_value_with_proj: DefinitionAnalysisMapProjection::default(),
                 defid_to_value: FxHashMap::default(),
                 expected_return_values: HashMap::default(),
                 expecting_value: VecDeque::default(),
@@ -628,15 +636,17 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     (Value::Object(exist_var), Value::Object(new_var)) => {
                         // store projection values that are transferred
                         let mut projections_transferred = vec![];
-
                         // transfer all projection values from the new_var into the existing var
                         let start_new = (defid_block, new_var, ProjectionVec::new());
                         let query_new = match new_var.0.checked_add(1) {
                             Some(end) => self
                                 .value_manager
-                                .varid_to_value
+                                .varid_to_value_with_proj
                                 .range(start_new..(defid_block, VarId(end), ProjectionVec::new())),
-                            None => self.value_manager.varid_to_value.range(start_new..),
+                            None => self
+                                .value_manager
+                                .varid_to_value_with_proj
+                                .range(start_new..),
                         };
 
                         let vals = query_new
@@ -657,10 +667,13 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                         // clear remaining vars
                         let start_exists = (defid_block, exist_var, ProjectionVec::new());
                         let query_exists = match exist_var.0.checked_add(1) {
-                            Some(end) => self.value_manager.varid_to_value.range_mut(
+                            Some(end) => self.value_manager.varid_to_value_with_proj.range_mut(
                                 start_exists..(defid_block, VarId(end), ProjectionVec::new()),
                             ),
-                            None => self.value_manager.varid_to_value.range_mut(start_exists..),
+                            None => self
+                                .value_manager
+                                .varid_to_value_with_proj
+                                .range_mut(start_exists..),
                         };
 
                         for (_, value) in query_exists.filter(|((_, _, projections), _)| {
@@ -785,10 +798,13 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         varid: VarId,
         projection: Option<ProjectionVec>,
     ) -> Option<&Value> {
-        let projections = projection.unwrap_or_default();
-        self.value_manager
-            .varid_to_value
-            .get(&(defid_block, varid, projections))
+        match projection {
+            Some(projection) if !projection.is_empty() => self
+                .value_manager
+                .varid_to_value_with_proj
+                .get(&(defid_block, varid, projection)),
+            _ => self.value_manager.varid_to_value.get(&(defid_block, varid)),
+        }
     }
 
     #[inline]
