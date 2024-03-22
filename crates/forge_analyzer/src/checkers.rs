@@ -1481,7 +1481,6 @@ impl<'cx> Dataflow<'cx> for DefinitionAnalysisRunner {
                             }
                         }
                         /* should be expanded to include all cases ... */
-
                         interp.add_value_to_definition(def, var.clone(), rvalue.clone());
                     }
                     Rvalue::Template(_) => {
