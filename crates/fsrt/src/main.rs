@@ -331,6 +331,9 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
             let mut checker = PermissionChecker::new();
             perm_interp.value_manager.varid_to_value =
                 definition_analysis_interp.value_manager.varid_to_value;
+            perm_interp.value_manager.varid_to_value_with_proj = definition_analysis_interp
+                .value_manager
+                .varid_to_value_with_proj;
             perm_interp.value_manager.defid_to_value =
                 definition_analysis_interp.value_manager.defid_to_value;
             if let Err(err) = perm_interp.run_checker(
@@ -343,6 +346,9 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
             }
             definition_analysis_interp.value_manager.varid_to_value =
                 perm_interp.value_manager.varid_to_value;
+            definition_analysis_interp
+                .value_manager
+                .varid_to_value_with_proj = perm_interp.value_manager.varid_to_value_with_proj;
             definition_analysis_interp.value_manager.defid_to_value =
                 perm_interp.value_manager.defid_to_value;
         }
@@ -350,6 +356,9 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         let mut checker = SecretChecker::new();
         secret_interp.value_manager.varid_to_value =
             definition_analysis_interp.value_manager.varid_to_value;
+        secret_interp.value_manager.varid_to_value_with_proj = definition_analysis_interp
+            .value_manager
+            .varid_to_value_with_proj;
         secret_interp.value_manager.defid_to_value =
             definition_analysis_interp.value_manager.defid_to_value;
         if let Err(err) = secret_interp.run_checker(
@@ -364,6 +373,9 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         }
         definition_analysis_interp.value_manager.varid_to_value =
             secret_interp.value_manager.varid_to_value;
+        definition_analysis_interp
+            .value_manager
+            .varid_to_value_with_proj = secret_interp.value_manager.varid_to_value_with_proj;
         definition_analysis_interp.value_manager.defid_to_value =
             secret_interp.value_manager.defid_to_value;
 
