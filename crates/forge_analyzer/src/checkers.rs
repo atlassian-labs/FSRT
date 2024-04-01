@@ -1510,7 +1510,7 @@ impl<'cx> Dataflow<'cx> for DefinitionAnalysisRunner {
             let mut args = args.clone();
             args.reverse();
             for (varid, varkind) in function_var.iter_enumerated() {
-                if let VarKind::Arg(_) = varkind {
+                if let VarKind::GlobalRef(_) = varkind {
                     if let Some(operand) = args.pop() {
                         interp.add_value(def, varid, operand.clone());
                         interp
