@@ -12,7 +12,7 @@ use serde::Deserialize;
 use tracing::trace;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct AuthProviders<'a> {
+pub struct AuthProviders<'a> {
     #[serde(borrow)]
     auth: Vec<&'a str>,
 }
@@ -79,10 +79,10 @@ pub struct JustFunc<'a> {
 // Common Modules
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FunctionMod<'a> {
-    key: &'a str,
-    handler: &'a str,
+    pub key: &'a str,
+    pub handler: &'a str,
     #[serde(borrow)]
-    providers: Option<AuthProviders<'a>>,
+    pub providers: Option<AuthProviders<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -368,7 +368,7 @@ pub struct ForgeModules<'a> {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct Content<'a> {
+pub struct Content<'a> {
     #[serde(default, borrow)]
     scripts: Vec<&'a str>,
     #[serde(default, borrow)]

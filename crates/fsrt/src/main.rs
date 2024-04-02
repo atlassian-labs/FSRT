@@ -1,9 +1,14 @@
 #![allow(clippy::type_complexity)]
+
+mod test;
+
 use clap::{Parser, ValueHint};
 use forge_permission_resolver::permissions_resolver::{
     get_permission_resolver_confluence, get_permission_resolver_jira,
 };
+
 use miette::{IntoDiagnostic, Result};
+use std::collections::VecDeque;
 use std::{
     collections::HashSet,
     fs,
@@ -12,8 +17,9 @@ use std::{
     sync::Arc,
 };
 
+use swc_core::common::SourceFile;
 use swc_core::{
-    common::{Globals, Mark, SourceMap, GLOBALS},
+    common::{sync::Lrc, FileName, Globals, Mark, SourceMap, GLOBALS},
     ecma::{
         ast::EsVersion,
         parser::{parse_file_as_module, Syntax, TsConfig},
@@ -37,7 +43,8 @@ use forge_analyzer::{
     resolver::resolve_calls,
 };
 
-use forge_loader::manifest::{Entrypoint, ForgeManifest, Resolved};
+use forge_analyzer::reporter::Vulnerability;
+use forge_loader::manifest::{AppInfo, Entrypoint, ForgeManifest, FunctionMod, Perms, Resolved};
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
@@ -100,13 +107,29 @@ struct ForgeProject<'a> {
     funcs: Vec<ResolvedEntryPoint<'a>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct MockForgeProject {
+    pub name: String,
+    pub source: String,
+}
+
 impl<'a> ForgeProject<'a> {
     #[instrument(skip(src, iter))]
-    fn with_files_and_sourceroot<P: AsRef<Path>, I: IntoIterator<Item = PathBuf>>(
+    fn with_files_and_sourceroot<
+        P: AsRef<Path>,
+        I: IntoIterator<Item = PathBuf> + std::fmt::Debug,
+    >(
         src: P,
         iter: I,
+        test: bool,
+        test_sources: Option<VecDeque<Arc<SourceFile>>>,
         secret_packages: Vec<PackageData>,
     ) -> Self {
+        assert!(
+            !test || test_sources.is_some(),
+            "expected test_sources when testing"
+        );
+        let mut test_sources = test_sources.unwrap_or_default();
         let sm = Arc::<SourceMap>::default();
         let target = EsVersion::latest();
         let globals = Globals::new();
@@ -115,7 +138,11 @@ impl<'a> ForgeProject<'a> {
             let sourcemap = Arc::clone(&sm);
             GLOBALS.set(&globals, || {
                 debug!(file = %p.display(), "parsing");
-                let src = sourcemap.load_file(&p).unwrap();
+                let src = if test {
+                    test_sources.pop_front().unwrap()
+                } else {
+                    sourcemap.load_file(&p).unwrap()
+                };
                 debug!("loaded sourcemap");
                 let mut recovered_errors = vec![];
                 let module = parse_file_as_module(
@@ -184,33 +211,106 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
         })
 }
 
+fn scan_directory_test<'a>(forge_test_proj: Vec<MockForgeProject>) -> Option<Vec<Vulnerability>> {
+    scan_directory(PathBuf::new(), &Args::parse(), true, forge_test_proj)
+}
+
 #[tracing::instrument(level = "debug")]
-fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<()> {
-    let mut manifest_file = dir.clone();
-    manifest_file.push("manifest.yaml");
-    if !manifest_file.exists() {
-        manifest_file.set_extension("yml");
-    }
-    debug!(?manifest_file);
+fn scan_directory<'a>(
+    dir: PathBuf,
+    opts: &Args,
+    test: bool,
+    forge_test_proj: Vec<MockForgeProject>,
+) -> Option<Vec<Vulnerability>> {
+    let manifest_text;
+    let manifest = if test {
+        let mut forge_manifest_test = ForgeManifest::default();
+        forge_manifest_test.modules.functions.push(FunctionMod {
+            key: "main",
+            handler: "index.run",
+            providers: None,
+        });
+        forge_manifest_test
+    } else {
+        let mut manifest_file = dir.clone();
+        manifest_file.push("manifest.yaml");
+        if !manifest_file.exists() {
+            manifest_file.set_extension("yml");
+        }
+        debug!(?manifest_file);
 
-    let manifest = fs::read_to_string(&manifest_file).into_diagnostic()?;
-    let manifest: ForgeManifest<'_> = serde_yaml::from_str(&manifest).into_diagnostic()?;
+        manifest_text = fs::read_to_string(&manifest_file)
+            .into_diagnostic()
+            .ok()?
+            .clone();
+        serde_yaml::from_str(&manifest_text)
+            .into_diagnostic()
+            .ok()?
+    };
+
+    let paths = if test {
+        forge_test_proj
+            .iter()
+            .map(|file| PathBuf::from(file.name.clone()))
+            .collect::<HashSet<_>>()
+    } else {
+        collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>()
+    };
+
+    let mut proj = if test {
+        let cm: Lrc<SourceMap> = Default::default();
+
+        let source_files: Vec<_> = forge_test_proj
+            .iter()
+            .map(|file| {
+                cm.new_source_file(
+                    FileName::Custom(file.name.clone().into()),
+                    file.source.clone().into(),
+                )
+            })
+            .collect();
+
+        let mut dir_path = PathBuf::from("test-apps/basic/src/");
+
+        let vec_file_names = forge_test_proj
+            .into_iter()
+            .map(|file| {
+                dir_path.push(file.clone().name);
+                let curr = dir_path.clone();
+                dir_path.pop();
+                curr
+            })
+            .collect::<Vec<_>>();
+
+        let deq = VecDeque::from(source_files);
+        ForgeProject::with_files_and_sourceroot(
+            Path::new("src"),
+            vec_file_names,
+            true,
+            Some(deq),
+            vec![],
+        )
+    } else {
+        let secret_packages: Vec<PackageData> =
+            if let Result::Ok(f) = std::fs::File::open("secretdata.yaml") {
+                let scrape_config: Vec<PackageData> =
+                    serde_yaml::from_reader(f).expect("Failed to deserialize package");
+                scrape_config
+            } else {
+                vec![]
+            };
+
+        let src_root = dir.join("src");
+        ForgeProject::with_files_and_sourceroot(
+            src_root.clone(),
+            paths.clone(),
+            false,
+            None,
+            secret_packages,
+        )
+    };
+
     let name = manifest.app.name.unwrap_or_default();
-
-    let requested_permissions = manifest.permissions;
-    let permission_scopes = requested_permissions.scopes;
-    let permissions_declared: HashSet<String> =
-        HashSet::from_iter(permission_scopes.iter().map(|s| s.replace('\"', "")));
-
-    let secret_packages: Vec<PackageData> =
-        if let Result::Ok(f) = std::fs::File::open("secretdata.yaml") {
-            let scrape_config: Vec<PackageData> =
-                serde_yaml::from_reader(f).expect("Failed to deserialize package");
-            scrape_config
-        } else {
-            vec![]
-        };
-
     let paths = collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>();
 
     let transpiled_async = paths.iter().any(|path| {
@@ -222,7 +322,19 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         }
         false
     });
+
+    if transpiled_async {
+        warn!("Unable to scan due to transpiled async");
+        return None;
+    }
+
+    let requested_permissions = manifest.permissions;
+    let permission_scopes = requested_permissions.scopes;
+
     let run_permission_checker = opts.check_permissions && !transpiled_async;
+
+    let permissions_declared: HashSet<String> =
+        HashSet::from_iter(permission_scopes.iter().map(|s| s.replace('\"', "")));
 
     let funcrefs = manifest
         .modules
@@ -236,19 +348,12 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
             })
         });
 
-    let src_root = dir.join("src");
-    let mut proj =
-        ForgeProject::with_files_and_sourceroot(src_root, paths.clone(), secret_packages);
-    if transpiled_async {
-        warn!("Unable to scan due to transpiled async");
-        return Ok(());
-    }
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
     if let Some(func) = opts.dump_ir.as_ref() {
         let mut lock = std::io::stdout().lock();
         proj.env.dump_function(&mut lock, func);
-        return Ok(());
+        return None;
     }
 
     let permissions = Vec::from_iter(permissions_declared.iter().cloned());
@@ -301,7 +406,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         &confluence_regex_map,
     );
     reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
-    //let mut all_used_permissions = HashSet::default();
 
     let mut perm_interp = Interp::<PermissionChecker>::new(
         &proj.env,
@@ -406,16 +510,18 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
     if run_permission_checker && !perm_interp.permissions.is_empty() {
         reporter.add_vulnerabilities([PermissionVuln::new(perm_interp.permissions)]);
     }
-    let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
+    let vulns = reporter.vulns.clone();
+    let data = reporter.into_report();
+    let report = serde_json::to_string(&data).into_diagnostic().ok()?;
     debug!("On the debug layer: Writing Report");
     match &opts.out {
         Some(path) => {
-            fs::write(path, report).into_diagnostic()?;
+            fs::write(path, report.clone()).into_diagnostic().ok()?;
         }
         None => println!("{report}"),
     }
 
-    Ok(())
+    Some(vulns)
 }
 
 fn main() -> Result<()> {
@@ -428,7 +534,7 @@ fn main() -> Result<()> {
     let function = args.function.as_deref();
     for dir in dirs {
         debug!(?dir);
-        scan_directory(dir, function, &args)?;
+        scan_directory(dir, &args, false, vec![]);
     }
     Ok(())
 }
