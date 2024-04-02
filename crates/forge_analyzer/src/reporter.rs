@@ -39,7 +39,7 @@ pub struct Report {
 }
 
 pub struct Reporter {
-    vulns: Vec<Vulnerability>,
+    pub vulns: Vec<Vulnerability>,
     started_at: OffsetDateTime,
     // (key, name)
     apps: Vec<(String, String)>,
