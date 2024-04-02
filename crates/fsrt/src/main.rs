@@ -263,10 +263,7 @@ fn scan_directory<'a>(
         let source_files: Vec<_> = forge_test_proj
             .iter()
             .map(|file| {
-                cm.new_source_file(
-                    FileName::Custom(file.name.clone()),
-                    file.source.clone(),
-                )
+                cm.new_source_file(FileName::Custom(file.name.clone()), file.source.clone())
             })
             .collect();
 
