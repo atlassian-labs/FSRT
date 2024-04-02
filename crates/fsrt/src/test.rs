@@ -1,3 +1,4 @@
+#[cfg(test)]
 mod tests {
     use crate::{scan_directory_test, MockForgeProject};
 

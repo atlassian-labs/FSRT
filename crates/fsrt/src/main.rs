@@ -44,7 +44,7 @@ use forge_analyzer::{
 };
 
 use forge_analyzer::reporter::Vulnerability;
-use forge_loader::manifest::{AppInfo, Entrypoint, ForgeManifest, FunctionMod, Perms, Resolved};
+use forge_loader::manifest::{Entrypoint, ForgeManifest, FunctionMod, Resolved};
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
@@ -211,7 +211,7 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
         })
 }
 
-fn scan_directory_test<'a>(forge_test_proj: Vec<MockForgeProject>) -> Option<Vec<Vulnerability>> {
+pub fn scan_directory_test(forge_test_proj: Vec<MockForgeProject>) -> Option<Vec<Vulnerability>> {
     scan_directory(PathBuf::new(), &Args::parse(), true, forge_test_proj)
 }
 
@@ -264,8 +264,8 @@ fn scan_directory<'a>(
             .iter()
             .map(|file| {
                 cm.new_source_file(
-                    FileName::Custom(file.name.clone().into()),
-                    file.source.clone().into(),
+                    FileName::Custom(file.name.clone()),
+                    file.source.clone(),
                 )
             })
             .collect();
@@ -531,7 +531,6 @@ fn main() -> Result<()> {
         .with(EnvFilter::from_env("FORGE_LOG"))
         .init();
     let dirs = std::mem::take(&mut args.dirs);
-    let function = args.function.as_deref();
     for dir in dirs {
         debug!(?dir);
         scan_directory(dir, &args, false, vec![]);
