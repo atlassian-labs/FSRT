@@ -1,5 +1,7 @@
 #![allow(clippy::type_complexity)]
 
+mod forge_project;
+#[cfg(test)]
 mod test;
 
 use clap::{Parser, ValueHint};
@@ -7,27 +9,16 @@ use forge_permission_resolver::permissions_resolver::{
     get_permission_resolver_confluence, get_permission_resolver_jira,
 };
 
+use forge_project::MockForgeProject;
 use miette::{IntoDiagnostic, Result};
-use std::collections::VecDeque;
 use std::{
     collections::HashSet,
     fs,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
-use swc_core::common::SourceFile;
-use swc_core::{
-    common::{sync::Lrc, FileName, Globals, Mark, SourceMap, GLOBALS},
-    ecma::{
-        ast::EsVersion,
-        parser::{parse_file_as_module, Syntax, TsConfig},
-        transforms::base::resolver,
-        visit::FoldWith,
-    },
-};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, warn};
 use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
@@ -36,15 +27,16 @@ use forge_analyzer::{
         AuthZChecker, AuthenticateChecker, DefinitionAnalysisRunner, PermissionChecker,
         PermissionVuln, SecretChecker,
     },
-    ctx::{AppCtx, ModId},
-    definitions::{run_resolver, DefId, Environment, PackageData},
+    ctx::ModId,
+    definitions::DefId,
     interp::Interp,
     reporter::Reporter,
     resolver::resolve_calls,
 };
 
+use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait};
 use forge_analyzer::reporter::Vulnerability;
-use forge_loader::manifest::{Entrypoint, ForgeManifest, FunctionMod, Resolved};
+use forge_loader::manifest::Entrypoint;
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
@@ -99,100 +91,6 @@ struct ResolvedEntryPoint<'a> {
     admin: bool,
 }
 
-struct ForgeProject<'a> {
-    #[allow(dead_code)]
-    sm: Arc<SourceMap>,
-    ctx: AppCtx,
-    env: Environment,
-    funcs: Vec<ResolvedEntryPoint<'a>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct MockForgeProject {
-    pub name: String,
-    pub source: String,
-}
-
-impl<'a> ForgeProject<'a> {
-    #[instrument(skip(src, iter))]
-    fn with_files_and_sourceroot<
-        P: AsRef<Path>,
-        I: IntoIterator<Item = PathBuf> + std::fmt::Debug,
-    >(
-        src: P,
-        iter: I,
-        test: bool,
-        test_sources: Option<VecDeque<Arc<SourceFile>>>,
-        secret_packages: Vec<PackageData>,
-    ) -> Self {
-        assert!(
-            !test || test_sources.is_some(),
-            "expected test_sources when testing"
-        );
-        let mut test_sources = test_sources.unwrap_or_default();
-        let sm = Arc::<SourceMap>::default();
-        let target = EsVersion::latest();
-        let globals = Globals::new();
-        let ctx = AppCtx::new(src);
-        let ctx = iter.into_iter().fold(ctx, |mut ctx, p| {
-            let sourcemap = Arc::clone(&sm);
-            GLOBALS.set(&globals, || {
-                debug!(file = %p.display(), "parsing");
-                let src = if test {
-                    test_sources.pop_front().unwrap()
-                } else {
-                    sourcemap.load_file(&p).unwrap()
-                };
-                debug!("loaded sourcemap");
-                let mut recovered_errors = vec![];
-                let module = parse_file_as_module(
-                    &src,
-                    Syntax::Typescript(TsConfig {
-                        tsx: true,
-                        decorators: true,
-                        ..Default::default()
-                    }),
-                    target,
-                    None,
-                    &mut recovered_errors,
-                )
-                .unwrap();
-                debug!("finished parsing");
-                let mut hygeine = resolver(Mark::new(), Mark::new(), true);
-                let module = module.fold_with(&mut hygeine);
-                ctx.load_module(p, module);
-                ctx
-            })
-        });
-        let keys = ctx.module_ids().collect::<Vec<_>>();
-        debug!(?keys);
-        let env = run_resolver(ctx.modules(), ctx.file_resolver(), secret_packages);
-        Self {
-            sm,
-            ctx,
-            env,
-            funcs: vec![],
-        }
-    }
-
-    fn add_funcs<I: IntoIterator<Item = Entrypoint<'a, Resolved>>>(&mut self, iter: I) {
-        self.funcs.extend(iter.into_iter().filter_map(|entrypoint| {
-            let (func_name, path) = entrypoint.function.into_func_path();
-            let module = self.ctx.modid_from_path(&path)?;
-            let def_id = self.env.module_export(module, func_name)?;
-            Some(ResolvedEntryPoint {
-                func_name,
-                path,
-                module,
-                def_id,
-                invokable: entrypoint.invokable,
-                webtrigger: entrypoint.web_trigger,
-                admin: entrypoint.admin,
-            })
-        }));
-    }
-}
-
 fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
     matches!(
         path.as_ref().extension().map(|s| s.as_bytes()),
@@ -211,104 +109,22 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
         })
 }
 
-pub fn scan_directory_test(forge_test_proj: Vec<MockForgeProject>) -> Option<Vec<Vulnerability>> {
-    scan_directory(PathBuf::new(), &Args::parse(), true, forge_test_proj)
+#[allow(dead_code)]
+pub(crate) fn scan_directory_test(forge_test_proj: MockForgeProject<'_>) -> Option<Vec<Vulnerability>> {
+    scan_directory(PathBuf::new(), &Args::parse(), forge_test_proj)
 }
 
 #[tracing::instrument(level = "debug")]
-fn scan_directory<'a>(
+pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
     opts: &Args,
-    test: bool,
-    forge_test_proj: Vec<MockForgeProject>,
+    project: impl ForgeProjectTrait<'a> + std::fmt::Debug,
 ) -> Option<Vec<Vulnerability>> {
-    let manifest_text;
-    let manifest = if test {
-        let mut forge_manifest_test = ForgeManifest::default();
-        forge_manifest_test.modules.functions.push(FunctionMod {
-            key: "main",
-            handler: "index.run",
-            providers: None,
-        });
-        forge_manifest_test
-    } else {
-        let mut manifest_file = dir.clone();
-        manifest_file.push("manifest.yaml");
-        if !manifest_file.exists() {
-            manifest_file.set_extension("yml");
-        }
-        debug!(?manifest_file);
-
-        manifest_text = fs::read_to_string(&manifest_file)
-            .into_diagnostic()
-            .ok()?
-            .clone();
-        serde_yaml::from_str(&manifest_text)
-            .into_diagnostic()
-            .ok()?
-    };
-
-    let paths = if test {
-        forge_test_proj
-            .iter()
-            .map(|file| PathBuf::from(file.name.clone()))
-            .collect::<HashSet<_>>()
-    } else {
-        collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>()
-    };
-
-    let mut proj = if test {
-        let cm: Lrc<SourceMap> = Default::default();
-
-        let source_files: Vec<_> = forge_test_proj
-            .iter()
-            .map(|file| {
-                cm.new_source_file(FileName::Custom(file.name.clone()), file.source.clone())
-            })
-            .collect();
-
-        let mut dir_path = PathBuf::from("test-apps/basic/src/");
-
-        let vec_file_names = forge_test_proj
-            .into_iter()
-            .map(|file| {
-                dir_path.push(file.clone().name);
-                let curr = dir_path.clone();
-                dir_path.pop();
-                curr
-            })
-            .collect::<Vec<_>>();
-
-        let deq = VecDeque::from(source_files);
-        ForgeProject::with_files_and_sourceroot(
-            Path::new("src"),
-            vec_file_names,
-            true,
-            Some(deq),
-            vec![],
-        )
-    } else {
-        let secret_packages: Vec<PackageData> =
-            if let Result::Ok(f) = std::fs::File::open("secretdata.yaml") {
-                let scrape_config: Vec<PackageData> =
-                    serde_yaml::from_reader(f).expect("Failed to deserialize package");
-                scrape_config
-            } else {
-                vec![]
-            };
-
-        let src_root = dir.join("src");
-        ForgeProject::with_files_and_sourceroot(
-            src_root.clone(),
-            paths.clone(),
-            false,
-            None,
-            secret_packages,
-        )
-    };
+    let paths = project.get_paths();
+    let manifest = project.get_manifest();
+    let mut proj = project.with_files_and_sourceroot(Path::new("src"), paths.clone(), vec![]);
 
     let name = manifest.app.name.unwrap_or_default();
-    let paths = collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>();
 
     let transpiled_async = paths.iter().any(|path| {
         if let Ok(data) = fs::read_to_string(path) {
@@ -528,9 +344,28 @@ fn main() -> Result<()> {
         .with(EnvFilter::from_env("FORGE_LOG"))
         .init();
     let dirs = std::mem::take(&mut args.dirs);
+
     for dir in dirs {
+        let mut manifest_file = dir.clone();
+        manifest_file.push("manifest.yaml");
+        if !manifest_file.exists() {
+            manifest_file.set_extension("yml");
+        }
+        debug!(?manifest_file);
+
+        let manifest_text = fs::read_to_string(&manifest_file)
+            .into_diagnostic()
+            .ok()
+            .clone()
+            .unwrap_or_default();
+
+        let forge_project_from_dir = ForgeProjectFromDir {
+            dir: dir.clone(),
+            manifest_file_content: manifest_text,
+        };
+
         debug!(?dir);
-        scan_directory(dir, &args, false, vec![]);
+        scan_directory(dir, &args, forge_project_from_dir);
     }
     Ok(())
 }
