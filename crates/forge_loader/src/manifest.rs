@@ -414,6 +414,17 @@ pub struct ForgeManifest<'a> {
     pub permissions: Perms<'a>,
 }
 
+impl<'a> ForgeManifest<'a> {
+    pub fn create_manifest_with_func_mod(function_mod: FunctionMod<'a>) -> Self {
+        let mut forge_manifest_test = ForgeManifest::default();
+        forge_manifest_test
+            .modules
+            .functions
+            .push(function_mod.clone());
+        forge_manifest_test
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Resolved;
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
