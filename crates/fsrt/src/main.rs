@@ -110,7 +110,9 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 }
 
 #[allow(dead_code)]
-pub(crate) fn scan_directory_test(forge_test_proj: MockForgeProject<'_>) -> Option<Vec<Vulnerability>> {
+pub(crate) fn scan_directory_test(
+    forge_test_proj: MockForgeProject<'_>,
+) -> Option<Vec<Vulnerability>> {
     scan_directory(PathBuf::new(), &Args::parse(), forge_test_proj)
 }
 
