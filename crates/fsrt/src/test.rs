@@ -61,7 +61,7 @@ mod tests {
 
     #[test]
     fn with_multiple_files() {
-        let mut test_forge_project = MockForgeProject::files_from_string(
+        let test_forge_project = MockForgeProject::files_from_string(
             "// src/index.tsx
             import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui'; \n
             import test_function from 'test_function'; \n
