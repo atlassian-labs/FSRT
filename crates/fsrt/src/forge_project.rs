@@ -68,6 +68,7 @@ pub(crate) trait ForgeProjectTrait<'a> {
 
     fn get_paths(&self) -> HashSet<PathBuf>;
 
+    #[allow(dead_code)]
     fn get_secret_packages(&self) -> Vec<PackageData>;
 
     fn get_manifest(&self) -> ForgeManifest<'_>;
@@ -185,6 +186,7 @@ impl<'a> ForgeProjectTrait<'a> for MockForgeProject<'a> {
             .collect::<HashSet<_>>()
     }
 
+    #[allow(dead_code)]
     fn get_secret_packages(&self) -> Vec<PackageData> {
         vec![]
     }
