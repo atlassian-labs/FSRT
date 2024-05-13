@@ -117,7 +117,7 @@ impl MockForgeProject<'_> {
         let different_files = string
             .split("//")
             .map(|f| f.replace("//", "").trim().to_string())
-            .filter(|file| file.is_empty());
+            .filter(|file| !file.is_empty());
         for file in different_files {
             let (file_name, file_source) = file.split_once('\n').unwrap();
             mock_forge_project
