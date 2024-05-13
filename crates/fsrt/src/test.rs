@@ -1,8 +1,3 @@
-use crate::forge_project::MockForgeProject;
-use crate::scan_directory_test;
-use forge_loader::manifest::{ForgeManifest, FunctionMod};
-use std::collections::HashMap;
-
 mod tests {
     use crate::{scan_directory_test, MockForgeProject};
     use forge_loader::manifest::{ForgeManifest, FunctionMod};
