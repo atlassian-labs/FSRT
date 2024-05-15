@@ -23,7 +23,7 @@ pub(crate) struct MockForgeProject<'a> {
 }
 
 impl fmt::Debug for MockForgeProject<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Mock Forge Project {:?}", self.files_name_to_source)
     }
 }
