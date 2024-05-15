@@ -1,12 +1,11 @@
 use crate::{collect_sourcefiles, ResolvedEntryPoint};
 use forge_analyzer::ctx::AppCtx;
 use forge_analyzer::definitions::{run_resolver, Environment, PackageData};
-use forge_loader::manifest::{Entrypoint, ForgeManifest, FunctionMod, Resolved};
-use std::collections::{HashMap, HashSet};
+use forge_loader::manifest::{Entrypoint, ForgeManifest, Resolved};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use swc_core::common::sync::Lrc;
-use swc_core::common::{FileName, Globals, Mark, SourceFile, SourceMap, GLOBALS};
+use swc_core::common::{Globals, Mark, SourceFile, SourceMap, GLOBALS};
 use swc_core::ecma::ast::EsVersion;
 use swc_core::ecma::parser::{parse_file_as_module, Syntax, TsConfig};
 use swc_core::ecma::transforms::base::resolver;
@@ -15,6 +14,7 @@ use tracing::debug;
 
 pub(crate) trait ForgeProjectTrait<'a> {
     fn load_file(&self, path: impl AsRef<Path>, _: Arc<SourceMap>) -> Arc<SourceFile>;
+
     #[inline]
     fn with_files_and_sourceroot<
         P: AsRef<Path>,
@@ -37,7 +37,7 @@ pub(crate) trait ForgeProjectTrait<'a> {
                 debug!("loaded sourcemap");
                 let mut recovered_errors = vec![];
                 let module = parse_file_as_module(
-                    &src,
+                    src.as_ref(),
                     Syntax::Typescript(TsConfig {
                         tsx: true,
                         decorators: true,
@@ -101,46 +101,10 @@ impl<'a> ForgeProject<'a> {
     }
 }
 
-#[allow(dead_code)]
-impl MockForgeProject<'_> {
-    pub fn files_from_string(string: String) -> Self {
-        let forge_manifest = ForgeManifest::create_manifest_with_func_mod(FunctionMod {
-            key: "main",
-            handler: "index.run",
-            providers: None,
-        });
-
-        let mut mock_forge_project = MockForgeProject {
-            files_name_to_source: HashMap::new(),
-            test_manifest: forge_manifest,
-        };
-
-        let different_files = string
-            .split("//")
-            .map(|f| f.replace("//", "").trim().to_string())
-            .filter(|file| !file.is_empty());
-        for file in different_files {
-            let (file_name, file_source) = file.split_once('\n').unwrap();
-            mock_forge_project
-                .files_name_to_source
-                .insert(PathBuf::from(file_name.trim()), file_source.to_string());
-        }
-
-        mock_forge_project
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct ForgeProjectFromDir {
-    #[allow(dead_code)]
     pub dir: PathBuf,
     pub manifest_file_content: String,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct MockForgeProject<'a> {
-    pub files_name_to_source: HashMap<PathBuf, String>,
-    pub test_manifest: ForgeManifest<'a>,
 }
 
 impl<'a> ForgeProjectTrait<'a> for ForgeProjectFromDir {
@@ -165,33 +129,5 @@ impl<'a> ForgeProjectTrait<'a> for ForgeProjectFromDir {
     fn get_manifest(&self) -> ForgeManifest<'_> {
         let out = serde_yaml::from_str(&self.manifest_file_content);
         out.unwrap_or_default()
-    }
-}
-
-impl<'a> ForgeProjectTrait<'a> for MockForgeProject<'a> {
-    fn load_file(&self, p: impl AsRef<Path>, _: Arc<SourceMap>) -> Arc<SourceFile> {
-        let cm: Lrc<SourceMap> = Default::default();
-        let file_name = p.as_ref();
-
-        cm.new_source_file(
-            FileName::Real(file_name.into()),
-            self.files_name_to_source.get(file_name).unwrap().clone(),
-        )
-    }
-
-    fn get_paths(&self) -> HashSet<PathBuf> {
-        self.files_name_to_source
-            .keys()
-            .map(|file| file.into())
-            .collect::<HashSet<_>>()
-    }
-
-    #[allow(dead_code)]
-    fn get_secret_packages(&self) -> Vec<PackageData> {
-        vec![]
-    }
-
-    fn get_manifest(&self) -> ForgeManifest<'_> {
-        self.test_manifest.clone()
     }
 }
