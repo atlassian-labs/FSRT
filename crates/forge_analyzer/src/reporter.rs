@@ -28,7 +28,7 @@ pub trait IntoVuln {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Report {
-    vulns: Vec<Vulnerability>,
+    pub vulns: Vec<Vulnerability>,
     scanner: &'static str,
     #[serde(with = "time::serde::rfc3339")]
     started_at: OffsetDateTime,
@@ -96,6 +96,10 @@ impl Reporter {
             scanned: self.apps.into_iter().map(|(key, _)| key).collect(),
             errors: false,
         }
+    }
+
+    pub fn into_vulns(&self) -> &Vec<Vulnerability> {
+        &self.vulns
     }
 }
 

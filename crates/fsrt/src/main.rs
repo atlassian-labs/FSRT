@@ -9,11 +9,10 @@ use forge_permission_resolver::permissions_resolver::{
     get_permission_resolver_confluence, get_permission_resolver_jira,
 };
 
-use forge_project::MockForgeProject;
-use miette::{IntoDiagnostic, Result};
+use miette::Result;
 use std::{
     collections::HashSet,
-    fs,
+    fmt, fs,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
 };
@@ -30,18 +29,18 @@ use forge_analyzer::{
     ctx::ModId,
     definitions::DefId,
     interp::Interp,
-    reporter::Reporter,
+    reporter::{Report, Reporter},
     resolver::resolve_calls,
 };
+use miette::IntoDiagnostic;
 
 use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait};
-use forge_analyzer::reporter::Vulnerability;
 use forge_loader::manifest::Entrypoint;
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
-struct Args {
+pub struct Args {
     #[arg(short, long)]
     debug: bool,
 
@@ -91,6 +90,21 @@ struct ResolvedEntryPoint<'a> {
     admin: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum Error {
+    TranspiledAsyncError,
+    UnableToReport,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::TranspiledAsyncError => write!(f, "Could not scan due to transpiled async."),
+            Error::UnableToReport => write!(f, "Could not report."),
+        }
+    }
+}
+
 fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
     matches!(
         path.as_ref().extension().map(|s| s.as_bytes()),
@@ -109,19 +123,12 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
         })
 }
 
-#[allow(dead_code)]
-pub(crate) fn scan_directory_test(
-    forge_test_proj: MockForgeProject<'_>,
-) -> Option<Vec<Vulnerability>> {
-    scan_directory(PathBuf::new(), &Args::parse(), forge_test_proj)
-}
-
 #[tracing::instrument(level = "debug")]
 pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
     opts: &Args,
     project: impl ForgeProjectTrait<'a> + std::fmt::Debug,
-) -> Option<Vec<Vulnerability>> {
+) -> Result<Report, Error> {
     let paths = project.get_paths();
     let manifest = project.get_manifest();
     let mut proj = project.with_files_and_sourceroot(Path::new("src"), paths.clone(), vec![]);
@@ -140,7 +147,7 @@ pub(crate) fn scan_directory<'a>(
 
     if transpiled_async {
         warn!("Unable to scan due to transpiled async");
-        return None;
+        return Err(Error::TranspiledAsyncError);
     }
 
     let requested_permissions = manifest.permissions;
@@ -168,7 +175,7 @@ pub(crate) fn scan_directory<'a>(
     if let Some(func) = opts.dump_ir.as_ref() {
         let mut lock = std::io::stdout().lock();
         proj.env.dump_function(&mut lock, func);
-        return None;
+        return Err(Error::TranspiledAsyncError);
     }
 
     let permissions = Vec::from_iter(permissions_declared.iter().cloned());
@@ -325,18 +332,8 @@ pub(crate) fn scan_directory<'a>(
     if run_permission_checker && !perm_interp.permissions.is_empty() {
         reporter.add_vulnerabilities([PermissionVuln::new(perm_interp.permissions)]);
     }
-    let vulns = reporter.vulns.clone();
-    let data = reporter.into_report();
-    let report = serde_json::to_string(&data).into_diagnostic().ok()?;
-    debug!("On the debug layer: Writing Report");
-    match &opts.out {
-        Some(path) => {
-            fs::write(path, report.clone()).into_diagnostic().ok()?;
-        }
-        None => println!("{report}"),
-    }
 
-    Some(vulns)
+    Ok(reporter.into_report())
 }
 
 fn main() -> Result<()> {
@@ -348,18 +345,15 @@ fn main() -> Result<()> {
     let dirs = std::mem::take(&mut args.dirs);
 
     for dir in dirs {
-        let mut manifest_file = dir.clone();
-        manifest_file.push("manifest.yaml");
+        let mut manifest_file = dir.join("manifest.yaml");
         if !manifest_file.exists() {
             manifest_file.set_extension("yml");
         }
         debug!(?manifest_file);
 
         let manifest_text = fs::read_to_string(&manifest_file)
-            .into_diagnostic()
-            .ok()
-            .clone()
-            .unwrap_or_default();
+            .into_diagnostic()?
+            .clone();
 
         let forge_project_from_dir = ForgeProjectFromDir {
             dir: dir.clone(),
@@ -367,7 +361,22 @@ fn main() -> Result<()> {
         };
 
         debug!(?dir);
-        scan_directory(dir, &args, forge_project_from_dir);
+        let reporter_result = scan_directory(dir.clone(), &args, forge_project_from_dir);
+        match reporter_result {
+            Result::Ok(report) => {
+                let report = serde_json::to_string(&report).into_diagnostic().unwrap();
+                debug!("On the debug layer: Writing Report");
+                match &args.out {
+                    Some(path) => {
+                        let _ = fs::write(path, report.clone()).into_diagnostic();
+                    }
+                    None => println!("{report}"),
+                }
+            }
+            Result::Err(err) => {
+                warn!("Could not scan {dir:?} due to {err}")
+            }
+        }
     }
     Ok(())
 }
