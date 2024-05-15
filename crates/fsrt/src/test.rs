@@ -1,15 +1,13 @@
-use crate::{forge_project::ForgeProjectTrait, scan_directory, Args, Error};
+use crate::{forge_project::ForgeProjectTrait, scan_directory, Args};
 use clap::Parser;
 use forge_analyzer::{definitions::PackageData, reporter::Vulnerability};
 use forge_loader::manifest::{ForgeManifest, FunctionMod};
-use miette::Result;
 use std::fmt;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
-use swc_core::common::source_map;
 use swc_core::common::sync::Lrc;
 use swc_core::{
     common::{FileName, SourceFile, SourceMap},

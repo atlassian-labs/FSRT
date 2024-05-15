@@ -2,6 +2,7 @@
 
 mod forge_project;
 #[cfg(test)]
+#[allow(dead_code)]
 mod test;
 
 use clap::{Parser, ValueHint};
