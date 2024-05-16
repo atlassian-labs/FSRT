@@ -56,13 +56,12 @@ impl MockForgeProject<'_> {
     }
 
     fn add_file(&mut self, p: impl Into<PathBuf>, source: String) {
-        let file_name = p.into(); 
+        let file_name = p.into();
         let source_file = self
             .cm
             .new_source_file(FileName::Real(file_name.clone()), source);
 
-        self.files_name_to_source
-            .insert(file_name, source_file);
+        self.files_name_to_source.insert(file_name, source_file);
     }
 }
 
