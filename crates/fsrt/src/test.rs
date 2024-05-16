@@ -55,15 +55,14 @@ impl MockForgeProject<'_> {
         mock_forge_project
     }
 
-    fn add_file(&mut self, p: impl AsRef<Path>, source: String) {
-        let file_name = p.as_ref();
-
-        let tx = self
+    fn add_file(&mut self, p: impl Into<PathBuf>, source: String) {
+        let file_name = p.into(); 
+        let source_file = self
             .cm
-            .new_source_file(FileName::Real(file_name.into()), source);
+            .new_source_file(FileName::Real(file_name.clone()), source);
 
         self.files_name_to_source
-            .insert(file_name.to_path_buf(), tx);
+            .insert(file_name, source_file);
     }
 }
 
