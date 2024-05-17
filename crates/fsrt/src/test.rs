@@ -11,9 +11,7 @@ use std::{
 use swc_core::common::sync::Lrc;
 use swc_core::{
     common::{FileName, SourceFile, SourceMap},
-    ecma::visit::FoldWith,
 };
-use tracing::debug;
 
 #[derive(Clone)]
 pub(crate) struct MockForgeProject<'a> {
