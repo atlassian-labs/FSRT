@@ -28,7 +28,7 @@ pub trait IntoVuln {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Report {
-    pub vulns: Vec<Vulnerability>,
+    vulns: Vec<Vulnerability>,
     scanner: &'static str,
     #[serde(with = "time::serde::rfc3339")]
     started_at: OffsetDateTime,
@@ -39,7 +39,7 @@ pub struct Report {
 }
 
 pub struct Reporter {
-    pub vulns: Vec<Vulnerability>,
+    vulns: Vec<Vulnerability>,
     started_at: OffsetDateTime,
     // (key, name)
     apps: Vec<(String, String)>,
@@ -98,6 +98,12 @@ impl Reporter {
         }
     }
 
+    pub fn into_vulns(&self) -> &Vec<Vulnerability> {
+        &self.vulns
+    }
+}
+
+impl Report {
     pub fn into_vulns(&self) -> &Vec<Vulnerability> {
         &self.vulns
     }

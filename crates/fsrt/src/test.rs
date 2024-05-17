@@ -30,7 +30,7 @@ impl fmt::Debug for MockForgeProject<'_> {
 
 #[allow(dead_code)]
 impl MockForgeProject<'_> {
-    pub fn files_from_string(string: String) -> Self {
+    pub fn files_from_string(string: &str) -> Self {
         let forge_manifest = ForgeManifest::create_manifest_with_func_mod(FunctionMod {
             key: "main",
             handler: "index.run",
@@ -85,69 +85,11 @@ impl<'a> ForgeProjectTrait<'a> for MockForgeProject<'a> {
     fn get_manifest(&self) -> ForgeManifest<'_> {
         self.test_manifest.clone()
     }
-
-    fn with_files_and_sourceroot<
-        P: AsRef<Path>,
-        I: IntoIterator<Item = PathBuf> + std::fmt::Debug,
-    >(
-        &self,
-        src: P,
-        iter: I,
-        secret_packages: Vec<forge_analyzer::definitions::PackageData>,
-    ) -> crate::forge_project::ForgeProject<'_> {
-        let sm = std::sync::Arc::<swc_core::common::SourceMap>::default();
-        let target = swc_core::ecma::ast::EsVersion::latest();
-        let globals = swc_core::common::Globals::new();
-        let ctx = forge_analyzer::ctx::AppCtx::new(src);
-        let ctx = iter.into_iter().fold(ctx, |mut ctx, p| {
-            let sourcemap = std::sync::Arc::clone(&sm);
-            swc_core::common::GLOBALS.set(&globals, || {
-                debug!(file = %p.display(), "parsing");
-                let src = self.load_file(p.clone(), sourcemap);
-                debug!("loaded sourcemap");
-                let mut recovered_errors = vec![];
-                let module = swc_core::ecma::parser::parse_file_as_module(
-                    &src,
-                    swc_core::ecma::parser::Syntax::Typescript(swc_core::ecma::parser::TsConfig {
-                        tsx: true,
-                        decorators: true,
-                        ..Default::default()
-                    }),
-                    target,
-                    None,
-                    &mut recovered_errors,
-                )
-                .unwrap();
-                debug!("finished parsing");
-                let mut hygeine = swc_core::ecma::transforms::base::resolver(
-                    swc_core::common::Mark::new(),
-                    swc_core::common::Mark::new(),
-                    true,
-                );
-                let module = module.fold_with(&mut hygeine);
-                ctx.load_module(p, module);
-                ctx
-            })
-        });
-        let keys = ctx.module_ids().collect::<Vec<_>>();
-        debug!(?keys);
-        let env = forge_analyzer::definitions::run_resolver(
-            ctx.modules(),
-            ctx.file_resolver(),
-            secret_packages,
-        );
-        crate::forge_project::ForgeProject {
-            sm,
-            ctx,
-            env,
-            funcs: vec![],
-        }
-    }
 }
 
 pub(crate) fn scan_directory_test(forge_test_proj: MockForgeProject<'_>) -> Vec<Vulnerability> {
     match scan_directory(PathBuf::new(), &Args::parse(), forge_test_proj) {
-        Ok(report) => report.vulns,
+        Ok(report) => report.into_vulns().clone(),
         Err(err) => panic!("error while scanning {err:?}"),
     }
 }
@@ -161,7 +103,7 @@ fn test_simple() {
     });
 
     let mut test_forge_project = MockForgeProject {
-        test_manifest: forge_manifest.clone(),
+        test_manifest: forge_manifest,
         files_name_to_source: HashMap::new(),
         cm: Lrc::new(SourceMap::default()),
     };
@@ -186,7 +128,7 @@ fn test_secret_vuln() {
     });
 
     let mut test_forge_project = MockForgeProject {
-        test_manifest: forge_manifest.clone(),
+        test_manifest: forge_manifest,
         files_name_to_source: HashMap::new(),
         cm: Lrc::new(SourceMap::default()),
     };
@@ -214,8 +156,7 @@ fn with_multiple_files() {
             function App() { let test = 'textx'; console.log('test') } \n
             export const run = render(<Macro app={<App />} />); 
             // src/test_function.tsx
-            export default function test() { let test1 = 'test_one'; console.log('test_function') }"
-                .to_string(),
+            export default function test() { let test1 = 'test_one'; console.log('test_function') }",
         );
 
     let scan_result = scan_directory_test(test_forge_project);
