@@ -9,9 +9,7 @@ use std::{
     sync::Arc,
 };
 use swc_core::common::sync::Lrc;
-use swc_core::{
-    common::{FileName, SourceFile, SourceMap},
-};
+use swc_core::common::{FileName, SourceFile, SourceMap};
 
 #[derive(Clone)]
 pub(crate) struct MockForgeProject<'a> {
