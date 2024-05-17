@@ -417,10 +417,7 @@ pub struct ForgeManifest<'a> {
 impl<'a> ForgeManifest<'a> {
     pub fn create_manifest_with_func_mod(function_mod: FunctionMod<'a>) -> Self {
         let mut forge_manifest_test = ForgeManifest::default();
-        forge_manifest_test
-            .modules
-            .functions
-            .push(function_mod.clone());
+        forge_manifest_test.modules.functions.push(function_mod);
         forge_manifest_test
     }
 }

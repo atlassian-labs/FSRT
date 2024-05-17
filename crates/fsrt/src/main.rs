@@ -2,7 +2,6 @@
 
 mod forge_project;
 #[cfg(test)]
-#[allow(dead_code)]
 mod test;
 
 use clap::{Parser, ValueHint};
@@ -352,9 +351,7 @@ fn main() -> Result<()> {
         }
         debug!(?manifest_file);
 
-        let manifest_text = fs::read_to_string(&manifest_file)
-            .into_diagnostic()?
-            .clone();
+        let manifest_text = fs::read_to_string(&manifest_file).into_diagnostic()?;
 
         let forge_project_from_dir = ForgeProjectFromDir {
             dir: dir.clone(),
@@ -362,7 +359,7 @@ fn main() -> Result<()> {
         };
 
         debug!(?dir);
-        let reporter_result = scan_directory(dir.clone(), &args, forge_project_from_dir);
+        let reporter_result = scan_directory(dir, &args, forge_project_from_dir);
         match reporter_result {
             Result::Ok(report) => {
                 let report = serde_json::to_string(&report).into_diagnostic().unwrap();
@@ -375,7 +372,7 @@ fn main() -> Result<()> {
                 }
             }
             Result::Err(err) => {
-                warn!("Could not scan {dir:?} due to {err}")
+                warn!("Could not scan due to {err}")
             }
         }
     }
