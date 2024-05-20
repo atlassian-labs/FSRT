@@ -853,13 +853,21 @@ enum ApiCallKind {
 }
 
 fn classify_api_call(expr: &Expr) -> ApiCallKind {
-    use once_cell::sync::Lazy;
     use regex::Regex;
+    use std::cell::OnceCell;
 
     // FIXME: this should be done as a dataflow analysis instead of on the AST.
-    static TRIVIAL: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"user|instance|avatar|license|preferences|server[iI]nfo").unwrap()
-    });
+    fn trivial_regex(route: &str) -> bool {
+        thread_local! {
+            static TRIVIAL: OnceCell<Regex> = const { OnceCell::new() }
+        }
+        TRIVIAL.with(move |r| {
+            r.get_or_init(|| {
+                Regex::new(r"user|instance|avatar|license|preferences|server[iI]nfo").unwrap()
+            })
+            .is_match(route)
+        })
+    }
 
     #[derive(Default)]
     struct ApiCallClassifier {
@@ -870,7 +878,7 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
         fn check(&mut self, name: &str) {
             if name.contains("permission") {
                 self.kind = self.kind.max(ApiCallKind::Authorize);
-            } else if TRIVIAL.is_match(name) || name.contains("group") {
+            } else if trivial_regex(name) || name.contains("group") {
                 self.kind = self.kind.max(ApiCallKind::Trivial);
             } else if name == "/rest/api/3/field" || name == "/rest/api/2/field" {
                 self.kind = ApiCallKind::Fields;

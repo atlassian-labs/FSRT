@@ -1,10 +1,10 @@
+use std::cell::OnceCell;
 use std::path::Path;
 use std::{borrow::Borrow, hash::Hash, path::PathBuf};
 
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
-use once_cell::unsync::OnceCell;
 use petgraph::prelude::NodeIndex;
 use petgraph::stable_graph::DefaultIx;
 use smallvec::smallvec;

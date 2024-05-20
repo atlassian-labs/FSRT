@@ -13,7 +13,6 @@ workspace = true
 [dependencies]
 forge_utils.workspace = true
 itertools.workspace = true
-miette.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

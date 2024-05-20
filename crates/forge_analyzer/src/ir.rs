@@ -5,6 +5,7 @@
 
 use core::fmt;
 use std::array;
+use std::cell::OnceCell;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::hash;
@@ -15,7 +16,6 @@ use std::slice;
 
 use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
-use once_cell::unsync::OnceCell;
 use smallvec::smallvec;
 use smallvec::smallvec_inline;
 use smallvec::SmallVec;

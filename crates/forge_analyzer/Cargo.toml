@@ -11,15 +11,12 @@ workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-fixedbitset.workspace = true
 forge_file_resolver.workspace = true
 forge_utils.workspace = true
 forge_loader.workspace = true
 forge_permission_resolver.workspace = true
 itertools.workspace = true
-im-rc.workspace = true
 num-bigint.workspace = true
-once_cell.workspace = true
 petgraph.workspace = true
 regex.workspace = true
 serde_json.workspace = true
