@@ -215,7 +215,7 @@ impl AppCtx {
         let funcs = self.func_mut(func).unwrap();
         funcs.out[block].meet(input);
         debug!(output = ?funcs.out[block], ?input, "result of transfer");
-        if funcs.succ.get(&block).is_none() {
+        if !funcs.succ.contains_key(&block) {
             let res = &mut funcs.res;
             match res.get_mut() {
                 Some(val) => {

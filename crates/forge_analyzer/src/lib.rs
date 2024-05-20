@@ -34,6 +34,7 @@ pub(crate) enum ImportKind {
     Default,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ImportDescriptor {
     pub exported_name: ImportKind,
