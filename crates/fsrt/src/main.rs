@@ -9,7 +9,6 @@ use forge_permission_resolver::permissions_resolver::{
     get_permission_resolver_confluence, get_permission_resolver_jira,
 };
 
-use miette::Result;
 use std::{
     collections::HashSet,
     fmt, fs,
@@ -32,11 +31,11 @@ use forge_analyzer::{
     reporter::{Report, Reporter},
     resolver::resolve_calls,
 };
-use miette::IntoDiagnostic;
 
 use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait};
 use forge_loader::manifest::Entrypoint;
 use walkdir::WalkDir;
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -105,6 +104,8 @@ impl fmt::Display for Error {
     }
 }
 
+impl std::error::Error for Error {}
+
 fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
     matches!(
         path.as_ref().extension().map(|s| s.as_bytes()),
@@ -128,7 +129,7 @@ pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
     opts: &Args,
     project: impl ForgeProjectTrait<'a> + std::fmt::Debug,
-) -> Result<Report, Error> {
+) -> Result<Report> {
     let paths = project.get_paths();
     let manifest = project.get_manifest();
     let mut proj = project.with_files_and_sourceroot(Path::new("src"), paths.clone(), vec![]);
@@ -147,7 +148,7 @@ pub(crate) fn scan_directory<'a>(
 
     if transpiled_async {
         warn!("Unable to scan due to transpiled async");
-        return Err(Error::TranspiledAsyncError);
+        Err(Error::TranspiledAsyncError)?;
     }
 
     let requested_permissions = manifest.permissions;
@@ -173,12 +174,11 @@ pub(crate) fn scan_directory<'a>(
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
     if let Some(func) = opts.dump_ir.as_ref() {
-        let mut lock = std::io::stdout().lock();
-        proj.env.dump_function(&mut lock, func);
-        return Err(Error::TranspiledAsyncError);
+        proj.env.dump_function(&mut std::io::stdout().lock(), func);
+        std::process::exit(0);
     }
 
-    let permissions = Vec::from_iter(permissions_declared.iter().cloned());
+    let permissions = permissions_declared.into_iter().collect::<Vec<_>>();
 
     let (jira_permission_resolver, jira_regex_map) = get_permission_resolver_jira();
     let (confluence_permission_resolver, confluence_regex_map) =
@@ -233,7 +233,7 @@ pub(crate) fn scan_directory<'a>(
         &proj.env,
         false,
         true,
-        permissions.clone(),
+        permissions,
         &jira_permission_resolver,
         &jira_regex_map,
         &confluence_permission_resolver,
@@ -363,7 +363,7 @@ fn main() -> Result<()> {
         }
         debug!(?manifest_file);
 
-        let manifest_text = fs::read_to_string(&manifest_file).into_diagnostic()?;
+        let manifest_text = fs::read_to_string(&manifest_file)?;
 
         let forge_project_from_dir = ForgeProjectFromDir {
             dir: dir.clone(),
@@ -374,11 +374,11 @@ fn main() -> Result<()> {
         let reporter_result = scan_directory(dir, &args, forge_project_from_dir);
         match reporter_result {
             Result::Ok(report) => {
-                let report = serde_json::to_string(&report).into_diagnostic().unwrap();
+                let report = serde_json::to_string(&report)?;
                 debug!("On the debug layer: Writing Report");
                 match &args.out {
                     Some(path) => {
-                        let _ = fs::write(path, report.clone()).into_diagnostic();
+                        fs::write(path, &*report)?;
                     }
                     None => println!("{report}"),
                 }
