@@ -1,27 +1,23 @@
 #![allow(clippy::type_complexity)]
+
+mod forge_project;
+#[cfg(test)]
+mod test;
+
 use clap::{Parser, ValueHint};
 use forge_permission_resolver::permissions_resolver::{
     get_permission_resolver_confluence, get_permission_resolver_jira,
 };
-use miette::{IntoDiagnostic, Result};
+
+use miette::Result;
 use std::{
     collections::HashSet,
-    fs,
+    fmt, fs,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
-use swc_core::{
-    common::{Globals, Mark, SourceMap, GLOBALS},
-    ecma::{
-        ast::EsVersion,
-        parser::{parse_file_as_module, Syntax, TsConfig},
-        transforms::base::resolver,
-        visit::FoldWith,
-    },
-};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, warn};
 use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
 
@@ -30,19 +26,21 @@ use forge_analyzer::{
         AuthZChecker, AuthenticateChecker, DefinitionAnalysisRunner, PermissionChecker,
         PermissionVuln, SecretChecker,
     },
-    ctx::{AppCtx, ModId},
-    definitions::{run_resolver, DefId, Environment, PackageData},
+    ctx::ModId,
+    definitions::DefId,
     interp::Interp,
-    reporter::Reporter,
+    reporter::{Report, Reporter},
     resolver::resolve_calls,
 };
+use miette::IntoDiagnostic;
 
-use forge_loader::manifest::{Entrypoint, ForgeManifest, Resolved};
+use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait};
+use forge_loader::manifest::Entrypoint;
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
-struct Args {
+pub struct Args {
     #[arg(short, long)]
     debug: bool,
 
@@ -92,77 +90,18 @@ struct ResolvedEntryPoint<'a> {
     admin: bool,
 }
 
-struct ForgeProject<'a> {
-    #[allow(dead_code)]
-    sm: Arc<SourceMap>,
-    ctx: AppCtx,
-    env: Environment,
-    funcs: Vec<ResolvedEntryPoint<'a>>,
+#[derive(Debug, PartialEq, Eq)]
+pub enum Error {
+    TranspiledAsyncError,
+    UnableToReport,
 }
 
-impl<'a> ForgeProject<'a> {
-    #[instrument(skip(src, iter))]
-    fn with_files_and_sourceroot<P: AsRef<Path>, I: IntoIterator<Item = PathBuf>>(
-        src: P,
-        iter: I,
-        secret_packages: Vec<PackageData>,
-    ) -> Self {
-        let sm = Arc::<SourceMap>::default();
-        let target = EsVersion::latest();
-        let globals = Globals::new();
-        let ctx = AppCtx::new(src);
-        let ctx = iter.into_iter().fold(ctx, |mut ctx, p| {
-            let sourcemap = Arc::clone(&sm);
-            GLOBALS.set(&globals, || {
-                debug!(file = %p.display(), "parsing");
-                let src = sourcemap.load_file(&p).unwrap();
-                debug!("loaded sourcemap");
-                let mut recovered_errors = vec![];
-                let module = parse_file_as_module(
-                    &src,
-                    Syntax::Typescript(TsConfig {
-                        tsx: true,
-                        decorators: true,
-                        ..Default::default()
-                    }),
-                    target,
-                    None,
-                    &mut recovered_errors,
-                )
-                .unwrap();
-                debug!("finished parsing");
-                let mut hygeine = resolver(Mark::new(), Mark::new(), true);
-                let module = module.fold_with(&mut hygeine);
-                ctx.load_module(p, module);
-                ctx
-            })
-        });
-        let keys = ctx.module_ids().collect::<Vec<_>>();
-        debug!(?keys);
-        let env = run_resolver(ctx.modules(), ctx.file_resolver(), secret_packages);
-        Self {
-            sm,
-            ctx,
-            env,
-            funcs: vec![],
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::TranspiledAsyncError => write!(f, "Could not scan due to transpiled async."),
+            Error::UnableToReport => write!(f, "Could not report."),
         }
-    }
-
-    fn add_funcs<I: IntoIterator<Item = Entrypoint<'a, Resolved>>>(&mut self, iter: I) {
-        self.funcs.extend(iter.into_iter().filter_map(|entrypoint| {
-            let (func_name, path) = entrypoint.function.into_func_path();
-            let module = self.ctx.modid_from_path(&path)?;
-            let def_id = self.env.module_export(module, func_name)?;
-            Some(ResolvedEntryPoint {
-                func_name,
-                path,
-                module,
-                def_id,
-                invokable: entrypoint.invokable,
-                webtrigger: entrypoint.web_trigger,
-                admin: entrypoint.admin,
-            })
-        }));
     }
 }
 
@@ -185,33 +124,16 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 }
 
 #[tracing::instrument(level = "debug")]
-fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<()> {
-    let mut manifest_file = dir.clone();
-    manifest_file.push("manifest.yaml");
-    if !manifest_file.exists() {
-        manifest_file.set_extension("yml");
-    }
-    debug!(?manifest_file);
+pub(crate) fn scan_directory<'a>(
+    dir: PathBuf,
+    opts: &Args,
+    project: impl ForgeProjectTrait<'a> + std::fmt::Debug,
+) -> Result<Report, Error> {
+    let paths = project.get_paths();
+    let manifest = project.get_manifest();
+    let mut proj = project.with_files_and_sourceroot(Path::new("src"), paths.clone(), vec![]);
 
-    let manifest = fs::read_to_string(&manifest_file).into_diagnostic()?;
-    let manifest: ForgeManifest<'_> = serde_yaml::from_str(&manifest).into_diagnostic()?;
     let name = manifest.app.name.unwrap_or_default();
-
-    let requested_permissions = manifest.permissions;
-    let permission_scopes = requested_permissions.scopes;
-    let permissions_declared: HashSet<String> =
-        HashSet::from_iter(permission_scopes.iter().map(|s| s.replace('\"', "")));
-
-    let secret_packages: Vec<PackageData> =
-        if let Result::Ok(f) = std::fs::File::open("secretdata.yaml") {
-            let scrape_config: Vec<PackageData> =
-                serde_yaml::from_reader(f).expect("Failed to deserialize package");
-            scrape_config
-        } else {
-            vec![]
-        };
-
-    let paths = collect_sourcefiles(dir.join("src/")).collect::<HashSet<_>>();
 
     let transpiled_async = paths.iter().any(|path| {
         if let Ok(data) = fs::read_to_string(path) {
@@ -222,7 +144,19 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         }
         false
     });
+
+    if transpiled_async {
+        warn!("Unable to scan due to transpiled async");
+        return Err(Error::TranspiledAsyncError);
+    }
+
+    let requested_permissions = manifest.permissions;
+    let permission_scopes = requested_permissions.scopes;
+
     let run_permission_checker = opts.check_permissions && !transpiled_async;
+
+    let permissions_declared: HashSet<String> =
+        HashSet::from_iter(permission_scopes.iter().map(|s| s.replace('\"', "")));
 
     let funcrefs = manifest
         .modules
@@ -236,19 +170,12 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
             })
         });
 
-    let src_root = dir.join("src");
-    let mut proj =
-        ForgeProject::with_files_and_sourceroot(src_root, paths.clone(), secret_packages);
-    if transpiled_async {
-        warn!("Unable to scan due to transpiled async");
-        return Ok(());
-    }
     proj.add_funcs(funcrefs);
     resolve_calls(&mut proj.ctx);
     if let Some(func) = opts.dump_ir.as_ref() {
         let mut lock = std::io::stdout().lock();
         proj.env.dump_function(&mut lock, func);
-        return Ok(());
+        return Err(Error::TranspiledAsyncError);
     }
 
     let permissions = Vec::from_iter(permissions_declared.iter().cloned());
@@ -301,7 +228,6 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
         &confluence_regex_map,
     );
     reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
-    //let mut all_used_permissions = HashSet::default();
 
     let mut perm_interp = Interp::<PermissionChecker>::new(
         &proj.env,
@@ -418,16 +344,8 @@ fn scan_directory(dir: PathBuf, function: Option<&str>, opts: &Args) -> Result<(
     if run_permission_checker && !perm_interp.permissions.is_empty() {
         reporter.add_vulnerabilities([PermissionVuln::new(perm_interp.permissions)]);
     }
-    let report = serde_json::to_string(&reporter.into_report()).into_diagnostic()?;
-    debug!("On the debug layer: Writing Report");
-    match &opts.out {
-        Some(path) => {
-            fs::write(path, report).into_diagnostic()?;
-        }
-        None => println!("{report}"),
-    }
 
-    Ok(())
+    Ok(reporter.into_report())
 }
 
 fn main() -> Result<()> {
@@ -437,10 +355,38 @@ fn main() -> Result<()> {
         .with(EnvFilter::from_env("FORGE_LOG"))
         .init();
     let dirs = std::mem::take(&mut args.dirs);
-    let function = args.function.as_deref();
+
     for dir in dirs {
+        let mut manifest_file = dir.join("manifest.yaml");
+        if !manifest_file.exists() {
+            manifest_file.set_extension("yml");
+        }
+        debug!(?manifest_file);
+
+        let manifest_text = fs::read_to_string(&manifest_file).into_diagnostic()?;
+
+        let forge_project_from_dir = ForgeProjectFromDir {
+            dir: dir.clone(),
+            manifest_file_content: manifest_text,
+        };
+
         debug!(?dir);
-        scan_directory(dir, function, &args)?;
+        let reporter_result = scan_directory(dir, &args, forge_project_from_dir);
+        match reporter_result {
+            Result::Ok(report) => {
+                let report = serde_json::to_string(&report).into_diagnostic().unwrap();
+                debug!("On the debug layer: Writing Report");
+                match &args.out {
+                    Some(path) => {
+                        let _ = fs::write(path, report.clone()).into_diagnostic();
+                    }
+                    None => println!("{report}"),
+                }
+            }
+            Result::Err(err) => {
+                warn!("Could not scan due to {err}")
+            }
+        }
     }
     Ok(())
 }

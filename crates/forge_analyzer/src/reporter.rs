@@ -97,6 +97,16 @@ impl Reporter {
             errors: false,
         }
     }
+
+    pub fn into_vulns(&self) -> &Vec<Vulnerability> {
+        &self.vulns
+    }
+}
+
+impl Report {
+    pub fn into_vulns(&self) -> &Vec<Vulnerability> {
+        &self.vulns
+    }
 }
 
 impl Default for Reporter {
