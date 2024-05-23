@@ -22,6 +22,12 @@ pub struct Vulnerability {
     pub(crate) date: Date,
 }
 
+impl Vulnerability {
+    pub fn check_name(&self) -> &str {
+        &self.check_name
+    }
+}
+
 pub trait IntoVuln {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability;
 }
@@ -104,7 +110,8 @@ impl Reporter {
 }
 
 impl Report {
-    pub fn into_vulns(&self) -> &Vec<Vulnerability> {
+    #[inline]
+    pub fn into_vulns(&self) -> &[Vulnerability] {
         &self.vulns
     }
 }

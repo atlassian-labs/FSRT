@@ -1,6 +1,7 @@
 use crate::{forge_project::ForgeProjectTrait, scan_directory, Args};
 use clap::Parser;
-use forge_analyzer::{definitions::PackageData, reporter::Vulnerability};
+use forge_analyzer::definitions::PackageData;
+use forge_analyzer::reporter::Report;
 use forge_loader::manifest::{ForgeManifest, FunctionMod};
 use std::fmt;
 use std::{
@@ -10,6 +11,35 @@ use std::{
 };
 use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceFile, SourceMap};
+
+trait ReportExt {
+    fn has_no_vulns(&self) -> bool;
+
+    fn contains_secret_vuln(&self, expected_len: usize) -> bool;
+
+    fn contains_vulns(&self, expected_len: i32) -> bool;
+}
+
+impl ReportExt for Report {
+    #[inline]
+    fn has_no_vulns(&self) -> bool {
+        self.into_vulns().is_empty()
+    }
+
+    #[inline]
+    fn contains_secret_vuln(&self, expected_len: usize) -> bool {
+        self.into_vulns()
+            .iter()
+            .filter(|vuln| vuln.check_name() == "Hardcoded-Secret-11311281663139041059")
+            .count()
+            == expected_len
+    }
+
+    #[inline]
+    fn contains_vulns(&self, expected_len: i32) -> bool {
+        self.into_vulns().len() == expected_len as usize
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct MockForgeProject<'a> {
@@ -43,19 +73,27 @@ impl MockForgeProject<'_> {
             .split("//")
             .map(|f| f.replace("//", "").trim().to_string())
             .filter(|file| !file.is_empty());
+
         for file in different_files {
+            println!("files {file:?}");
             let (file_name, file_source) = file.split_once('\n').unwrap();
-            mock_forge_project.add_file(file_name.trim(), file_source.into());
+            println!("files {file_name:?} {file_source:?}");
+            mock_forge_project.add_file(
+                file_name.replace("\"", "").trim(),
+                file_source.replace("\"", ""),
+            );
         }
+
+        println!("mock_forge_project {mock_forge_project:?}");
 
         mock_forge_project
     }
 
-    fn add_file(&mut self, p: impl Into<PathBuf>, source: String) {
+    pub fn add_file(&mut self, p: impl Into<PathBuf>, source: impl Into<String>) {
         let file_name = p.into();
         let source_file = self
             .cm
-            .new_source_file(FileName::Real(file_name.clone()), source);
+            .new_source_file(FileName::Real(file_name.clone()), source.into());
 
         self.files_name_to_source.insert(file_name, source_file);
     }
@@ -83,9 +121,20 @@ impl<'a> ForgeProjectTrait<'a> for MockForgeProject<'a> {
     }
 }
 
-pub(crate) fn scan_directory_test(forge_test_proj: MockForgeProject<'_>) -> Vec<Vulnerability> {
-    match scan_directory(PathBuf::new(), &Args::parse(), forge_test_proj) {
-        Ok(report) => report.into_vulns().clone(),
+pub(crate) fn scan_directory_test(
+    forge_test_proj: MockForgeProject<'_>,
+) -> forge_analyzer::reporter::Report {
+    let secret_packages: Vec<PackageData> = std::fs::File::open("../../secretdata.yaml")
+        .map(|f| serde_yaml::from_reader(f).expect("Failed to deserialize packages"))
+        .unwrap_or_else(|_| vec![]);
+
+    match scan_directory(
+        PathBuf::new(),
+        &Args::parse(),
+        forge_test_proj,
+        &secret_packages,
+    ) {
+        Ok(report) => report,
         Err(err) => panic!("error while scanning {err:?}"),
     }
 }
@@ -104,15 +153,14 @@ fn test_simple() {
         cm: Lrc::new(SourceMap::default()),
     };
     test_forge_project.add_file(
-        PathBuf::from("src/index.tsx"),
+        "src/index.tsx",
         "import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui'; \n
             function App() { console.log('test') } \n
-            export const run = render(<Macro app={<App />} />);"
-            .to_string(),
+            export const run = render(<Macro app={<App />} />);",
     );
 
     let scan_result = scan_directory_test(test_forge_project);
-    assert!(scan_result.is_empty());
+    assert!(scan_result.has_no_vulns());
 }
 
 #[test]
@@ -129,33 +177,114 @@ fn test_secret_vuln() {
         cm: Lrc::new(SourceMap::default()),
     };
     test_forge_project.add_file(
-        PathBuf::from("src/index.tsx"),
-        "import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
-             import jwt from 'jsonwebtoken';
-            function App() { console.log('test');
-                jwt.sign({}, 'TEST');
-             } \n
-            export const run = render(<Macro app={<App />} />);"
-            .to_string(),
+        "src/index.tsx",
+        "import {AES} from 'crypto-js'
+        import ForgeUI, { render, Macro } from '@forge/ui';
+    
+        function App() { 
+            AES.encrypt(blah, 'blah');
+        } 
+
+        export const run = render(<Macro app={<App />} />);",
     );
 
     let scan_result = scan_directory_test(test_forge_project);
-    assert!(scan_result.is_empty());
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1))
 }
 
 #[test]
 fn with_multiple_files() {
     let test_forge_project = MockForgeProject::files_from_string(
-            "// src/index.tsx
-            import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui'; \n
-            import test_function from 'test_function'; \n
-            function App() { let test = 'textx'; console.log('test') } \n
-            export const run = render(<Macro app={<App />} />); 
-            // src/test_function.tsx
-            export default function test() { let test1 = 'test_one'; console.log('test_function') }",
-        );
+        "// src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui'; \n
+        import test_function from 'test_function'; \n
+        function App() { let test = 'textx'; console.log('test') } \n
+        export const run = render(<Macro app={<App />} />); 
+        // src/test_function.tsx
+        export default function test() { let test1 = 'test_one'; console.log('test_function') }",
+    );
 
     let scan_result = scan_directory_test(test_forge_project);
-    println!("scan_result {scan_result:?}");
-    assert!(scan_result.is_empty());
+    assert!(scan_result.has_no_vulns());
+}
+
+// secret checker integrationt tests
+#[test]
+fn secret_vuln_default_import() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro } from '@forge/ui';
+        import jwt from 'jsonwebtoken';
+
+        function App() { 
+            let a = 'shhhhh';
+            let secret = jwt.sign({ foo: 'bar' }, a);
+        } 
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
+fn secret_vuln_named_import() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import {AES} from 'crypto-js'
+        import ForgeUI, { render, Macro } from '@forge/ui';
+
+        function App() { 
+            AES.encrypt(blah, 'nothing');
+        } 
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
+fn secret_vuln_star_import() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro } from '@forge/ui';
+        import * as atlassian_jwt from 'atlassian-jwt';
+
+        function App() { 
+            atlassian_jwt.encodeSymmetric(blah, 'blah');
+        } 
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
+fn secret_vuln_global_import() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro } from '@forge/ui';
+        import * as atlassian_jwt from 'atlassian-jwt';
+
+        let SECRET = 'secret';
+
+        function App() { 
+            atlassian_jwt.encodeSymmetric(blah, SECRET);
+        } 
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1))
 }
