@@ -23,7 +23,7 @@ pub(crate) trait ForgeProjectTrait<'a> {
         &self,
         src: P,
         iter: I,
-        secret_packages: Vec<PackageData>,
+        secret_packages: &[PackageData],
     ) -> ForgeProject<'_> {
         let sm = Arc::<SourceMap>::default();
         let target = EsVersion::latest();
