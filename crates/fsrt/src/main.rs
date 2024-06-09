@@ -26,7 +26,7 @@ use forge_analyzer::{
         PermissionVuln, SecretChecker,
     },
     ctx::ModId,
-    definitions::DefId,
+    definitions::{DefId, PackageData},
     interp::Interp,
     reporter::{Report, Reporter},
     resolver::resolve_calls,
@@ -129,10 +129,12 @@ pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
     opts: &Args,
     project: impl ForgeProjectTrait<'a> + std::fmt::Debug,
+    secret_packages: &[PackageData],
 ) -> Result<Report> {
     let paths = project.get_paths();
     let manifest = project.get_manifest();
-    let mut proj = project.with_files_and_sourceroot(Path::new("src"), paths.clone(), vec![]);
+    let mut proj =
+        project.with_files_and_sourceroot(Path::new("src"), paths.clone(), secret_packages);
 
     let name = manifest.app.name.unwrap_or_default();
 
@@ -356,6 +358,10 @@ fn main() -> Result<()> {
         .init();
     let dirs = std::mem::take(&mut args.dirs);
 
+    let secret_packages: Vec<PackageData> = std::fs::File::open("secretdata.yaml")
+        .map(|f| serde_yaml::from_reader(f).expect("Failed to deserialize packages"))
+        .unwrap_or_else(|_| vec![]);
+
     for dir in dirs {
         let mut manifest_file = dir.join("manifest.yaml");
         if !manifest_file.exists() {
@@ -371,7 +377,7 @@ fn main() -> Result<()> {
         };
 
         debug!(?dir);
-        let reporter_result = scan_directory(dir, &args, forge_project_from_dir);
+        let reporter_result = scan_directory(dir, &args, forge_project_from_dir, &secret_packages);
         match reporter_result {
             Result::Ok(report) => {
                 let report = serde_json::to_string(&report)?;

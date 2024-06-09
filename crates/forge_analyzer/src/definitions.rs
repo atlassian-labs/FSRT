@@ -134,7 +134,7 @@ struct ModuleDefs {
 pub fn run_resolver(
     modules: &TiSlice<ModId, Module>,
     file_resolver: &ForgeResolver,
-    secret_packages: Vec<PackageData>,
+    secret_packages: &[PackageData],
 ) -> Environment {
     let mut environment = Environment::new();
 
@@ -207,7 +207,7 @@ pub fn run_resolver(
         let mut global_collector = GlobalCollector {
             res: &mut environment,
             global_id,
-            secret_packages: secret_packages.clone(), // remove the clone
+            secret_packages,
             module: curr_mod,
             parent: None,
         };
@@ -219,7 +219,7 @@ pub fn run_resolver(
             file_resolver,
             curr_class: None,
             curr_function: None,
-            secret_packages: secret_packages.clone(), // remove the clone
+            secret_packages,
             module: curr_mod,
             parent: None,
         };
@@ -536,7 +536,7 @@ struct GlobalCollector<'cx> {
     res: &'cx mut Environment,
     module: ModId,
     global_id: DefId,
-    secret_packages: Vec<PackageData>,
+    secret_packages: &'cx [PackageData],
     parent: Option<DefId>,
 }
 
@@ -803,7 +803,7 @@ struct FunctionCollector<'cx> {
     module: ModId,
     curr_class: Option<DefId>,
     curr_function: Option<DefId>,
-    secret_packages: Vec<PackageData>,
+    secret_packages: &'cx [PackageData],
     parent: Option<DefId>,
 }
 
@@ -814,7 +814,7 @@ struct FunctionAnalyzer<'cx> {
     assigning_to: Option<Variable>,
     pub body: Body,
     block: BasicBlockId,
-    secret_packages: Vec<PackageData>,
+    secret_packages: &'cx [PackageData],
     operand_stack: Vec<Operand>,
     in_lhs: bool,
 }
@@ -1022,7 +1022,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                 && import_kind == *package_data.identifier
                                 && *method_name == *method
                         } else {
-                            false
+                            package_name == package_data.package_name
+                                && *method_name == *package_data.identifier
+                                && import_kind == ImportKind::Default
                         }
                     });
                     package_found.map(|package| Intrinsic::SecretFunction(package.clone()))
@@ -2228,7 +2230,7 @@ impl Visit for FunctionCollector<'_> {
                         module: self.module,
                         current_def: *owner,
                         assigning_to: None,
-                        secret_packages: self.secret_packages.clone(),
+                        secret_packages: self.secret_packages,
                         body,
                         block: BasicBlockId::default(),
                         operand_stack: vec![],
@@ -2274,7 +2276,7 @@ impl Visit for FunctionCollector<'_> {
                         res: self.res,
                         module: self.module,
                         current_def: *owner,
-                        secret_packages: self.secret_packages.clone(),
+                        secret_packages: self.secret_packages,
                         assigning_to: None,
                         body,
                         block: BasicBlockId::default(),
@@ -2327,7 +2329,7 @@ impl Visit for FunctionCollector<'_> {
             module: self.module,
             current_def: owner,
             assigning_to: None,
-            secret_packages: self.secret_packages.clone(),
+            secret_packages: self.secret_packages,
             body,
             block: BasicBlockId::default(),
             operand_stack: vec![],
@@ -2441,7 +2443,7 @@ impl Visit for FunctionCollector<'_> {
                                 module: self.module,
                                 current_def: owner,
                                 assigning_to: None,
-                                secret_packages: self.secret_packages.clone(),
+                                secret_packages: self.secret_packages,
                                 body: Body::with_owner(owner),
                                 block: BasicBlockId::default(),
                                 operand_stack: vec![],
@@ -2572,7 +2574,7 @@ impl FunctionCollector<'_> {
             current_def: owner,
             assigning_to: None,
             body,
-            secret_packages: self.secret_packages.clone(),
+            secret_packages: self.secret_packages,
             block: BasicBlockId::default(),
             operand_stack: vec![],
             in_lhs: false,
@@ -3099,7 +3101,7 @@ impl Visit for GlobalCollector<'_> {
             module: self.module,
             current_def: owner,
             assigning_to: None,
-            secret_packages: self.secret_packages.clone(),
+            secret_packages: self.secret_packages,
             body,
             block: BasicBlockId::default(),
             operand_stack: vec![],
