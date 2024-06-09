@@ -96,6 +96,7 @@ impl<'a> MockForgeProject<'a> {
         };
 
         for file in different_files {
+            println!("files {file:?}");
             let (file_name, file_source) = file.split_once('\n').unwrap();
             if file_name.trim() == "manifest.yml" || file_name.trim() == "manifest.yaml" {
                 continue;
