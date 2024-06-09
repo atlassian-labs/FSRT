@@ -425,6 +425,25 @@ impl ValueManager {
                 .insert((def_id_func, var_id, projection_vec), value);
         }
     }
+
+    pub fn get_var_with_projection(
+        &self,
+        def_id_func: DefId,
+        var_id: VarId,
+        projection_vec: ProjectionVec,
+    ) -> Option<&Value> {
+        if let Some(value) =
+            self.varid_to_value_with_proj
+                .get(&(def_id_func, var_id, projection_vec.clone()))
+        {
+            Some(value)
+        } else if let Some(Value::Object(var_id)) = self.varid_to_value.get(&(def_id_func, var_id))
+        {
+            self.get_var_with_projection(def_id_func, *var_id, projection_vec)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -742,12 +761,15 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 projections,
             }) => {
                 let (varid, projections) = self.get_farthest_obj(defid_block, varid, projections);
-                if self.is_obj(varid) {
-                    return Value::Object(varid);
-                }
                 match self.get_value(defid_block, varid, Some(projections)) {
                     Some(value) => value.clone(),
-                    None => Value::Unknown,
+                    None => {
+                        if self.is_obj(varid) {
+                            Value::Object(varid)
+                        } else {
+                            Value::Unknown
+                        }
+                    }
                 }
             }
             Operand::Lit(str) => {
@@ -801,8 +823,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         match projection {
             Some(projection) if !projection.is_empty() => self
                 .value_manager
-                .varid_to_value_with_proj
-                .get(&(defid_block, varid, projection)),
+                .get_var_with_projection(defid_block, varid, projection),
             _ => self.value_manager.varid_to_value.get(&(defid_block, varid)),
         }
     }
