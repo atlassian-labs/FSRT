@@ -334,6 +334,36 @@ fn secret_vuln_object() {
 }
 
 #[test]
+fn secret_vuln_in_use_effect_hook() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro, useEffect } from '@forge/ui';
+        import * as atlassian_jwt from 'atlassian-jwt';
+
+        function App() { 
+
+            useEffect(() => {
+                let dict = { secret: 'secret' };
+
+                atlassian_jwt.encodeSymmetric({}, dict.secret);
+            })
+
+            return (
+                <Fragment>
+                    <Text>Hello world!</Text>
+                </Fragment>
+            );
+        } 
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
 fn secret_vuln_object_unknown() {
     let test_forge_project = MockForgeProject::files_from_string(
         "// src/index.tsx
