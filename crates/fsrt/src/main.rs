@@ -29,7 +29,6 @@ use forge_analyzer::{
     definitions::{DefId, PackageData},
     interp::Interp,
     reporter::{Report, Reporter},
-    resolver::resolve_calls,
 };
 
 use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait};
@@ -174,7 +173,7 @@ pub(crate) fn scan_directory<'a>(
         });
 
     proj.add_funcs(funcrefs);
-    resolve_calls(&mut proj.ctx);
+    // resolve_calls(&mut proj.ctx);
     if let Some(func) = opts.dump_ir.as_ref() {
         proj.env.dump_function(&mut std::io::stdout().lock(), func);
         std::process::exit(0);
