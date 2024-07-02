@@ -1341,29 +1341,24 @@ impl<'cx> FunctionAnalyzer<'cx> {
         if let JSXExpr::Expr(expr) = &n.expr {
             // FIXME: Add entry point for the functions that are called as part of the handlers
             self.lower_expr(expr, None);
-            if let Some(second_char) = ident_value.sym.chars().nth(2) {
-                if ident_value.sym.starts_with("on") && second_char.is_uppercase() {
-                    match &**expr {
-                        Expr::Arrow(arrow_expr) => {
-                            if let BlockStmtOrExpr::Expr(expr) = &*arrow_expr.body {
-                                self.lower_expr(expr, None);
-                            }
-                        }
-                        Expr::Ident(ident) => {
-                            let defid = self.res.sym_to_id(ident.to_id(), self.module);
-                            let varid = self.body.get_or_insert_global(defid.unwrap());
-                            self.body.push_tmp(
-                                self.block,
-                                Rvalue::Call(
-                                    Operand::Var(Variable::from(varid)),
-                                    SmallVec::default(),
-                                ),
-                                None,
-                            );
-                        }
-                        _ => {}
+            match &**expr {
+                // JSX handler names should start with "on[A-Z]"
+                _ if !matches!(ident_value.sym.as_bytes(), [b'o', b'n', b'A'..=b'Z', ..]) => {}
+                Expr::Arrow(arrow_expr) => {
+                    if let BlockStmtOrExpr::Expr(expr) = &*arrow_expr.body {
+                        self.lower_expr(expr, None);
                     }
                 }
+                Expr::Ident(ident) => {
+                    let defid = self.res.sym_to_id(ident.to_id(), self.module);
+                    let varid = self.body.get_or_insert_global(defid.unwrap());
+                    self.body.push_tmp(
+                        self.block,
+                        Rvalue::Call(Operand::Var(Variable::from(varid)), SmallVec::default()),
+                        None,
+                    );
+                }
+                _ => {}
             }
         }
     }
