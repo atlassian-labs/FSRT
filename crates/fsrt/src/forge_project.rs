@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use swc_core::common::{Globals, Mark, SourceFile, SourceMap, GLOBALS};
 use swc_core::ecma::ast::EsVersion;
-use swc_core::ecma::parser::{parse_file_as_module, Syntax, TsConfig};
+use swc_core::ecma::parser::{parse_file_as_module, Syntax, TsSyntax};
 use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::visit::FoldWith;
 use tracing::debug;
@@ -38,7 +38,7 @@ pub(crate) trait ForgeProjectTrait<'a> {
                 let mut recovered_errors = vec![];
                 let module = parse_file_as_module(
                     src.as_ref(),
-                    Syntax::Typescript(TsConfig {
+                    Syntax::Typescript(TsSyntax {
                         tsx: true,
                         decorators: true,
                         ..Default::default()
