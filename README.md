@@ -4,7 +4,7 @@
 
 A static analysis tool for finding common [Forge][1] vulnerabilities.
 
-[1]: <https://developer.atlassian.com/platform/forge> "Forge platform"
+[1]: https://developer.atlassian.com/platform/forge "Forge platform"
 
 ## Usage
 
@@ -16,8 +16,7 @@ Arguments:
 
   Options:
     -d, --debug
-    --callgraph            Dump a graphviz formatted callgraph
-    --cfg                  Dump a graphviz formatted control flow graph of the function specified in `--function`
+        --dump-ir <DUMP_IR> Dump the IR for the specified function.
     -f, --function <FUNCTION>  A specific function to scan. Must be an entrypoint specified in `manifest.yml`
     -h, --help                 Print help information
     -V, --version              Print version information
@@ -31,9 +30,9 @@ latest stable release, and adding the toolchain
 
 [^1]: Cargo is technically not required if you want to download every dependency, invoke `rustc`, and link everything manually. However, I wouldn't recommend doing this unless you're extremely bored.
 
-[Rust]: <https://www.rust-lang.org/>
-[Rustup]: <https://github.com/rust-lang/rustup> "Rustup"
-[Cargo]: <https://github.com/rust-lang/cargo>
+[Rust]: https://www.rust-lang.org/
+[Rustup]: https://github.com/rust-lang/rustup "Rustup"
+[Cargo]: https://github.com/rust-lang/cargo
 
 Installing from source:
 
@@ -70,7 +69,7 @@ Contributions to FSRT are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
 
-Copyright (c) 2022  Atlassian and others.
+Copyright (c) 2022 Atlassian and others.
 
 FSRT is dual licensed under the MIT and Apache 2.0 licenses.
 

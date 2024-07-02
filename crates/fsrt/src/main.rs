@@ -42,14 +42,6 @@ pub struct Args {
     #[arg(short, long)]
     debug: bool,
 
-    /// Dump a graphviz formatted callgraph
-    #[arg(long)]
-    callgraph: bool,
-
-    /// Dump a graphviz formatted control flow graph of the function specified in `--function`
-    #[arg(long)]
-    cfg: bool,
-
     /// Dump the IR for the specified function
     #[arg(long)]
     dump_ir: Option<String>,
