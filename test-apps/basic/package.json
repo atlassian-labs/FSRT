@@ -14,6 +14,8 @@
   },
   "dependencies": {
     "@forge/api": "3.2.0",
-    "@forge/ui": "1.11.0"
+    "@forge/ui": "1.11.0",
+    "atlassian-jwt": "^2.0.3",
+    "jsonwebtoken": "^9.0.2"
   }
 }
