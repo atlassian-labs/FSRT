@@ -13,6 +13,26 @@ let test_function = (word) => {
   let test_var = "test_var";
 }
 
+function complex(a) {
+  let b = a - 20;
+  let c = b + 1;
+  b = 10;
+  return b * 10;
+}
+
+function simple() {
+  let a = 4;
+  let b = 7;
+  a = 10;
+  a = 5;
+}
+
+function reassign() {
+  let a = 4;
+  let b = "7";
+  b = "7" + a;
+}
+
 const App = () => {
 
     let testObjectOther = {
@@ -28,15 +48,6 @@ const App = () => {
       return res;
     }
   }
-
-    let value = "value"
-
-    let h = { headers: { authorization: "test" } }
-    h.headers.authorization = process.env.SECRET
-    h.headers.authorization = `test ${value}`
-
-
-    fetch("url", h)
 
   foo();
   test_function("test_word");

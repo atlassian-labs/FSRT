@@ -8,12 +8,10 @@
     "validate": "tsc --noEmit --project ./tsconfig.json"
   },
   "devDependencies": {
-    "@types/node": "20.11.20",
+    "@forge/api": "^3.8.0",
+    "@forge/ui": "^1.11.1",
+    "@types/node": "^20.14.10",
     "@types/react": "18.2.57",
     "typescript": "5.3.3"
-  },
-  "dependencies": {
-    "@forge/api": "3.2.0",
-    "@forge/ui": "1.11.0"
   }
 }

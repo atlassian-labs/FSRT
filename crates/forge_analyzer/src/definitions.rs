@@ -5,6 +5,8 @@ use std::{borrow::Borrow, fmt, mem};
 use crate::utils::{calls_method, eq_prop_name};
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
+use std::collections::{HashMap, HashSet};
+use swc_core::common::pass::define;
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -138,6 +140,7 @@ pub fn run_resolver(
 ) -> Environment {
     let mut environment = Environment::new();
 
+    // This for loop parses each token of each code statement in the file.
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut export_collector = ExportCollector {
             res_table: &mut environment.resolver,
@@ -156,6 +159,7 @@ pub fn run_resolver(
         }
     }
 
+    // The following two for loops iterate through the imported modules of the file.
     let mut foreign = TiVec::default();
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut import_collector = ImportCollector {
@@ -182,7 +186,7 @@ pub fn run_resolver(
         module.visit_with(&mut import_collector);
     }
 
-    // check for required after Definitions pass
+    // This loop runs through the different import modules and corresponding definitions.
     let defs = Definitions::new(
         environment
             .resolver
@@ -225,7 +229,84 @@ pub fn run_resolver(
         };
         module.visit_with(&mut collector);
     }
+    // // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump
+    let mut new_funcs: TiVec<FuncId, Body> = TiVec::new();
+    // // Iterates through the bodies in the environment
+    for (func_id, body) in environment.bodies().enumerate() {
+        let mut new_body = body.clone();
+        let vars = &body.vars;
+        // Make a new structure to hold all global ids
+        let mut temp = HashSet::new();
+        let mut non_local_vars = HashMap::new();
+        for var_id in vars.keys() {
+            // Add to set of globals if VarKind is global reference, temp, ret, or arg
+            let varkind = vars.get(var_id).unwrap();
+            match varkind {
+                VarKind::GlobalRef(defid) | VarKind::Arg(defid) => {
+                    temp.insert(var_id);
+                    non_local_vars.insert(var_id, varkind);
+                }
+                VarKind::Temp { parent } => {
+                    temp.insert(var_id);
+                    non_local_vars.insert(var_id, varkind);
+                }
+                VarKind::Ret => {
+                    temp.insert(var_id);
+                    non_local_vars.insert(var_id, varkind);
+                }
+                _ => {}
+            }
+        }
 
+        // Parse through the blocks within the body:
+        let blocks = &body.blocks;
+        // For every "Assign" statement, there must be a global reference that matches it
+        for blockid in blocks.keys() {
+            let blockiter = blocks.get(blockid).into_iter();
+            for block in blockiter {
+                let insts = &block.insts;
+                let mut new_insts: Vec<Inst> = Vec::new();
+                for inst in insts.iter() {
+                    if let Inst::Assign(variable, rvalue) = inst {
+                        // We only want to do this for Assign statements with "Read(Literal)" rvalues.
+                        // if let Rvalue::Read(operand) = rvalue {
+                        // if let Operand::Lit(_) = operand {
+                        // Found "Assign" statement. Now check if there is a global ref that matches it in vars
+                        let var_id = variable.as_var_id().unwrap();
+                        // If exists in globals, then remove to reflect that this assign statement has a corresp. global ref
+                        // And also add current instruction to set of instructions.
+                        if temp.contains(&var_id) {
+                            temp.remove(&var_id);
+                            new_insts.insert(new_insts.len(), inst.clone());
+                        }
+                        // If one does not exist: Make a copy of the previous global ref (this is guaranteed to exist)
+                        // And add updated instruction to set of instructions.
+                        else {
+                            // Extract VarKind(DefId) for this VarId from the globals map
+                            let var_kind = (*non_local_vars.get(&var_id).unwrap()).clone();
+                            let new_var_id = new_body.add_var(var_kind);
+                            let new_inst = Inst::Assign(Variable::from(new_var_id), rvalue.clone());
+                            new_insts.insert(new_insts.len(), new_inst);
+
+                            // Update the def id to locals value, to reflect the new VarId assignment to this global ref.
+                            let def_id = new_body.get_defid_from_var(new_var_id).unwrap();
+                            new_body.update_global(def_id, new_var_id);
+                        }
+                        // }
+                        // }
+                    } else if let Inst::Expr(rvalue) = inst {
+                        new_insts.insert(new_insts.len(), inst.clone());
+                    }
+                }
+                // Add set of instructions to updated Body of environment
+                new_body.add_insts(new_insts, blockid);
+            }
+        }
+        // Add updated body to new set of functions
+        new_funcs.insert(FuncId(func_id as u32), new_body);
+    }
+    // Update environment with new structures created
+    environment.defs.funcs = new_funcs;
     environment
 }
 

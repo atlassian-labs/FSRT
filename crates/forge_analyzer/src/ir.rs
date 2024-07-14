@@ -342,6 +342,12 @@ impl Body {
     }
 
     #[inline]
+    pub(crate) fn add_insts(&mut self, new_insts: Vec<Inst>, bb: BasicBlockId) {
+        let block = self.blocks.get_mut(bb).unwrap();
+        block.insts = new_insts;
+    }
+
+    #[inline]
     pub(crate) fn get_defid_from_var(&self, varid: VarId) -> Option<DefId> {
         match self.vars.get(varid)? {
             VarKind::AnonClosure(def)
@@ -367,12 +373,20 @@ impl Body {
         var_id
     }
 
+    // This function returns the varId that maps to the input defId,
+    //      or creates a new mapping of type global reference with the input defId and new varId.
     #[inline]
     pub(crate) fn get_or_insert_global(&mut self, def: DefId) -> VarId {
         *self
             .def_id_to_vars
             .entry(def)
             .or_insert_with(|| self.vars.push_and_get_key(VarKind::GlobalRef(def)))
+    }
+
+    // This function updates the existing DefId -> VarId mapping with the input values, or inserts new if one doesn't exist.
+    #[inline]
+    pub(crate) fn update_global(&mut self, def: DefId, var: VarId) {
+        self.def_id_to_vars.insert(def, var);
     }
 
     #[inline]
