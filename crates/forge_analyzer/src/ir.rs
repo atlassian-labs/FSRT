@@ -16,9 +16,11 @@ use std::slice;
 
 use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
+use itertools::Itertools;
 use smallvec::smallvec;
 use smallvec::smallvec_inline;
 use smallvec::SmallVec;
+use swc_core::common::SyntaxContext;
 use swc_core::ecma::ast;
 use swc_core::ecma::ast::BinaryOp;
 use swc_core::ecma::ast::JSXText;
@@ -116,7 +118,7 @@ pub struct Location {
     pub stmt: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
 pub enum VarKind {
     LocalDef(DefId),
     GlobalRef(DefId),
@@ -267,6 +269,12 @@ impl BasicBlock {
         self.insts.iter()
     }
 
+    // Mutable iterator for instructions of the basic block
+    #[inline]
+    pub fn iter_insts_mut(&mut self) -> impl Iterator<Item = &mut Inst> + '_ {
+        self.insts.iter_mut()
+    }
+
     pub(crate) fn successors(&self) -> Successors {
         match self.term {
             Terminator::Ret => Successors::Return,
@@ -331,6 +339,14 @@ impl Body {
         self.blocks.iter_enumerated()
     }
 
+    // Mutable iterator for blocks
+    #[inline]
+    pub fn iter_blocks_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (BasicBlockId, &mut BasicBlock)> + '_ {
+        self.blocks.iter_mut_enumerated()
+    }
+
     #[inline]
     pub(crate) fn owner(&self) -> Option<DefId> {
         self.owner
@@ -367,6 +383,8 @@ impl Body {
         var_id
     }
 
+    // This function returns the varId that maps to the input defId,
+    //      or creates a new mapping of type global reference with the input defId and new varId.
     #[inline]
     pub(crate) fn get_or_insert_global(&mut self, def: DefId) -> VarId {
         *self
@@ -605,6 +623,12 @@ impl Location {
 
 impl Inst {
     pub(crate) fn rvalue(&self) -> &Rvalue {
+        match self {
+            Inst::Assign(_, r) | Inst::Expr(r) => r,
+        }
+    }
+
+    pub(crate) fn rvalue_mut(&mut self) -> &mut Rvalue {
         match self {
             Inst::Assign(_, r) | Inst::Expr(r) => r,
         }
