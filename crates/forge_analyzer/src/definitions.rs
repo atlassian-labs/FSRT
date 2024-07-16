@@ -1,10 +1,11 @@
 #![allow(dead_code, unused)]
 
 use std::{borrow::Borrow, fmt, mem};
+use std::collections::{HashMap, HashSet};
 
 use crate::utils::{calls_method, eq_prop_name};
 use forge_file_resolver::{FileResolver, ForgeResolver};
-use forge_utils::{create_newtype, FxHashMap};
+use forge_utils::{create_newtype, FxHashMap, FxIndexMap};
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -182,6 +183,18 @@ pub fn run_resolver(
         module.visit_with(&mut import_collector);
     }
 
+    // ENVIRONMENT.DEFS.FUNCS EMPTY AT THIS POINT
+    if environment.defs.funcs.is_empty() {
+        println!("EMPTY");
+        for (_, body) in environment.defs.funcs.iter_enumerated() {
+            println!("BODY 1: {:?}", body);
+            println!();
+        }
+
+    } else {
+        println!("NOT EMPTY");
+    }
+
     // check for required after Definitions pass
     let defs = Definitions::new(
         environment
@@ -202,6 +215,18 @@ pub fn run_resolver(
         };
         module.visit_with(&mut lowerer);
     }
+
+    if environment.defs.funcs.is_empty() {
+        println!("EMPTY");
+
+    } else {
+        println!("NOT EMPTY");
+    }
+    for (_, body) in environment.defs.funcs.iter_enumerated() {
+        println!("BODY after DEFINTIONS CREATION: {:?}", body);
+        println!();
+    }
+
     for (curr_mod, module) in modules.iter_enumerated() {
         let global_id = environment.get_or_reserve_global_scope(curr_mod);
         let mut global_collector = GlobalCollector {
@@ -213,6 +238,17 @@ pub fn run_resolver(
         };
         module.visit_with(&mut global_collector);
     }
+
+    for (_, body) in environment.defs.funcs.iter_enumerated() {
+        println!("BODY POST-GLOBAL-COLLECTOR: {:?}", body);
+        println!();
+    }
+
+    // for (curr_mod, module) in modules.iter_enumerated() {
+    //     println!("MODULE: {:?}", module);
+    //     println!();
+    // }
+
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut collector = FunctionCollector {
             res: &mut environment,
@@ -226,6 +262,151 @@ pub fn run_resolver(
         module.visit_with(&mut collector);
     }
 
+    for (_, body) in environment.defs.funcs.iter_enumerated() {
+        println!("BODY POST-FUNCTION-COLLECTOR: {:?}", body);
+        println!();
+    }
+    // // lowering has been completed here
+
+    // let mut new_funcs: TiVec<FuncId, Body> = TiVec::new();
+    // new_funcs = environment.defs.funcs.clone();
+    // new_funcs.body = environment.defs.funcs.body.clone();;
+
+    for (_, body) in environment.defs.funcs.iter_enumerated() {
+        println!("BODY: {:?}", body);
+        println!();
+    }
+
+    for (body) in environment.defs.funcs.iter_mut() {
+        let mut max = 0;
+        let mut new_vars = body.vars.clone();
+        let mut new_def_id_to_vars = body.def_id_to_vars.clone();
+        let mut old_to_new_var: HashMap<VarId, VarId> = HashMap::new();
+
+        for block in body.blocks.iter_mut() {
+            for inst in block.insts.iter_mut() {
+                if let Inst::Assign(var, rval) = &*inst {
+                    if let Base::Var(var_id) = &var.base {
+                        let var_id_clone = var_id.clone();
+                        
+                        let mut new_inst = Inst::Assign(var.clone(), rval.clone());
+                        let mut new_var = var.clone();
+
+                        let mut inst_changed_left = false;    
+                        let mut inst_changed_right = false;                    
+
+                        // handle return var first
+                        if var_id.0 == 0 {
+                            continue;
+                        }
+                        // new variable
+                        else if var_id.0 > max {
+                            max = var_id.0;
+                        }
+                        // repeated variable
+                        else {
+                            println!("REPEATED VAR: {:?}", var_id);
+                            println!();
+                            let new_var_id = crate::ir::VarId(max + 1);
+                            new_var = Variable::new(new_var_id);
+                            new_inst = Inst::Assign(new_var.clone(), rval.clone());
+                            inst_changed_left = true;
+
+                            print!("new inst: {:?}", new_inst);
+                            max += 1;
+
+                            // *inst = new_inst;
+
+                            // for ensuring that the var is replaced w/ new var anywhere it's used after
+                            old_to_new_var.insert(var_id_clone, new_var_id);
+
+
+                            // find the rhs for vars
+                            for (vars_var_id, var_kind) in body.vars.iter_mut_enumerated() {
+                                
+                                if vars_var_id == var_id_clone {  // had to clone bc of borrowing issues
+                                    new_vars.insert(new_var_id, var_kind.clone());
+
+                                    // update def_id_to_vars
+                                    // grab the DefId from VarKind
+                                    if let VarKind::GlobalRef(def_id) = var_kind {
+                                        new_def_id_to_vars.insert(def_id.clone(), new_var_id);
+                                    }
+                                    if let VarKind::LocalDef(def_id) = var_kind {
+                                        new_def_id_to_vars.insert(def_id.clone(), new_var_id);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // for any prev. updated vars to be updated in later insts
+                        let mut new_rval = rval.clone();
+
+                        if let Rvalue::Unary(unop, op) = rval {
+                            if let Operand::Var(var) = op {
+                                if let Some(var_id) = var.as_var_id() {
+                                    if let Some(new_var_id) = old_to_new_var.get(&var_id) {
+                                        let new_op = Operand::Var(Variable::new(*new_var_id));
+                                        new_rval = Rvalue::Unary(*unop, Operand::Var(Variable::new(*new_var_id)));
+                                        // *inst = Inst::Assign(var.clone(), new_rval);
+                                        inst_changed_right = true;
+                                    }
+                                }
+                                
+                            }
+                        }
+                        if let Rvalue::Bin(binop, op, op2) = rval {
+                            if let Operand::Var(var) = op {
+                                if let Some(var_id) = var.as_var_id() {
+                                    if let Some(new_var_id) = old_to_new_var.get(&var_id) {
+                                        let new_op = Operand::Var(Variable::new(*new_var_id));
+                                        new_rval = Rvalue::Bin(*binop, Operand::Var(Variable::new(*new_var_id)), op2.clone());
+                                        // *inst = Inst::Assign(var.clone(), new_rval);
+                                        inst_changed_right = true;
+                                    }
+                                }
+                                
+                            }
+                            if let Operand::Var(var) = op2 {
+                                if let Some(var_id) = var.as_var_id() {
+                                    if let Some(new_var_id) = old_to_new_var.get(&var_id) {
+                                        let new_op = Operand::Var(Variable::new(*new_var_id));
+                                        new_rval = Rvalue::Bin(*binop, op.clone(), Operand::Var(Variable::new(*new_var_id)));
+                                        // *inst = Inst::Assign(var.clone(), new_rval);
+                                        inst_changed_right = true;
+                                    }
+                                }
+                            }
+                        }
+                        if (inst_changed_left && inst_changed_right) {
+                            *inst = Inst::Assign(new_var, new_rval);
+                        }
+                        else if (inst_changed_left) {
+                            *inst = Inst::Assign(new_var, rval.clone());
+                        }
+                        else if (inst_changed_right) {
+                            *inst = Inst::Assign(var.clone(), new_rval);
+                        }
+                        
+
+                    }
+                }
+                if let Inst::Expr(expr) = &*inst {
+                    println!("EXPR: {:?}", expr);
+                    println!();
+                }
+            }
+        }
+        body.vars = new_vars;
+        body.def_id_to_vars = new_def_id_to_vars;
+        // update def_id_to_vars
+    }
+
+    for (_, body) in environment.defs.funcs.iter_enumerated() {
+        println!("BODY: {:?}", body);
+        println!();
+    }
+    
     environment
 }
 
@@ -1530,11 +1711,20 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     .push_tmp(self.block, Rvalue::Unary(op.into(), arg), None);
                 Operand::with_var(tmp)
             }
+
             Expr::Update(UpdateExpr {
                 op, prefix, arg, ..
             }) => {
                 // FIXME: Handle op
                 self.lower_expr(arg, None)
+
+                // COMMENTED OUT: this seems to be where the lowering is happening
+                // let def_id = self
+                //     .res
+                //     .add_anonymous("__UNKNOWN", AnonType::Obj, self.module);
+                // let new_var_id = self.body.add_var(VarKind::LocalDef(def_id));
+                // let new_var = Variable::new(new_var_id);
+                // Operand::Var(Variable::new(new_var_id))
             }
             Expr::Bin(BinExpr {
                 op, left, right, ..

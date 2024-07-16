@@ -1,51 +1,29 @@
-import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
-import api, { route, fetch } from '@forge/api';
-import { testFn } from './test';
-
-const foo = () => {
-  const res = api.asApp().requestConfluence(route`/rest/api/3/test`);
-  test_function("hi")
-  return res;
-};
-
-let test_function = (word) => {
-  console.log(word);
-  let test_var = "test_var";
+function reassign() {
+  let a = 3;
+  let b = 4;
+  a = 1;
 }
 
-const App = () => {
+function foo(a) {
+  let b = a - 20;
+  let c = b + 1;
+  b = 10;
+  return b * 10;
+}
 
-    let testObjectOther = {
-        someFunction(): any {
-            let a = "b";
-        }
-    }
+function reassign_expr() {
+  let a = 4;
+  let b = "7";
+  b = "7" + a;
+  let c = a + b;
+}
 
-  let testObject = {
-    someFunction() {
-      const res = api.asApp().requestConfluence(route`/rest/api/3/test`);
-      test_function("hi")
-      return res;
-    }
-  }
-
-    let value = "value"
-
-    let h = { headers: { authorization: "test" } }
-    h.headers.authorization = process.env.SECRET
-    h.headers.authorization = `test ${value}`
-
-
-    fetch("url", h)
-
-  foo();
-  test_function("test_word");
-  testFn();
-  return (
-    <Fragment>
-      <Text>Hello world!</Text>
-    </Fragment>
-  );
-};
-
-export const run = render(<Macro app={<App />} />);
+// w/ control flow
+function newfunc() {
+  let a = 3;
+  if (a > 2) {
+    a = 1;
+    let b = a;
+  }  
+  let c = a;
+}
