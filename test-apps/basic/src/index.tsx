@@ -33,6 +33,16 @@ function reassign() {
   b = "7" + a;
 }
 
+function var_reref() {
+  let a = 4;
+  let b = 7;
+  a = 10;
+  let c = a + b
+  a = 5;
+  c = 2 * b;
+}
+
+
 const App = () => {
 
     let testObjectOther = {

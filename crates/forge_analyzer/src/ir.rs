@@ -16,11 +16,14 @@ use std::slice;
 
 use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
+use itertools::Itertools;
 use smallvec::smallvec;
 use smallvec::smallvec_inline;
 use smallvec::SmallVec;
+use swc_core::common::SyntaxContext;
 use swc_core::ecma::ast;
 use swc_core::ecma::ast::BinaryOp;
+use swc_core::ecma::ast::Bool;
 use swc_core::ecma::ast::JSXText;
 use swc_core::ecma::ast::Lit;
 use swc_core::ecma::ast::Null;
@@ -137,7 +140,7 @@ pub struct Body {
     pub blocks: TiVec<BasicBlockId, BasicBlock>,
     pub vars: TiVec<VarId, VarKind>,
     pub values: FxHashMap<DefId, Value>,
-    ident_to_local: FxHashMap<Id, VarId>,
+    pub ident_to_local: FxHashMap<Id, VarId>,
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     pub class_instantiations: HashMap<DefId, DefId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
@@ -334,6 +337,26 @@ impl Body {
     #[inline]
     pub(crate) fn owner(&self) -> Option<DefId> {
         self.owner
+    }
+
+    // This function clears the non local definition variables in the vars of this body.
+    // Written to supports the SSA Form fix.
+    #[inline]
+    pub(crate) fn clear_non_local_vars(&mut self) {
+        println!("OLD VARS: {:?}", self.vars);
+        let mut new_vars = self.vars.clone();
+        new_vars.clear();
+
+        for (_, varkind) in self.vars.iter_mut_enumerated() {
+            match varkind {
+                VarKind::LocalDef(_) | VarKind::Ret => {
+                    _ = new_vars.push_and_get_key(varkind.clone());
+                }
+                _ => {}
+            }
+        }
+        println!("NEW VARS: {:?}", new_vars);
+        self.vars = new_vars;
     }
 
     #[inline]

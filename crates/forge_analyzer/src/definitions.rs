@@ -1,5 +1,6 @@
 #![allow(dead_code, unused)]
 
+use std::hash::Hash;
 use std::{borrow::Borrow, fmt, mem};
 
 use crate::utils::{calls_method, eq_prop_name};
@@ -229,15 +230,17 @@ pub fn run_resolver(
         };
         module.visit_with(&mut collector);
     }
-    // // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump
+    // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump.
     let mut new_funcs: TiVec<FuncId, Body> = TiVec::new();
-    // // Iterates through the bodies in the environment
+    // Structures used in the loop - initialized here for reuse per each body.
+    let mut temp = HashSet::new();
+    let mut non_local_vars = HashMap::new();
+    let mut updated_vars = HashMap::new();
+    // Iterates through the bodies in the environment
     for (func_id, body) in environment.bodies().enumerate() {
         let mut new_body = body.clone();
         let vars = &body.vars;
         // Make a new structure to hold all global ids
-        let mut temp = HashSet::new();
-        let mut non_local_vars = HashMap::new();
         for var_id in vars.keys() {
             // Add to set of globals if VarKind is global reference, temp, ret, or arg
             let varkind = vars.get(var_id).unwrap();
@@ -257,6 +260,7 @@ pub fn run_resolver(
                 _ => {}
             }
         }
+        // new_body.clear_non_local_vars();
 
         // Parse through the blocks within the body:
         let blocks = &body.blocks;
@@ -267,33 +271,38 @@ pub fn run_resolver(
                 let insts = &block.insts;
                 let mut new_insts: Vec<Inst> = Vec::new();
                 for inst in insts.iter() {
+                    // Instructions that are assign statements must be updated with new VarId reference:
                     if let Inst::Assign(variable, rvalue) = inst {
-                        // We only want to do this for Assign statements with "Read(Literal)" rvalues.
-                        // if let Rvalue::Read(operand) = rvalue {
-                        // if let Operand::Lit(_) = operand {
-                        // Found "Assign" statement. Now check if there is a global ref that matches it in vars
+                        // Parse and update the rvalue to have correct VarId references:
+                        let new_rvalue = update_rvalue(rvalue, &updated_vars);
+
                         let var_id = variable.as_var_id().unwrap();
-                        // If exists in globals, then remove to reflect that this assign statement has a corresp. global ref
-                        // And also add current instruction to set of instructions.
+
+                        // EXISTING CASE:
+                        // If this VarId exists in globals, then remove to reflect that this assign statement has a corresp. global ref, and add updated instruction.
                         if temp.contains(&var_id) {
                             temp.remove(&var_id);
-                            new_insts.insert(new_insts.len(), inst.clone());
+                            new_insts.insert(
+                                new_insts.len(),
+                                Inst::Assign(variable.clone(), new_rvalue),
+                            );
                         }
-                        // If one does not exist: Make a copy of the previous global ref (this is guaranteed to exist)
-                        // And add updated instruction to set of instructions.
+                        // NEW CASE:
+                        // If one does not exist: Make a copy of the previous global ref (this is guaranteed to exist), and add updated instruction to set of instructions.
                         else {
-                            // Extract VarKind(DefId) for this VarId from the globals map
+                            // Extract VarKind(DefId) for this VarId from the globals map, and add Var to body.
                             let var_kind = (*non_local_vars.get(&var_id).unwrap()).clone();
                             let new_var_id = new_body.add_var(var_kind);
-                            let new_inst = Inst::Assign(Variable::from(new_var_id), rvalue.clone());
+                            let new_inst = Inst::Assign(Variable::from(new_var_id), new_rvalue);
                             new_insts.insert(new_insts.len(), new_inst);
-
-                            // Update the def id to locals value, to reflect the new VarId assignment to this global ref.
+                            // Update the def_id_to_locals value, to reflect the new VarId assignment to this global ref.
                             let def_id = new_body.get_defid_from_var(new_var_id).unwrap();
                             new_body.update_global(def_id, new_var_id);
+
+                            // Update our updated_vars map with the new {old VarId -> new VarId} mapping for later references.
+                            updated_vars.insert(var_id, new_var_id);
                         }
-                        // }
-                        // }
+                    // If instruction is of type Expression, we simply add the instruction to set of instructions.
                     } else if let Inst::Expr(rvalue) = inst {
                         new_insts.insert(new_insts.len(), inst.clone());
                     }
@@ -304,10 +313,68 @@ pub fn run_resolver(
         }
         // Add updated body to new set of functions
         new_funcs.insert(FuncId(func_id as u32), new_body);
+        // Clear all used structures:
+        temp.clear();
+        non_local_vars.clear();
+        updated_vars.clear();
     }
     // Update environment with new structures created
     environment.defs.funcs = new_funcs;
     environment
+}
+
+// This function is a helper function to run_resolver() 's SSA Form Loop.
+// Input: rvalue and hashmap of VarIds that have been updated in the SSA Form Loop.
+// Output: new rvalue that has the newest VarId in its operands.
+pub fn update_rvalue(rvalue: &Rvalue, updated_vars: &HashMap<VarId, VarId>) -> Rvalue {
+    let mut new_rvalue = rvalue.clone();
+    match rvalue {
+        Rvalue::Unary(unop, Operand::Var(variable)) => {
+            let op_var_id = variable.as_var_id().unwrap();
+            if updated_vars.contains_key(&op_var_id) {
+                let updated_var_id = *updated_vars.get(&op_var_id).unwrap();
+                let new_operand = Operand::Var(Variable::new(updated_var_id));
+                new_rvalue = Rvalue::Unary(*unop, new_operand);
+            }
+        }
+        Rvalue::Bin(binop, operand1, operand2) => {
+            let mut new_operand_1 = operand1.clone();
+            let mut new_operand_2 = operand2.clone();
+            if let Operand::Var(variable) = operand1 {
+                let op_var_id = variable.as_var_id().unwrap();
+                if updated_vars.contains_key(&op_var_id) {
+                    let updated_var_id = *updated_vars.get(&op_var_id).unwrap();
+                    new_operand_1 = Operand::Var(Variable::new(updated_var_id));
+                }
+            }
+            if let Operand::Var(variable) = operand2 {
+                let op_var_id = variable.as_var_id().unwrap();
+                if updated_vars.contains_key(&op_var_id) {
+                    let updated_var_id = *updated_vars.get(&op_var_id).unwrap();
+                    new_operand_2 = Operand::Var(Variable::new(updated_var_id));
+                }
+            }
+            new_rvalue = Rvalue::Bin(*binop, new_operand_1, new_operand_2);
+        }
+        Rvalue::Read(Operand::Var(variable)) => {
+            let op_var_id = variable.as_var_id().unwrap();
+            if updated_vars.contains_key(&op_var_id) {
+                let updated_var_id = *updated_vars.get(&op_var_id).unwrap();
+                let new_operand = Operand::Var(Variable::new(updated_var_id));
+                new_rvalue = Rvalue::Read(new_operand);
+            }
+        }
+        Rvalue::Call(Operand::Var(variable), vector) => {
+            let op_var_id = variable.as_var_id().unwrap();
+            if updated_vars.contains_key(&op_var_id) {
+                let updated_var_id = *updated_vars.get(&op_var_id).unwrap();
+                let new_operand = Operand::Var(Variable::new(updated_var_id));
+                new_rvalue = Rvalue::Call(new_operand, vector.clone());
+            }
+        }
+        _ => {}
+    }
+    new_rvalue
 }
 
 /// this struct is a bit of a hack, because we also use it for
@@ -3387,6 +3454,12 @@ impl Environment {
     #[inline]
     pub fn bodies(&self) -> impl Iterator<Item = &Body> + '_ {
         self.defs.funcs.iter()
+    }
+
+    // Mutable iterator
+    #[inline]
+    pub fn bodies_mut(&mut self) -> impl Iterator<Item = &mut Body> + '_ {
+        self.defs.funcs.iter_mut()
     }
 
     #[inline]

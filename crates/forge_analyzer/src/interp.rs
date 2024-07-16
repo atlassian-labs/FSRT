@@ -607,7 +607,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         projections: ProjectionVec,
     ) {
         // println!("In add val with proj: Adding new value defid - {:?} varid - {:?} proj vec - {:?} val - {:?}", defid_block, varid, projections, value);
-        println!("Add val with projection: {:?}", value);
+        // println!("Add val with projection: {:?}", value);
         let (varid, projections) = self.get_farthest_obj(defid_block, varid, projections);
         self.value_manager
             .insert_var_with_projection(defid_block, varid, projections, value);
@@ -621,7 +621,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     #[inline]
     pub fn add_value_to_definition(&mut self, defid_block: DefId, lval: Variable, rvalue: Rvalue) {
         // println!("Entered add val to def function with defid - {:?}, lval - {:?}, rval - {:?}", defid_block, lval, rvalue);
-        println!("Add val to def: {:?}", rvalue);
+        // println!("Add val to def: {:?}", rvalue);
         if let Variable {
             base: Base::Var(varid),
             projections,
@@ -633,7 +633,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 .get_value(defid_block, varid, Some(projections.clone()))
                 .cloned()
             {
-                println!("The existing value: {:?}", existing_lval);
+                // println!("The existing value: {:?}", existing_lval);
                 // println!("The (current) real value: {:?}", rval_value);
                 // if there is an existing value...
                 match (existing_lval, rval_value) {
@@ -653,7 +653,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     // SW: NEED TO MODIFY THIS CASE TO HANDLE REASSIGNMENTS. Hits if we do a reassignment after already having done one.
                     (Value::Const(const_value), Value::Phi(phi_value))
                     | (Value::Phi(phi_value), Value::Const(const_value)) => {
-                        println!("Entered constant and phi vec match case");
+                        // println!("Entered constant and phi vec match case");
                         let mut new_phi = phi_value;
                         new_phi.push(const_value);
                         self.add_value_with_projection(
@@ -672,7 +672,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                             Value::Phi(vec![const_value1, const_value2]),
                             projections,
                         );
-                        println!("Entered double constant match case");
+                        // println!("Entered double constant match case");
                     }
                     (Value::Object(exist_var), Value::Object(new_var)) => {
                         // store projection values that are transferred
@@ -728,7 +728,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 }
             } else {
                 // push the rval if no existing value
-                println!("No existing value");
+                // println!("No existing value");
                 self.add_value_with_projection(defid_block, varid, rval_value, projections)
             }
         }
