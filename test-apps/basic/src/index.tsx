@@ -42,7 +42,6 @@ function var_reref() {
   c = 2 * b;
 }
 
-
 const App = () => {
 
     let testObjectOther = {
@@ -58,6 +57,15 @@ const App = () => {
       return res;
     }
   }
+
+    let value = "value"
+
+    let h = { headers: { authorization: "test" } }
+    h.headers.authorization = process.env.SECRET
+    h.headers.authorization = `test ${value}`
+
+
+    fetch("url", h)
 
   foo();
   test_function("test_word");

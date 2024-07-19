@@ -99,7 +99,6 @@ pub trait Dataflow<'cx>: Sized {
         rvalue: &'cx Rvalue,
         initial_state: Self::State,
     ) -> Self::State {
-        // println!("hi");
         match rvalue {
             Rvalue::Intrinsic(intrinsic, args) => self.transfer_intrinsic(
                 interp,
@@ -419,15 +418,9 @@ impl ValueManager {
         projection_vec: ProjectionVec,
         value: Value,
     ) {
-        // println!("Attempting to insert: defid - {:?} varid - {:?} proj vec - {:?} val - {:?}", def_id_func, var_id, projection_vec[0], value);
-        // println!("Current var mapping with projects: {:?}", self.varid_to_value_with_proj);
-        // println!("Current var mapping with values: {:?}", self.varid_to_value);
         if projection_vec.is_empty() {
-            // println!("EMPTY!");
             self.varid_to_value.insert((def_id_func, var_id), value);
         } else {
-            // println!("NOT EMPTY");
-            // DOES NOT FIX:
             self.varid_to_value_with_proj
                 .insert((def_id_func, var_id, projection_vec), value);
         }
@@ -606,22 +599,13 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         value: Value,
         projections: ProjectionVec,
     ) {
-        // println!("In add val with proj: Adding new value defid - {:?} varid - {:?} proj vec - {:?} val - {:?}", defid_block, varid, projections, value);
-        // println!("Add val with projection: {:?}", value);
         let (varid, projections) = self.get_farthest_obj(defid_block, varid, projections);
         self.value_manager
             .insert_var_with_projection(defid_block, varid, projections, value);
     }
 
-    // this function takes in an operand checks for previous values and returns a value optional
-    //
-    // SW: This function adds a value to a definition,
-    //      with the input of a DefId, the locator value (points to memory location), and the read value (value to be read).
-    // There are 4 cases - if the existing value
     #[inline]
     pub fn add_value_to_definition(&mut self, defid_block: DefId, lval: Variable, rvalue: Rvalue) {
-        // println!("Entered add val to def function with defid - {:?}, lval - {:?}, rval - {:?}", defid_block, lval, rvalue);
-        // println!("Add val to def: {:?}", rvalue);
         if let Variable {
             base: Base::Var(varid),
             projections,
@@ -633,8 +617,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 .get_value(defid_block, varid, Some(projections.clone()))
                 .cloned()
             {
-                // println!("The existing value: {:?}", existing_lval);
-                // println!("The (current) real value: {:?}", rval_value);
                 // if there is an existing value...
                 match (existing_lval, rval_value) {
                     // return unknown if either values are unknown
@@ -650,10 +632,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                         projections,
                     ),
                     // push other const onto phi vec if either are const and phi
-                    // SW: NEED TO MODIFY THIS CASE TO HANDLE REASSIGNMENTS. Hits if we do a reassignment after already having done one.
                     (Value::Const(const_value), Value::Phi(phi_value))
                     | (Value::Phi(phi_value), Value::Const(const_value)) => {
-                        // println!("Entered constant and phi vec match case");
                         let mut new_phi = phi_value;
                         new_phi.push(const_value);
                         self.add_value_with_projection(
@@ -664,7 +644,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                         )
                     }
                     // push consts into vec if both are consts
-                    // SW: NEED TO MODIFY THIS CASE TO HANDLE REASSIGNMENTS. Hits if we do a single reassignment.
                     (Value::Const(const_value1), Value::Const(const_value2)) => {
                         self.add_value_with_projection(
                             defid_block,
@@ -672,12 +651,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                             Value::Phi(vec![const_value1, const_value2]),
                             projections,
                         );
-                        // println!("Entered double constant match case");
                     }
                     (Value::Object(exist_var), Value::Object(new_var)) => {
                         // store projection values that are transferred
                         let mut projections_transferred = vec![];
-                        // println!("In add val to def - projections transferred are: {:?}", projections_transferred);
                         // transfer all projection values from the new_var into the existing var
                         let start_new = (defid_block, new_var, ProjectionVec::new());
                         let query_new = match new_var.0.checked_add(1) {
@@ -728,7 +705,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 }
             } else {
                 // push the rval if no existing value
-                // println!("No existing value");
                 self.add_value_with_projection(defid_block, varid, rval_value, projections)
             }
         }

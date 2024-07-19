@@ -339,26 +339,6 @@ impl Body {
         self.owner
     }
 
-    // This function clears the non local definition variables in the vars of this body.
-    // Written to supports the SSA Form fix.
-    #[inline]
-    pub(crate) fn clear_non_local_vars(&mut self) {
-        println!("OLD VARS: {:?}", self.vars);
-        let mut new_vars = self.vars.clone();
-        new_vars.clear();
-
-        for (_, varkind) in self.vars.iter_mut_enumerated() {
-            match varkind {
-                VarKind::LocalDef(_) | VarKind::Ret => {
-                    _ = new_vars.push_and_get_key(varkind.clone());
-                }
-                _ => {}
-            }
-        }
-        println!("NEW VARS: {:?}", new_vars);
-        self.vars = new_vars;
-    }
-
     #[inline]
     pub(crate) fn add_var(&mut self, kind: VarKind) -> VarId {
         self.vars.push_and_get_key(kind)
@@ -396,20 +376,21 @@ impl Body {
         var_id
     }
 
-    // This function returns the varId that maps to the input defId,
-    //      or creates a new mapping of type global reference with the input defId and new varId.
-    #[inline]
+    // Given an input DefId, inserts new entry and returns created VarId.
+    //    Used for when vars are initialized or reassigned a new value.
+    pub(crate) fn insert_global(&mut self, def: DefId) -> VarId {
+        let var_id = self.vars.push_and_get_key(VarKind::GlobalRef(def));
+        self.def_id_to_vars.insert(def, var_id);
+        var_id
+    }
+
+    // Given an input DefId, gets corresponding VarId or adds new entry and returns created VarId.
+    //    Used to get vars already defined (or args passed in) on the right hand of equal sign.
     pub(crate) fn get_or_insert_global(&mut self, def: DefId) -> VarId {
         *self
             .def_id_to_vars
             .entry(def)
             .or_insert_with(|| self.vars.push_and_get_key(VarKind::GlobalRef(def)))
-    }
-
-    // This function updates the existing DefId -> VarId mapping with the input values, or inserts new if one doesn't exist.
-    #[inline]
-    pub(crate) fn update_global(&mut self, def: DefId, var: VarId) {
-        self.def_id_to_vars.insert(def, var);
     }
 
     #[inline]

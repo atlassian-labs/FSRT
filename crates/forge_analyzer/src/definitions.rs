@@ -230,96 +230,6 @@ pub fn run_resolver(
         };
         module.visit_with(&mut collector);
     }
-    // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump.
-    let mut new_funcs: TiVec<FuncId, Body> = TiVec::new();
-    // Structures used in the loop - initialized here for reuse per each body.
-    let mut temp = HashSet::new();
-    let mut non_local_vars = HashMap::new();
-    let mut updated_vars = HashMap::new();
-    // Iterates through the bodies in the environment
-    for (func_id, body) in environment.bodies().enumerate() {
-        let mut new_body = body.clone();
-        let vars = &body.vars;
-        // Make a new structure to hold all global ids
-        for var_id in vars.keys() {
-            // Add to set of globals if VarKind is global reference, temp, ret, or arg
-            let varkind = vars.get(var_id).unwrap();
-            match varkind {
-                VarKind::GlobalRef(defid) | VarKind::Arg(defid) => {
-                    temp.insert(var_id);
-                    non_local_vars.insert(var_id, varkind);
-                }
-                VarKind::Temp { parent } => {
-                    temp.insert(var_id);
-                    non_local_vars.insert(var_id, varkind);
-                }
-                VarKind::Ret => {
-                    temp.insert(var_id);
-                    non_local_vars.insert(var_id, varkind);
-                }
-                _ => {}
-            }
-        }
-        // new_body.clear_non_local_vars();
-
-        // Parse through the blocks within the body:
-        let blocks = &body.blocks;
-        // For every "Assign" statement, there must be a global reference that matches it
-        for blockid in blocks.keys() {
-            let blockiter = blocks.get(blockid).into_iter();
-            for block in blockiter {
-                let insts = &block.insts;
-                let mut new_insts: Vec<Inst> = Vec::new();
-                for inst in insts.iter() {
-                    // Instructions that are assign statements must be updated with new VarId reference:
-                    if let Inst::Assign(variable, rvalue) = inst {
-                        // Parse and update the rvalue to have correct VarId references:
-                        let new_rvalue = update_rvalue(rvalue, &updated_vars);
-
-                        let var_id = variable.as_var_id().unwrap();
-
-                        // EXISTING CASE:
-                        // If this VarId exists in globals, then remove to reflect that this assign statement has a corresp. global ref, and add updated instruction.
-                        if temp.contains(&var_id) {
-                            temp.remove(&var_id);
-                            new_insts.insert(
-                                new_insts.len(),
-                                Inst::Assign(variable.clone(), new_rvalue),
-                            );
-                        }
-                        // NEW CASE:
-                        // If one does not exist: Make a copy of the previous global ref (this is guaranteed to exist), and add updated instruction to set of instructions.
-                        else {
-                            // Extract VarKind(DefId) for this VarId from the globals map, and add Var to body.
-                            let var_kind = (*non_local_vars.get(&var_id).unwrap()).clone();
-                            let new_var_id = new_body.add_var(var_kind);
-                            let new_inst = Inst::Assign(Variable::from(new_var_id), new_rvalue);
-                            new_insts.insert(new_insts.len(), new_inst);
-                            // Update the def_id_to_locals value, to reflect the new VarId assignment to this global ref.
-                            let def_id = new_body.get_defid_from_var(new_var_id).unwrap();
-                            new_body.update_global(def_id, new_var_id);
-
-                            // Update our updated_vars map with the new {old VarId -> new VarId} mapping for later references.
-                            updated_vars.insert(var_id, new_var_id);
-                        }
-                    // If instruction is of type Expression, we simply add the instruction to set of instructions.
-                    } else if let Inst::Expr(rvalue) = inst {
-                        new_insts.insert(new_insts.len(), inst.clone());
-                    }
-                }
-                // Add set of instructions to updated Body of environment
-                new_body.add_insts(new_insts, blockid);
-            }
-        }
-        // Add updated body to new set of functions
-        new_funcs.insert(FuncId(func_id as u32), new_body);
-        // Clear all used structures:
-        temp.clear();
-        non_local_vars.clear();
-        updated_vars.clear();
-    }
-    // Update environment with new structures created
-    environment.defs.funcs = new_funcs;
     environment
 }
 
@@ -1242,7 +1152,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Pat::Ident(BindingIdent { id, .. }) => {
                 let id = id.to_id();
                 let def = self.res.get_or_insert_sym(id, self.module);
-                let var = self.body.get_or_insert_global(def);
+                let var = self.body.insert_global(def);
                 self.push_curr_inst(Inst::Assign(
                     Variable::new(var),
                     Rvalue::Read(Operand::Var(rhs)),
@@ -1293,7 +1203,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                             let id = key.to_id();
                             rhs.projections.push(Projection::Known(id.0.clone()));
                             let def = self.res.get_or_insert_sym(id, self.module);
-                            let var = self.body.get_or_insert_global(def);
+                            let var = self.body.insert_global(def);
                             self.push_curr_inst(Inst::Assign(
                                 Variable::new(var),
                                 Rvalue::Read(Operand::Var(rhs)),
@@ -1340,7 +1250,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     .iter()
                     .find(|(name, defid)| name == "constructor")
                 {
-                    let var = self.body.get_or_insert_global(*def_constructor);
+                    let var = self.body.insert_global(*def_constructor);
                     return Operand::with_var(var);
                 }
             }
@@ -1354,7 +1264,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                             .iter()
                             .find(|(name, defid)| name == &ident.sym)
                         {
-                            let var = self.body.get_or_insert_global(*def_constructor);
+                            let var = self.body.insert_global(*def_constructor);
                             return Operand::with_var(var);
                         }
                     }
@@ -1430,7 +1340,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Pat::Ident(BindingIdent { id, .. }) => {
                 let id = id.to_id();
                 let def = self.res.get_or_insert_sym(id, self.module);
-                let var = self.body.get_or_insert_global(def);
+                let var = self.body.insert_global(def);
                 self.push_curr_inst(Inst::Assign(Variable::new(var), val));
             }
             Pat::Array(ArrayPat { elems, .. }) => {
@@ -1499,7 +1409,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
                 Expr::Ident(ident) => {
                     let defid = self.res.sym_to_id(ident.to_id(), self.module);
-                    let varid = self.body.get_or_insert_global(defid.unwrap());
+                    let varid = self.body.insert_global(defid.unwrap());
                     self.body.push_tmp(
                         self.block,
                         Rvalue::Call(Operand::Var(Variable::from(varid)), SmallVec::default()),
@@ -1542,7 +1452,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             warn!("unknown symbol: {}", id.0);
             return Literal::Undef.into();
         };
-        let var = self.body.get_or_insert_global(def);
+        let var = self.body.insert_global(def);
         Operand::with_var(var)
     }
 
@@ -1562,7 +1472,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     warn!("unknown symbol: {}", id.0);
                     return Literal::Undef.into();
                 };
-                let var = self.body.get_or_insert_global(def);
+                let var = self.body.insert_global(def);
                 Operand::with_var(var)
             }
             JSXElementName::JSXMemberExpr(mem) => self.lower_jsx_member(mem),
@@ -1572,7 +1482,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     warn!("unknown symbol: {}", ns.0);
                     return Literal::Undef.into();
                 };
-                let var = self.body.get_or_insert_global(def);
+                let var = self.body.insert_global(def);
                 let mut var = Variable::new(var);
                 var.projections.push(Projection::Known(name.sym.clone()));
                 Operand::Var(var)
@@ -1612,7 +1522,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                     let id = ident.to_id();
                                     let new_def =
                                         self.res.get_or_insert_sym(id.clone(), self.module);
-                                    let var_id = self.body.get_or_insert_global(new_def);
+                                    let var_id = self.body.insert_global(new_def);
                                     var.projections.push(Projection::Known(ident.sym.clone()));
                                     self.res
                                         .def_mut(def_id)
@@ -2117,7 +2027,7 @@ impl Visit for ArgDefiner<'_> {
             .res
             .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
         self.res.add_parent(defid, self.func);
-        let var = self.body.get_or_insert_global(defid);
+        let var = self.body.insert_global(defid);
         self.body.push_assign(
             STARTING_BLOCK,
             var.into(),
@@ -3454,12 +3364,6 @@ impl Environment {
     #[inline]
     pub fn bodies(&self) -> impl Iterator<Item = &Body> + '_ {
         self.defs.funcs.iter()
-    }
-
-    // Mutable iterator
-    #[inline]
-    pub fn bodies_mut(&mut self) -> impl Iterator<Item = &mut Body> + '_ {
-        self.defs.funcs.iter_mut()
     }
 
     #[inline]
