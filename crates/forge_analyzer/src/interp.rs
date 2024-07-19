@@ -644,14 +644,13 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                         )
                     }
                     // push consts into vec if both are consts
-                    (Value::Const(const_value1), Value::Const(const_value2)) => {
-                        self.add_value_with_projection(
+                    (Value::Const(const_value1), Value::Const(const_value2)) => self
+                        .add_value_with_projection(
                             defid_block,
                             varid,
                             Value::Phi(vec![const_value1, const_value2]),
                             projections,
-                        );
-                    }
+                        ),
                     (Value::Object(exist_var), Value::Object(new_var)) => {
                         // store projection values that are transferred
                         let mut projections_transferred = vec![];

@@ -1,13 +1,10 @@
 #![allow(dead_code, unused)]
 
-use std::hash::Hash;
 use std::{borrow::Borrow, fmt, mem};
 
 use crate::utils::{calls_method, eq_prop_name};
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
-use std::collections::{HashMap, HashSet};
-use swc_core::common::pass::define;
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -187,6 +184,7 @@ pub fn run_resolver(
         module.visit_with(&mut import_collector);
     }
 
+    // check for required after Definitions pass
     // This loop runs through the different import modules and corresponding definitions.
     let defs = Definitions::new(
         environment
@@ -230,61 +228,8 @@ pub fn run_resolver(
         };
         module.visit_with(&mut collector);
     }
-    environment
-}
 
-// This function is a helper function to run_resolver() 's SSA Form Loop.
-// Input: rvalue and hashmap of VarIds that have been updated in the SSA Form Loop.
-// Output: new rvalue that has the newest VarId in its operands.
-pub fn update_rvalue(rvalue: &Rvalue, updated_vars: &HashMap<VarId, VarId>) -> Rvalue {
-    let mut new_rvalue = rvalue.clone();
-    match rvalue {
-        Rvalue::Unary(unop, Operand::Var(variable)) => {
-            let op_var_id = variable.as_var_id().unwrap();
-            if updated_vars.contains_key(&op_var_id) {
-                let updated_var_id = *updated_vars.get(&op_var_id).unwrap();
-                let new_operand = Operand::Var(Variable::new(updated_var_id));
-                new_rvalue = Rvalue::Unary(*unop, new_operand);
-            }
-        }
-        Rvalue::Bin(binop, operand1, operand2) => {
-            let mut new_operand_1 = operand1.clone();
-            let mut new_operand_2 = operand2.clone();
-            if let Operand::Var(variable) = operand1 {
-                let op_var_id = variable.as_var_id().unwrap();
-                if updated_vars.contains_key(&op_var_id) {
-                    let updated_var_id = *updated_vars.get(&op_var_id).unwrap();
-                    new_operand_1 = Operand::Var(Variable::new(updated_var_id));
-                }
-            }
-            if let Operand::Var(variable) = operand2 {
-                let op_var_id = variable.as_var_id().unwrap();
-                if updated_vars.contains_key(&op_var_id) {
-                    let updated_var_id = *updated_vars.get(&op_var_id).unwrap();
-                    new_operand_2 = Operand::Var(Variable::new(updated_var_id));
-                }
-            }
-            new_rvalue = Rvalue::Bin(*binop, new_operand_1, new_operand_2);
-        }
-        Rvalue::Read(Operand::Var(variable)) => {
-            let op_var_id = variable.as_var_id().unwrap();
-            if updated_vars.contains_key(&op_var_id) {
-                let updated_var_id = *updated_vars.get(&op_var_id).unwrap();
-                let new_operand = Operand::Var(Variable::new(updated_var_id));
-                new_rvalue = Rvalue::Read(new_operand);
-            }
-        }
-        Rvalue::Call(Operand::Var(variable), vector) => {
-            let op_var_id = variable.as_var_id().unwrap();
-            if updated_vars.contains_key(&op_var_id) {
-                let updated_var_id = *updated_vars.get(&op_var_id).unwrap();
-                let new_operand = Operand::Var(Variable::new(updated_var_id));
-                new_rvalue = Rvalue::Call(new_operand, vector.clone());
-            }
-        }
-        _ => {}
-    }
-    new_rvalue
+    environment
 }
 
 /// this struct is a bit of a hack, because we also use it for
