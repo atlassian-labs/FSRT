@@ -1467,7 +1467,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                     let id = ident.to_id();
                                     let new_def =
                                         self.res.get_or_insert_sym(id.clone(), self.module);
-                                    let var_id = self.body.insert_global(new_def);
+                                    let var_id = self.body.get_or_insert_global(new_def);
                                     var.projections.push(Projection::Known(ident.sym.clone()));
                                     self.res
                                         .def_mut(def_id)

@@ -13,6 +13,11 @@ let test_function = (word) => {
   let test_var = "test_var";
 }
 
+function test_bug() {
+  let b = 3;
+  let a = b
+}
+
 function complex(a) {
   let b = a - 20;
   let c = b + 1;
