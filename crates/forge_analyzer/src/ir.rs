@@ -2,7 +2,6 @@
 
 // TODO: Use [`SSA`] instead
 // [`SSA`]: https://pfalcon.github.io/ssabook/latest/book-full.pdf
-// testing
 
 use core::fmt;
 use std::array;
@@ -141,7 +140,7 @@ pub struct Body {
     ident_to_local: FxHashMap<Id, VarId>,
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     pub class_instantiations: HashMap<DefId, DefId>,
-    predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
+    predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,  // OnceCell method auto initializes the value first time it's used
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -235,7 +234,7 @@ create_newtype! {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
-pub struct Variable {
+pub struct  Variable {
     pub(crate) base: Base,
     pub(crate) projections: ProjectionVec,
 }
@@ -284,6 +283,15 @@ impl BasicBlock {
         }
     }
 }
+
+struct Arc {  // represents an edge
+    v: u32, // destination vertex of an arc/edge; the u32 represents BasicBlockId
+    next: Option<usize>  // index of the next arc in the list of arcs; None if this is the last arc
+                         // TODO: should v be a BasicBlockId or a usize? or u32
+}
+
+const N: usize = 100000;  // max number of nodes/bbs
+const M: usize = 500000;  // max number of edges
 
 impl Body {
     #[inline]
@@ -344,6 +352,7 @@ impl Body {
 
     #[inline]
     pub(crate) fn get_defid_from_var(&self, varid: VarId) -> Option<DefId> {
+        // println!("Line 358: {:?}", self.vars.get(varid));
         match self.vars.get(varid)? {
             VarKind::AnonClosure(def)
             | VarKind::Arg(def)
@@ -393,13 +402,153 @@ impl Body {
         })
     }
 
+    
+    // MOVED TO OUTSIDE BODY SCOPE
+    // struct Arc {  // represents an edge
+    //     v: BasicBlockId,
+    //     next: Option
+    // }
+
+    // for building up the incoming/outgoing vectors
+    // returns a vector in format of: [(from, to), ...]
+    fn build_cfg_vec(&self) -> Vec<(u32, u32)> {  // the u32's represent BasicBlockIds
+        let mut edges = vec![];
+        for (bb_id, block) in self.iter_blocks_enumerated() {
+            match block.successors() {
+                Successors::Return => {}
+                Successors::One(s) => edges.push((bb_id.0, s.0)),
+                Successors::Two(s1, s2) => {
+                    edges.push((bb_id.0, s1.0));
+                    edges.push((bb_id.0, s2.0));
+                }
+            }
+        }
+        edges
+    }
+
+    // using semi-nca algo from https://maskray.me/blog/2020-12-11-dominator-tree
+    fn build_dom_tree(&self, cfg: Vec<(u32, u32)>) -> Vec<usize> {
+        // declare vars
+        let mut outgoing = vec![None; N];  // e
+        let mut incoming = vec![None; N];  // ee
+
+        
+        // let mut pool: Vec<Arc> = vec![Arc {v: 0, next: None}; 2 * M];
+        let mut pool: Vec<Arc> = Vec::with_capacity(2 * M);
+        // let mut pool: Vec<Arc> = vec![Arc { v: 0, next: None }; 2 * M];
+        let mut pool: Vec<Arc> = Vec::new();
+        let mut pit = pool.as_mut_ptr();  // maybe don't need in Rust?
+
+        // build graph; main() fn from the algo
+        // u->v :: from->to
+        for &(u, v) in cfg {
+            // add edge 'u->v' to u's outgoing edges
+            pool.push(Arc { v: v, next: outgoing[u] });
+            outgoing[u] = Some(pool.len() - 1);
+
+            // add edge 'u->v' to v's incoming edges
+            pool.push(Arc { v: u, next: incoming[v] });
+            incoming[v] = Some(pool.len() - 1);
+        }
+        
+        // semi-nca algo
+        let mut tick = 0;
+        let mut dfn = vec![-1; N];
+        let mut rdfn = vec![0; N];
+        let mut uf = vec![0; N];
+        let mut sdom = vec![0; N];
+        let mut best = vec![0; N];
+        let mut idom = vec![0; N];
+
+        // call dfs
+        dfs(0, &mut tick, &mut dfn, &mut rdfn, &mut outgoing, &mut pool);
+        // iota equivalent
+        for (i, value) in best.iter_mut().enumerate() {
+            *value = i;
+        }
+
+        for i in (1..tick).rev() {
+            let v = rdfn[i];
+            let mut u;
+            sdom[v] = v;
+
+            let mut a = incoming[v];
+            while let Some(arc_index) = a {
+                let arc = &pool[arc_index];
+                u = pool[a].v;
+                if dfn[u] != -1 {
+                    eval(u, i, &dfn, &best, &uf);
+                    if (dfn[best[u]] < dfn[sdom[v]]) {
+                        sdom[v] = best[u];
+                    }
+                }
+                a = pool[a].next;
+            }
+            best[v] = sdom[v];
+            idom[v] = uf[v];
+        }
+        for i in 1..tick {
+            let v = rdfn[i];
+            while dfn[idom[v] > dfn[sdom[v]]] {
+                idom[v] = idom[idom[v]];
+            }
+        }
+    }
+
+    // dfs; helper for semi-nca algo in build_dom_tree()
+    fn dfs(&self, u: BasicBlockId, tick: &mut u32, dfn: &mut Vec<i32>, rdfn: &mut Vec<i32>, outgoing: &mut Vec<Option<usize>>, pool: &mut Vec<Arc>) {
+        dfn[u] = *tick;
+        rdfn[*tick] = u;
+        *tick += 1;
+
+        if let Some(mut a) = outgoing[u] {
+            while let Some(arc) = pool.get(a) {
+                let v = arc.v;
+                if dfn[v] < 0 {
+                    uf[v] = u;
+                    self.dfs(v, tick, dfn, rdfn, outgoing, pool);
+                }
+            }
+        }
+    }
+
+    // eval; helper for semi-nca algo in build_dom_tree()
+    fn eval(v: usize, cur: i32, dfn: &Vec<i32>, best: &Vec<i32>, uf: &Vec<i32>) -> i32 {
+        if dfn[v] <= cur {
+            return v;
+        }
+        let u = uf[v];
+        let r = eval(u, cur, dfn, best, uf);
+        if (dfn[best[u]] < dfn[best[v]]) {
+            best[v] = best[u];
+        }
+        uf[v] = r;
+        r
+    }
+
+    // returns true if a dominates b; false otherwise
+    // a dominates b if every path from entry -> b must go through a; [entry...a...b]
+    pub(crate) fn dominates(&self, a: BasicBlockId, b: BasicBlockId) -> bool {
+        false  // filler
+        // thoughts: 
+        // take in the idom tree, use idom tree to figure out if a dom b
+        // by looping from idom[v]; if at one point, we reach u, then true
+    }
+    
+    // returns an iterator over the dominance frontier of a basic block
+    pub(crate) fn dominance_frontier(&self, b: BasicBlockId) -> impl Iterator<Item = BasicBlockId> + '_ {
+        std::iter::empty()  // filler
+    }
+
+    
+
     pub(crate) fn predecessors(&self, block: BasicBlockId) -> &[BasicBlockId] {
         &self.predecessors.get_or_init(|| {
             let mut preds: TiVec<_, _> = vec![SmallVec::new(); self.blocks.len()].into();
             for (bb, block) in self.iter_blocks_enumerated() {
                 match block.successors() {
                     Successors::Return => {}
-                    Successors::One(s) => preds[s].push(bb),
+                    Successors::One(s) => preds[s].push(bb),  // pushes self's block on the predecessor list of the successor block
                     Successors::Two(s1, s2) => {
                         preds[s1].push(bb);
                         preds[s2].push(bb);
@@ -501,6 +650,7 @@ impl Body {
         parent: Option<DefId>,
     ) -> VarId {
         let var = self.vars.push_and_get_key(VarKind::Temp { parent });
+        println!("push_tmp called on var: {:?}", var);
         self.push_inst(bb, Inst::Assign(Variable::new(var), val));
         var
     }
