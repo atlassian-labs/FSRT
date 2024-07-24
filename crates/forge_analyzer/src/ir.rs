@@ -141,6 +141,8 @@ pub struct Body {
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     pub class_instantiations: HashMap<DefId, DefId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,  // OnceCell method auto initializes the value first time it's used
+    // dominator_tree: OnceCell<Vec<BasicBlockId>>,
+    pub dominator_tree: OnceCell<DomTree>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -233,8 +235,13 @@ create_newtype! {
     pub struct VarId(pub u32);
 }
 
+#[derive(Clone, Debug, Hash, Default)]
+pub struct DomTree {
+    idom: Vec<i32>,  // maybe change to BasicBlockId later
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
-pub struct  Variable {
+pub struct Variable {
     pub(crate) base: Base,
     pub(crate) projections: ProjectionVec,
 }
@@ -306,6 +313,7 @@ impl Body {
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
             predecessors: Default::default(),
+            dominator_tree: Default::default(),
         }
     }
 
@@ -427,7 +435,7 @@ impl Body {
     }
 
     // using semi-nca algo from https://maskray.me/blog/2020-12-11-dominator-tree
-    fn build_dom_tree(&self, cfg: Vec<(u32, u32)>) -> Vec<usize> {
+    fn build_dom_tree(&self, cfg: &Vec<(u32, u32)>) -> Vec<i32> {
         // declare vars
         let mut outgoing = vec![None; N];  // e
         let mut incoming = vec![None; N];  // ee
@@ -443,84 +451,85 @@ impl Body {
         // u->v :: from->to
         for &(u, v) in cfg {
             // add edge 'u->v' to u's outgoing edges
-            pool.push(Arc { v: v, next: outgoing[u] });
-            outgoing[u] = Some(pool.len() - 1);
+            pool.push(Arc { v: v, next: outgoing[u as usize] });
+            outgoing[u as usize] = Some(pool.len() - 1);
 
             // add edge 'u->v' to v's incoming edges
-            pool.push(Arc { v: u, next: incoming[v] });
-            incoming[v] = Some(pool.len() - 1);
+            pool.push(Arc { v: u, next: incoming[v as usize] });
+            incoming[v as usize] = Some(pool.len() - 1);
         }
         
         // semi-nca algo
         let mut tick = 0;
-        let mut dfn = vec![-1; N];
+        let mut dfn: Vec<i32> = vec![-1; N];
         let mut rdfn = vec![0; N];
         let mut uf = vec![0; N];
         let mut sdom = vec![0; N];
-        let mut best = vec![0; N];
+        let mut best:Vec<i32> = vec![0; N];
         let mut idom = vec![0; N];
 
         // call dfs
-        dfs(0, &mut tick, &mut dfn, &mut rdfn, &mut outgoing, &mut pool);
+        self.dfs(0, &mut tick, &mut dfn, &mut rdfn, &mut uf, &mut outgoing, &mut pool);
         // iota equivalent
         for (i, value) in best.iter_mut().enumerate() {
-            *value = i;
+            *value = i as i32;
         }
 
         for i in (1..tick).rev() {
-            let v = rdfn[i];
+            let v = rdfn[i as usize];
             let mut u;
-            sdom[v] = v;
+            sdom[v as usize] = v;
 
-            let mut a = incoming[v];
+            let mut a = incoming[v as usize];
             while let Some(arc_index) = a {
                 let arc = &pool[arc_index];
-                u = pool[a].v;
-                if dfn[u] != -1 {
-                    eval(u, i, &dfn, &best, &uf);
-                    if (dfn[best[u]] < dfn[sdom[v]]) {
-                        sdom[v] = best[u];
+                u = pool[a.unwrap()].v;
+                if dfn[u as usize] != -1 {
+                    self.eval(u.try_into().unwrap(), i as i32, &dfn, &mut best, &mut uf);
+                    if dfn[best[u as usize] as usize] < dfn[sdom[v as usize] as usize] {
+                        sdom[v as usize] = best[u as usize];
                     }
                 }
-                a = pool[a].next;
+                a = pool[a.unwrap()].next;
             }
-            best[v] = sdom[v];
-            idom[v] = uf[v];
+            best[v as usize] = sdom[v as usize];
+            idom[v as usize] = uf[v as usize];
         }
         for i in 1..tick {
-            let v = rdfn[i];
-            while dfn[idom[v] > dfn[sdom[v]]] {
-                idom[v] = idom[idom[v]];
+            let v = rdfn[i as usize];
+            while dfn[idom[v as usize] as usize] > dfn[sdom[v as usize] as usize] {
+                idom[v as usize] = idom[idom[v as usize] as usize];
             }
         }
+        idom
     }
 
     // dfs; helper for semi-nca algo in build_dom_tree()
-    fn dfs(&self, u: BasicBlockId, tick: &mut u32, dfn: &mut Vec<i32>, rdfn: &mut Vec<i32>, outgoing: &mut Vec<Option<usize>>, pool: &mut Vec<Arc>) {
-        dfn[u] = *tick;
-        rdfn[*tick] = u;
+    fn dfs(&self, u: usize, tick: &mut u32, dfn: &mut Vec<i32>, rdfn: &mut Vec<i32>, uf: &mut Vec<i32>, outgoing: &mut Vec<Option<usize>>, pool: &mut Vec<Arc>) {
+        dfn[u] = *tick as i32;
+        rdfn[*tick as usize] = u as i32;
         *tick += 1;
 
-        if let Some(mut a) = outgoing[u] {
+        if let Some(a) = outgoing[u] {
             while let Some(arc) = pool.get(a) {
                 let v = arc.v;
-                if dfn[v] < 0 {
-                    uf[v] = u;
-                    self.dfs(v, tick, dfn, rdfn, outgoing, pool);
+                if dfn[v as usize] < 0 {
+                    uf[v as usize] = u as i32;
+                    self.dfs(v as usize, tick, dfn, rdfn, uf, outgoing, pool);
                 }
             }
         }
     }
 
     // eval; helper for semi-nca algo in build_dom_tree()
-    fn eval(v: usize, cur: i32, dfn: &Vec<i32>, best: &Vec<i32>, uf: &Vec<i32>) -> i32 {
+    fn eval(&self, v: usize, cur: i32, dfn: &Vec<i32>, best: &mut Vec<i32>, uf: &mut Vec<i32>) -> i32 {
         if dfn[v] <= cur {
-            return v;
+            return v.try_into().unwrap();
         }
         let u = uf[v];
-        let r = eval(u, cur, dfn, best, uf);
-        if (dfn[best[u]] < dfn[best[v]]) {
-            best[v] = best[u];
+        let r = self.eval(u.try_into().unwrap(), cur, dfn, best, uf);
+        if dfn[best[u as usize] as usize] < dfn[best[v as usize] as usize] {
+            best[v] = best[u as usize];
         }
         uf[v] = r;
         r
@@ -537,10 +546,18 @@ impl Body {
     
     // returns an iterator over the dominance frontier of a basic block
     pub(crate) fn dominance_frontier(&self, b: BasicBlockId) -> impl Iterator<Item = BasicBlockId> + '_ {
+        // thoughts:
+        // 
         std::iter::empty()  // filler
     }
 
-    
+    pub(crate) fn dominator_tree(&self) -> &DomTree {
+        self.dominator_tree.get_or_init(|| {
+            let cfg = self.build_cfg_vec();
+            let dom_tree = self.build_dom_tree(&cfg);
+            DomTree { idom: dom_tree }
+        })
+    }
 
     pub(crate) fn predecessors(&self, block: BasicBlockId) -> &[BasicBlockId] {
         &self.predecessors.get_or_init(|| {
