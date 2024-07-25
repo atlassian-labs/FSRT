@@ -249,6 +249,13 @@ pub fn run_resolver(
     //     println!();
     // }
 
+    for (_, body) in environment.defs.funcs.iter_enumerated() {
+        println!("NEW NEW\n");
+        for (block_id, block) in body.blocks.iter_enumerated() {
+            println!("PREDECESSORS: {:?}", body.predecessors(block_id));  // PREDS EMPTY AT THIS POINT
+        }
+    }
+
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut collector = FunctionCollector {
             res: &mut environment,
@@ -260,6 +267,20 @@ pub fn run_resolver(
             parent: None,
         };
         module.visit_with(&mut collector);
+    }
+
+    for (_, body) in environment.defs.funcs.iter_enumerated() {
+        println!("NEW NEW222\n");
+        for (block_id, block) in body.blocks.iter_enumerated() {
+            println!("PREDECESSORS: {:?}", body.predecessors(block_id));  // PREDS HAS THINGS
+            println!("DOMINATOR_TREE: {:?}", body.dominator_tree());
+
+            // if let Some(dominator_tree) = body.dominator_tree.get() {
+            //     println!("DOMINATOR_TREE!: {:?}", &dominator_tree.idom[..20]);
+            // } else{
+            //     println!("NO DOMINATOR TREE");
+            // }
+        }
     }
 
     for (_, body) in environment.defs.funcs.iter_enumerated() {
@@ -275,6 +296,7 @@ pub fn run_resolver(
     for (_, body) in environment.defs.funcs.iter_enumerated() {
         println!("BODY: {:?}", body);
         println!();
+        // println!("DOMINATORS: {:?}", body.dominator_tree);
     }
 
     for (body) in environment.defs.funcs.iter_mut() {
@@ -403,11 +425,16 @@ pub fn run_resolver(
     }
 
     for (_, body) in environment.defs.funcs.iter_enumerated() {
-        println!("BODY: {:?}", body);
-        println!();
+        println!("START HERE\n");
+        for (block_id, block) in body.blocks.iter_enumerated() {
+            println!("BLOCK: {:?}", block_id);
+            println!("SUCCESSORS: {:?}", block.successors());
+            println!("PREDECESSORS: {:?}", body.predecessors(block_id));
+        }
     }
     
     environment
+
 }
 
 /// this struct is a bit of a hack, because we also use it for

@@ -237,7 +237,7 @@ create_newtype! {
 
 #[derive(Clone, Debug, Hash, Default)]
 pub struct DomTree {
-    idom: Vec<i32>,  // maybe change to BasicBlockId later
+    pub idom: Vec<i32>,  // maybe change to BasicBlockId later
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
@@ -291,6 +291,7 @@ impl BasicBlock {
     }
 }
 
+#[derive(Clone, Debug, Copy)]
 struct Arc {  // represents an edge
     v: u32, // destination vertex of an arc/edge; the u32 represents BasicBlockId
     next: Option<usize>  // index of the next arc in the list of arcs; None if this is the last arc
@@ -431,18 +432,20 @@ impl Body {
                 }
             }
         }
+        println!("IN BUILD_CFG_VEC: {:?}", edges);
         edges
     }
 
     // using semi-nca algo from https://maskray.me/blog/2020-12-11-dominator-tree
     fn build_dom_tree(&self, cfg: &Vec<(u32, u32)>) -> Vec<i32> {
+        println!("IN BUILD_DOM_TREE BEGINNING");
         // declare vars
         let mut outgoing = vec![None; N];  // e
         let mut incoming = vec![None; N];  // ee
 
         
         // let mut pool: Vec<Arc> = vec![Arc {v: 0, next: None}; 2 * M];
-        let mut pool: Vec<Arc> = Vec::with_capacity(2 * M);
+        // let mut pool: Vec<Arc> = Vec::with_capacity(2 * M);
         // let mut pool: Vec<Arc> = vec![Arc { v: 0, next: None }; 2 * M];
         let mut pool: Vec<Arc> = Vec::new();
         let mut pit = pool.as_mut_ptr();  // maybe don't need in Rust?
@@ -459,6 +462,40 @@ impl Body {
             incoming[v as usize] = Some(pool.len() - 1);
         }
         
+        for (index, a) in pool.iter().enumerate() {
+            println!("Index: {}, Value: {:?}", index, a);
+        }
+
+        println!("OUTGOING");
+        // for i in &outgoing {  // THIS IS WRONG!!! wasn't printing things out correctly
+        //     if let Some(index) = i {
+        //     println!("index: {index}, {:?}", pool[*index]);
+        //     }
+        // }
+        for (i, mut a) in outgoing.iter().enumerate() {
+            while let Some(arc_index) = a {
+                let arc = &pool[*arc_index];
+                println!("index: {}, {:?}", i, arc);
+                a = &arc.next;
+            }
+        }
+
+        println!("INCOMING");
+        // for i in &incoming {
+        //     if let Some(index) = i {
+        //     println!("index: {index}, {:?}", pool[*index]);
+        //     }
+        // }
+        for (i, mut a) in incoming.iter().enumerate() {
+            while let Some(arc_index) = a {
+                let arc = &pool[*arc_index];
+                println!("index: {}, {:?}", i, arc);
+                a = &arc.next;
+            }
+        }
+
+        println!("MIDDLE");
+        
         // semi-nca algo
         let mut tick = 0;
         let mut dfn: Vec<i32> = vec![-1; N];
@@ -470,16 +507,20 @@ impl Body {
 
         // call dfs
         self.dfs(0, &mut tick, &mut dfn, &mut rdfn, &mut uf, &mut outgoing, &mut pool);
+        
+        println!("AFTER DFS CALL");
         // iota equivalent
         for (i, value) in best.iter_mut().enumerate() {
             *value = i as i32;
         }
+        println!("OVER HERE");
 
         for i in (1..tick).rev() {
             let v = rdfn[i as usize];
             let mut u;
             sdom[v as usize] = v;
 
+            println!("BEFORE WHILE");
             let mut a = incoming[v as usize];
             while let Some(arc_index) = a {
                 let arc = &pool[arc_index];
@@ -492,6 +533,8 @@ impl Body {
                 }
                 a = pool[a.unwrap()].next;
             }
+            println!("AFTER WHILE");
+
             best[v as usize] = sdom[v as usize];
             idom[v as usize] = uf[v as usize];
         }
@@ -501,24 +544,40 @@ impl Body {
                 idom[v as usize] = idom[idom[v as usize] as usize];
             }
         }
+        println!("IN BUILD_DOM_TREE END");  // doesn't make it here
         idom
     }
 
     // dfs; helper for semi-nca algo in build_dom_tree()
-    fn dfs(&self, u: usize, tick: &mut u32, dfn: &mut Vec<i32>, rdfn: &mut Vec<i32>, uf: &mut Vec<i32>, outgoing: &mut Vec<Option<usize>>, pool: &mut Vec<Arc>) {
+    fn dfs(&self, u: usize, tick: &mut u32, dfn: &mut Vec<i32>, rdfn: &mut Vec<i32>,
+           uf: &mut Vec<i32>, outgoing: &mut Vec<Option<usize>>, pool: &Vec<Arc>) {
         dfn[u] = *tick as i32;
         rdfn[*tick as usize] = u as i32;
         *tick += 1;
 
-        if let Some(a) = outgoing[u] {
-            while let Some(arc) = pool.get(a) {
-                let v = arc.v;
-                if dfn[v as usize] < 0 {
-                    uf[v as usize] = u as i32;
-                    self.dfs(v as usize, tick, dfn, rdfn, uf, outgoing, pool);
-                }
+        let mut a = outgoing[u];
+        while let Some(arc_index) = a {
+            let arc = &pool[arc_index];
+            let v = arc.v;
+            if dfn[v as usize] < 0 {
+                uf[v as usize] = u as i32;
+                self.dfs(v as usize, tick, dfn, rdfn, uf, outgoing, pool);
             }
+            a = arc.next;
         }
+
+        // if let Some(a) = outgoing[u] {
+        //     while let Some(arc) = pool.get(a) {
+        //         let v = arc.v;
+        //         if dfn[v as usize] < 0 {
+        //             uf[v as usize] = u as i32;
+        //             self.dfs(v as usize, tick, dfn, rdfn, uf, outgoing, pool);
+        //         }
+                
+        //         // println!("INSIDE LOOP");
+        //     }
+        // }
+        // println!("DFS END");
     }
 
     // eval; helper for semi-nca algo in build_dom_tree()
@@ -553,6 +612,7 @@ impl Body {
 
     pub(crate) fn dominator_tree(&self) -> &DomTree {
         self.dominator_tree.get_or_init(|| {
+            println!("dominator_tree called");
             let cfg = self.build_cfg_vec();
             let dom_tree = self.build_dom_tree(&cfg);
             DomTree { idom: dom_tree }
@@ -561,6 +621,7 @@ impl Body {
 
     pub(crate) fn predecessors(&self, block: BasicBlockId) -> &[BasicBlockId] {
         &self.predecessors.get_or_init(|| {
+            println!("predecessors called");
             let mut preds: TiVec<_, _> = vec![SmallVec::new(); self.blocks.len()].into();
             for (bb, block) in self.iter_blocks_enumerated() {
                 match block.successors() {
