@@ -467,11 +467,6 @@ impl Body {
         }
 
         println!("OUTGOING");
-        // for i in &outgoing {  // THIS IS WRONG!!! wasn't printing things out correctly
-        //     if let Some(index) = i {
-        //     println!("index: {index}, {:?}", pool[*index]);
-        //     }
-        // }
         for (i, mut a) in outgoing.iter().enumerate() {
             while let Some(arc_index) = a {
                 let arc = &pool[*arc_index];
@@ -481,11 +476,6 @@ impl Body {
         }
 
         println!("INCOMING");
-        // for i in &incoming {
-        //     if let Some(index) = i {
-        //     println!("index: {index}, {:?}", pool[*index]);
-        //     }
-        // }
         for (i, mut a) in incoming.iter().enumerate() {
             while let Some(arc_index) = a {
                 let arc = &pool[*arc_index];
@@ -503,22 +493,42 @@ impl Body {
         let mut uf = vec![0; N];
         let mut sdom = vec![0; N];
         let mut best:Vec<i32> = vec![0; N];
-        let mut idom = vec![0; N];
+        let mut idom = vec![-1; N];
 
         // call dfs
         self.dfs(0, &mut tick, &mut dfn, &mut rdfn, &mut uf, &mut outgoing, &mut pool);
+
+        // println!("DFN CONTENTS ");
+        // for (index, &value) in dfn.iter().enumerate() {
+        //     println!("dfn[{}]: {}", index, value);
+        // }
+        // println!("RDFN CONTENTS ");
+        // for (index, &value) in rdfn.iter().enumerate() {
+        //     println!("rdfn[{}]: {}", index, value);
+        // }
         
         println!("AFTER DFS CALL");
         // iota equivalent
         for (i, value) in best.iter_mut().enumerate() {
             *value = i as i32;
         }
+
+        // println!("BEST CONTENTS ");  // filled correctly
+        // for (index, &value) in best.iter().enumerate() {
+        //     println!("best[{}]: {}", index, value);
+        // }
+
         println!("OVER HERE");
 
         for i in (1..tick).rev() {
-            let v = rdfn[i as usize];
+            let v = rdfn[i as usize];  // values of rdfn match up with the indicies
             let mut u;
-            sdom[v as usize] = v;
+            sdom[v as usize] = v;  // essentially sdom values match rdfn values (?)
+
+            println!("PRINTING SDOM CONTENTS!!!");
+            for (index, &value) in sdom.iter().enumerate().take(tick as usize) {
+                println!("sdom[{}]: {}", index, value);
+            }
 
             println!("BEFORE WHILE");
             let mut a = incoming[v as usize];
@@ -526,8 +536,10 @@ impl Body {
                 let arc = &pool[arc_index];
                 u = pool[a.unwrap()].v;
                 if dfn[u as usize] != -1 {
+                    println!("ENTERED \n");
                     self.eval(u.try_into().unwrap(), i as i32, &dfn, &mut best, &mut uf);
                     if dfn[best[u as usize] as usize] < dfn[sdom[v as usize] as usize] {
+                        println!("2ENTERED \n");
                         sdom[v as usize] = best[u as usize];
                     }
                 }
@@ -537,14 +549,47 @@ impl Body {
 
             best[v as usize] = sdom[v as usize];
             idom[v as usize] = uf[v as usize];
+
+            println!("CHECK OVER HERE");
+            println!("V: {}", v);
+            println!("3BEST");
+            for (index, &value) in best.iter().enumerate().take(tick as usize) {
+                println!("best[{}]: {}", index, value);
+            }
+            println!("3SDOM");
+            for (index, &value) in sdom.iter().enumerate().take(tick as usize) {
+                println!("sdom[{}]: {}", index, value);
+            }
+            println!("3IDOM");  // NOT GETTING POPULATED CORRECTLY; SHOULD BE -1, 0, -1 -> fixed; init issue
+            for (index, &value) in idom.iter().enumerate().take(tick as usize) {
+                println!("idom[{}]: {}", index, value);
+            }
+            println!("3UF");
+            for (index, &value) in uf.iter().enumerate().take(tick as usize) {
+                println!("uf[{}]: {}", index, value);
+            }
+
         }
+
+        // // check sdom contents
+        // println!("SDOM CONTENTS ");
+        // for (index, &value) in sdom.iter().enumerate() {
+        //     println!("sdom[{}]: {}", index, value);
+        // }
+
         for i in 1..tick {
             let v = rdfn[i as usize];
             while dfn[idom[v as usize] as usize] > dfn[sdom[v as usize] as usize] {
                 idom[v as usize] = idom[idom[v as usize] as usize];
+                println!("ENTERED!!!!!");
             }
         }
-        println!("IN BUILD_DOM_TREE END");  // doesn't make it here
+        
+        // check idom contents
+        println!("IDOM CONTENTS OVER HERE!!!");
+        for (index, &value) in idom.iter().enumerate().take(tick as usize) {
+            println!("idom[{}]: {}", index, value);
+        }
         idom
     }
 
@@ -565,19 +610,6 @@ impl Body {
             }
             a = arc.next;
         }
-
-        // if let Some(a) = outgoing[u] {
-        //     while let Some(arc) = pool.get(a) {
-        //         let v = arc.v;
-        //         if dfn[v as usize] < 0 {
-        //             uf[v as usize] = u as i32;
-        //             self.dfs(v as usize, tick, dfn, rdfn, uf, outgoing, pool);
-        //         }
-                
-        //         // println!("INSIDE LOOP");
-        //     }
-        // }
-        // println!("DFS END");
     }
 
     // eval; helper for semi-nca algo in build_dom_tree()
