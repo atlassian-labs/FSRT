@@ -273,13 +273,7 @@ pub fn run_resolver(
         println!("NEW NEW222\n");
         for (block_id, block) in body.blocks.iter_enumerated() {
             println!("PREDECESSORS: {:?}", body.predecessors(block_id));  // PREDS HAS THINGS
-            println!("DOMINATOR_TREE: {:?}", body.dominator_tree());
-
-            // if let Some(dominator_tree) = body.dominator_tree.get() {
-            //     println!("DOMINATOR_TREE!: {:?}", &dominator_tree.idom[..20]);
-            // } else{
-            //     println!("NO DOMINATOR TREE");
-            // }
+            println!("DOMINATOR_TREE: {:?}", body.dominator_tree());  // NEED TO CALL THIS TO TEST OUT IDOM CODE FROM IR.RS
         }
     }
 
@@ -287,11 +281,7 @@ pub fn run_resolver(
         println!("BODY POST-FUNCTION-COLLECTOR: {:?}", body);
         println!();
     }
-    // // lowering has been completed here
-
-    // let mut new_funcs: TiVec<FuncId, Body> = TiVec::new();
-    // new_funcs = environment.defs.funcs.clone();
-    // new_funcs.body = environment.defs.funcs.body.clone();;
+    // lowering has been completed here
 
     for (_, body) in environment.defs.funcs.iter_enumerated() {
         println!("BODY: {:?}", body);
