@@ -629,17 +629,58 @@ impl Body {
     // returns true if a dominates b; false otherwise
     // a dominates b if every path from entry -> b must go through a; [entry...a...b]
     pub(crate) fn dominates(&self, a: BasicBlockId, b: BasicBlockId) -> bool {
-        false  // filler
-        // thoughts: 
-        // take in the idom tree, use idom tree to figure out if a dom b
-        // by looping from idom[v]; if at one point, we reach u, then true
+        let dom_tree = self.dominator_tree();
+        let idom = &dom_tree.idom;
+
+        let a = a.0 as i32;
+        let b = b.0 as i32;
+
+        let mut val = b as usize;
+        while idom[val] != -1 {
+            if idom[val] == a {
+                return true;
+            }
+            val = idom[val] as usize;
+        }
+        false
     }
     
     // returns an iterator over the dominance frontier of a basic block
     pub(crate) fn dominance_frontier(&self, b: BasicBlockId) -> impl Iterator<Item = BasicBlockId> + '_ {
-        // thoughts:
-        // 
-        std::iter::empty()  // filler
+        let idom = &self.dominator_tree().idom;
+        let mut frontier: Vec<BasicBlockId> = Vec::new();
+
+         // set of blocks dominated by b
+        let mut b_doms: Vec<BasicBlockId> = Vec::new();
+        for (bb, _) in self.iter_blocks_enumerated() {
+            if self.dominates(b, bb) {
+                b_doms.push(bb);
+            }
+        }
+
+        // get all the immediate successors of each block in b_doms
+        for bb in b_doms {
+            // get the immediate successors of the block,
+            // add to frontier if the successor !dom b
+            let block = self.block(bb);
+            match block.successors() {
+                Successors::Return => {}
+                Successors::One(s) => {
+                    if !self.dominates(b, s) {
+                        frontier.push(s);
+                    }
+                }
+                Successors::Two(s1, s2) => {
+                    if !self.dominates(b, s1) {
+                        frontier.push(s1);
+                    }
+                    if !self.dominates(b, s2) {
+                        frontier.push(s2);
+                    }
+                }
+            }
+        }
+        frontier.into_iter()
     }
 
     pub(crate) fn dominator_tree(&self) -> &DomTree {
