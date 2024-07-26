@@ -361,7 +361,6 @@ impl Body {
 
     #[inline]
     pub(crate) fn get_defid_from_var(&self, varid: VarId) -> Option<DefId> {
-        // println!("Line 358: {:?}", self.vars.get(varid));
         match self.vars.get(varid)? {
             VarKind::AnonClosure(def)
             | VarKind::Arg(def)
@@ -411,12 +410,6 @@ impl Body {
         })
     }
 
-    
-    // MOVED TO OUTSIDE BODY SCOPE
-    // struct Arc {  // represents an edge
-    //     v: BasicBlockId,
-    //     next: Option
-    // }
 
     // for building up the incoming/outgoing vectors
     // returns a vector in format of: [(from, to), ...]
@@ -432,23 +425,16 @@ impl Body {
                 }
             }
         }
-        println!("IN BUILD_CFG_VEC: {:?}", edges);
         edges
     }
 
     // using semi-nca algo from https://maskray.me/blog/2020-12-11-dominator-tree
     fn build_dom_tree(&self, cfg: &Vec<(u32, u32)>) -> Vec<i32> {
-        println!("IN BUILD_DOM_TREE BEGINNING");
         // declare vars
         let mut outgoing = vec![None; N];  // e
         let mut incoming = vec![None; N];  // ee
 
-        
-        // let mut pool: Vec<Arc> = vec![Arc {v: 0, next: None}; 2 * M];
-        // let mut pool: Vec<Arc> = Vec::with_capacity(2 * M);
-        // let mut pool: Vec<Arc> = vec![Arc { v: 0, next: None }; 2 * M];
         let mut pool: Vec<Arc> = Vec::new();
-        let mut pit = pool.as_mut_ptr();  // maybe don't need in Rust?
 
         // build graph; main() fn from the algo
         // u->v :: from->to
@@ -462,30 +448,6 @@ impl Body {
             incoming[v as usize] = Some(pool.len() - 1);
         }
         
-        for (index, a) in pool.iter().enumerate() {
-            println!("Index: {}, Value: {:?}", index, a);
-        }
-
-        println!("OUTGOING");
-        for (i, mut a) in outgoing.iter().enumerate() {
-            while let Some(arc_index) = a {
-                let arc = &pool[*arc_index];
-                println!("index: {}, {:?}", i, arc);
-                a = &arc.next;
-            }
-        }
-
-        println!("INCOMING");
-        for (i, mut a) in incoming.iter().enumerate() {
-            while let Some(arc_index) = a {
-                let arc = &pool[*arc_index];
-                println!("index: {}, {:?}", i, arc);
-                a = &arc.next;
-            }
-        }
-
-        println!("MIDDLE");
-        
         // semi-nca algo
         let mut tick = 0;
         let mut dfn: Vec<i32> = vec![-1; N];
@@ -498,97 +460,38 @@ impl Body {
         // call dfs
         self.dfs(0, &mut tick, &mut dfn, &mut rdfn, &mut uf, &mut outgoing, &mut pool);
 
-        // println!("DFN CONTENTS ");
-        // for (index, &value) in dfn.iter().enumerate() {
-        //     println!("dfn[{}]: {}", index, value);
-        // }
-        // println!("RDFN CONTENTS ");
-        // for (index, &value) in rdfn.iter().enumerate() {
-        //     println!("rdfn[{}]: {}", index, value);
-        // }
-        
-        println!("AFTER DFS CALL");
         // iota equivalent
         for (i, value) in best.iter_mut().enumerate() {
             *value = i as i32;
         }
-
-        // println!("BEST CONTENTS ");  // filled correctly
-        // for (index, &value) in best.iter().enumerate() {
-        //     println!("best[{}]: {}", index, value);
-        // }
-
-        println!("OVER HERE");
 
         for i in (1..tick).rev() {
             let v = rdfn[i as usize];  // values of rdfn match up with the indicies
             let mut u;
             sdom[v as usize] = v;  // essentially sdom values match rdfn values (?)
 
-            println!("PRINTING SDOM CONTENTS!!!");
-            for (index, &value) in sdom.iter().enumerate().take(tick as usize) {
-                println!("sdom[{}]: {}", index, value);
-            }
-
-            println!("BEFORE WHILE");
             let mut a = incoming[v as usize];
             while let Some(arc_index) = a {
                 let arc = &pool[arc_index];
                 u = pool[a.unwrap()].v;
                 if dfn[u as usize] != -1 {
-                    println!("ENTERED \n");
                     self.eval(u.try_into().unwrap(), i as i32, &dfn, &mut best, &mut uf);
                     if dfn[best[u as usize] as usize] < dfn[sdom[v as usize] as usize] {
-                        println!("2ENTERED \n");
                         sdom[v as usize] = best[u as usize];
                     }
                 }
                 a = pool[a.unwrap()].next;
             }
-            println!("AFTER WHILE");
 
             best[v as usize] = sdom[v as usize];
             idom[v as usize] = uf[v as usize];
-
-            println!("CHECK OVER HERE");
-            println!("V: {}", v);
-            println!("3BEST");
-            for (index, &value) in best.iter().enumerate().take(tick as usize) {
-                println!("best[{}]: {}", index, value);
-            }
-            println!("3SDOM");
-            for (index, &value) in sdom.iter().enumerate().take(tick as usize) {
-                println!("sdom[{}]: {}", index, value);
-            }
-            println!("3IDOM");  // NOT GETTING POPULATED CORRECTLY; SHOULD BE -1, 0, -1 -> fixed; init issue
-            for (index, &value) in idom.iter().enumerate().take(tick as usize) {
-                println!("idom[{}]: {}", index, value);
-            }
-            println!("3UF");
-            for (index, &value) in uf.iter().enumerate().take(tick as usize) {
-                println!("uf[{}]: {}", index, value);
-            }
-
         }
-
-        // // check sdom contents
-        // println!("SDOM CONTENTS ");
-        // for (index, &value) in sdom.iter().enumerate() {
-        //     println!("sdom[{}]: {}", index, value);
-        // }
 
         for i in 1..tick {
             let v = rdfn[i as usize];
             while dfn[idom[v as usize] as usize] > dfn[sdom[v as usize] as usize] {
                 idom[v as usize] = idom[idom[v as usize] as usize];
-                println!("ENTERED!!!!!");
             }
-        }
-        
-        // check idom contents
-        println!("IDOM CONTENTS OVER HERE!!!");
-        for (index, &value) in idom.iter().enumerate().take(tick as usize) {
-            println!("idom[{}]: {}", index, value);
         }
         idom
     }
@@ -685,7 +588,6 @@ impl Body {
 
     pub(crate) fn dominator_tree(&self) -> &DomTree {
         self.dominator_tree.get_or_init(|| {
-            println!("dominator_tree called");
             let cfg = self.build_cfg_vec();
             let dom_tree = self.build_dom_tree(&cfg);
             DomTree { idom: dom_tree }
@@ -694,7 +596,6 @@ impl Body {
 
     pub(crate) fn predecessors(&self, block: BasicBlockId) -> &[BasicBlockId] {
         &self.predecessors.get_or_init(|| {
-            println!("predecessors called");
             let mut preds: TiVec<_, _> = vec![SmallVec::new(); self.blocks.len()].into();
             for (bb, block) in self.iter_blocks_enumerated() {
                 match block.successors() {
@@ -801,7 +702,6 @@ impl Body {
         parent: Option<DefId>,
     ) -> VarId {
         let var = self.vars.push_and_get_key(VarKind::Temp { parent });
-        println!("push_tmp called on var: {:?}", var);
         self.push_inst(bb, Inst::Assign(Variable::new(var), val));
         var
     }
