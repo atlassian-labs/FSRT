@@ -119,7 +119,7 @@ pub struct Location {
     pub stmt: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
 pub enum VarKind {
     LocalDef(DefId),
     GlobalRef(DefId),
@@ -270,6 +270,12 @@ impl BasicBlock {
         self.insts.iter()
     }
 
+    // Mutable iterator for instructions of the basic block
+    #[inline]
+    pub fn iter_insts_mut(&mut self) -> impl Iterator<Item = &mut Inst> + '_ {
+        self.insts.iter_mut()
+    }    
+
     pub(crate) fn successors(&self) -> Successors {
         match self.term {
             Terminator::Ret => Successors::Return,
@@ -333,6 +339,12 @@ impl Body {
     ) -> impl ExactSizeIterator<Item = (BasicBlockId, &BasicBlock)> + DoubleEndedIterator {
         self.blocks.iter_enumerated()
     }
+
+    // Mutable iterator for blocks
+    #[inline]
+    pub fn iter_blocks_mut(&mut self) -> impl Iterator<Item = (BasicBlockId, &mut BasicBlock)> + '_ {
+        self.blocks.iter_mut_enumerated()
+    }    
 
     #[inline]
     pub(crate) fn owner(&self) -> Option<DefId> {

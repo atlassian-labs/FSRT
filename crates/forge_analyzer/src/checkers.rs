@@ -177,7 +177,7 @@ impl<'cx> Dataflow<'cx> for TaintDataflow {
                 debug!(first_var = ?kind, "no arguments read");
             }
         }
-        for (idx, inst) in block.iter().enumerate() {
+        for (idx, inst) in block.iter_insts().enumerate() {
             initial_state = self.transfer_inst(
                 interp,
                 def,
@@ -1188,7 +1188,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
     ) -> Self::State {
         let mut state = initial_state;
 
-        for (stmt, inst) in block.iter().enumerate() {
+        for (stmt, inst) in block.iter_insts().enumerate() {
             let loc = Location::new(bb, stmt as u32);
             state = self.transfer_inst(interp, def, loc, block, inst, state);
         }
@@ -1539,7 +1539,7 @@ impl<'cx> Dataflow<'cx> for DefinitionAnalysisRunner {
             }
         }
 
-        for (stmt, inst) in block.iter().enumerate() {
+        for (stmt, inst) in block.iter_insts().enumerate() {
             let loc = Location::new(bb, stmt as u32);
             state = self.transfer_inst(interp, def, loc, block, inst, state);
         }

@@ -156,7 +156,7 @@ pub trait Dataflow<'cx>: Sized {
         _arguments: Option<Vec<Value>>,
     ) -> Self::State {
         let mut state = initial_state;
-        for (stmt, inst) in block.iter().enumerate() {
+        for (stmt, inst) in block.iter_insts().enumerate() {
             let loc = Location::new(bb, stmt as u32);
             state = self.transfer_inst(interp, def, loc, block, inst, state);
         }
@@ -469,7 +469,7 @@ impl CallGraph {
             .flat_map(|(def, body)| {
                 iter::repeat((def, body)).zip(
                     body.iter_blocks_enumerated()
-                        .flat_map(|(bb, block)| iter::repeat(bb).zip(block.iter().enumerate())),
+                        .flat_map(|(bb, block)| iter::repeat(bb).zip(block.iter_insts().enumerate())),
                 )
             })
             .filter_map(|((def, body), (bb, (inst_idx, inst)))| {
