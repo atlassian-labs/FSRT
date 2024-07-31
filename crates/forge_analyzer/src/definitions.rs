@@ -258,7 +258,7 @@ pub fn run_resolver(
         // Mutable iteration through the blocks of the body
         for (block_id, body_block) in body.iter_blocks_mut() {
             let mut block = mem::take(body_block);
-            // For every "Assign" statement, there must be a global reference variable to match
+            // Iterate through existing instructions and create new instruction set with new var references
             let mut insts: Vec<Inst> = Vec::new();
             for inst in block.iter_insts_mut() {
                 if let Inst::Assign(variable, old_rvalue) = inst {
