@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use crate::{
     definitions::Environment,
-    ir::{Body, VarKind},
+    ir::{BasicBlockId, Body, VarKind},
 };
 
 impl Environment {
@@ -80,26 +80,63 @@ pub fn dump_ir(output: &mut dyn Write, env: &Environment, body: &Body) -> io::Re
         writeln!(output, "{id}:\n{block}")?;
     }
 
-    writeln!(output, "Checking Control Flow Graph\n")?;
+    writeln!(output)?;
+    dump_dom_tree(output, env, body)?;
 
-    for (a, b) in body.iter_cfg_enumerated() {
-        write!(output, "Edge: ({a}, {b})\n")?;
-    }
-
-    write!(output, "dominator tree idom: {:?}\n", body.dominator_tree().idom)?;
-
-    
     Ok(())
 }
 
 pub fn dump_dom_tree(output: &mut dyn Write, env: &Environment, body: &Body) -> io::Result<()> {
+
+    writeln!(output, "----------------------------------------------")?;
     writeln!(output, "Checking Control Flow Graph\n")?;
 
     for (a, b) in body.iter_cfg_enumerated() {
         write!(output, "Edge: ({a}, {b})\n")?;
     }
 
-    write!(output, "dominator tree idom: {:?}\n", body.dominator_tree().idom)?;
+    writeln!(output, "----------------------------------------------")?;
+    let num_blocks = body.blocks.len();
+    write!(output, "Dominator Tree idom: {:?}\n", &body.dominator_tree().idom[..num_blocks])?;
+
+    writeln!(output, "Idoms in format of <bb: bb's idom>")?;
+    for (block, idom) in body.dominator_tree().idom[..num_blocks].iter().enumerate() {
+        writeln!(output, "{}: {:?}", block, idom)?;
+    }
+
+    writeln!(output, "----------------------------------------------")?;
+    for (block, idom) in body.dominator_tree().idom[..num_blocks].iter().enumerate() {
+        write!(output, "Blocks that bb{} Dominates: ", block)?;
+        for i in 0..num_blocks {
+            if body.dominates(BasicBlockId(block as u32), BasicBlockId(i as u32)) {
+                write!(output, "{}, ", i)?;
+            }
+        }
+        writeln!(output)?;
+    }
+
+    writeln!(output, "----------------------------------------------")?;
+    for (block, idom) in body.dominator_tree().idom[..num_blocks].iter().enumerate() {
+        write!(output, "bb{}'s Dominators: ", block)?;
+        for i in 0..num_blocks {
+            if body.dominates(BasicBlockId(i as u32), BasicBlockId(block as u32)) {
+                write!(output, "{}, ", i)?;
+            }
+        }
+        writeln!(output)?;
+    }
+
+    writeln!(output, "----------------------------------------------")?;
+    writeln!(output, "Dominance Frontiers:")?;
+    for (block, _) in body.iter_blocks_enumerated() {
+        write!(output, "bb{}: ", block.0)?;
+        let dominance_frontier = body.dominance_frontier(block);
+
+        for frontier_block in dominance_frontier {
+            write!(output, "{}, ", frontier_block.0)?;
+        }
+        writeln!(output)?;
+    }
     
     Ok(())
 }
