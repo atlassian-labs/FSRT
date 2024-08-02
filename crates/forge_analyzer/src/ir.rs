@@ -16,6 +16,7 @@ use std::slice;
 
 use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
+use petgraph::algo::dominators;
 use smallvec::smallvec;
 use smallvec::smallvec_inline;
 use smallvec::SmallVec;
@@ -43,7 +44,7 @@ use crate::interp::ProjectionVec;
 pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
 
 create_newtype! {
-    pub struct BasicBlockId(u32);
+    pub struct BasicBlockId(pub u32);
 }
 
 #[derive(Clone, Debug)]
@@ -336,6 +337,11 @@ impl Body {
         self.vars.iter_enumerated()
     }
 
+    #[inline]
+    pub(crate) fn iter_cfg_enumerated(&self) -> impl Iterator<Item = (u32, u32)> {
+        self.build_cfg_vec().into_iter()
+    }
+
     pub(crate) fn iter_block_keys(
         &self,
     ) -> impl ExactSizeIterator<Item = BasicBlockId> + DoubleEndedIterator + '_ {
@@ -472,7 +478,7 @@ impl Body {
 
             let mut a = incoming[v as usize];
             while let Some(arc_index) = a {
-                let arc = &pool[arc_index];
+                // let arc = &pool[arc_index];
                 u = pool[a.unwrap()].v;
                 if dfn[u as usize] != -1 {
                     self.eval(u.try_into().unwrap(), i as i32, &dfn, &mut best, &mut uf);
@@ -551,39 +557,27 @@ impl Body {
     // returns an iterator over the dominance frontier of a basic block
     pub(crate) fn dominance_frontier(&self, b: BasicBlockId) -> impl Iterator<Item = BasicBlockId> + '_ {
         let idom = &self.dominator_tree().idom;
-        let mut frontier: Vec<BasicBlockId> = Vec::new();
-
-         // set of blocks dominated by b
-        let mut b_doms: Vec<BasicBlockId> = Vec::new();
-        for (bb, _) in self.iter_blocks_enumerated() {
-            if self.dominates(b, bb) {
-                b_doms.push(bb);
-            }
+        let mut frontiers: Vec<Vec<BasicBlockId>> = Vec::new();
+        for _ in 0..self.blocks.len() {
+            frontiers.push(Vec::new());
         }
 
-        // get all the immediate successors of each block in b_doms
-        for bb in b_doms {
-            // get the immediate successors of the block,
-            // add to frontier if the successor !dom b
-            let block = self.block(bb);
-            match block.successors() {
-                Successors::Return => {}
-                Successors::One(s) => {
-                    if !self.dominates(b, s) {
-                        frontier.push(s);
-                    }
-                }
-                Successors::Two(s1, s2) => {
-                    if !self.dominates(b, s1) {
-                        frontier.push(s1);
-                    }
-                    if !self.dominates(b, s2) {
-                        frontier.push(s2);
+        // algorithm from https://en.wikipedia.org/wiki/Static_single-assignment_form#Computing_minimal_SSA_using_dominance_frontiers
+        // which references: https://www.cs.tufts.edu/comp/150FP/archive/keith-cooper/dom14.pdf
+        for (id, block) in self.iter_blocks_enumerated() {
+            if (self.predecessors(id).len() >= 2) {
+                for pred in self.predecessors(id) {
+                    let mut runner = pred.0;
+                    while runner != idom[id.0 as usize] as u32 {
+                        frontiers[runner as usize].push(id);
+                        runner = idom[runner as usize] as u32;
                     }
                 }
             }
         }
-        frontier.into_iter()
+        let ret_frontier = frontiers[b.0 as usize].clone();
+        ret_frontier.into_iter()
+
     }
 
     pub(crate) fn dominator_tree(&self) -> &DomTree {
