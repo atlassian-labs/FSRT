@@ -274,7 +274,7 @@ impl BasicBlock {
     #[inline]
     pub fn iter_insts_mut(&mut self) -> impl Iterator<Item = &mut Inst> + '_ {
         self.insts.iter_mut()
-    }    
+    }
 
     pub(crate) fn successors(&self) -> Successors {
         match self.term {
@@ -342,44 +342,20 @@ impl Body {
 
     // Mutable iterator for blocks
     #[inline]
-    pub fn iter_blocks_mut(&mut self) -> impl Iterator<Item = (BasicBlockId, &mut BasicBlock)> + '_ {
+    pub fn iter_blocks_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (BasicBlockId, &mut BasicBlock)> + '_ {
         self.blocks.iter_mut_enumerated()
-    }    
+    }
 
     #[inline]
     pub(crate) fn owner(&self) -> Option<DefId> {
         self.owner
     }
 
-    // This function clears the non local definition variables in the vars of this body.
-    // Written to supports the SSA Form fix.
-    #[inline]
-    pub(crate) fn clear_non_local_vars(&mut self) {
-        println!("OLD VARS: {:?}", self.vars);
-        let mut new_vars = self.vars.clone();
-        new_vars.clear();
-
-        for (_, varkind) in self.vars.iter_mut_enumerated() {
-            match varkind {
-                VarKind::LocalDef(_) | VarKind::Ret => {
-                    _ = new_vars.push_and_get_key(varkind.clone());
-                }
-                _ => {}
-            }
-        }
-        println!("NEW VARS: {:?}", new_vars);
-        self.vars = new_vars;
-    }
-
     #[inline]
     pub(crate) fn add_var(&mut self, kind: VarKind) -> VarId {
         self.vars.push_and_get_key(kind)
-    }
-
-    #[inline]
-    pub(crate) fn add_insts(&mut self, new_insts: Vec<Inst>, bb: BasicBlockId) {
-        let block = self.blocks.get_mut(bb).unwrap();
-        block.insts = new_insts;
     }
 
     #[inline]

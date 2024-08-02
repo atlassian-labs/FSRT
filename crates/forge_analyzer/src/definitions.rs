@@ -233,12 +233,9 @@ pub fn run_resolver(
         module.visit_with(&mut collector);
     }
     // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump.
-    let mut funcs: TiVec<FuncId, Body> = mem::take(&mut environment.defs.funcs);
     let mut vars_map: HashMap<VarId, (VarKind, Option<VarId>, bool)> = HashMap::new();
-
     // Mutable iteration through the bodies in the environment
-    for (func_id, env_body) in environment.bodies_mut().enumerate() {
-        let mut body = mem::take(env_body);
+    for (func_id, body) in environment.bodies_mut().enumerate() {
         // Populate the variables map
         for var_id in body.vars.keys() {
             let var_kind = *body.vars.get(var_id).unwrap();
@@ -256,44 +253,54 @@ pub fn run_resolver(
             }
         }
         // Mutable iteration through the blocks of the body
-        for (block_id, body_block) in body.iter_blocks_mut() {
-            let mut block = mem::take(body_block);
+        for (block_id, block) in body.blocks.iter_mut_enumerated() {
             // Iterate through existing instructions and create new instruction set with new var references
             let mut insts: Vec<Inst> = Vec::new();
             for inst in block.iter_insts_mut() {
                 if let Inst::Assign(variable, old_rvalue) = inst {
                     let new_rvalue = update_rvalue(old_rvalue, &vars_map);
                     let var_id = variable.as_var_id().unwrap();
-                    if (vars_map.contains_key(&var_id)) {
-                        let (var_kind, updated_var_id, global_exists) = vars_map.get_mut(&var_id).unwrap();
-                        if !*global_exists { // Does not exist case (reassignment of var)
-                            body.add_var(*var_kind);
-                        } // Exists case (assignment of var)
+                    let (var_kind, updated_var_id, global_exists) =
+                        vars_map.get_mut(&var_id).unwrap();
+                    if !*global_exists {
+                        // a global match does not exist for this var - global existing case.
                         insts.insert(insts.len(), Inst::Assign(variable.clone(), new_rvalue));
-                        global_exists = &mut true;
+                        *updated_var_id = variable.as_var_id();
+                        *global_exists = true;
+                    }
+                    // a global match for this varid already exists - need new global case.
+                    else {
+                        let new_var_id = body.vars.push_and_get_key(*var_kind);
+                        insts.insert(
+                            insts.len(),
+                            Inst::Assign(Variable::from(new_var_id), new_rvalue),
+                        );
+                        *updated_var_id = Some(new_var_id);
+                        *global_exists = true;
                     }
                 } else if let Inst::Expr(rvalue) = inst {
-                    insts.insert(insts.len(), *inst);
+                    insts.insert(insts.len(), inst.clone());
                 }
             }
-            body_block = &mut block;
+            block.insts = insts;
         }
-        env_body = &mut body;
+        vars_map.clear();
     }
-    // Update environment with new structures created
-    environment.defs.funcs = funcs;
     environment
 }
 
 // This function is a helper function to run_resolver() 's SSA Form Loop.
 // Input: rvalue and hashmap of VarIds that have been updated in the SSA Form Loop.
 // Output: new rvalue that has the newest VarId in its operands.
-pub fn update_rvalue(rvalue: &Rvalue, vars_map: &HashMap<VarId, (VarKind, Option<VarId>, bool)>) -> Rvalue {
+pub fn update_rvalue(
+    rvalue: &mut Rvalue,
+    vars_map: &HashMap<VarId, (VarKind, Option<VarId>, bool)>,
+) -> Rvalue {
     let mut new_rvalue = rvalue.clone();
     match rvalue {
         Rvalue::Unary(unop, Operand::Var(variable)) => {
             let op_var_id = variable.as_var_id().unwrap();
-            if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id) != None) {
+            if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id).unwrap().2) {
                 let (var_kind, updated_var_id, global_exists) = vars_map.get(&op_var_id).unwrap();
                 let new_operand = Operand::Var(Variable::new(updated_var_id.unwrap()));
                 new_rvalue = Rvalue::Unary(*unop, new_operand);
@@ -304,15 +311,17 @@ pub fn update_rvalue(rvalue: &Rvalue, vars_map: &HashMap<VarId, (VarKind, Option
             let mut new_operand_2 = operand2.clone();
             if let Operand::Var(variable) = operand1 {
                 let op_var_id = variable.as_var_id().unwrap();
-                if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id) != None) {
-                    let (var_kind, updated_var_id, global_exists) = vars_map.get(&op_var_id).unwrap();
+                if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id).unwrap().2) {
+                    let (var_kind, updated_var_id, global_exists) =
+                        vars_map.get(&op_var_id).unwrap();
                     new_operand_1 = Operand::Var(Variable::new(updated_var_id.unwrap()));
                 }
             }
             if let Operand::Var(variable) = operand2 {
                 let op_var_id = variable.as_var_id().unwrap();
-                if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id) != None) {
-                    let (var_kind, updated_var_id, global_exists) = vars_map.get(&op_var_id).unwrap();
+                if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id).unwrap().2) {
+                    let (var_kind, updated_var_id, global_exists) =
+                        vars_map.get(&op_var_id).unwrap();
                     new_operand_2 = Operand::Var(Variable::new(updated_var_id.unwrap()));
                 }
             }
@@ -320,7 +329,7 @@ pub fn update_rvalue(rvalue: &Rvalue, vars_map: &HashMap<VarId, (VarKind, Option
         }
         Rvalue::Read(Operand::Var(variable)) => {
             let op_var_id = variable.as_var_id().unwrap();
-            if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id) != None) {
+            if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id).unwrap().2) {
                 let (var_kind, updated_var_id, global_exists) = vars_map.get(&op_var_id).unwrap();
                 let new_operand = Operand::Var(Variable::new(updated_var_id.unwrap()));
                 new_rvalue = Rvalue::Read(new_operand);
@@ -328,7 +337,7 @@ pub fn update_rvalue(rvalue: &Rvalue, vars_map: &HashMap<VarId, (VarKind, Option
         }
         Rvalue::Call(Operand::Var(variable), vector) => {
             let op_var_id = variable.as_var_id().unwrap();
-            if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id) != None) {
+            if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id).unwrap().2) {
                 let (var_kind, updated_var_id, global_exists) = vars_map.get(&op_var_id).unwrap();
                 let new_operand = Operand::Var(Variable::new(updated_var_id.unwrap()));
                 new_rvalue = Rvalue::Call(new_operand, vector.clone());
