@@ -28,17 +28,32 @@ function newfunc() {
   let c = a;
 }
 
-function compnewfunc() {
-  let result = 0;
-  let condition = Math.random() > 0.5;
-  if (condition) {
-      result += 1;
-  } else {
-      result += 2;
+function compnewfunc2() {
+  let a = Math.random();
+  let b = 0;
+  if (a >= 0.5) {
+    if (a > 0.5) {
+      a = a + 1;
+    } else {
+      a = a + 2;
+    }
+    b = a + 3;
   }
-  result += 3;
-  if (result < 10) {
-      result *= 2;
+  let c = a;
+}
+
+function compnewfunc3() {
+  let a = Math.random();  // bb0
+  let b = 0;
+  if (a >= 0.5) {
+    if (a > 0.5) { // bb1
+      a = a + 1;   // bb4
+    } else {
+      a = a + 2;  // bb6
+    }
+    b = a + 3;  // bb5
+  } else {  // bb3
+    b = a + 4;
   }
-  return result + 1;
+  let c = a;  // bb2
 }
