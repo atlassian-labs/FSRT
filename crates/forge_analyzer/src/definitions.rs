@@ -335,14 +335,7 @@ pub fn update_rvalue(
                 new_rvalue = Rvalue::Read(new_operand);
             }
         }
-        Rvalue::Call(Operand::Var(variable), vector) => {
-            let op_var_id = variable.as_var_id().unwrap();
-            if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id).unwrap().2) {
-                let (var_kind, updated_var_id, global_exists) = vars_map.get(&op_var_id).unwrap();
-                let new_operand = Operand::Var(Variable::new(updated_var_id.unwrap()));
-                new_rvalue = Rvalue::Call(new_operand, vector.clone());
-            }
-        }
+        // Rvalues of Call (method), Intrinsic, Phi, and Template can be kept same.
         _ => {}
     }
     new_rvalue
