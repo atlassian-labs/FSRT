@@ -55,7 +55,6 @@ rust_2018_idioms = "warn"
 rust_2024_compatibility = "warn"
 meta_variable_misuse = "warn"
 missing_abi = "warn"
-unsafe_op_in_unsafe_fn = "deny"
 
 [workspace.lints.clippy]
 too_many_arguments = "allow"
