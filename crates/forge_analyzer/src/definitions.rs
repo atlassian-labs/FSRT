@@ -236,11 +236,11 @@ pub fn run_resolver(
     let mut vars_map: HashMap<VarId, (VarKind, Option<VarId>, bool)> = HashMap::new();
     // Mutable iteration through the bodies in the environment
     for (func_id, body) in environment.bodies_mut().enumerate() {
-        // Populate the variables map
+        // Populate the variables map with vars of type: GlobalRef, Arg, AnonClosure, Temp, Ret
         for var_id in body.vars.keys() {
             let var_kind = *body.vars.get(var_id).unwrap();
             match var_kind {
-                VarKind::GlobalRef(defid) | VarKind::Arg(defid) => {
+                VarKind::GlobalRef(defid) | VarKind::Arg(defid) | VarKind::AnonClosure(defid) => {
                     vars_map.insert(var_id, (var_kind, None, false));
                 }
                 VarKind::Temp { parent } => {
@@ -252,7 +252,7 @@ pub fn run_resolver(
                 _ => {}
             }
         }
-        // Mutable iteration through the blocks of the body
+        // Mutable iteration to modify the blocks of the body
         for (block_id, block) in body.blocks.iter_mut_enumerated() {
             // Iterate through existing instructions and create new instruction set with new var references
             let mut insts: Vec<Inst> = Vec::new();
@@ -263,13 +263,12 @@ pub fn run_resolver(
                     let (var_kind, updated_var_id, global_exists) =
                         vars_map.get_mut(&var_id).unwrap();
                     if !*global_exists {
-                        // a global match does not exist for this var - global existing case.
+                        // a global match does not exist already for this var - can match existing global case.
                         insts.insert(insts.len(), Inst::Assign(variable.clone(), new_rvalue));
                         *updated_var_id = variable.as_var_id();
                         *global_exists = true;
-                    }
-                    // a global match for this varid already exists - need new global case.
-                    else {
+                    } else {
+                        // a global match for this varid already exists - need to create a new global case.
                         let new_var_id = body.vars.push_and_get_key(*var_kind);
                         insts.insert(
                             insts.len(),
