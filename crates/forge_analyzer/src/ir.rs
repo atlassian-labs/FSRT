@@ -477,7 +477,7 @@ impl Body {
             sdom[v as usize] = v;  // essentially sdom values match rdfn values (?)
 
             let mut a = incoming[v as usize];
-            while let Some(arc_index) = a {
+            while let Some(_arc_index) = a {
                 // let arc = &pool[arc_index];
                 u = pool[a.unwrap()].v;
                 if dfn[u as usize] != -1 {
@@ -564,8 +564,8 @@ impl Body {
 
         // algorithm from https://en.wikipedia.org/wiki/Static_single-assignment_form#Computing_minimal_SSA_using_dominance_frontiers
         // which references: https://www.cs.tufts.edu/comp/150FP/archive/keith-cooper/dom14.pdf
-        for (id, block) in self.iter_blocks_enumerated() {
-            if (self.predecessors(id).len() >= 2) {
+        for (id, _) in self.iter_blocks_enumerated() {
+            if self.predecessors(id).len() >= 2 {
                 for pred in self.predecessors(id) {
                     let mut runner = pred.0;
                     while runner != idom[id.0 as usize] as u32 {

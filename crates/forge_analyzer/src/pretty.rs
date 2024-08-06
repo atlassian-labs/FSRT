@@ -86,7 +86,7 @@ pub fn dump_ir(output: &mut dyn Write, env: &Environment, body: &Body) -> io::Re
     Ok(())
 }
 
-pub fn dump_dom_tree(output: &mut dyn Write, env: &Environment, body: &Body) -> io::Result<()> {
+pub fn dump_dom_tree(output: &mut dyn Write, _env: &Environment, body: &Body) -> io::Result<()> {
 
     writeln!(output, "----------------------------------------------")?;
     writeln!(output, "Checking Control Flow Graph\n")?;
@@ -105,7 +105,7 @@ pub fn dump_dom_tree(output: &mut dyn Write, env: &Environment, body: &Body) -> 
     }
 
     writeln!(output, "----------------------------------------------")?;
-    for (block, idom) in body.dominator_tree().idom[..num_blocks].iter().enumerate() {
+    for (block, _) in body.dominator_tree().idom[..num_blocks].iter().enumerate() {
         write!(output, "Blocks that bb{} Dominates: ", block)?;
         for i in 0..num_blocks {
             if body.dominates(BasicBlockId(block as u32), BasicBlockId(i as u32)) {
@@ -116,7 +116,7 @@ pub fn dump_dom_tree(output: &mut dyn Write, env: &Environment, body: &Body) -> 
     }
 
     writeln!(output, "----------------------------------------------")?;
-    for (block, idom) in body.dominator_tree().idom[..num_blocks].iter().enumerate() {
+    for (block, _) in body.dominator_tree().idom[..num_blocks].iter().enumerate() {
         write!(output, "bb{}'s Dominators: ", block)?;
         for i in 0..num_blocks {
             if body.dominates(BasicBlockId(i as u32), BasicBlockId(block as u32)) {

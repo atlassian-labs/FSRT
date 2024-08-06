@@ -176,7 +176,6 @@ pub(crate) fn scan_directory<'a>(
     }
 
     if let Some(func) = opts.dump_dt.as_ref() {
-        println!("My CLI thing WORKS");
         proj.env.dump_tree(&mut std::io::stdout().lock(), func);
         std::process::exit(0);
     }
@@ -353,7 +352,6 @@ pub(crate) fn scan_directory<'a>(
 
 fn main() -> Result<()> {
     let mut args = Args::parse();
-    println!("What is args {:?}", args);
     tracing_subscriber::registry()
         .with(HierarchicalLayer::new(2))
         .with(EnvFilter::from_env("FORGE_LOG"))
