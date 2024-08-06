@@ -235,7 +235,7 @@ pub fn run_resolver(
 
     // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump.
     let mut vars_map: HashMap<VarId, (VarKind, Option<VarId>, bool)> = HashMap::new();
-    // Mutable iteration through the bodies in the environment
+    // Mutable iteration to modify the bodies in the environment
     for (func_id, body) in environment.bodies_mut().enumerate() {
         // Populate the variables map with vars of type: GlobalRef, Arg, AnonClosure, Temp, Ret
         for var_id in body.vars.keys() {
@@ -264,12 +264,12 @@ pub fn run_resolver(
                     let (var_kind, updated_var_id, global_exists) =
                         vars_map.get_mut(&var_id).unwrap();
                     if !*global_exists {
-                        // a global match does not exist already for this var - can match existing global case.
+                        // a global match does not exist already for this var - can match existing global case
                         insts.insert(insts.len(), Inst::Assign(variable.clone(), new_rvalue));
                         *updated_var_id = variable.as_var_id();
                         *global_exists = true;
                     } else {
-                        // a global match for this varid already exists - need to create a new global case.
+                        // a global match for this varid already exists - need to create a new global case
                         let new_var_id = body.vars.push_and_get_key(*var_kind);
                         insts.insert(
                             insts.len(),
