@@ -65,3 +65,25 @@ function loop() {
   }
   return a;
 }
+
+function whileloop() {
+  let a = 0;
+  let i = 0;
+  while (i < 10) {
+    a = a + i;
+    i++;
+  }
+  return a;
+}
+
+function doubleloop() {
+  let a = 0;  // bb0
+  for (let i = 0; i < 10; i++) {  // i = 0 is in bb0; cond in bb1; i++ in bb4
+    for (let j = 0; j < 10; j++) {  // j = 0 in bb3; cond in bb4
+      a = a + i + j;  //bb6
+    }
+    let b = 3;
+  }
+  return a;  // bb2
+}
+
