@@ -17,6 +17,7 @@ Arguments:
   Options:
     -d, --debug
         --dump-ir <DUMP_IR> Dump the IR for the specified function.
+    -dt, --dump-dt <DUMP_DOM_TREE> Dump the Dominator Tree for the specified app
     -f, --function <FUNCTION>  A specific function to scan. Must be an entrypoint specified in `manifest.yml`
     -h, --help                 Print help information
     -V, --version              Print version information
