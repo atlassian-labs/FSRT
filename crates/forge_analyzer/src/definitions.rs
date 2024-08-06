@@ -14,14 +14,14 @@ use swc_core::common::pass::define;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use smallvec::{smallvec, SmallVec};
-use swc_core::ecma::ast::{Bool, MethodKind, PrivateMethod};
+use swc_core::ecma::ast::{MethodKind, PrivateMethod};
 use swc_core::{
     common::{Span, SyntaxContext, DUMMY_SP},
     ecma::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
             AssignProp, AssignTarget, AwaitExpr, BinExpr, BindingIdent, BlockStmt, BlockStmtOrExpr,
-            BreakStmt, CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName,
+            Bool, BreakStmt, CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName,
             CondExpr, Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll,
             ExportDecl, ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier,
             ExportSpecifier, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForHead, ForInStmt,
@@ -252,6 +252,7 @@ pub fn run_resolver(
                 _ => {}
             }
         }
+
         // Mutable iteration to modify the blocks of the body
         for (block_id, block) in body.blocks.iter_mut_enumerated() {
             // Iterate through existing instructions and create new instruction set with new var references
