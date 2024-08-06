@@ -23,7 +23,6 @@ use smallvec::SmallVec;
 use swc_core::common::SyntaxContext;
 use swc_core::ecma::ast;
 use swc_core::ecma::ast::BinaryOp;
-use swc_core::ecma::ast::Bool;
 use swc_core::ecma::ast::JSXText;
 use swc_core::ecma::ast::Lit;
 use swc_core::ecma::ast::Null;
@@ -140,7 +139,7 @@ pub struct Body {
     pub blocks: TiVec<BasicBlockId, BasicBlock>,
     pub vars: TiVec<VarId, VarKind>,
     pub values: FxHashMap<DefId, Value>,
-    pub ident_to_local: FxHashMap<Id, VarId>,
+    ident_to_local: FxHashMap<Id, VarId>,
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     pub class_instantiations: HashMap<DefId, DefId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
@@ -392,12 +391,6 @@ impl Body {
             .def_id_to_vars
             .entry(def)
             .or_insert_with(|| self.vars.push_and_get_key(VarKind::GlobalRef(def)))
-    }
-
-    // This function updates the existing DefId -> VarId mapping with the input values, or inserts new if one doesn't exist.
-    #[inline]
-    pub(crate) fn update_global(&mut self, def: DefId, var: VarId) {
-        self.def_id_to_vars.insert(def, var);
     }
 
     #[inline]

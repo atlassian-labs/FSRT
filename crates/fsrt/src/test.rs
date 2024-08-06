@@ -328,6 +328,7 @@ fn secret_vuln_object() {
     );
 
     let scan_result = scan_directory_test(test_forge_project);
+    println!("scan_result {scan_result:?}");
     assert!(scan_result.contains_secret_vuln(1));
     assert!(scan_result.contains_vulns(1))
 }
