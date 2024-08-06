@@ -232,6 +232,7 @@ pub fn run_resolver(
         };
         module.visit_with(&mut collector);
     }
+
     // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump.
     let mut vars_map: HashMap<VarId, (VarKind, Option<VarId>, bool)> = HashMap::new();
     // Mutable iteration through the bodies in the environment
@@ -252,7 +253,6 @@ pub fn run_resolver(
                 _ => {}
             }
         }
-
         // Mutable iteration to modify the blocks of the body
         for (block_id, block) in body.blocks.iter_mut_enumerated() {
             // Iterate through existing instructions and create new instruction set with new var references
