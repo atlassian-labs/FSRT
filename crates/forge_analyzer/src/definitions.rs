@@ -235,54 +235,34 @@ pub fn run_resolver(
 
     // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump.
     let mut vars_map: HashMap<VarId, (VarKind, Option<VarId>, bool)> = HashMap::new();
-    // Mutable iteration to modify the bodies in the environment
     for (func_id, body) in environment.bodies_mut().enumerate() {
-        // Populate the variables map with vars of type: GlobalRef, Arg, AnonClosure, Temp, Ret
+        // Builds the variables map to track existing all variables, store their VarId, and check if they have been assigned once (by SSA).
         for var_id in body.vars.keys() {
             let var_kind = *body.vars.get(var_id).unwrap();
-            match var_kind {
-                VarKind::GlobalRef(defid) | VarKind::Arg(defid) | VarKind::AnonClosure(defid) => {
-                    vars_map.insert(var_id, (var_kind, None, false));
-                }
-                VarKind::Temp { parent } => {
-                    vars_map.insert(var_id, (var_kind, None, false));
-                }
-                VarKind::Ret => {
-                    vars_map.insert(var_id, (var_kind, None, false));
-                }
-                _ => {}
-            }
+            vars_map.insert(var_id, (var_kind, None, false));
         }
-        // Mutable iteration to modify the blocks of the body
+        // Updates the instruction set with creation of new global reference variables if necessary.
         for (block_id, block) in body.blocks.iter_mut_enumerated() {
-            // Iterate through existing instructions and create new instruction set with new var references
-            let mut insts: Vec<Inst> = Vec::new();
             for inst in block.iter_insts_mut() {
-                if let Inst::Assign(variable, old_rvalue) = inst {
-                    let new_rvalue = update_rvalue(old_rvalue, &vars_map);
-                    let var_id = variable.as_var_id().unwrap();
-                    let (var_kind, updated_var_id, global_exists) =
-                        vars_map.get_mut(&var_id).unwrap();
-                    if !*global_exists {
-                        // a global match does not exist already for this var - can match existing global case
-                        insts.insert(insts.len(), Inst::Assign(variable.clone(), new_rvalue));
-                        *updated_var_id = variable.as_var_id();
-                        *global_exists = true;
-                    } else {
-                        // a global match for this varid already exists - need to create a new global case
-                        let new_var_id = body.vars.push_and_get_key(*var_kind);
-                        insts.insert(
-                            insts.len(),
-                            Inst::Assign(Variable::from(new_var_id), new_rvalue),
-                        );
-                        *updated_var_id = Some(new_var_id);
-                        *global_exists = true;
+                match inst {
+                    Inst::Assign(variable, rvalue) => {
+                        update_rvalue(rvalue, &vars_map);
+                        let var_id = variable.as_var_id().unwrap();
+                        let (var_kind, updated_var_id, global_exists) =
+                            vars_map.get_mut(&var_id).unwrap();
+                        if !*global_exists {
+                            *updated_var_id = Some(var_id);
+                            *global_exists = true;
+                        } else {
+                            let new_var_id = body.vars.push_and_get_key(*var_kind);
+                            variable.base = Base::Var(new_var_id);
+                            *updated_var_id = Some(new_var_id);
+                            *global_exists = true;
+                        }
                     }
-                } else if let Inst::Expr(rvalue) = inst {
-                    insts.insert(insts.len(), inst.clone());
+                    Inst::Expr(rvalue) => {}
                 }
             }
-            block.insts = insts;
         }
         vars_map.clear();
     }
@@ -295,26 +275,24 @@ pub fn run_resolver(
 pub fn update_rvalue(
     rvalue: &mut Rvalue,
     vars_map: &HashMap<VarId, (VarKind, Option<VarId>, bool)>,
-) -> Rvalue {
-    let mut new_rvalue = rvalue.clone();
+) {
     match rvalue {
         Rvalue::Unary(unop, Operand::Var(variable)) => {
             let op_var_id = variable.as_var_id().unwrap();
             if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id).unwrap().2) {
                 let (var_kind, updated_var_id, global_exists) = vars_map.get(&op_var_id).unwrap();
-                let new_operand = Operand::Var(Variable::new(updated_var_id.unwrap()));
-                new_rvalue = Rvalue::Unary(*unop, new_operand);
+                let mut base = &mut variable.base;
+                *base = Base::Var(updated_var_id.unwrap());
             }
         }
         Rvalue::Bin(binop, operand1, operand2) => {
-            let mut new_operand_1 = operand1.clone();
-            let mut new_operand_2 = operand2.clone();
             if let Operand::Var(variable) = operand1 {
                 let op_var_id = variable.as_var_id().unwrap();
                 if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id).unwrap().2) {
                     let (var_kind, updated_var_id, global_exists) =
                         vars_map.get(&op_var_id).unwrap();
-                    new_operand_1 = Operand::Var(Variable::new(updated_var_id.unwrap()));
+                    let mut base = &mut variable.base;
+                    *base = Base::Var(updated_var_id.unwrap());
                 }
             }
             if let Operand::Var(variable) = operand2 {
@@ -322,23 +300,27 @@ pub fn update_rvalue(
                 if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id).unwrap().2) {
                     let (var_kind, updated_var_id, global_exists) =
                         vars_map.get(&op_var_id).unwrap();
-                    new_operand_2 = Operand::Var(Variable::new(updated_var_id.unwrap()));
+                    let mut base = &mut variable.base;
+                    *base = Base::Var(updated_var_id.unwrap());
                 }
             }
-            new_rvalue = Rvalue::Bin(*binop, new_operand_1, new_operand_2);
         }
         Rvalue::Read(Operand::Var(variable)) => {
             let op_var_id = variable.as_var_id().unwrap();
             if (vars_map.contains_key(&op_var_id)) && (vars_map.get(&op_var_id).unwrap().2) {
                 let (var_kind, updated_var_id, global_exists) = vars_map.get(&op_var_id).unwrap();
-                let new_operand = Operand::Var(Variable::new(updated_var_id.unwrap()));
-                new_rvalue = Rvalue::Read(new_operand);
+                let mut base = &mut variable.base;
+                *base = Base::Var(updated_var_id.unwrap());
             }
         }
-        // Rvalues of Call (method), Intrinsic, Phi, and Template can be kept same.
-        _ => {}
+        // Rvalues of Read (Literal), Unary (Literal), Call (method), Intrinsic, Phi, and Template can be kept same.
+        Rvalue::Read(_)
+        | Rvalue::Unary(_, _)
+        | Rvalue::Call(_, _)
+        | Rvalue::Intrinsic(_, _)
+        | Rvalue::Phi(_)
+        | Rvalue::Template(_) => {}
     }
-    new_rvalue
 }
 
 /// this struct is a bit of a hack, because we also use it for
