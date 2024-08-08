@@ -419,8 +419,8 @@ fn secret_vuln_object_reassignment() {
         export const run = render(<Macro app={<App />} />);",
     );
 
-    let _scan_result = scan_directory_test(test_forge_project);
-    // assert!(scan_result.contains_vulns(1))
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(1))
 }
 
 #[test]
@@ -579,8 +579,8 @@ fn secret_vuln_fetch_header_reassigned() {
         export const run = render(<Macro app={<App />} />);",
     );
 
-    let _scan_result = scan_directory_test(test_forge_project);
-    // assert!(scan_result.contains_vulns(0));
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(0));
 }
 
 #[test]
