@@ -1,10 +1,15 @@
 #![allow(dead_code, unused)]
 
+use std::borrow::BorrowMut;
+use std::env;
+use std::hash::Hash;
 use std::{borrow::Borrow, fmt, mem};
 
 use crate::utils::{calls_method, eq_prop_name};
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
+use std::collections::{HashMap, HashSet};
+use swc_core::common::pass::define;
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -16,7 +21,7 @@ use swc_core::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
             AssignProp, AssignTarget, AwaitExpr, BinExpr, BindingIdent, BlockStmt, BlockStmtOrExpr,
-            BreakStmt, CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName,
+            Bool, BreakStmt, CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName,
             CondExpr, Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll,
             ExportDecl, ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier,
             ExportSpecifier, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForHead, ForInStmt,
@@ -138,6 +143,7 @@ pub fn run_resolver(
 ) -> Environment {
     let mut environment = Environment::new();
 
+    // This for loop parses each token of each code statement in the file.
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut export_collector = ExportCollector {
             res_table: &mut environment.resolver,
@@ -156,6 +162,7 @@ pub fn run_resolver(
         }
     }
 
+    // The following two for loops iterate through the imported modules of the file.
     let mut foreign = TiVec::default();
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut import_collector = ImportCollector {
@@ -182,7 +189,7 @@ pub fn run_resolver(
         module.visit_with(&mut import_collector);
     }
 
-    // check for required after Definitions pass
+    // This loop runs through the different import modules and corresponding definitions.
     let defs = Definitions::new(
         environment
             .resolver
@@ -226,7 +233,97 @@ pub fn run_resolver(
         module.visit_with(&mut collector);
     }
 
+    // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump.
+    let mut vars_map: HashMap<VarId, (VarKind, Option<VarId>, bool)> = HashMap::new();
+    for (func_id, body) in environment.bodies_mut().enumerate() {
+        // Builds the variables map to track existing all variables, store their VarId, and check if they have been assigned once (by SSA).
+        for var_id in body.vars.keys() {
+            let var_kind = *body.vars.get(var_id).unwrap();
+            vars_map.insert(var_id, (var_kind, None, false));
+        }
+        // Updates the instruction set with creation of new global reference variables if necessary.
+        for (block_id, block) in body.blocks.iter_mut_enumerated() {
+            for inst in block.iter_insts_mut() {
+                match inst {
+                    Inst::Assign(variable, rvalue) => {
+                        update_rvalue(rvalue, &vars_map);
+                        let var_id = variable.as_var_id().unwrap();
+                        let (var_kind, updated_var_id, global_exists) =
+                            vars_map.get_mut(&var_id).unwrap();
+                        let projections = &variable.projections;
+                        if !*global_exists || !projections.is_empty() {
+                            *updated_var_id = Some(var_id);
+                            *global_exists = true;
+                        } else {
+                            let new_var_id = body.vars.push_and_get_key(*var_kind);
+                            variable.base = Base::Var(new_var_id);
+                            *updated_var_id = Some(new_var_id);
+                            *global_exists = true;
+                        }
+                    }
+                    Inst::Expr(rvalue) => {}
+                }
+            }
+        }
+        vars_map.clear();
+    }
     environment
+}
+
+// This function is a helper function to run_resolver() 's SSA Form Loop.
+// Input: rvalue and hashmap of VarIds that have been updated in the SSA Form Loop.
+// Output: new rvalue that has the newest VarId in its operands.
+pub fn update_rvalue(
+    rvalue: &mut Rvalue,
+    vars_map: &HashMap<VarId, (VarKind, Option<VarId>, bool)>,
+) {
+    match rvalue {
+        Rvalue::Unary(unop, Operand::Var(variable)) => {
+            let op_var_id = variable.as_var_id().unwrap();
+            if let Some((var_kind, updated_var_id, global_exists)) = vars_map.get(&op_var_id) {
+                if *global_exists {
+                    let mut base = &mut variable.base;
+                    *base = Base::Var(updated_var_id.unwrap());
+                }
+            }
+        }
+        Rvalue::Bin(binop, operand1, operand2) => {
+            if let Operand::Var(variable) = operand1 {
+                let op_var_id = variable.as_var_id().unwrap();
+                if let Some((var_kind, updated_var_id, global_exists)) = vars_map.get(&op_var_id) {
+                    if *global_exists {
+                        let mut base = &mut variable.base;
+                        *base = Base::Var(updated_var_id.unwrap());
+                    }
+                }
+            }
+            if let Operand::Var(variable) = operand2 {
+                let op_var_id = variable.as_var_id().unwrap();
+                if let Some((var_kind, updated_var_id, global_exists)) = vars_map.get(&op_var_id) {
+                    if *global_exists {
+                        let mut base = &mut variable.base;
+                        *base = Base::Var(updated_var_id.unwrap());
+                    }
+                }
+            }
+        }
+        Rvalue::Read(Operand::Var(variable)) => {
+            let op_var_id = variable.as_var_id().unwrap();
+            if let Some((var_kind, updated_var_id, global_exists)) = vars_map.get(&op_var_id) {
+                if *global_exists {
+                    let mut base = &mut variable.base;
+                    *base = Base::Var(updated_var_id.unwrap());
+                }
+            }
+        }
+        // Rvalues of Read (Literal), Unary (Literal), Call (method), Intrinsic, Phi, and Template can be kept same.
+        Rvalue::Read(_)
+        | Rvalue::Unary(_, _)
+        | Rvalue::Call(_, _)
+        | Rvalue::Intrinsic(_, _)
+        | Rvalue::Phi(_)
+        | Rvalue::Template(_) => {}
+    }
 }
 
 /// this struct is a bit of a hack, because we also use it for
@@ -3306,6 +3403,12 @@ impl Environment {
     #[inline]
     pub fn bodies(&self) -> impl Iterator<Item = &Body> + '_ {
         self.defs.funcs.iter()
+    }
+
+    // Mutable iterator for bodies of the environment
+    #[inline]
+    pub fn bodies_mut(&mut self) -> impl Iterator<Item = &mut Body> + '_ {
+        self.defs.funcs.iter_mut()
     }
 
     #[inline]
