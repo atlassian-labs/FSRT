@@ -1,8 +1,9 @@
-// function reassign() {
-//   let a = 3;
-//   let b = 4;
-//   a = 1;
-// }
+function reassign() {
+  let a = 3;
+  let b = 4;
+  a = 1;
+  // check if basicblockbuilder is empty
+}
 
 // function foo(a) {
 //   let b = a - 20;
@@ -130,6 +131,72 @@ function whileincond() {
   return a;  // bb2
 }
 
+// early return in `if` only
+function earlyret() {
+  let a = 0; 
+  if (a > 5) {  // bb0
+    a = 1;
+    return a;  // bb1
+  }
+  let b = 4;
+  return a;  // bb2
+}
+
+// early return in `else` only
+function earlyret2() {
+  let a = 0; 
+  if (a > 5) {
+    a = 1;
+  } else {
+    a = 2;
+    return a;
+    let c = 3;
+  }
+  let b = 4;
+  return a;
+}
+
+// early return in 'if' and 'else'
+function earlyret3() {
+  let a = 0; 
+  if (a > 5) {
+    a = 1;
+    return a;
+  } else {
+    a = 2;
+    return a;
+  }
+  let b = 4;  // a bb still gets created, it's just
+              // never jumped to. check if this is OK?
+              // assuming that this is how compilers work
+              // to detect unreachable code
+  return a;
+}
+
+// function earlyretloop() {
+//   let a = 0;
+//   let i = 0;
+//   while (i < 10) {
+//     if (i > 5) {
+//       return 1;
+//     }
+//     i = i + 1;
+//   }
+// }
+
+function loopbreak() {
+  let a = 0;
+  let i = 0;  // bb0
+  while (i < 10) {  // bb1
+    if (i > 5) {  // bb3
+      a = 1;  // bb4
+      break;
+    }
+    i = i + 1;  // bb5
+  }
+  return a;  // bb2
+}
+
 // ignore below for now
 // function nestedforloop() {
 //   let a = 0;  // bb0
@@ -141,4 +208,3 @@ function whileincond() {
 //   }
 //   return a;  // bb2
 // }
-

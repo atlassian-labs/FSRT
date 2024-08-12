@@ -80,6 +80,12 @@ pub fn dump_ir(output: &mut dyn Write, env: &Environment, body: &Body) -> io::Re
         writeln!(output, "{id}:\n{block}")?;
     }
 
+    writeln!(output, "below is for temporarily debugging blockbuilders")?;
+    
+    for (id, blockbuilder) in body.iter_blockbuilders_enumerated() {
+        writeln!(output, "{id}:\n{blockbuilder}")?;
+    }
+
     writeln!(output)?;
     dump_dom_tree(output, env, body)?;
 
