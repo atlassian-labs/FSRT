@@ -651,18 +651,11 @@ impl Body {
         })[block]
     }
 
-    // TODO: MIGHT NEED TO CHANGE THIS TO ALSO CONVERT BUILDERBLOCKS INTO BASICBLOCKS
-    // #[inline]
-    // pub(crate) fn set_terminator(&mut self, bb: BasicBlockId, term: Terminator) -> Terminator {
-    //     mem::replace(&mut self.blocks[bb].term, term)
-    // }
     #[inline]
     pub(crate) fn set_terminator(&mut self, bb: BasicBlockId, term: Terminator) -> Terminator {
-        // self.blocks.push_and_get_key(BasicBlock::default());
 
         let builder_insts = std::mem::take(&mut self.blockbuilders[bb].insts);  // double check - not sure if using mem efficiently
-        // println!("builder for block: {:?}: {:?}", bb, builder.insts);
-        // println!();
+
         let block = BasicBlock {
             insts: builder_insts,
             term,
@@ -671,16 +664,7 @@ impl Body {
 
         let old_block = mem::replace(&mut self.blocks[bb], block);
         old_block.term
-        // self.blocks.push_and_get_key(block);  // REVISIT
-        
-        // self.blocks[bb] = block;
-        // self.blocks[bb].term.clone()  // REVISIT
     }
-
-    // #[inline]
-    // pub(crate) fn get_terminator(&mut self, bb: BasicBlockId) -> Terminator {
-    //     self.blocks[bb].term.clone()
-    // }
 
     #[inline]
     pub(crate) fn get_terminator(&mut self, bb: BasicBlockId) -> Option<Terminator> {
@@ -689,12 +673,6 @@ impl Body {
         } else {
             None
         }
-
-        // if bb.0 > (self.blocks.len() - 1) as u32 {
-        //     None
-        // } else {
-        //     Some(self.blocks[bb].term.clone())
-        // }
     }
 
     #[inline]

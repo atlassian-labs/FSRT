@@ -1061,11 +1061,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
     /// Sets the current block to `block` and returns the previous block.
     #[inline]
     fn goto_block(&mut self, block: BasicBlockId) -> BasicBlockId {
-        // if let Terminator::Ret = self.get_curr_terminator() {
-            
-        // } else {
-        //     self.set_curr_terminator(Terminator::Goto(block));
-        // }
         if self.get_curr_terminator().is_none() {
             self.set_curr_terminator(Terminator::Goto(block));
         } 
@@ -1822,53 +1817,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
     fn lower_stmts(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
-            // println!("STMT: {:?}", stmt);
-            // println!();
             self.lower_stmt(stmt);  // to prevent stmts from being lowered after returns
             if let Stmt::Return(_) = stmt {
                 return;
             }
-            
-            // for avoid "temp" being outputted, would have to not only check if we're the last statement
-            // in the block and don't have a non-temp term yet, but would also have to check if we're the
-            // last statement in entire function // the final bb in body -> not as easy to do?
         }
-
-        // for (id, block) in &mut self.body.blocks.iter_enumerated() {
-        //     if !block.set_term_called {
-        //         self.body.set_terminator(id, Terminator::Ret);
-        //     }
-        // }
-
-        // let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
-        // // 1st pass: find all blocks that didn't have a terminator set
-        // // should really only be the block where the last stmt of a fn is in
-        // // if a block exists
-        // for (id, block) in self.body.blocks.iter_enumerated() {
-        //     if !block.set_term_called {
-        //         blocks_to_update.push(id);
-        //     }
-        // }
-        // // 2nd pass: update blocks from above
-        // for id in blocks_to_update {
-        //     self.body.set_terminator(id, Terminator::Ret);
-        // }
-
-
-        // for (i, stmt) in stmts.iter().enumerate() {
-        //     // println!("STMT: {:?}", stmt);
-        //     // println!();
-        //     self.lower_stmt(stmt);  // to prevent stmts from being lowered after returns
-        //     if let Stmt::Return(_) = stmt {
-        //         return;
-        //     }
-        //     if i == stmts.len() - 1 {
-        //         self.set_curr_terminator(Terminator::Temp);
-        //     }
-        // }
-        // if let Terminator::Temp = self.get_curr_terminator().unwrap() {
-        //     self.set_curr_terminator(Terminator::Ret);
-        // }
     }
 
     fn lower_stmt(&mut self, n: &Stmt) {
@@ -1913,11 +1866,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     let alt_block = self.body.new_blockbuilder();
                     let old_block = mem::replace(&mut self.block, alt_block);
                     self.lower_stmt(alt);
-                    // if let Terminator::Ret = self.get_curr_terminator() {
-        
-                    // } else {
-                    //     self.set_curr_terminator(Terminator::Goto(cont));
-                    // }
+                    
                     if self.get_curr_terminator().is_none() {
                         self.set_curr_terminator(Terminator::Goto(cont));
                     }
@@ -2380,16 +2329,6 @@ impl Visit for FunctionCollector<'_> {
                     if let Some(BlockStmt { stmts, .. }) = &n.body {
                         analyzer.lower_stmts(stmts);
                         let body = analyzer.body;
-                        // let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
-                        // for (id, block) in body.blocks.iter_enumerated() {
-                        //     if !block.set_term_called {
-                        //         blocks_to_update.push(id);
-                        //     }
-                        // }
-                        // for id in blocks_to_update {
-                        //     body.set_terminator(id, Terminator::Ret);
-                        // }
-                        
                         *self.res.def_mut(*owner).expect_body() = body;
                     }
                 }
@@ -2733,7 +2672,7 @@ impl FunctionCollector<'_> {
         if let Some(BlockStmt { stmts, .. }) = &n.body {
             analyzer.lower_stmts(stmts);
             let mut body = analyzer.body;
-            
+
             let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
             for (id, block) in body.blocks.iter_enumerated() {
                 if !block.set_term_called {

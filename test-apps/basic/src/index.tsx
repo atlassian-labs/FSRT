@@ -4,6 +4,10 @@ function reassign() {
   a = 1;
 }
 
+function retimmed() {
+  return
+}
+
 function reassign2() {
   let a = 3;
   let b = 4;
