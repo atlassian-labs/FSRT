@@ -29,6 +29,18 @@ function newfunc() {
   let c = a;
 }
 
+function newfunc2() {
+  let a = 3;
+  if (a > 2) {
+    a = 1;
+    let b = a;
+  } else {
+    a = 2;
+    let b = a;
+  }
+  let c = a;
+}
+
 function compnewfunc2() {
   let a = Math.random();
   let b = 0;

@@ -53,10 +53,11 @@ pub struct BranchTargets {
     branch: SmallVec<[BasicBlockId; 2]>,
 }
 
-#[derive(Clone, Debug, Default)]
+// #[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub enum Terminator {
-    #[default]
-    Temp,
+    // #[default]
+    // Temp,
     Ret,
     Goto(BasicBlockId),
     Throw,
@@ -106,11 +107,12 @@ pub enum Rvalue {
     Template(Template),
 }
 
-#[derive(Clone, Debug, Default)]
-// #[derive(Clone, Debug)]
+// #[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct BasicBlock {
     pub insts: Vec<Inst>,
     pub term: Terminator,
+    pub set_term_called: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -285,7 +287,6 @@ impl BasicBlock {
 
     pub(crate) fn successors(&self) -> Successors {
         match self.term {
-            Terminator::Temp => Successors::Return,  // should never actually hit this case?
             Terminator::Ret => Successors::Return,
             Terminator::Goto(bb) => Successors::One(bb),
             Terminator::Throw => Successors::Return,
@@ -318,16 +319,24 @@ impl Body {
         Self {
             vars: local_vars,
             owner: None,
-            blocks: vec![BasicBlock::default()].into(),
+            // blocks: vec![BasicBlock::default()].into(),
             // blocks: TiVec::new(),
+            blocks: vec![BasicBlock {
+                insts: Vec::new(),
+                term: Terminator::Ret,
+                set_term_called: false,
+            }].into(),
             values: FxHashMap::default(),
             class_instantiations: Default::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
             predecessors: Default::default(),
             dominator_tree: Default::default(),
-            blockbuilders: vec![BasicBlockBuilder::default()].into(),
+            // blockbuilders: vec![BasicBlockBuilder::default()].into(),
             // blockbuilders: TiVec::new(),
+            blockbuilders: vec! [BasicBlockBuilder {
+                insts: Vec::new(),
+            }].into(),
         }
     }
 
@@ -420,7 +429,8 @@ impl Body {
 
     #[inline]
     pub(crate) fn new_block(&mut self) -> BasicBlockId {
-        self.blocks.push_and_get_key(BasicBlock::default())
+        // self.blocks.push_and_get_key(BasicBlock::default())
+        self.new_block_with_terminator(Terminator::Ret)
     }
 
     pub(crate) fn new_blocks<const NUM: usize>(&mut self) -> [BasicBlockId; NUM] {
@@ -436,11 +446,19 @@ impl Body {
         array::from_fn(|_| self.new_blockbuilder())
     }
 
+    // #[inline]
+    // pub(crate) fn new_block_with_terminator(&mut self, term: Terminator) -> BasicBlockId {
+    //     self.blocks.push_and_get_key(BasicBlock {
+    //         term,
+    //         ..Default::default()
+    //     })
+    // }
     #[inline]
     pub(crate) fn new_block_with_terminator(&mut self, term: Terminator) -> BasicBlockId {
         self.blocks.push_and_get_key(BasicBlock {
-            term,
-            ..Default::default()
+            insts: Vec::new(),
+            term: term,
+            set_term_called: false,
         })
     }
 
@@ -642,18 +660,21 @@ impl Body {
     pub(crate) fn set_terminator(&mut self, bb: BasicBlockId, term: Terminator) -> Terminator {
         // self.blocks.push_and_get_key(BasicBlock::default());
 
-        let builder = std::mem::take(&mut self.blockbuilders[bb]);
+        let builder_insts = std::mem::take(&mut self.blockbuilders[bb].insts);  // double check - not sure if using mem efficiently
         // println!("builder for block: {:?}: {:?}", bb, builder.insts);
         // println!();
         let block = BasicBlock {
-            insts: builder.insts,
+            insts: builder_insts,
             term,
+            set_term_called: true,
         };
 
+        let old_block = mem::replace(&mut self.blocks[bb], block);
+        old_block.term
         // self.blocks.push_and_get_key(block);  // REVISIT
         
-        self.blocks[bb] = block;
-        self.blocks[bb].term.clone()  // REVISIT
+        // self.blocks[bb] = block;
+        // self.blocks[bb].term.clone()  // REVISIT
     }
 
     // #[inline]
@@ -663,16 +684,23 @@ impl Body {
 
     #[inline]
     pub(crate) fn get_terminator(&mut self, bb: BasicBlockId) -> Option<Terminator> {
-        if bb.0 > (self.blocks.len() - 1) as u32 {
-            None
-        } else {
+        if self.blocks[bb].set_term_called {
             Some(self.blocks[bb].term.clone())
+        } else {
+            None
         }
+
+        // if bb.0 > (self.blocks.len() - 1) as u32 {
+        //     None
+        // } else {
+        //     Some(self.blocks[bb].term.clone())
+        // }
     }
 
     #[inline]
     pub(crate) fn push_inst(&mut self, bb: BasicBlockId, inst: Inst) {
-        self.blocks[bb].insts.push(inst);
+        // self.blocks[bb].insts.push(inst);
+        self.blockbuilders[bb].insts.push(inst);
     }
 
     pub(crate) fn resolve_prop(&mut self, bb: BasicBlockId, opnd: Operand) -> Projection {
@@ -680,7 +708,8 @@ impl Body {
             Operand::Lit(lit) => Projection::Known(lit.as_jsword()),
             Operand::Var(var) if var.projections.is_empty() => Projection::Computed(var.base),
             Operand::Var(_) => {
-                Projection::Computed(Base::Var(self.push_tmp(bb, Rvalue::Read(opnd), None)))
+                // Projection::Computed(Base::Var(self.push_tmp(bb, Rvalue::Read(opnd), None)))
+                Projection::Computed(Base::Var(self.push_tmp_builder(bb, Rvalue::Read(opnd), None)))
             }
         }
     }
@@ -741,7 +770,8 @@ impl Body {
                     let var = self
                         .vars
                         .push_and_get_key(VarKind::Temp { parent: parent_key });
-                    self.push_inst(bb, Inst::Assign(Variable::new(var), Rvalue::Read(val)));
+                    // self.push_inst(bb, Inst::Assign(Variable::new(var), Rvalue::Read(val)));
+                    self.push_inst_builder(bb, Inst::Assign(Variable::new(var), Rvalue::Read(val)));
                     var
                 }),
                 projections: Default::default(),
@@ -756,18 +786,21 @@ impl Body {
         parent: Option<DefId>,
     ) -> VarId {
         let var = self.vars.push_and_get_key(VarKind::Temp { parent });
-        self.push_inst(bb, Inst::Assign(Variable::new(var), val));
+        // self.push_inst(bb, Inst::Assign(Variable::new(var), val));
+        self.push_inst_builder(bb, Inst::Assign(Variable::new(var), val));
         var
     }
 
     #[inline]
     pub(crate) fn push_assign(&mut self, bb: BasicBlockId, var: Variable, val: Rvalue) {
-        self.blocks[bb].insts.push(Inst::Assign(var, val));
+        // self.blocks[bb].insts.push(Inst::Assign(var, val));
+        self.blockbuilders[bb].insts.push(Inst::Assign(var, val));
     }
 
     #[inline]
     pub(crate) fn push_expr(&mut self, bb: BasicBlockId, val: Rvalue) {
-        self.blocks[bb].insts.push(Inst::Expr(val));
+        // self.blocks[bb].insts.push(Inst::Expr(val));
+        self.blockbuilders[bb].insts.push(Inst::Expr(val));
     }
 
     #[inline]
@@ -1020,7 +1053,6 @@ impl fmt::Display for Operand {
 impl fmt::Display for Terminator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Terminator::Temp => write!(f, "temp"),  // shouldn't ever actually hit this case
             Terminator::Ret => write!(f, "return"),
             Terminator::Goto(bb) => write!(f, "goto {bb}"),
             Terminator::Throw => write!(f, "throw"),

@@ -1262,6 +1262,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         Expr::Fn(FnExpr { ident: _, function }) => {
                             if let Some(body) = &function.body {
                                 self.lower_stmts(&body.stmts);
+                                
 
                                 return Operand::UNDEF;
                             }
@@ -1553,11 +1554,18 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 Operand::Var(Variable::new(class_var_id))
             }
             Expr::Fn(_) => Operand::UNDEF,
+            // Expr::Unary(UnaryExpr { op, arg, .. }) => {
+            //     let arg = self.lower_expr(arg, None);
+            //     let tmp = self
+            //         .body
+            //         .push_tmp(self.block, Rvalue::Unary(op.into(), arg), None);
+            //     Operand::with_var(tmp)
+            // }
             Expr::Unary(UnaryExpr { op, arg, .. }) => {
                 let arg = self.lower_expr(arg, None);
                 let tmp = self
                     .body
-                    .push_tmp(self.block, Rvalue::Unary(op.into(), arg), None);
+                    .push_tmp_builder(self.block, Rvalue::Unary(op.into(), arg), None);
                 Operand::with_var(tmp)
             }
             Expr::Update(UpdateExpr {
@@ -1813,29 +1821,51 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn lower_stmts(&mut self, stmts: &[Stmt]) {
-        // for stmt in stmts {
-        //     println!("STMT: {:?}", stmt);
-        //     println!();
-        //     self.lower_stmt(stmt);  // to prevent stmts from being lowered after returns
-        //     if let Stmt::Return(_) = stmt {
-        //         return;
-        //     }
-            
-        //     // for avoid "temp" being outputted, would have to not only check if we're the last statement
-        //     // in the block and don't have a non-temp term yet, but would also have to check if we're the
-        //     // last statement in entire function // the final bb in body -> not as easy to do?
-        // }
-        for (i, stmt) in stmts.iter().enumerate() {
+        for stmt in stmts {
             // println!("STMT: {:?}", stmt);
             // println!();
             self.lower_stmt(stmt);  // to prevent stmts from being lowered after returns
             if let Stmt::Return(_) = stmt {
                 return;
             }
-            if i == stmts.len() - 1 {
-                self.set_curr_terminator(Terminator::Temp);
+            
+            // for avoid "temp" being outputted, would have to not only check if we're the last statement
+            // in the block and don't have a non-temp term yet, but would also have to check if we're the
+            // last statement in entire function // the final bb in body -> not as easy to do?
+        }
+
+        // for (id, block) in &mut self.body.blocks.iter_enumerated() {
+        //     if !block.set_term_called {
+        //         self.body.set_terminator(id, Terminator::Ret);
+        //     }
+        // }
+
+        let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+        // 1st pass: find all blocks that didn't have a terminator set
+        // should really only be the block where the last stmt of a fn is in
+        // if a block exists
+        for (id, block) in self.body.blocks.iter_enumerated() {
+            if !block.set_term_called {
+                blocks_to_update.push(id);
             }
         }
+        // 2nd pass: update blocks from above
+        for id in blocks_to_update {
+            self.body.set_terminator(id, Terminator::Ret);
+        }
+
+
+        // for (i, stmt) in stmts.iter().enumerate() {
+        //     // println!("STMT: {:?}", stmt);
+        //     // println!();
+        //     self.lower_stmt(stmt);  // to prevent stmts from being lowered after returns
+        //     if let Stmt::Return(_) = stmt {
+        //         return;
+        //     }
+        //     if i == stmts.len() - 1 {
+        //         self.set_curr_terminator(Terminator::Temp);
+        //     }
+        // }
         // if let Terminator::Temp = self.get_curr_terminator().unwrap() {
         //     self.set_curr_terminator(Terminator::Ret);
         // }
