@@ -77,7 +77,7 @@ pub fn dump_ir(output: &mut dyn Write, env: &Environment, body: &Body) -> io::Re
     }
 
     for (id, block) in body.iter_blocks_enumerated() {
-        writeln!(output, "{id}:\n{block}")?;
+        writeln!(output, "{id}, {:?}:\n{block}", block.set_term_called)?;
     }
 
     writeln!(output, "below is for temporarily debugging blockbuilders")?;

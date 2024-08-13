@@ -2,7 +2,13 @@ function reassign() {
   let a = 3;
   let b = 4;
   a = 1;
-  // check if basicblockbuilder is empty
+}
+
+function reassign2() {
+  let a = 3;
+  let b = 4;
+  a = 1;
+  return
 }
 
 // function foo(a) {

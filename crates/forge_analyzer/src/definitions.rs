@@ -1840,19 +1840,19 @@ impl<'cx> FunctionAnalyzer<'cx> {
         //     }
         // }
 
-        let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
-        // 1st pass: find all blocks that didn't have a terminator set
-        // should really only be the block where the last stmt of a fn is in
-        // if a block exists
-        for (id, block) in self.body.blocks.iter_enumerated() {
-            if !block.set_term_called {
-                blocks_to_update.push(id);
-            }
-        }
-        // 2nd pass: update blocks from above
-        for id in blocks_to_update {
-            self.body.set_terminator(id, Terminator::Ret);
-        }
+        // let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+        // // 1st pass: find all blocks that didn't have a terminator set
+        // // should really only be the block where the last stmt of a fn is in
+        // // if a block exists
+        // for (id, block) in self.body.blocks.iter_enumerated() {
+        //     if !block.set_term_called {
+        //         blocks_to_update.push(id);
+        //     }
+        // }
+        // // 2nd pass: update blocks from above
+        // for id in blocks_to_update {
+        //     self.body.set_terminator(id, Terminator::Ret);
+        // }
 
 
         // for (i, stmt) in stmts.iter().enumerate() {
@@ -2380,6 +2380,16 @@ impl Visit for FunctionCollector<'_> {
                     if let Some(BlockStmt { stmts, .. }) = &n.body {
                         analyzer.lower_stmts(stmts);
                         let body = analyzer.body;
+                        // let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+                        // for (id, block) in body.blocks.iter_enumerated() {
+                        //     if !block.set_term_called {
+                        //         blocks_to_update.push(id);
+                        //     }
+                        // }
+                        // for id in blocks_to_update {
+                        //     body.set_terminator(id, Terminator::Ret);
+                        // }
+                        
                         *self.res.def_mut(*owner).expect_body() = body;
                     }
                 }
@@ -2722,7 +2732,18 @@ impl FunctionCollector<'_> {
         };
         if let Some(BlockStmt { stmts, .. }) = &n.body {
             analyzer.lower_stmts(stmts);
-            let body = analyzer.body;
+            let mut body = analyzer.body;
+            
+            let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+            for (id, block) in body.blocks.iter_enumerated() {
+                if !block.set_term_called {
+                    blocks_to_update.push(id);
+                }
+            }
+            for id in blocks_to_update {
+                body.set_terminator(id, Terminator::Ret);
+            }
+
             *self.res.def_mut(owner).expect_body() = body;
         }
     }
