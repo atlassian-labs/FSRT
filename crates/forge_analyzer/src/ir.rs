@@ -112,7 +112,7 @@ pub enum Rvalue {
 pub struct BasicBlock {
     pub insts: Vec<Inst>,
     pub term: Terminator,
-    pub set_term_called: bool, // maybe rename - supposed to represent whether or not we've
+    pub set_term_called: bool, // represents whether or not we've
                                // moved over its corresponding BasicBlockBuilder
 }
 
@@ -152,7 +152,6 @@ pub struct Body {
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     pub class_instantiations: HashMap<DefId, DefId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>, // OnceCell method auto initializes the value first time it's used
-    // dominator_tree: OnceCell<Vec<BasicBlockId>>,
     pub dominator_tree: OnceCell<DomTree>,
     pub blockbuilders: TiVec<BasicBlockId, BasicBlockBuilder>,
 }
@@ -321,8 +320,6 @@ impl Body {
         Self {
             vars: local_vars,
             owner: None,
-            // blocks: vec![BasicBlock::default()].into(),
-            // blocks: TiVec::new(),
             blocks: vec![BasicBlock {
                 insts: Vec::new(),
                 term: Terminator::Ret,
@@ -335,8 +332,6 @@ impl Body {
             def_id_to_vars: Default::default(),
             predecessors: Default::default(),
             dominator_tree: Default::default(),
-            // blockbuilders: vec![BasicBlockBuilder::default()].into(),
-            // blockbuilders: TiVec::new(),
             blockbuilders: vec![BasicBlockBuilder { insts: Vec::new() }].into(),
         }
     }
@@ -431,7 +426,6 @@ impl Body {
 
     #[inline]
     pub(crate) fn new_block(&mut self) -> BasicBlockId {
-        // self.blocks.push_and_get_key(BasicBlock::default())
         self.new_block_with_terminator(Terminator::Ret)
     }
 
@@ -449,13 +443,6 @@ impl Body {
         array::from_fn(|_| self.new_blockbuilder())
     }
 
-    // #[inline]
-    // pub(crate) fn new_block_with_terminator(&mut self, term: Terminator) -> BasicBlockId {
-    //     self.blocks.push_and_get_key(BasicBlock {
-    //         term,
-    //         ..Default::default()
-    //     })
-    // }
     #[inline]
     pub(crate) fn new_block_with_terminator(&mut self, term: Terminator) -> BasicBlockId {
         self.blocks.push_and_get_key(BasicBlock {
@@ -687,7 +674,7 @@ impl Body {
 
     #[inline]
     pub(crate) fn set_terminator(&mut self, bb: BasicBlockId, term: Terminator) -> Terminator {
-        let builder_insts = std::mem::take(&mut self.blockbuilders[bb].insts); // double check - not sure if using mem efficiently
+        let builder_insts = std::mem::take(&mut self.blockbuilders[bb].insts); // TODO: double check - not sure if using mem efficiently
 
         let block = BasicBlock {
             insts: builder_insts,
@@ -710,7 +697,6 @@ impl Body {
 
     #[inline]
     pub(crate) fn push_inst(&mut self, bb: BasicBlockId, inst: Inst) {
-        // self.blocks[bb].insts.push(inst);
         self.blockbuilders[bb].insts.push(inst);
     }
 
@@ -719,12 +705,7 @@ impl Body {
             Operand::Lit(lit) => Projection::Known(lit.as_jsword()),
             Operand::Var(var) if var.projections.is_empty() => Projection::Computed(var.base),
             Operand::Var(_) => {
-                // Projection::Computed(Base::Var(self.push_tmp(bb, Rvalue::Read(opnd), None)))
-                Projection::Computed(Base::Var(self.push_tmp_builder(
-                    bb,
-                    Rvalue::Read(opnd),
-                    None,
-                )))
+                Projection::Computed(Base::Var(self.push_tmp(bb, Rvalue::Read(opnd), None)))
             }
         }
     }
@@ -785,8 +766,7 @@ impl Body {
                     let var = self
                         .vars
                         .push_and_get_key(VarKind::Temp { parent: parent_key });
-                    // self.push_inst(bb, Inst::Assign(Variable::new(var), Rvalue::Read(val)));
-                    self.push_inst_builder(bb, Inst::Assign(Variable::new(var), Rvalue::Read(val)));
+                    self.push_inst(bb, Inst::Assign(Variable::new(var), Rvalue::Read(val)));
                     var
                 }),
                 projections: Default::default(),
@@ -801,79 +781,23 @@ impl Body {
         parent: Option<DefId>,
     ) -> VarId {
         let var = self.vars.push_and_get_key(VarKind::Temp { parent });
-        // self.push_inst(bb, Inst::Assign(Variable::new(var), val));
-        self.push_inst_builder(bb, Inst::Assign(Variable::new(var), val));
+        self.push_inst(bb, Inst::Assign(Variable::new(var), val));
         var
     }
 
     #[inline]
     pub(crate) fn push_assign(&mut self, bb: BasicBlockId, var: Variable, val: Rvalue) {
-        // self.blocks[bb].insts.push(Inst::Assign(var, val));
         self.blockbuilders[bb].insts.push(Inst::Assign(var, val));
     }
 
     #[inline]
     pub(crate) fn push_expr(&mut self, bb: BasicBlockId, val: Rvalue) {
-        // self.blocks[bb].insts.push(Inst::Expr(val));
         self.blockbuilders[bb].insts.push(Inst::Expr(val));
     }
 
     #[inline]
     pub(crate) fn block(&self, bb: BasicBlockId) -> &BasicBlock {
         &self.blocks[bb]
-    }
-
-    // ADDITIONAL FNS FOR BLOCKBUILDERS
-    #[inline]
-    pub(crate) fn push_inst_builder(&mut self, bb: BasicBlockId, inst: Inst) {
-        self.blockbuilders[bb].insts.push(inst);
-    }
-
-    pub(crate) fn coerce_to_lval_builder(
-        &mut self,
-        bb: BasicBlockId,
-        val: Operand,
-        parent_key: Option<DefId>,
-    ) -> Variable {
-        match val {
-            Operand::Var(var) => var,
-            Operand::Lit(_) => Variable {
-                base: Base::Var({
-                    let var = self
-                        .vars
-                        .push_and_get_key(VarKind::Temp { parent: parent_key });
-                    self.push_inst_builder(bb, Inst::Assign(Variable::new(var), Rvalue::Read(val)));
-                    var
-                }),
-                projections: Default::default(),
-            },
-        }
-    }
-
-    pub(crate) fn push_tmp_builder(
-        &mut self,
-        bb: BasicBlockId,
-        val: Rvalue,
-        parent: Option<DefId>,
-    ) -> VarId {
-        let var = self.vars.push_and_get_key(VarKind::Temp { parent });
-        self.push_inst_builder(bb, Inst::Assign(Variable::new(var), val));
-        var
-    }
-
-    #[inline]
-    pub(crate) fn push_assign_builder(&mut self, bb: BasicBlockId, var: Variable, val: Rvalue) {
-        self.blockbuilders[bb].insts.push(Inst::Assign(var, val));
-    }
-
-    #[inline]
-    pub(crate) fn push_expr_builder(&mut self, bb: BasicBlockId, val: Rvalue) {
-        self.blockbuilders[bb].insts.push(Inst::Expr(val));
-    }
-
-    #[inline]
-    pub(crate) fn builderblock(&self, bb: BasicBlockId) -> &BasicBlockBuilder {
-        &self.blockbuilders[bb]
     }
 }
 

@@ -1064,14 +1064,12 @@ impl<'cx> FunctionAnalyzer<'cx> {
         if self.get_curr_terminator().is_none() {
             self.set_curr_terminator(Terminator::Goto(block));
         }
-        // self.set_curr_terminator(Terminator::Goto(block));
         mem::replace(&mut self.block, block)
     }
 
     #[inline]
     fn push_curr_inst(&mut self, inst: Inst) {
-        // self.body.push_inst(self.block, inst);
-        self.body.push_inst_builder(self.block, inst);
+        self.body.push_inst(self.block, inst);
     }
 
     fn lower_member(&mut self, obj: &Expr, prop: &MemberProp) -> Operand {
@@ -1486,27 +1484,19 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                         .expect_class()
                                         .pub_members
                                         .push((id.0, new_def));
-                                    // self.body.push_inst(
-                                    //     self.block,
-                                    //     Inst::Assign(var, Rvalue::Read(Operand::with_var(var_id))),
-                                    // );
-                                    self.body.push_inst_builder(
+                                    self.body.push_inst(
                                         self.block,
                                         Inst::Assign(var, Rvalue::Read(Operand::with_var(var_id))),
                                     );
                                 }
                                 Prop::KeyValue(KeyValueProp { key, value }) => {
                                     let lowered_value = self.lower_expr(value, None);
-                                    // let lowered_var = self.body.coerce_to_lval(
-                                    //     self.block,
-                                    //     lowered_value.clone(),
-                                    //     None,
-                                    // );
-                                    let lowered_var = self.body.coerce_to_lval_builder(
+                                    let lowered_var = self.body.coerce_to_lval(
                                         self.block,
                                         lowered_value.clone(),
                                         None,
                                     );
+                                    
 
                                     let rval = Rvalue::Read(lowered_value);
                                     if let Base::Var(var_id) = lowered_var.base {
@@ -1535,9 +1525,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                             }
                                             _ => {}
                                         }
-                                        // self.body.push_inst(self.block, Inst::Assign(var, rval));
-                                        self.body
-                                            .push_inst_builder(self.block, Inst::Assign(var, rval));
+                                        self.body.push_inst(self.block, Inst::Assign(var, rval));
+                                        
                                     }
                                 }
                                 _ => {}
@@ -1549,20 +1538,14 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 Operand::Var(Variable::new(class_var_id))
             }
             Expr::Fn(_) => Operand::UNDEF,
-            // Expr::Unary(UnaryExpr { op, arg, .. }) => {
-            //     let arg = self.lower_expr(arg, None);
-            //     let tmp = self
-            //         .body
-            //         .push_tmp(self.block, Rvalue::Unary(op.into(), arg), None);
-            //     Operand::with_var(tmp)
-            // }
             Expr::Unary(UnaryExpr { op, arg, .. }) => {
                 let arg = self.lower_expr(arg, None);
-                let tmp =
-                    self.body
-                        .push_tmp_builder(self.block, Rvalue::Unary(op.into(), arg), None);
+                let tmp = self
+                    .body
+                    .push_tmp(self.block, Rvalue::Unary(op.into(), arg), None);
                 Operand::with_var(tmp)
             }
+            
             Expr::Update(UpdateExpr {
                 op, prefix, arg, ..
             }) => {
@@ -1575,16 +1558,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 let left = self.lower_expr(left, None);
                 let right = self.lower_expr(right, None);
 
-                // let tmp = self
-                //     .body
-                //     .push_tmp(self.block, Rvalue::Bin(op.into(), left, right), None);
-                // Operand::with_var(tmp)
-                let tmp = self.body.push_tmp_builder(
-                    self.block,
-                    Rvalue::Bin(op.into(), left, right),
-                    None,
-                );
+                let tmp = self
+                    .body
+                    .push_tmp(self.block, Rvalue::Bin(op.into(), left, right), None);
                 Operand::with_var(tmp)
+               
             }
 
             Expr::SuperProp(SuperPropExpr { obj, prop, .. }) => {
@@ -1613,14 +1591,12 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     AssignTarget::Simple(expr) => match expr {
                         SimpleAssignTarget::Ident(BindingIdent { id, .. }) => {
                             let lval = self.lower_ident(id);
-                            // let lval = self.body.coerce_to_lval(self.block, lval, None);
-                            let lval = self.body.coerce_to_lval_builder(self.block, lval, None);
+                            let lval = self.body.coerce_to_lval(self.block, lval, None);
                             self.push_curr_inst(Inst::Assign(lval, Rvalue::Read(rhs.clone())));
                         }
                         SimpleAssignTarget::Member(MemberExpr { obj, prop, .. }) => {
                             let lval = self.lower_member(obj, prop);
-                            // let lval = self.body.coerce_to_lval(self.block, lval, None);
-                            let lval = self.body.coerce_to_lval_builder(self.block, lval, None);
+                            let lval = self.body.coerce_to_lval(self.block, lval, None);
                             self.push_curr_inst(Inst::Assign(lval, Rvalue::Read(rhs.clone())));
                         }
                         SimpleAssignTarget::SuperProp(_) => {
@@ -1628,17 +1604,14 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         }
                         SimpleAssignTarget::Paren(ParenExpr { expr, .. }) => {
                             let lval = self.lower_expr(expr, None);
-                            // let lval = self.body.coerce_to_lval(self.block, lval, None);
-                            let lval = self.body.coerce_to_lval_builder(self.block, lval, None);
+                            let lval = self.body.coerce_to_lval(self.block, lval, None);
                             self.push_curr_inst(Inst::Assign(lval, Rvalue::Read(rhs.clone())));
                         }
                         SimpleAssignTarget::OptChain(OptChainExpr { optional, base, .. }) => {
                             match &**base {
                                 OptChainBase::Call(OptCall { callee, args, .. }) => {
                                     let callee = self.lower_call(callee.as_ref().into(), args);
-                                    // let lval = self.body.coerce_to_lval(self.block, callee, None);
-                                    let lval =
-                                        self.body.coerce_to_lval_builder(self.block, callee, None);
+                                    let lval = self.body.coerce_to_lval(self.block, callee, None);
                                     self.push_curr_inst(Inst::Assign(
                                         lval,
                                         Rvalue::Read(rhs.clone()),
@@ -1646,9 +1619,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                 }
                                 OptChainBase::Member(MemberExpr { obj, prop, .. }) => {
                                     let lval = self.lower_member(obj, prop);
-                                    // let lval = self.body.coerce_to_lval(self.block, lval, None);
-                                    let lval =
-                                        self.body.coerce_to_lval_builder(self.block, lval, None);
+                                    let lval = self.body.coerce_to_lval(self.block, lval, None);
                                     self.push_curr_inst(Inst::Assign(
                                         lval,
                                         Rvalue::Read(rhs.clone()),
@@ -1687,26 +1658,15 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 });
                 self.block = cons_block;
                 let cons = self.lower_expr(cons, None);
-                // let cons_phi = self.body.push_tmp(self.block, Rvalue::Read(cons), None);
-                let cons_phi = self
-                    .body
-                    .push_tmp_builder(self.block, Rvalue::Read(cons), None);
+                let cons_phi = self.body.push_tmp(self.block, Rvalue::Read(cons), None);
 
                 self.set_curr_terminator(Terminator::Goto(rest));
                 self.block = alt_block;
                 let alt = self.lower_expr(alt, None);
-                // let alt_phi = self.body.push_tmp(self.block, Rvalue::Read(alt), None);
-                let alt_phi = self
-                    .body
-                    .push_tmp_builder(self.block, Rvalue::Read(alt), None);
+                let alt_phi = self.body.push_tmp(self.block, Rvalue::Read(alt), None);
                 self.set_curr_terminator(Terminator::Goto(rest));
                 self.block = rest;
-                // let phi = self.body.push_tmp(
-                //     self.block,
-                //     Rvalue::Phi(vec![(cons_phi, cons_block), (alt_phi, alt_block)]),
-                //     None,
-                // );
-                let phi = self.body.push_tmp_builder(
+                let phi = self.body.push_tmp(
                     self.block,
                     Rvalue::Phi(vec![(cons_phi, cons_block), (alt_phi, alt_block)]),
                     None,
@@ -1714,7 +1674,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 Operand::with_var(phi)
             }
 
-            // TODO: COME BACK TO; lower_call may have a few instances where we need to use builder?
             Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
             Expr::New(NewExpr { callee, args, .. }) => {
                 if let Expr::Ident(ident) = &**callee {
@@ -1731,8 +1690,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 if let Some((last, rest)) = exprs.split_last() {
                     for expr in rest {
                         let opnd = self.lower_expr(expr, None);
-                        // self.body.push_expr(self.block, Rvalue::Read(opnd));
-                        self.body.push_expr_builder(self.block, Rvalue::Read(opnd));
+                        self.body.push_expr(self.block, Rvalue::Read(opnd));
                     }
                     self.lower_expr(last, None)
                 } else {
@@ -1751,15 +1709,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Expr::Lit(lit) => lit.clone().into(),
             Expr::Tpl(tpl) => {
                 let tpl = self.lower_tpl(tpl);
-                // Operand::with_var(
-                //     self.body
-                //         .push_tmp(self.block, Rvalue::Template(tpl), parent),
-                // )
-                Operand::with_var(self.body.push_tmp_builder(
-                    self.block,
-                    Rvalue::Template(tpl),
-                    parent,
-                ))
+                Operand::with_var(
+                    self.body
+                        .push_tmp(self.block, Rvalue::Template(tpl), parent),
+                )
             }
             Expr::TaggedTpl(TaggedTpl { tag, tpl, .. }) => {
                 let tag = Some(self.lower_expr(tag, parent));
@@ -1767,15 +1720,10 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     tag,
                     ..self.lower_tpl(tpl)
                 };
-                // Operand::with_var(
-                //     self.body
-                //         .push_tmp(self.block, Rvalue::Template(tpl), parent),
-                // )
-                Operand::with_var(self.body.push_tmp_builder(
-                    self.block,
-                    Rvalue::Template(tpl),
-                    parent,
-                ))
+                Operand::with_var(
+                    self.body
+                        .push_tmp(self.block, Rvalue::Template(tpl), parent),
+                )
             }
             Expr::Arrow(_) => Operand::UNDEF,
             Expr::Class(_) => Operand::UNDEF,
@@ -1842,20 +1790,15 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Stmt::Debugger(_) => {}
             Stmt::With(WithStmt { obj, body, .. }) => {
                 let opnd = self.lower_expr(obj, None);
-                // self.body.push_expr(self.block, Rvalue::Read(opnd));
-                self.body.push_expr_builder(self.block, Rvalue::Read(opnd));
+                self.body.push_expr(self.block, Rvalue::Read(opnd));
 
                 self.lower_stmt(body);
             }
             Stmt::Return(ReturnStmt { arg, .. }) => {
                 if let Some(arg) = arg {
                     let opnd = self.lower_expr(arg, None);
-                    // self.body
-                    //     .push_inst(self.block, Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)));
-                    self.body.push_inst_builder(
-                        self.block,
-                        Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)),
-                    );
+                    self.body
+                        .push_inst(self.block, Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)));
                 }
                 self.body.set_terminator(self.block, Terminator::Ret);
             }
@@ -1868,13 +1811,11 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 test, cons, alt, ..
             }) => {
                 // adds two blocks to body; one for cons, another for cont (what comes after the if (&else if present))
-                // let [cons_block, cont] = self.body.new_blocks();
                 let [temp1, temp2] = self.body.new_blocks();
 
                 let [cons_block, cont] = self.body.new_blockbuilders();
                 // if an alt block is present (else case), add another block for it
                 let alt_block = if let Some(alt) = alt {
-                    // let alt_block = self.body.new_block();
                     let temp3 = self.body.new_block();
                     let alt_block = self.body.new_blockbuilder();
                     let old_block = mem::replace(&mut self.block, alt_block);
@@ -1883,7 +1824,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     if self.get_curr_terminator().is_none() {
                         self.set_curr_terminator(Terminator::Goto(cont));
                     }
-                    // self.set_curr_terminator(Terminator::Goto(cont));  // BUG: always goes to cont
                     self.block = old_block;
                     alt_block
                 } else {
@@ -1901,8 +1841,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 self.block = cons_block;
                 self.lower_stmt(cons);
 
-                self.goto_block(cont); // BUG: always goes to cont -> not a bug? check w josh
-                                       // JK is a bug; made some edits to the func
+                self.goto_block(cont);
             }
             Stmt::Switch(SwitchStmt {
                 discriminant,
@@ -1914,8 +1853,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }
             Stmt::Throw(ThrowStmt { arg, .. }) => {
                 let opnd = self.lower_expr(arg, None);
-                // self.body.push_expr(self.block, Rvalue::Read(opnd));
-                self.body.push_expr_builder(self.block, Rvalue::Read(opnd));
+                self.body.push_expr(self.block, Rvalue::Read(opnd));
                 self.body.set_terminator(self.block, Terminator::Throw);
             }
             Stmt::Try(stmt) => {
@@ -1931,7 +1869,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
             }
             Stmt::While(WhileStmt { test, body, .. }) => {
-                // let [check, cont, body_id] = self.body.new_blocks();
                 let [temp1, temp2, temp3] = self.body.new_blocks();
                 let [check, cont, body_id] = self.body.new_blockbuilders();
                 self.set_curr_terminator(Terminator::Goto(check));
@@ -1948,7 +1885,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 self.block = cont;
             }
             Stmt::DoWhile(DoWhileStmt { test, body, .. }) => {
-                // let [check, cont, body_id] = self.body.new_blocks();
                 let [temp1, temp2, temp3] = self.body.new_blocks();
                 let [check, cont, body_id] = self.body.new_blockbuilders();
                 self.set_curr_terminator(Terminator::Goto(body_id));
@@ -1964,7 +1900,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 });
                 self.block = cont;
             }
-            // TODO: FIX FOR STMT LATER (ALSO NEED TO INCORP BLOCKBUILDER)
+            // TODO: Fix For Loop Lowering
             Stmt::For(ForStmt {
                 init,
                 test,
@@ -2021,8 +1957,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             },
             Stmt::Expr(ExprStmt { expr, .. }) => {
                 let opnd = self.lower_expr(expr, None);
-                // self.body.push_expr(self.block, Rvalue::Read(opnd));
-                self.body.push_expr_builder(self.block, Rvalue::Read(opnd));
+                self.body.push_expr(self.block, Rvalue::Read(opnd));
             }
         }
     }
