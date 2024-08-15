@@ -1496,7 +1496,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                         lowered_value.clone(),
                                         None,
                                     );
-                                    
 
                                     let rval = Rvalue::Read(lowered_value);
                                     if let Base::Var(var_id) = lowered_var.base {
@@ -1526,7 +1525,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                                             _ => {}
                                         }
                                         self.body.push_inst(self.block, Inst::Assign(var, rval));
-                                        
                                     }
                                 }
                                 _ => {}
@@ -1545,7 +1543,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     .push_tmp(self.block, Rvalue::Unary(op.into(), arg), None);
                 Operand::with_var(tmp)
             }
-            
+
             Expr::Update(UpdateExpr {
                 op, prefix, arg, ..
             }) => {
@@ -1562,7 +1560,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     .body
                     .push_tmp(self.block, Rvalue::Bin(op.into(), left, right), None);
                 Operand::with_var(tmp)
-               
             }
 
             Expr::SuperProp(SuperPropExpr { obj, prop, .. }) => {

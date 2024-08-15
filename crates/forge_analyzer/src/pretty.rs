@@ -89,9 +89,9 @@ pub fn dump_dom_tree(output: &mut dyn Write, _env: &Environment, body: &Body) ->
 
     writeln!(output, "----------------------------------------------")?;
     let num_blocks = body.blocks.len();
-    write!(
+    writeln!(
         output,
-        "Dominator Tree idom: {:?}\n",
+        "Dominator Tree idom: {:?}",
         &body.dominator_tree().idom[..num_blocks]
     )?;
 

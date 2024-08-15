@@ -53,11 +53,8 @@ pub struct BranchTargets {
     branch: SmallVec<[BasicBlockId; 2]>,
 }
 
-// #[derive(Clone, Debug, Default)]
 #[derive(Clone, Debug)]
 pub enum Terminator {
-    // #[default]
-    // Temp,
     Ret,
     Goto(BasicBlockId),
     Throw,
@@ -107,7 +104,6 @@ pub enum Rvalue {
     Template(Template),
 }
 
-// #[derive(Clone, Debug, Default)]
 #[derive(Clone, Debug)]
 pub struct BasicBlock {
     pub insts: Vec<Inst>,
@@ -249,6 +245,7 @@ create_newtype! {
 #[derive(Clone, Debug, Hash, Default)]
 pub struct DomTree {
     pub idom: Vec<i32>, // maybe change to BasicBlockId later
+    pub frontiers: Vec<Vec<BasicBlockId>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
@@ -506,7 +503,7 @@ impl Body {
         let mut idom = vec![-1; N];
 
         // call dfs
-        self.dfs(
+        Self::dfs(
             0,
             &mut tick,
             &mut dfn,
@@ -531,7 +528,7 @@ impl Body {
                 // let arc = &pool[arc_index];
                 u = pool[a.unwrap()].v;
                 if dfn[u as usize] != -1 {
-                    self.eval(u.try_into().unwrap(), i as i32, &dfn, &mut best, &mut uf);
+                    Self::eval(u.try_into().unwrap(), i as i32, &dfn, &mut best, &mut uf);
                     if dfn[best[u as usize] as usize] < dfn[sdom[v as usize] as usize] {
                         sdom[v as usize] = best[u as usize];
                     }
@@ -554,7 +551,6 @@ impl Body {
 
     // dfs; helper for semi-nca algo in build_dom_tree()
     fn dfs(
-        &self,
         u: usize,
         tick: &mut u32,
         dfn: &mut Vec<i32>,
@@ -573,26 +569,19 @@ impl Body {
             let v = arc.v;
             if dfn[v as usize] < 0 {
                 uf[v as usize] = u as i32;
-                self.dfs(v as usize, tick, dfn, rdfn, uf, outgoing, pool);
+                Self::dfs(v as usize, tick, dfn, rdfn, uf, outgoing, pool);
             }
             a = arc.next;
         }
     }
 
     // eval; helper for semi-nca algo in build_dom_tree()
-    fn eval(
-        &self,
-        v: usize,
-        cur: i32,
-        dfn: &Vec<i32>,
-        best: &mut Vec<i32>,
-        uf: &mut Vec<i32>,
-    ) -> i32 {
+    fn eval(v: usize, cur: i32, dfn: &Vec<i32>, best: &mut Vec<i32>, uf: &mut Vec<i32>) -> i32 {
         if dfn[v] <= cur {
             return v.try_into().unwrap();
         }
         let u = uf[v];
-        let r = self.eval(u.try_into().unwrap(), cur, dfn, best, uf);
+        let r = Self::eval(u.try_into().unwrap(), cur, dfn, best, uf);
         if dfn[best[u as usize] as usize] < dfn[best[v] as usize] {
             best[v] = best[u as usize];
         }
@@ -624,7 +613,12 @@ impl Body {
         &self,
         b: BasicBlockId,
     ) -> impl Iterator<Item = BasicBlockId> + '_ {
-        let idom = &self.dominator_tree().idom;
+        let dom_tree = self.dominator_tree();
+        let ret_frontier = dom_tree.frontiers[b.0 as usize].clone();
+        ret_frontier.into_iter()
+    }
+
+    fn build_dom_frontier(&self, idom: &[i32]) -> Vec<Vec<BasicBlockId>> {
         let mut frontiers: Vec<Vec<BasicBlockId>> = Vec::new();
         for _ in 0..self.blocks.len() {
             frontiers.push(Vec::new());
@@ -643,15 +637,18 @@ impl Body {
                 }
             }
         }
-        let ret_frontier = frontiers[b.0 as usize].clone();
-        ret_frontier.into_iter()
+        frontiers
     }
 
     pub(crate) fn dominator_tree(&self) -> &DomTree {
         self.dominator_tree.get_or_init(|| {
             let cfg = self.build_cfg_vec();
             let dom_tree = self.build_dom_tree(&cfg);
-            DomTree { idom: dom_tree }
+            let dom_frontier = self.build_dom_frontier(&dom_tree);
+            DomTree {
+                idom: dom_tree,
+                frontiers: dom_frontier,
+            }
         })
     }
 
