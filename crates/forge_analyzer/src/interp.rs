@@ -604,7 +604,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             .insert_var_with_projection(defid_block, varid, projections, value);
     }
 
-    // this function takes in an operand checks for previous values and returns a value optional
+    // This function takes in an operand, checks for existing values, and returns a value optional.
+    // There are 4 cases for the existing values.
     #[inline]
     pub fn add_value_to_definition(&mut self, defid_block: DefId, lval: Variable, rvalue: Rvalue) {
         if let Variable {

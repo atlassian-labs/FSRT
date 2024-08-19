@@ -1,10 +1,16 @@
 #![allow(dead_code, unused)]
 
+use std::borrow::BorrowMut;
+use std::env;
+use std::hash::Hash;
 use std::{borrow::Borrow, fmt, mem};
 
 use crate::utils::{calls_method, eq_prop_name};
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
+use std::collections::{HashMap, HashSet};
+use swc_core::common::pass::define;
+use swc_core::ecma::utils::var;
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -16,7 +22,7 @@ use swc_core::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
             AssignProp, AssignTarget, AwaitExpr, BinExpr, BindingIdent, BlockStmt, BlockStmtOrExpr,
-            BreakStmt, CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName,
+            Bool, BreakStmt, CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName,
             CondExpr, Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll,
             ExportDecl, ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier,
             ExportSpecifier, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForHead, ForInStmt,
@@ -138,6 +144,7 @@ pub fn run_resolver(
 ) -> Environment {
     let mut environment = Environment::new();
 
+    // This for loop parses each token of each code statement in the file.
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut export_collector = ExportCollector {
             res_table: &mut environment.resolver,
@@ -156,6 +163,7 @@ pub fn run_resolver(
         }
     }
 
+    // The following two for loops iterate through the imported modules of the file.
     let mut foreign = TiVec::default();
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut import_collector = ImportCollector {
@@ -182,7 +190,7 @@ pub fn run_resolver(
         module.visit_with(&mut import_collector);
     }
 
-    // check for required after Definitions pass
+    // This loop runs through the different import modules and corresponding definitions.
     let defs = Definitions::new(
         environment
             .resolver
@@ -226,7 +234,68 @@ pub fn run_resolver(
         module.visit_with(&mut collector);
     }
 
+    // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump.
+    let mut updated_vars: HashMap<VarId, VarId> = HashMap::new();
+    for body in environment.bodies_mut() {
+        // Updates the instruction set with creation of new global reference variables if necessary.
+        for block in body.blocks.iter_mut() {
+            for inst in block.iter_insts_mut() {
+                update_rvalue(inst.rvalue_mut(), &updated_vars);
+                match inst {
+                    Inst::Assign(variable, rvalue) => {
+                        if let Some(var_id) = variable.as_var_id() {
+                            if let Some(updated_var_id) = updated_vars.get_mut(&var_id) {
+                                if variable.projections.is_empty() {
+                                    let var_kind = body.vars.get(var_id).unwrap();
+                                    let new_var_id = body.vars.push_and_get_key(*var_kind);
+                                    variable.base = Base::Var(new_var_id);
+                                    *updated_var_id = new_var_id;
+                                }
+                            } else {
+                                updated_vars.insert(var_id, var_id);
+                            }
+                        }
+                        // else: Skip renaming for variables 'super' or 'this', as VarId = None.
+                    }
+                    Inst::Expr(rvalue) => {}
+                }
+            }
+        }
+        updated_vars.clear();
+    }
     environment
+}
+
+// This is a helper function to run_resolver() 's SSA Form Loop.
+// Input: rvalue of instruction and map of VarIds that have been updated in the SSA Form Loop.
+pub fn update_rvalue(rvalue: &mut Rvalue, updated_vars: &HashMap<VarId, VarId>) {
+    // Updates the VarId in the instruction to persist the changes made by the SSA Form Loop.
+    let update_var = |variable: &mut Variable| {
+        if let Some(op_var_id) = variable.as_var_id() {
+            if let Some(updated_var_id) = updated_vars.get(&op_var_id) {
+                let mut base = &mut variable.base;
+                *base = Base::Var(*updated_var_id);
+            }
+        }
+    };
+
+    // Updates the Rvalue of the instruction.
+    match rvalue {
+        Rvalue::Unary(_, Operand::Var(variable))
+        | Rvalue::Read(Operand::Var(variable))
+        | Rvalue::Bin(_, Operand::Var(variable), _)
+        | Rvalue::Bin(_, _, Operand::Var(variable)) => {
+            update_var(variable);
+        }
+        // Rvalues of Read (Literal), Binary (Literal), Unary (Literal), Call (method), Intrinsic, Phi, and Template can be kept same.
+        Rvalue::Read(_)
+        | Rvalue::Bin(_, _, _)
+        | Rvalue::Unary(_, _)
+        | Rvalue::Call(_, _)
+        | Rvalue::Intrinsic(_, _)
+        | Rvalue::Phi(_)
+        | Rvalue::Template(_) => {}
+    }
 }
 
 /// this struct is a bit of a hack, because we also use it for
@@ -3306,6 +3375,12 @@ impl Environment {
     #[inline]
     pub fn bodies(&self) -> impl Iterator<Item = &Body> + '_ {
         self.defs.funcs.iter()
+    }
+
+    // Mutable iterator for bodies of the environment
+    #[inline]
+    pub fn bodies_mut(&mut self) -> impl Iterator<Item = &mut Body> + '_ {
+        self.defs.funcs.iter_mut()
     }
 
     #[inline]

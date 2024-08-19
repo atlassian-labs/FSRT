@@ -13,6 +13,40 @@ let test_function = (word) => {
   let test_var = "test_var";
 }
 
+function test_bug() {
+  let b = 3;
+  let a = b
+}
+
+function complex(a) {
+  let b = a - 20;
+  let c = b + 1;
+  b = 10;
+  return b * 10;
+}
+
+function simple() {
+  let a = 4;
+  let b = 7;
+  a = 10;
+  a = 5;
+}
+
+function reassign() {
+  let a = 4;
+  let b = "7";
+  b = "7" + a;
+}
+
+function var_reref() {
+  let a = 4;
+  let b = 7;
+  a = 10;
+  let c = a + b
+  a = 5;
+  c = 2 * b;
+}
+
 const App = () => {
 
     let testObjectOther = {
