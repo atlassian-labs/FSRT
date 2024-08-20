@@ -1640,9 +1640,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }) => {
                 let cond = self.lower_expr(test, None);
                 let curr = self.block;
-                // let rest = self.body.new_block();
-                // let cons_block = self.body.new_block();
-                // let alt_block = self.body.new_block();
                 let [temp1, temp2, temp3] = self.body.new_blocks();
                 let rest = self.body.new_blockbuilder();
                 let cons_block = self.body.new_blockbuilder();
