@@ -1773,7 +1773,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
     fn lower_stmts(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
-            println!("STATEMENT:{:?}", stmt);
             self.lower_stmt(stmt); // to prevent stmts from being lowered after returns
             if let Stmt::Return(_) = stmt {
                 return;
@@ -2274,7 +2273,18 @@ impl Visit for FunctionCollector<'_> {
                     };
                     if let Some(BlockStmt { stmts, .. }) = &n.body {
                         analyzer.lower_stmts(stmts);
-                        let body = analyzer.body;
+                        let mut body = analyzer.body;
+
+                        let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+                        for (id, block) in body.blocks.iter_enumerated() {
+                            if !block.set_term_called {
+                                blocks_to_update.push(id);
+                            }
+                        }
+                        for id in blocks_to_update {
+                            body.set_terminator(id, Terminator::Ret);
+                        }
+
                         *self.res.def_mut(*owner).expect_body() = body;
                     }
                 }
@@ -2321,7 +2331,18 @@ impl Visit for FunctionCollector<'_> {
                     };
                     if let Some(BlockStmt { stmts, .. }) = &n.function.body {
                         analyzer.lower_stmts(stmts);
-                        let body = analyzer.body;
+                        let mut body = analyzer.body;
+
+                        let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+                        for (id, block) in body.blocks.iter_enumerated() {
+                            if !block.set_term_called {
+                                blocks_to_update.push(id);
+                            }
+                        }
+                        for id in blocks_to_update {
+                            body.set_terminator(id, Terminator::Ret);
+                        }
+
                         *self.res.def_mut(*owner).expect_body() = body;
                     }
                 }
@@ -2382,7 +2403,19 @@ impl Visit for FunctionCollector<'_> {
                     .push_inst(analyzer.block, Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)));
             }
         }
-        *self.res.def_mut(owner).expect_body() = analyzer.body;
+        let mut body = analyzer.body;
+
+        let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+        for (id, block) in body.blocks.iter_enumerated() {
+            if !block.set_term_called {
+                blocks_to_update.push(id);
+            }
+        }
+        for id in blocks_to_update {
+            body.set_terminator(id, Terminator::Ret);
+        }
+
+        *self.res.def_mut(owner).expect_body() = body;
         self.parent = old_parent;
     }
 
@@ -2490,8 +2523,20 @@ impl Visit for FunctionCollector<'_> {
                                 analyzer.block,
                                 Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)),
                             );
-                            analyzer.body.set_terminator(analyzer.block, Terminator::Ret);
-                            *self.res.def_mut(owner).expect_body() = analyzer.body;
+
+                            let mut body = analyzer.body;
+
+                            let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+                            for (id, block) in body.blocks.iter_enumerated() {
+                                if !block.set_term_called {
+                                    blocks_to_update.push(id);
+                                }
+                            }
+                            for id in blocks_to_update {
+                                body.set_terminator(id, Terminator::Ret);
+                            }
+
+                            *self.res.def_mut(owner).expect_body() = body;
                             self.parent = old_parent;
                         }
                     }
@@ -3164,7 +3209,17 @@ impl Visit for GlobalCollector<'_> {
             }
         }
         analyzer.lower_stmts(all_module_items.as_slice());
-        let body = analyzer.body;
+        let mut body = analyzer.body;
+
+        let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+        for (id, block) in body.blocks.iter_enumerated() {
+            if !block.set_term_called {
+                blocks_to_update.push(id);
+            }
+        }
+        for id in blocks_to_update {
+            body.set_terminator(id, Terminator::Ret);
+        }
 
         *self.res.def_mut(owner).expect_body() = body;
     }
