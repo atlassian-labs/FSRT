@@ -1773,6 +1773,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
     fn lower_stmts(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
+            println!("STATEMENT:{:?}", stmt);
             self.lower_stmt(stmt); // to prevent stmts from being lowered after returns
             if let Stmt::Return(_) = stmt {
                 return;
@@ -2489,6 +2490,7 @@ impl Visit for FunctionCollector<'_> {
                                 analyzer.block,
                                 Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)),
                             );
+                            analyzer.body.set_terminator(analyzer.block, Terminator::Ret);
                             *self.res.def_mut(owner).expect_body() = analyzer.body;
                             self.parent = old_parent;
                         }
