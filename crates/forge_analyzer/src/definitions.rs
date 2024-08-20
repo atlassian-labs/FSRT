@@ -909,11 +909,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
         self.body.set_terminator(self.block, term);
     }
 
-    // #[inline]
-    // fn get_curr_terminator(&mut self) -> Terminator {
-    //     self.body.get_terminator(self.block)
-    // }
-
     #[inline]
     fn get_curr_terminator(&mut self) -> Option<Terminator> {
         self.body.get_terminator(self.block)
@@ -1229,7 +1224,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
-        // debug!("in da lower call");
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first() {
             if self.res.is_imported_from(id, "@forge/ui").map_or(
