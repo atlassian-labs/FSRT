@@ -1,279 +1,234 @@
-// function reassign() {
-//   let a = 3;
-//   let b = 4;
-//   a = 1;
+function reassign() {
+  let a = 3;
+  let b = 4;
+  a = 1;
+}
+
+function retimmed() {
+  return
+}
+
+function reassign2() {
+  let a = 3;
+  let b = 4;
+  a = 1;
+  return
+}
+
+// function foo(a) {
+//   let b = a - 20;
+//   let c = b + 1;
+//   b = 10;
+//   return b * 10;
 // }
 
-// function retimmed() {
-//   return
+// function reassign_expr() {
+//   let a = 4;
+//   let b = "7";
+//   b = "7" + a;
+//   let c = a + b;
 // }
 
-// function reassign2() {
-//   let a = 3;
-//   let b = 4;
-//   a = 1;
-//   return
-// }
+// w/ control flow
+function newfunc() {
+  let a = 3;
+  if (a > 2) {
+    a = 1;
+    let b = a;
+  }  
+  let c = a;
+}
 
-// // function foo(a) {
-// //   let b = a - 20;
-// //   let c = b + 1;
-// //   b = 10;
-// //   return b * 10;
-// // }
+function newfunc2() {
+  let a = 3;
+  if (a > 2) {
+    a = 1;
+    let b = a;
+  } else {
+    a = 2;
+    let b = a;
+  }
+  let c = a;
+}
 
-// // function reassign_expr() {
-// //   let a = 4;
-// //   let b = "7";
-// //   b = "7" + a;
-// //   let c = a + b;
-// // }
+function compnewfunc2() {
+  let a = Math.random();
+  let b = 0;
+  if (a >= 0.5) {
+    if (a > 0.5) {
+      a = a + 1;
+    } else {
+      a = a + 2;
+    }
+    b = a + 3;
+  }
+  let c = a;
+}
 
-// // w/ control flow
-// function newfunc() {
-//   let a = 3;
-//   if (a > 2) {
-//     a = 1;
-//     let b = a;
-//   }  
-//   let c = a;
-// }
+function compnewfunc3() {
+  let a = Math.random();  // bb0
+  let b = 0;
+  if (a >= 0.5) {
+    if (a > 0.5) { // bb1
+      a = a + 1;   // bb4
+    } else {
+      a = a + 2;  // bb6
+    }
+    b = a + 3;  // bb5
+  } else {  // bb3
+    b = a + 4;
+  }
+  let c = a;  // bb2
+}
 
-// function newfunc2() {
-//   let a = 3;
-//   if (a > 2) {
-//     a = 1;
-//     let b = a;
-//   } else {
-//     a = 2;
-//     let b = a;
-//   }
-//   let c = a;
-// }
+function forloop() {
+  let a = 0;
+  for (let i = 0; i < 10; i++) {
+    a = a + i;
+  }
+  return a;
+}
 
-// function compnewfunc2() {
-//   let a = Math.random();
-//   let b = 0;
-//   if (a >= 0.5) {
-//     if (a > 0.5) {
-//       a = a + 1;
-//     } else {
-//       a = a + 2;
-//     }
-//     b = a + 3;
-//   }
-//   let c = a;
-// }
+function whileloop() {
+  let a = 0;
+  let i = 0;
+  while (i < 10) {
+    a = a + i;  // bb3
+    i++;
+  }
+  return a;
+}
 
-// function compnewfunc3() {
-//   let a = Math.random();  // bb0
-//   let b = 0;
-//   if (a >= 0.5) {
-//     if (a > 0.5) { // bb1
-//       a = a + 1;   // bb4
-//     } else {
-//       a = a + 2;  // bb6
-//     }
-//     b = a + 3;  // bb5
-//   } else {  // bb3
-//     b = a + 4;
-//   }
-//   let c = a;  // bb2
-// }
+function nestedwhileloop() {
+  let a = 0;
+  let i = 0;
+  while (i < 10) {
+    let j = 0;
+    while (j < 10) {
+      a = a + i + j;
+      j++;
+    }
+    i++;
+  }
+  return a;
+}
 
-// // function forloop() {
-// //   let a = 0;
-// //   for (let i = 0; i < 10; i++) {
-// //     a = a + i;
-// //   }
-// //   return a;
-// // }
+function whileandcond() {
+  let a = 0;
+  let i = 0;  // bb0
+  while (i < 10) {  // bb1
+    if (i > 5) {  // bb3
+      a = a + i;  // bb4
+    }
+    i++;  // bb5
+  }
+  return a;  // bb2
+}
 
-// function whileloop() {
+function whileandcond2() {
+  let a = 0;
+  let i = 0;  // bb0
+  while (i < 10) {  // bb1
+    if (i > 5) {  // bb3
+      a = a + 1;  // bb4
+    } else {
+      a = a + 2;  // bb6
+    }
+    i++;  // bb5
+  }
+  return a;  // bb2
+}
+
+function whileincond() {
+  let a = 0;
+  let b = Math.random();  // bb0
+  if (b < 0.5) {  // bb1
+    while (a < 2) {  // bb4
+      a = a + b;  // bb6
+    } 
+                  // bb5
+  } else {
+    a = 1;  // bb3
+  }
+  return a;  // bb2
+}
+
+// early return in `if` only
+function earlyret() {
+  let a = 0; 
+  if (a > 5) {  // bb0
+    a = 1;
+    return a;  // bb1
+  }
+  let b = 4;
+  return a;  // bb2
+}
+
+// early return in `else` only
+function earlyret2() {
+  let a = 0; 
+  if (a > 5) {
+    a = 1;
+  } else {
+    a = 2;
+    return a;
+    let c = 3;
+  }
+  let b = 4;
+  return a;
+}
+
+// early return in 'if' and 'else'
+function earlyret3() {
+  let a = 0; 
+  if (a > 5) {
+    a = 1;
+    return a;
+  } else {
+    a = 2;
+    return a;
+  }
+  let b = 4;  // a bb still gets created, it's just
+              // never jumped to. check if this is OK?
+              // assuming that this is how compilers work
+              // to detect unreachable code
+  return a;
+}
+
+// function earlyretloop() {
 //   let a = 0;
 //   let i = 0;
 //   while (i < 10) {
-//     a = a + i;  // bb3
-//     i++;
-//   }
-//   return a;
-// }
-
-// function nestedwhileloop() {
-//   let a = 0;
-//   let i = 0;
-//   while (i < 10) {
-//     let j = 0;
-//     while (j < 10) {
-//       a = a + i + j;
-//       j++;
+//     if (i > 5) {
+//       return 1;
 //     }
-//     i++;
+//     i = i + 1;
 //   }
-//   return a;
 // }
 
-// function whileandcond() {
-//   let a = 0;
-//   let i = 0;  // bb0
-//   while (i < 10) {  // bb1
-//     if (i > 5) {  // bb3
-//       a = a + i;  // bb4
+function loopbreak() {
+  let a = 0;
+  let i = 0;  // bb0
+  while (i < 10) {  // bb1
+    if (i > 5) {  // bb3
+      a = 1;  // bb4
+      break;
+    }
+    i = i + 1;  // bb5
+  }
+  return a;  // bb2
+}
+
+// ignore below for now
+// function nestedforloop() {
+//   let a = 0;  // bb0
+//   for (let i = 0; i < 10; i++) {  // i = 0 is in bb0; cond in bb1; i++ in bb4
+//     for (let j = 0; j < 10; j++) {  // j = 0 in bb3; cond in bb4
+//       a = a + i + j;  //bb6
 //     }
-//     i++;  // bb5
+//     let b = 3;
 //   }
 //   return a;  // bb2
 // }
 
-// function whileandcond2() {
-//   let a = 0;
-//   let i = 0;  // bb0
-//   while (i < 10) {  // bb1
-//     if (i > 5) {  // bb3
-//       a = a + 1;  // bb4
-//     } else {
-//       a = a + 2;  // bb6
-//     }
-//     i++;  // bb5
-//   }
-//   return a;  // bb2
-// }
 
-// function whileincond() {
-//   let a = 0;
-//   let b = Math.random();  // bb0
-//   if (b < 0.5) {  // bb1
-//     while (a < 2) {  // bb4
-//       a = a + b;  // bb6
-//     } 
-//                   // bb5
-//   } else {
-//     a = 1;  // bb3
-//   }
-//   return a;  // bb2
-// }
-
-// // early return in `if` only
-// function earlyret() {
-//   let a = 0; 
-//   if (a > 5) {  // bb0
-//     a = 1;
-//     return a;  // bb1
-//   }
-//   let b = 4;
-//   return a;  // bb2
-// }
-
-// // early return in `else` only
-// function earlyret2() {
-//   let a = 0; 
-//   if (a > 5) {
-//     a = 1;
-//   } else {
-//     a = 2;
-//     return a;
-//     let c = 3;
-//   }
-//   let b = 4;
-//   return a;
-// }
-
-// // early return in 'if' and 'else'
-// function earlyret3() {
-//   let a = 0; 
-//   if (a > 5) {
-//     a = 1;
-//     return a;
-//   } else {
-//     a = 2;
-//     return a;
-//   }
-//   let b = 4;  // a bb still gets created, it's just
-//               // never jumped to. check if this is OK?
-//               // assuming that this is how compilers work
-//               // to detect unreachable code
-//   return a;
-// }
-
-// // function earlyretloop() {
-// //   let a = 0;
-// //   let i = 0;
-// //   while (i < 10) {
-// //     if (i > 5) {
-// //       return 1;
-// //     }
-// //     i = i + 1;
-// //   }
-// // }
-
-// function loopbreak() {
-//   let a = 0;
-//   let i = 0;  // bb0
-//   while (i < 10) {  // bb1
-//     if (i > 5) {  // bb3
-//       a = 1;  // bb4
-//       break;
-//     }
-//     i = i + 1;  // bb5
-//   }
-//   return a;  // bb2
-// }
-
-// // ignore below for now
-// // function nestedforloop() {
-// //   let a = 0;  // bb0
-// //   for (let i = 0; i < 10; i++) {  // i = 0 is in bb0; cond in bb1; i++ in bb4
-// //     for (let j = 0; j < 10; j++) {  // j = 0 in bb3; cond in bb4
-// //       a = a + i + j;  //bb6
-// //     }
-// //     let b = 3;
-// //   }
-// //   return a;  // bb2
-// // }
-
-// basic_authz_vuln---------------
-// import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
-// import api, { route } from '@forge/api';
-
-
-// function getText({ text }) {
-// api.asApp().requestJira(route`rest/api/3/issue`);  // VULNERABILITY HERE
-// return 'Hello, world!\n' + text;
-// }
-
-// function App() { 
-
-//     getText({ text: 'test' })
-    
-//     return (
-//         <Fragment>
-//         <Text>Hello world!</Text>
-//         </Fragment>
-//     );
-// } 
-
-// export const run = render(<Macro app={<App />} />);
-
-// secret_vuln_global_import----------------------
-import ForgeUI, { render, Macro } from '@forge/ui';
-import * as atlassian_jwt from 'atlassian-jwt';
-
-let SECRET = 'secret';
-
-function App() { 
-    atlassian_jwt.encodeSymmetric(blah, SECRET);
-} 
-
-export const run = render(<Macro app={<App />} />);
-
-
-// secret_vuln_default_import----------------------
-// import ForgeUI, { render, Macro } from '@forge/ui';
-// import jwt from 'jsonwebtoken';
-
-// function App() { 
-//     let a = 'shhhhh';
-//     let secret = jwt.sign({ foo: 'bar' }, a);
-// } 
-
-// export const run = render(<Macro app={<App />} />);
