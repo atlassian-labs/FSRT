@@ -81,13 +81,13 @@ function compnewfunc3() {
   let c = a;  // bb2
 }
 
-function forloop() {
-  let a = 0;
-  for (let i = 0; i < 10; i++) {
-    a = a + i;
-  }
-  return a;
-}
+// function forloop() {
+//   let a = 0;
+//   for (let i = 0; i < 10; i++) {
+//     a = a + i;
+//   }
+//   return a;
+// }
 
 function whileloop() {
   let a = 0;
@@ -230,5 +230,3 @@ function loopbreak() {
 //   }
 //   return a;  // bb2
 // }
-
-
