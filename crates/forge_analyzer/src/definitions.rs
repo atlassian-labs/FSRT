@@ -909,11 +909,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
         self.body.set_terminator(self.block, term);
     }
 
-    // #[inline]
-    // fn get_curr_terminator(&mut self) -> Terminator {
-    //     self.body.get_terminator(self.block)
-    // }
-
     #[inline]
     fn get_curr_terminator(&mut self) -> Option<Terminator> {
         self.body.get_terminator(self.block)
@@ -1640,9 +1635,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }) => {
                 let cond = self.lower_expr(test, None);
                 let curr = self.block;
-                // let rest = self.body.new_block();
-                // let cons_block = self.body.new_block();
-                // let alt_block = self.body.new_block();
                 let [temp1, temp2, temp3] = self.body.new_blocks();
                 let rest = self.body.new_blockbuilder();
                 let cons_block = self.body.new_blockbuilder();
@@ -2490,8 +2482,10 @@ impl Visit for FunctionCollector<'_> {
                                 analyzer.block,
                                 Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)),
                             );
-                            
-                            analyzer.body.set_terminator(analyzer.block, Terminator::Ret);
+
+                            analyzer
+                                .body
+                                .set_terminator(analyzer.block, Terminator::Ret);
                             *self.res.def_mut(owner).expect_body() = analyzer.body;
                             self.parent = old_parent;
                         }
