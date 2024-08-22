@@ -1905,7 +1905,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     }
                     None => {}
                 }
-                let [check, cont, body_id] = self.body.new_blocks();
+                let [temp1, temp2, temp3] = self.body.new_blocks();
+                let [check, cont, body_id] = self.body.new_blockbuilders();
                 self.goto_block(check);
                 if let Some(test) = test {
                     let cond = self.lower_expr(test, None);

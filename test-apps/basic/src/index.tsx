@@ -15,6 +15,16 @@ function reassign2() {
   return
 }
 
+function updatetest() {
+    let i = 0;
+    i++;
+}
+
+function updatetest2() {
+    let i = 0;
+    i = i + 1;
+}
+
 // function foo(a) {
 //   let b = a - 20;
 //   let c = b + 1;
@@ -81,36 +91,46 @@ function compnewfunc3() {
   let c = a;  // bb2
 }
 
-// function forloop() {
-//   let a = 0;
-//   for (let i = 0; i < 10; i++) {
-//     a = a + i;
-//   }
-//   return a;
-// }
+function forloop() {
+  let a = 0;
+  for (let i = 0; i < 10; i = i + 1) {
+    a = a + i;
+  }
+  return a;
+}
 
 function whileloop() {
   let a = 0;
   let i = 0;
   while (i < 10) {
     a = a + i;  // bb3
-    i++;
+    i = i + 1;
   }
   return a;
 }
 
+function nestedforloop() {
+    let a = 0;
+    for (let i = 0; i < 10; i = i + 1) {
+      for (let j = 0; j < 10; j = j + 1) {
+        a = a + i + j;
+      }
+    }
+    return a;
+}
+
 function nestedwhileloop() {
   let a = 0;
-  let i = 0;
-  while (i < 10) {
-    let j = 0;
-    while (j < 10) {
-      a = a + i + j;
-      j++;
+  let i = 0;  // bb0
+  while (i < 10) {  // bb1
+    let j = 0;  // bb3
+    while (j < 10) {  // bb4
+      a = a + i + j;  // bb6
+      j = j + 1;
     }
-    i++;
+    i = i + 1;  // bb5
   }
-  return a;
+  return a;  // bb2
 }
 
 function whileandcond() {
@@ -151,6 +171,26 @@ function whileincond() {
     a = 1;  // bb3
   }
   return a;  // bb2
+}
+function earlyretforloop() {
+    for (let i = 0; i < 10; i = i + 1) {
+        let a = Math.random();
+        if (a > 0.5) {
+            return;
+        }
+    }
+}
+
+function earlyretwhileloop() {
+    let i = 0;  // bb0
+    while (i < 10) {  // bb1
+      let a = Math.random();  // bb3
+      if (a > 0.5) {
+        return;  // bb4
+      }
+      i = i + 1;  // bb5
+    }
+    // bb2
 }
 
 // early return in `if` only
