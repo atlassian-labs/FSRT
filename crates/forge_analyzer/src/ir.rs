@@ -53,6 +53,12 @@ pub struct BranchTargets {
     branch: SmallVec<[BasicBlockId; 2]>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum IfTermStatementType {
+    CondStmt,  // came from Expr::Cond or Stmt::If
+    LoopStmt,  // either for, while, or do-while loop
+}
+
 #[derive(Clone, Debug)]
 pub enum Terminator {
     Ret,
@@ -66,6 +72,7 @@ pub enum Terminator {
         cond: Operand,
         cons: BasicBlockId,
         alt: BasicBlockId,
+        blocktype: IfTermStatementType,  // denotes if the terminator is from an if statement or a loop statement
     },
 }
 
@@ -991,7 +998,7 @@ impl fmt::Display for Terminator {
             Terminator::Goto(bb) => write!(f, "goto {bb}"),
             Terminator::Throw => write!(f, "throw"),
             Terminator::Switch { .. } => write!(f, "switch"),
-            Terminator::If { cond, cons, alt } => {
+            Terminator::If { cond, cons, alt, .. } => {
                 write!(f, "if ({cond}) then goto {cons} else goto {alt}")
             }
         }

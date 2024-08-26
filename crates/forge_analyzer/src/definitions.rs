@@ -1,5 +1,6 @@
 #![allow(dead_code, unused)]
 
+use std::collections::VecDeque;
 use std::{borrow::Borrow, fmt, mem};
 
 use crate::utils::{calls_method, eq_prop_name};
@@ -42,7 +43,7 @@ use swc_core::{
 use tracing::{debug, field::debug, info, instrument, warn};
 use typed_index_collections::{TiSlice, TiVec};
 
-use crate::ir::VarId;
+use crate::ir::{IfTermStatementType, VarId};
 use crate::{
     ctx::ModId,
     ir::{
@@ -1643,6 +1644,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     cond,
                     cons: cons_block,
                     alt: alt_block,
+                    blocktype: IfTermStatementType::CondStmt
                 });
                 self.block = cons_block;
                 let cons = self.lower_expr(cons, None);
@@ -1771,6 +1773,33 @@ impl<'cx> FunctionAnalyzer<'cx> {
         }
     }
 
+
+    // using BFS to find closest loop - used for getting Terminator for break statement lowering
+    fn find_closest_loop(&self, initial_preds: &[BasicBlockId]) -> Option<BasicBlockId> {
+        let mut queue = VecDeque::new();
+        for &pred in initial_preds {
+            queue.push_back(pred);
+        }
+
+        while let Some(pred) = queue.pop_front() {
+            let pred_term = &self.body.block(pred).term;
+            if let Terminator::If { cond, cons, alt, blocktype } = pred_term {
+                if *blocktype == IfTermStatementType::LoopStmt {
+                    // return Some(*alt);
+                    return Some(pred);
+                }
+            }
+
+            let preds_of_pred = self.body.predecessors(pred);
+            for &p in preds_of_pred {
+                queue.push_back(p);
+            }
+        }
+
+        // nothing found -> should never happen
+        None
+    }
+
     fn lower_stmt(&mut self, n: &Stmt) {
         match n {
             Stmt::Block(BlockStmt { stmts, .. }) => self.lower_stmts(stmts),
@@ -1793,7 +1822,67 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Stmt::Labeled(LabeledStmt { label, body, .. }) => {
                 self.lower_stmt(body);
             }
-            Stmt::Break(BreakStmt { label, .. }) => {}
+            Stmt::Break(BreakStmt { label, .. }) => {
+                println!("{:?}", label);
+                println!("{:?}", self.block);
+                println!("{:?}", self.body.blocks);
+                for (id, block) in self.body.blocks.iter_enumerated() {
+                    println!("{:?}, {:?}\n", id, block);
+                }
+                println!("PREDECESSOR: {:?}", self.body.predecessors(self.block));
+
+
+
+                let preds = self.body.predecessors(self.block);
+
+                let post_break_block = self.find_closest_loop(preds);
+                let post_break_block = post_break_block.unwrap();
+
+                let term = &self.body.block(post_break_block).term;
+                if let Terminator::If { cond, cons, alt, blocktype } = term {
+                    self.body.set_terminator(self.block, Terminator::Goto(*alt));
+                }
+
+                // let mut loop_in_immed_pred = false;
+
+                // let preds = self.body.predecessors(self.block);
+
+                // for pred in preds {
+                //     let pred_term = &self.body.block(*pred).term;
+                //     if let Terminator::If { cond, cons, alt, blocktype } = pred_term {
+                //         if *blocktype == IfTermStatementType::LoopStmt {
+                //             // get the loop's alt block
+                //             post_break_block = *alt;
+                //             loop_in_immed_pred = true;
+                //             break;
+
+                //         }
+                //     }
+                // }
+                
+                // case 1: break inside a single for-loop or while loop
+                // let preds = self.body.predecessors(self.block);
+                // if preds.len() == 1 {
+                //     let pred = preds[0];
+
+
+
+                //     let pred_term = &self.body.block(pred).term;
+                //     if let Terminator::If { cond, cons, alt } = pred_term {
+                //         if *cons == self.block {  // don't think this is really line is necessary?
+                //                                   // this is guaranteed for a legal break statement right (breaks have to be inside loop or switch)
+                //             self.body.set_terminator(pred, Terminator::Goto(*alt));
+                //         }
+                //     }
+                // }
+
+                // self.goto ---
+
+                // other cases to handle: break inside a switch statement
+                
+
+                // self.body.set_terminator(self.block, Terminator::Goto(FILL-IN));
+            }
             Stmt::Continue(ContinueStmt { label, .. }) => {}
             Stmt::If(IfStmt {
                 test, cons, alt, ..
@@ -1825,6 +1914,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     cond, // if cond then goto {cons} else goto {alt}
                     cons: cons_block,
                     alt: alt_block,
+                    blocktype: IfTermStatementType::CondStmt,
                 });
                 self.block = cons_block;
                 self.lower_stmt(cons);
@@ -1866,6 +1956,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     cond,
                     cons: body_id,
                     alt: cont,
+                    blocktype: IfTermStatementType::LoopStmt,
                 });
                 let check = mem::replace(&mut self.block, body_id);
                 self.lower_stmt(body);
@@ -1885,6 +1976,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     cond,
                     cons: body_id,
                     alt: cont,
+                    blocktype: IfTermStatementType::LoopStmt,
                 });
                 self.block = cont;
             }
@@ -1914,6 +2006,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         cond,
                         cons: body_id,
                         alt: cont,
+                        blocktype: IfTermStatementType::LoopStmt,
                     });
                 } else {
                     self.set_curr_terminator(Terminator::Goto(body_id));
