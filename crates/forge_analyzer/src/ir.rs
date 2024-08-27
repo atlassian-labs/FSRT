@@ -700,7 +700,7 @@ impl Body {
     }
 
     #[inline]
-    pub(crate) fn push_inst(&mut self, bb: BasicBlockId, inst: Inst) {
+    pub(crate) fn push_inst(&mut self, bb: BasicBlockId, inst: Inst) {  // have this be Option
         self.blockbuilders[bb].insts.push(inst);
     }
 

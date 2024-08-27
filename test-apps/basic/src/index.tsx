@@ -253,22 +253,23 @@
 // function simpleforloopbreak() {  // function kinda useless but testing a case
 //     let a = 0;
 //     for (let i = 0; i < 10; i = i + 1) {
-//         a = a + 1;
+//         a = a + 3;
 //         break;
 //         a = 2;
 //     }
 // }
 
-// function simplewhileloopbreak() {
-//     let a = 0;
-//     let i = 0;
-//     while (i < 10) {
-//         a = a + 1;
-//         break;
-//         a = 2;
-//         i = i + 1;
-//     }
-// }
+function simplewhileloopbreak() {
+    let a = 0;
+    let i = 0;
+    while (i < 10) {
+        a = a + 3;
+        break;
+        // a = 2;
+        // i = i + 1;
+    }
+    a = 3;  // added this chunk
+}
 
 
 
@@ -276,6 +277,7 @@
 //   let a = 0;
 //   let i = 0;  // bb0
 //   while (i < 10) {  // bb1
+//     a = 7;
 //     if (i > 5) {  // bb3
 //       a = 1;  // bb4
 //       break;
@@ -286,17 +288,46 @@
 //   return a;  // bb2
 // }
 
-function forloopbreak() {
-    let a = 0;  // bb0
-    for (let i = 0; i < 10; i = i + 1) {  //bb 1
-        if (i > 5) {  // bb3
-            a = 1;  // bb4
-            break;
-        }
-        a = 3;  // bb5
-    }
-    return a;  // bb2
-}
+// function forloopbreak() {
+//     let a = 0;  // bb0
+//     for (let i = 0; i < 10; i = i + 1) {  //bb 1
+//         a = 7;
+//         if (i > 5) {  // bb3
+//             a = 1;  // bb4
+//             break;
+//         }
+//         a = 3;  // bb5
+//     }
+//     return a;  // bb2
+// }
+
+// function forloopbreak3() {
+//     let a = 0;
+//     for (let i = 0; i < 10; i = i + 1) {
+//         if (i === 5) {
+//           a = 8;
+//         } else {
+//           break;
+//         }
+//         a = 3;
+//     }
+//     return a;
+// }
+
+// function whileloopbreak3() {
+//     let a = 0;
+//     let i = 0;
+//     while (i < 10) {  // bb1
+//         if (i === 5) {  // bb3
+//           a = 8;  // bb4
+//         } else {
+//           break;  // bb6
+//         }
+//         a = 3;  // bb5
+//         i = i + 1;
+//     }
+//     return a;  // bb2
+// }
 
 // function whileloopbreak2() {  // with two preds
 //     let a = 0;

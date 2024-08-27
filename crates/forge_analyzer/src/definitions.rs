@@ -214,6 +214,10 @@ pub fn run_resolver(
         };
         module.visit_with(&mut global_collector);
     }
+    for (_, body) in environment.defs.funcs.iter_enumerated() {
+        println!("PRE PRE: {:?}", body.blocks);
+        println!();
+    }
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut collector = FunctionCollector {
             res: &mut environment,
@@ -226,7 +230,10 @@ pub fn run_resolver(
         };
         module.visit_with(&mut collector);
     }
-
+    for (_, body) in environment.defs.funcs.iter_enumerated() {
+        println!("BODY POST-FUNCTION-COLLECTOR: {:?}", body.blocks);
+        println!();
+    }
     environment
 }
 
@@ -1770,6 +1777,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
             if let Stmt::Return(_) = stmt {
                 return;
             }
+            if let Stmt::Break(_) = stmt {
+                return;
+            }
         }
     }
 
@@ -1831,50 +1841,29 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
                 println!("PREDECESSOR: {:?}", self.body.predecessors(self.block));
 
-
-
                 let preds = self.body.predecessors(self.block);
 
                 let post_break_block = self.find_closest_loop(preds);
                 let post_break_block = post_break_block.unwrap();
+                println!("POST BREAK BLOCK: {:?}", post_break_block);
 
                 let term = &self.body.block(post_break_block).term;
+                println!("POST BREAK BLOCK TERM: {:?}", term);
+
                 if let Terminator::If { cond, cons, alt, blocktype } = term {
-                    self.body.set_terminator(self.block, Terminator::Goto(*alt));
+                    // self.body.set_terminator(self.block, Terminator::Goto(*alt));
+                    println!("TERM'S ALT: {:?}", alt);
+                    // self.goto_block(*alt);
+                    let alt = *alt;
+
+                    self.body.set_terminator(self.block, Terminator::Goto(alt));
+                    // self.set_curr_terminator(Terminator::Goto(alt));
+                    // self.goto_block(alt);
+                    // self.lower_stmt(body);
+                    
+                    println!("CURR BLOCK {:?}'s TERM: {:?}", self.block, self.body.block(self.block).term);
+                    println!("BLOCKS AFTER GOTO IN STMT::BREAK: \n{:?}", self.body.blocks);
                 }
-
-                // let mut loop_in_immed_pred = false;
-
-                // let preds = self.body.predecessors(self.block);
-
-                // for pred in preds {
-                //     let pred_term = &self.body.block(*pred).term;
-                //     if let Terminator::If { cond, cons, alt, blocktype } = pred_term {
-                //         if *blocktype == IfTermStatementType::LoopStmt {
-                //             // get the loop's alt block
-                //             post_break_block = *alt;
-                //             loop_in_immed_pred = true;
-                //             break;
-
-                //         }
-                //     }
-                // }
-                
-                // case 1: break inside a single for-loop or while loop
-                // let preds = self.body.predecessors(self.block);
-                // if preds.len() == 1 {
-                //     let pred = preds[0];
-
-
-
-                //     let pred_term = &self.body.block(pred).term;
-                //     if let Terminator::If { cond, cons, alt } = pred_term {
-                //         if *cons == self.block {  // don't think this is really line is necessary?
-                //                                   // this is guaranteed for a legal break statement right (breaks have to be inside loop or switch)
-                //             self.body.set_terminator(pred, Terminator::Goto(*alt));
-                //         }
-                //     }
-                // }
 
                 // self.goto ---
 
@@ -1958,9 +1947,19 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     alt: cont,
                     blocktype: IfTermStatementType::LoopStmt,
                 });
+                println!("BLOCKNOW1 {:?}", self.block);
                 let check = mem::replace(&mut self.block, body_id);
                 self.lower_stmt(body);
-                self.set_curr_terminator(Terminator::Goto(check));
+
+                println!("BLOCKNOW2 {:?}", self.block);
+                // if !body.is_return_stmt() {
+                //     println!("ENTERED2, BODY: {:?}", body);
+                //     self.set_curr_terminator(Terminator::Goto(check));  // error here? should only goto(check) if there's no break
+                // } else {
+                //     self.set_curr_terminator(Terminator::Ret);
+                //     println!("ENTERED");
+                // }
+                self.set_curr_terminator(Terminator::Goto(check));  // error here? should only goto(check) if there's no break
                 self.block = cont;
             }
             Stmt::DoWhile(DoWhileStmt { test, body, .. }) => {
@@ -1980,7 +1979,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 });
                 self.block = cont;
             }
-            // TODO: Fix For Loop Lowering
             Stmt::For(ForStmt {
                 init,
                 test,
