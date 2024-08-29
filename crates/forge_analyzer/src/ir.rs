@@ -17,6 +17,7 @@ use std::slice;
 use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
 use itertools::Itertools;
+use petgraph::algo::dominators;
 use smallvec::smallvec;
 use smallvec::smallvec_inline;
 use smallvec::SmallVec;
@@ -45,7 +46,7 @@ use crate::interp::ProjectionVec;
 pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
 
 create_newtype! {
-    pub struct BasicBlockId(u32);
+    pub struct BasicBlockId(pub u32);
 }
 
 #[derive(Clone, Debug)]
@@ -143,6 +144,7 @@ pub struct Body {
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     pub class_instantiations: HashMap<DefId, DefId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
+    pub dominator_tree: OnceCell<DomTree>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -235,6 +237,12 @@ create_newtype! {
     pub struct VarId(pub u32);
 }
 
+#[derive(Clone, Debug, Hash, Default)]
+pub struct DomTree {
+    pub idom: Vec<i32>, // TODO: might be better design to make into Vec<BasicBlockId> later
+    pub frontiers: Vec<Vec<BasicBlockId>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub struct Variable {
     pub(crate) base: Base,
@@ -292,6 +300,19 @@ impl BasicBlock {
     }
 }
 
+// Represents an arc (directed edge) in the control flow graph (CFG) of a function, where:
+// - v   : the destination vertex of the arc; u32 represents a BasicBlockId.
+// - next: the index of the next arc for the source node we're on in the pool vector - see build_dom_tree() below;
+//         value is `None` if this is the last arc.
+#[derive(Clone, Debug, Copy)]
+struct Arc {
+    v: u32,
+    next: Option<usize>,
+}
+
+const N: usize = 100000;
+const M: usize = 500000;
+
 impl Body {
     #[inline]
     fn new() -> Self {
@@ -305,6 +326,7 @@ impl Body {
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
             predecessors: Default::default(),
+            dominator_tree: Default::default(),
         }
     }
 
@@ -324,6 +346,11 @@ impl Body {
     #[inline]
     pub(crate) fn iter_vars_enumerated(&self) -> impl Iterator<Item = (VarId, &VarKind)> {
         self.vars.iter_enumerated()
+    }
+
+    #[inline]
+    pub(crate) fn iter_cfg_enumerated(&self) -> impl Iterator<Item = (u32, u32)> {
+        self.build_cfg_vec().into_iter()
     }
 
     pub(crate) fn iter_block_keys(
@@ -410,13 +437,219 @@ impl Body {
         })
     }
 
+    // Builds up a CFG of a Body, where nodes are BasicBlocks.
+    // Returns the CFG as a vector in format of: [(a, b), ...],
+    //      where `a` is the source node and `b` the destination node of an arc.
+    fn build_cfg_vec(&self) -> Vec<(u32, u32)> {
+        let mut edges = vec![];
+        for (bb_id, block) in self.iter_blocks_enumerated() {
+            match block.successors() {
+                Successors::Return => {}
+                Successors::One(s) => edges.push((bb_id.0, s.0)),
+                Successors::Two(s1, s2) => {
+                    edges.push((bb_id.0, s1.0));
+                    edges.push((bb_id.0, s2.0));
+                }
+            }
+        }
+        edges
+    }
+
+    // Builds the dominator tree of a Body, given its CFG.
+    // Returns the dominator tree through idom, Vec<i32>, which stores the immediate dominator of each node.
+    //
+    // The algorithm used below is based on the semi-NCA algorithm described in
+    // https://maskray.me/blog/2020-12-11-dominator-tree (MaskRay), with some modifications.
+    fn build_dom_tree(&self, cfg: &Vec<(u32, u32)>) -> Vec<i32> {
+        let mut outgoing = vec![None; N];
+        let mut incoming = vec![None; N];
+
+        let mut pool: Vec<Arc> = Vec::new();
+
+        // Builds `pool`, where all the arcs of the CFG is stored
+        // Corresponds to main() fn from Maskray
+        for &(u, v) in cfg {
+            pool.push(Arc {
+                v,
+                next: outgoing[u as usize],
+            });
+            outgoing[u as usize] = Some(pool.len() - 1);
+
+            pool.push(Arc {
+                v: u,
+                next: incoming[v as usize],
+            });
+            incoming[v as usize] = Some(pool.len() - 1);
+        }
+
+        // Corresponds to semiNca() from Maskray
+        let mut tick = 0;
+        let mut dfn: Vec<i32> = vec![-1; N];
+        let mut rdfn = vec![0; N];
+        let mut uf = vec![0; N];
+        let mut sdom = vec![0; N];
+        let mut best: Vec<i32> = vec![0; N];
+        let mut idom = vec![-1; N];
+
+        Self::dfs(
+            0,
+            &mut tick,
+            &mut dfn,
+            &mut rdfn,
+            &mut uf,
+            &mut outgoing,
+            &pool,
+        );
+
+        for (i, value) in best.iter_mut().enumerate() {
+            *value = i as i32;
+        }
+
+        for i in (1..tick).rev() {
+            let v = rdfn[i as usize];
+            let mut u;
+            sdom[v as usize] = v;
+
+            let mut a = incoming[v as usize];
+            while let Some(_arc_index) = a {
+                u = pool[a.unwrap()].v;
+                if dfn[u as usize] != -1 {
+                    Self::eval(u.try_into().unwrap(), i as i32, &dfn, &mut best, &mut uf);
+                    if dfn[best[u as usize] as usize] < dfn[sdom[v as usize] as usize] {
+                        sdom[v as usize] = best[u as usize];
+                    }
+                }
+                a = pool[a.unwrap()].next;
+            }
+
+            best[v as usize] = sdom[v as usize];
+            idom[v as usize] = uf[v as usize];
+        }
+
+        for i in 1..tick {
+            let v = rdfn[i as usize];
+            while dfn[idom[v as usize] as usize] > dfn[sdom[v as usize] as usize] {
+                idom[v as usize] = idom[idom[v as usize] as usize];
+            }
+        }
+        idom
+    }
+
+    // Corresponds to dfs() from Maskray
+    fn dfs(
+        u: usize,
+        tick: &mut u32,
+        dfn: &mut Vec<i32>,
+        rdfn: &mut Vec<i32>,
+        uf: &mut Vec<i32>,
+        outgoing: &mut Vec<Option<usize>>,
+        pool: &Vec<Arc>,
+    ) {
+        dfn[u] = *tick as i32;
+        rdfn[*tick as usize] = u as i32;
+        *tick += 1;
+
+        let mut a = outgoing[u];
+        while let Some(arc_index) = a {
+            let arc = &pool[arc_index];
+            let v = arc.v;
+            if dfn[v as usize] < 0 {
+                uf[v as usize] = u as i32;
+                Self::dfs(v as usize, tick, dfn, rdfn, uf, outgoing, pool);
+            }
+            a = arc.next;
+        }
+    }
+
+    // Corresponds to eval() from Maskray
+    fn eval(v: usize, cur: i32, dfn: &Vec<i32>, best: &mut Vec<i32>, uf: &mut Vec<i32>) -> i32 {
+        if dfn[v] <= cur {
+            return v.try_into().unwrap();
+        }
+        let u = uf[v];
+        let r = Self::eval(u.try_into().unwrap(), cur, dfn, best, uf);
+        if dfn[best[u as usize] as usize] < dfn[best[v] as usize] {
+            best[v] = best[u as usize];
+        }
+        uf[v] = r;
+        r
+    }
+
+    // Returns true if BasicBlock `a` dominates BasicBlock `b`; false otherwise
+    pub(crate) fn dominates(&self, a: BasicBlockId, b: BasicBlockId) -> bool {
+        let dom_tree = self.dominator_tree();
+        let idom = &dom_tree.idom;
+
+        let a = a.0 as i32;
+        let b = b.0 as i32;
+
+        let mut val = b as usize;
+        while idom[val] != -1 {
+            if idom[val] == a {
+                return true;
+            }
+            val = idom[val] as usize;
+        }
+        false
+    }
+
+    // Returns an iterator over the dominance frontier (DF) of a BasicBlock
+    pub(crate) fn dominance_frontier(
+        &self,
+        b: BasicBlockId,
+    ) -> impl Iterator<Item = BasicBlockId> + '_ {
+        let dom_tree = self.dominator_tree();
+        let ret_frontier = dom_tree.frontiers[b.0 as usize].clone();
+        ret_frontier.into_iter()
+    }
+
+    // Builds the DF of all BasicBlocks in a Body.
+    // Returns all frontiers in the format of Vec<Vec<BasicBlockId>>,
+    //      where each inner Vec corresponds to the DF of the BasicBlock
+    //      of the same index as in the outer Vec.
+    //      E.g., frontiers[0] is the DF of the BasicBlock w/ BasicBlockId of 0.
+    fn build_dom_frontier(&self, idom: &[i32]) -> Vec<Vec<BasicBlockId>> {
+        let mut frontiers: Vec<Vec<BasicBlockId>> = Vec::new();
+        for _ in 0..self.blocks.len() {
+            frontiers.push(Vec::new());
+        }
+
+        // The algorithm below is based off of
+        // https://en.wikipedia.org/wiki/Static_single-assignment_form#Computing_minimal_SSA_using_dominance_frontiers and
+        // https://www.cs.tufts.edu/comp/150FP/archive/keith-cooper/dom14.pdf.
+        for (id, _) in self.iter_blocks_enumerated() {
+            if self.predecessors(id).len() >= 2 {
+                for pred in self.predecessors(id) {
+                    let mut runner = pred.0;
+                    while runner != idom[id.0 as usize] as u32 {
+                        frontiers[runner as usize].push(id);
+                        runner = idom[runner as usize] as u32;
+                    }
+                }
+            }
+        }
+        frontiers
+    }
+
+    pub(crate) fn dominator_tree(&self) -> &DomTree {
+        self.dominator_tree.get_or_init(|| {
+            let cfg = self.build_cfg_vec();
+            let dom_tree = self.build_dom_tree(&cfg);
+            let dom_frontier = self.build_dom_frontier(&dom_tree);
+            DomTree {
+                idom: dom_tree,
+                frontiers: dom_frontier,
+            }
+        })
+    }
+
     pub(crate) fn predecessors(&self, block: BasicBlockId) -> &[BasicBlockId] {
         &self.predecessors.get_or_init(|| {
             let mut preds: TiVec<_, _> = vec![SmallVec::new(); self.blocks.len()].into();
             for (bb, block) in self.iter_blocks_enumerated() {
                 match block.successors() {
                     Successors::Return => {}
-                    Successors::One(s) => preds[s].push(bb),
+                    Successors::One(s) => preds[s].push(bb), // pushes self's block on the predecessor list of the successor block
                     Successors::Two(s1, s2) => {
                         preds[s1].push(bb);
                         preds[s2].push(bb);

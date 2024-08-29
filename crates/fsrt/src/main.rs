@@ -46,6 +46,10 @@ pub struct Args {
     #[arg(long)]
     dump_ir: Option<String>,
 
+    /// Dump the Dominator Tree for specified file
+    #[arg(long)]
+    dump_dt: Option<String>,
+
     /// A specific function to scan. Must be an entrypoint specified in `manifest.yml`
     #[arg(short, long)]
     function: Option<String>,
@@ -168,6 +172,11 @@ pub(crate) fn scan_directory<'a>(
     // resolve_calls(&mut proj.ctx);
     if let Some(func) = opts.dump_ir.as_ref() {
         proj.env.dump_function(&mut std::io::stdout().lock(), func);
+        std::process::exit(0);
+    }
+
+    if let Some(func) = opts.dump_dt.as_ref() {
+        proj.env.dump_tree(&mut std::io::stdout().lock(), func);
         std::process::exit(0);
     }
 
