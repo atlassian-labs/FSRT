@@ -55,9 +55,8 @@ pub struct BranchTargets {
     branch: SmallVec<[BasicBlockId; 2]>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub enum Terminator {
-    #[default]
     Ret,
     Goto(BasicBlockId),
     Throw,
@@ -107,10 +106,17 @@ pub enum Rvalue {
     Template(Template),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct BasicBlock {
     pub insts: Vec<Inst>,
     pub term: Terminator,
+    pub set_term_called: bool, // represents whether or not we've
+                               // moved over its corresponding BasicBlockBuilder
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BasicBlockBuilder {
+    pub insts: Vec<Inst>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -145,6 +151,7 @@ pub struct Body {
     pub class_instantiations: HashMap<DefId, DefId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
     pub dominator_tree: OnceCell<DomTree>,
+    pub blockbuilders: TiVec<BasicBlockId, BasicBlockBuilder>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -320,13 +327,19 @@ impl Body {
         Self {
             vars: local_vars,
             owner: None,
-            blocks: vec![BasicBlock::default()].into(),
+            blocks: vec![BasicBlock {
+                insts: Vec::new(),
+                term: Terminator::Ret,
+                set_term_called: false,
+            }]
+            .into(),
             values: FxHashMap::default(),
             class_instantiations: Default::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
             predecessors: Default::default(),
             dominator_tree: Default::default(),
+            blockbuilders: vec![BasicBlockBuilder { insts: Vec::new() }].into(),
         }
     }
 
@@ -372,6 +385,14 @@ impl Body {
         &mut self,
     ) -> impl Iterator<Item = (BasicBlockId, &mut BasicBlock)> + '_ {
         self.blocks.iter_mut_enumerated()
+    }
+
+    #[inline]
+    pub(crate) fn iter_blockbuilders_enumerated(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (BasicBlockId, &BasicBlockBuilder)> + DoubleEndedIterator
+    {
+        self.blockbuilders.iter_enumerated()
     }
 
     #[inline]
@@ -422,7 +443,7 @@ impl Body {
 
     #[inline]
     pub(crate) fn new_block(&mut self) -> BasicBlockId {
-        self.blocks.push_and_get_key(BasicBlock::default())
+        self.new_block_with_terminator(Terminator::Ret)
     }
 
     pub(crate) fn new_blocks<const NUM: usize>(&mut self) -> [BasicBlockId; NUM] {
@@ -430,10 +451,21 @@ impl Body {
     }
 
     #[inline]
+    pub(crate) fn new_blockbuilder(&mut self) -> BasicBlockId {
+        self.blockbuilders
+            .push_and_get_key(BasicBlockBuilder::default())
+    }
+
+    pub(crate) fn new_blockbuilders<const NUM: usize>(&mut self) -> [BasicBlockId; NUM] {
+        array::from_fn(|_| self.new_blockbuilder())
+    }
+
+    #[inline]
     pub(crate) fn new_block_with_terminator(&mut self, term: Terminator) -> BasicBlockId {
         self.blocks.push_and_get_key(BasicBlock {
+            insts: Vec::new(),
             term,
-            ..Default::default()
+            set_term_called: false,
         })
     }
 
@@ -660,14 +692,37 @@ impl Body {
         })[block]
     }
 
+    // Moves all instructions of a given block from body.blockbuilders[bb]
+    // to body.blocks[bb], and sets its terminator.
+    //
+    // TODO: Returning the old terminator may not be necessary
     #[inline]
     pub(crate) fn set_terminator(&mut self, bb: BasicBlockId, term: Terminator) -> Terminator {
-        mem::replace(&mut self.blocks[bb].term, term)
+        let builder_insts = std::mem::take(&mut self.blockbuilders[bb].insts);
+
+        let block = BasicBlock {
+            insts: builder_insts,
+            term,
+            set_term_called: true,
+        };
+
+        let old_block = mem::replace(&mut self.blocks[bb], block);
+        old_block.term
+    }
+
+    // Returns the terminator of a given block if it has been set, otherwise returns None.
+    #[inline]
+    pub(crate) fn get_terminator(&mut self, bb: BasicBlockId) -> Option<Terminator> {
+        if self.blocks[bb].set_term_called {
+            Some(self.blocks[bb].term.clone())
+        } else {
+            None
+        }
     }
 
     #[inline]
     pub(crate) fn push_inst(&mut self, bb: BasicBlockId, inst: Inst) {
-        self.blocks[bb].insts.push(inst);
+        self.blockbuilders[bb].insts.push(inst);
     }
 
     pub(crate) fn resolve_prop(&mut self, bb: BasicBlockId, opnd: Operand) -> Projection {
@@ -757,12 +812,12 @@ impl Body {
 
     #[inline]
     pub(crate) fn push_assign(&mut self, bb: BasicBlockId, var: Variable, val: Rvalue) {
-        self.blocks[bb].insts.push(Inst::Assign(var, val));
+        self.blockbuilders[bb].insts.push(Inst::Assign(var, val));
     }
 
     #[inline]
     pub(crate) fn push_expr(&mut self, bb: BasicBlockId, val: Rvalue) {
-        self.blocks[bb].insts.push(Inst::Expr(val));
+        self.blockbuilders[bb].insts.push(Inst::Expr(val));
     }
 
     #[inline]
@@ -893,6 +948,17 @@ impl<'a> IntoIterator for &'a BasicBlock {
     }
 }
 
+impl<'a> IntoIterator for &'a BasicBlockBuilder {
+    type Item = &'a Inst;
+
+    type IntoIter = slice::Iter<'a, Inst>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.insts.iter()
+    }
+}
+
 impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -972,6 +1038,15 @@ impl fmt::Display for BasicBlock {
             writeln!(f, "    {inst}")?;
         }
         write!(f, "    {}", &self.term)
+    }
+}
+
+impl fmt::Display for BasicBlockBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for inst in &self.insts {
+            writeln!(f, "    {inst}")?;
+        }
+        write!(f, "    ")
     }
 }
 
