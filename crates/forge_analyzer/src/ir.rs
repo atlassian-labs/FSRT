@@ -675,8 +675,6 @@ impl Body {
         })
     }
 
-    
-
     pub(crate) fn predecessors(&self, block: BasicBlockId) -> &[BasicBlockId] {
         &self.predecessors.get_or_init(|| {
             let mut preds: TiVec<_, _> = vec![SmallVec::new(); self.blocks.len()].into();
