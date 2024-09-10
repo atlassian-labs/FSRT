@@ -358,9 +358,9 @@ fn main() -> Result<()> {
         .init();
     let dirs = std::mem::take(&mut args.dirs);
 
-    let secret_packages: Vec<PackageData> = std::fs::File::open("secretdata.yaml")
-        .map(|f| serde_yaml::from_reader(f).expect("Failed to deserialize packages"))
-        .unwrap_or_else(|_| vec![]);
+    let secretdata_file = include_str!("../../../secretdata.yaml");
+    let secret_packages: Vec<PackageData> =
+        serde_yaml::from_str(secretdata_file).expect("Failed to deserialize packages");
 
     for dir in dirs {
         let mut manifest_file = dir.join("manifest.yaml");
