@@ -1005,7 +1005,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 match classify_api_call(first_arg) {
                     ApiCallKind::Unknown => {
                         if is_as_app {
-                            Some(Intrinsic::ApiCall(IntrinsicName::Other))
+                            Some(Intrinsic::ApiCall(function_name))
                         } else {
                             Some(Intrinsic::SafeCall(function_name))
                         }
@@ -1024,21 +1024,21 @@ impl<'cx> FunctionAnalyzer<'cx> {
                             Some(Intrinsic::UserFieldAccess)
                         }
                     }
-                    ApiCallKind::Trivial => Some(Intrinsic::SafeCall(IntrinsicName::Other)),
-                    ApiCallKind::Authorize => Some(Intrinsic::Authorize(IntrinsicName::Other)),
+                    ApiCallKind::Trivial => Some(Intrinsic::SafeCall(function_name)),
+                    ApiCallKind::Authorize => Some(Intrinsic::Authorize(function_name)),
                 }
             }
 
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
                 match self.res.is_imported_from(def, "@forge/api") {
-                    Some(ImportKind::Named(ref name)) if *name == *"storage" => {
+                    Some(&ImportKind::Named(ref name)) if *name == *"storage" => {
                         Some(Intrinsic::StorageRead)
                     }
                     _ => None,
                 }
             }
             [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/api").is_some() => {
-                if let Some(ImportKind::Named(ref name)) =
+                if let Some(&ImportKind::Named(ref name)) =
                     self.res.is_imported_from(def, "@forge/api")
                 {
                     if *name == *"authorize" {
