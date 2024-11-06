@@ -109,6 +109,7 @@ pub fn get_permisions_for(
     endpoint_map_classic: &mut PermissionHashMap,
     endpoint_regex: &mut HashMap<String, Regex>,
 ) {
+    #[allow(if_let_rescope)]
     if let Result::Ok(response) = ureq::get(url).call() {
         let data: SwaggerReponse = response.into_json().unwrap();
         for (key, endpoint_data) in &data.paths {

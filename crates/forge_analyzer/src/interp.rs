@@ -904,11 +904,11 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     pub fn callees(
         &self,
         caller: DefId,
-    ) -> impl DoubleEndedIterator<Item = (DefId, Location)> + '_ {
+    ) -> impl DoubleEndedIterator<Item = (DefId, Location)> + use<'_, C> {
         self.call_graph
             .callgraph
             .range((caller, DefId::new(0))..(caller, DefId::new(u32::MAX)))
-            .map(|(&(_, callee), &loc)| (callee, loc))
+            .map(move |(&(_, callee), &loc)| (callee, loc))
     }
 
     fn run(&mut self, func_def: DefId) {
