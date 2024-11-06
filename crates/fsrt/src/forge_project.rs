@@ -107,7 +107,7 @@ pub(crate) struct ForgeProjectFromDir {
     pub manifest_file_content: String,
 }
 
-impl<'a> ForgeProjectTrait<'a> for ForgeProjectFromDir {
+impl ForgeProjectTrait<'_> for ForgeProjectFromDir {
     fn load_file(&self, path: impl AsRef<Path>, sourcemap: Arc<SourceMap>) -> Arc<SourceFile> {
         sourcemap.load_file(path.as_ref()).unwrap()
     }
