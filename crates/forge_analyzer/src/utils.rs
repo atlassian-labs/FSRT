@@ -134,12 +134,12 @@ pub fn return_combinations_phi(exprs: Vec<Value>) -> Value {
         combinations = new_combinations;
     }
 
-    return Value::Phi(
+    Value::Phi(
         combinations
             .iter()
             .map(|value| Const::Literal(value.clone()))
             .collect_vec(),
-    );
+    )
 }
 
 pub fn eq_prop_name(n: &MemberProp, name: &str) -> bool {

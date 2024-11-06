@@ -502,7 +502,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
     }
 }
 
-impl<'cx> Checker<'cx> for AuthZChecker {
+impl Checker<'_> for AuthZChecker {
     type Vuln = AuthZVuln;
 }
 
@@ -664,7 +664,7 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
     }
 }
 
-impl<'cx> Checker<'cx> for AuthenticateChecker {
+impl Checker<'_> for AuthenticateChecker {
     type Vuln = AuthNVuln;
 }
 
@@ -980,7 +980,7 @@ impl<'cx> Runner<'cx> for SecretChecker {
     }
 }
 
-impl<'cx> Checker<'cx> for SecretChecker {
+impl Checker<'_> for SecretChecker {
     type Vuln = SecretVuln;
 }
 
@@ -1299,7 +1299,7 @@ impl<'cx> Runner<'cx> for PermissionChecker {
     }
 }
 
-impl<'cx> Checker<'cx> for PermissionChecker {
+impl Checker<'_> for PermissionChecker {
     type Vuln = PermissionVuln;
 }
 

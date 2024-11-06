@@ -362,7 +362,9 @@ impl Body {
     }
 
     #[inline]
-    pub(crate) fn iter_cfg_enumerated(&self) -> impl IntoIterator<Item = (u32, u32)> + 'static + use<> {
+    pub(crate) fn iter_cfg_enumerated(
+        &self,
+    ) -> impl IntoIterator<Item = (u32, u32)> + 'static + use<> {
         self.build_cfg_vec()
     }
 

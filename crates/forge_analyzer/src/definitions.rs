@@ -663,7 +663,7 @@ fn normalize_callee_expr(
         in_prop: bool,
     }
 
-    impl<'cx> CalleeNormalizer<'cx> {
+    impl CalleeNormalizer<'_> {
         fn check_prop(&mut self, n: &MemberProp) {
             let old_prop = mem::replace(&mut self.in_prop, true);
             n.visit_with(self);
@@ -972,7 +972,7 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
     classifier.kind
 }
 
-impl<'cx> FunctionAnalyzer<'cx> {
+impl FunctionAnalyzer<'_> {
     #[inline]
     fn set_curr_terminator(&mut self, term: Terminator) {
         self.body.set_terminator(self.block, term);
@@ -1031,15 +1031,14 @@ impl<'cx> FunctionAnalyzer<'cx> {
 
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
                 match self.res.is_imported_from(def, "@forge/api") {
-                    Some(&ImportKind::Named(ref name)) if *name == *"storage" => {
+                    Some(ImportKind::Named(name)) if *name == *"storage" => {
                         Some(Intrinsic::StorageRead)
                     }
                     _ => None,
                 }
             }
             [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/api").is_some() => {
-                if let Some(&ImportKind::Named(ref name)) =
-                    self.res.is_imported_from(def, "@forge/api")
+                if let Some(ImportKind::Named(name)) = self.res.is_imported_from(def, "@forge/api")
                 {
                     if *name == *"authorize" {
                         return Some(Intrinsic::Authorize(IntrinsicName::Other));
