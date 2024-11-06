@@ -362,8 +362,8 @@ impl Body {
     }
 
     #[inline]
-    pub(crate) fn iter_cfg_enumerated(&self) -> impl Iterator<Item = (u32, u32)> {
-        self.build_cfg_vec().into_iter()
+    pub(crate) fn iter_cfg_enumerated(&self) -> impl IntoIterator<Item = (u32, u32)> + 'static + use<> {
+        self.build_cfg_vec()
     }
 
     pub(crate) fn iter_block_keys(
