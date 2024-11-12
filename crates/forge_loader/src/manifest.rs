@@ -9,6 +9,7 @@ use crate::Error;
 use forge_utils::FxHashMap;
 use itertools::Itertools;
 use serde::Deserialize;
+use serde_yaml::Value;
 use tracing::trace;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -384,6 +385,18 @@ pub struct Perms<'a> {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Remotes {
+    #[serde(default)]
+    pub auth: Value,
+}
+
+impl Remotes {
+    pub fn contains_auth(self) -> bool {
+        self.auth.is_mapping()
+    }
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct AppInfo<'a> {
     pub name: Option<&'a str>,
     pub id: &'a str,
@@ -412,6 +425,7 @@ pub struct ForgeManifest<'a> {
     pub modules: ForgeModules<'a>,
     #[serde(borrow)]
     pub permissions: Perms<'a>,
+    pub remotes: Option<Vec<Remotes>>,
 }
 
 impl<'a> ForgeManifest<'a> {
