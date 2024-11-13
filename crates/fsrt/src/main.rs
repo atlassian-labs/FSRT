@@ -150,6 +150,11 @@ pub(crate) fn scan_directory<'a>(
 
     let requested_permissions = manifest.permissions;
     let permission_scopes = requested_permissions.scopes;
+    let contains_remote_auth_token = manifest
+        .remotes
+        .unwrap_or_default()
+        .into_iter()
+        .any(|remote| remote.contains_auth());
 
     let run_permission_checker = opts.check_permissions && !transpiled_async;
 
@@ -255,7 +260,8 @@ pub(crate) fn scan_directory<'a>(
             );
         }
 
-        if run_permission_checker {
+        // if there is a remote backend that accepts an auth token, do not run
+        if run_permission_checker && !contains_remote_auth_token {
             let mut checker = PermissionChecker::new();
             perm_interp.value_manager.varid_to_value =
                 definition_analysis_interp.value_manager.varid_to_value;
