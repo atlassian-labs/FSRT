@@ -237,6 +237,7 @@ pub struct WorkflowPostFunction<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
 }
+
 // Jira Service Management Modules
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -249,10 +250,37 @@ struct AssetsImportType<'a> {
     import_status: JustFunc<'a>,
 }
 
+// Rovo Modules
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RovoAgent<'a> {
+    pub key: &'a str,
+    pub name: &'a str,
+    pub description: Option<&'a str>,
+    pub icon: Option<&'a str>,
+    pub prompt: String, // as may be multiline
+    #[serde(default, rename = "conversationStarters", borrow)]
+    pub conversation_starters: Vec<&'a str>,
+    #[serde(default, borrow)]
+    pub actions: Vec<&'a str>,
+    #[serde(rename = "followUpPrompt")]
+    pub follow_up_prompt: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Action<'a> {
+    pub key: &'a str,
+    // Action can have either an "endpoint" property or a "function" property
+    #[serde(rename = "function", default)]
+    pub function: Option<&'a str>,
+    #[serde(rename = "endpoint", default)]
+    pub endpoint: Option<&'a str>,
+}
+
 // Add more structs here for deserializing forge modules
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ForgeModules<'a> {
     // deserializing non user-invocable modules
+
     // Common Modules including triggers
     #[serde(rename = "consumer", default, borrow)]
     pub consumers: Vec<Consumer<'a>>,
@@ -264,6 +292,7 @@ pub struct ForgeModules<'a> {
     event_triggers: Vec<EventTrigger<'a>>,
     #[serde(rename = "scheduledTrigger", default, borrow)]
     scheduled_triggers: Vec<ScheduledTrigger<'a>>,
+
     // Compass Modules
     #[serde(rename = "compass:adminPage", default, borrow)]
     compass_admin_page: Vec<CommonKey<'a>>,
@@ -273,7 +302,8 @@ pub struct ForgeModules<'a> {
     compass_global_page: Vec<CommonKey<'a>>,
     #[serde(rename = "compass:teamPage", default, borrow)]
     team_page: Vec<CommonKey<'a>>,
-    // confluence Modules
+
+    // Confluence Modules
     #[serde(rename = "confluence:contentAction", default, borrow)]
     content_action: Vec<CommonKey<'a>>,
     #[serde(rename = "confluence:contentByLineItem", default, borrow)]
@@ -290,7 +320,8 @@ pub struct ForgeModules<'a> {
     space_settings: Vec<CommonKey<'a>>,
     #[serde(rename = "macro", default, borrow)]
     macros: Vec<MacroMod<'a>>,
-    // jira modules
+
+    // Jira modules
     #[serde(rename = "jira:adminPage", default, borrow)]
     pub jira_admin_page: Vec<JiraAdminPage<'a>>,
     #[serde(rename = "jira:customField", default, borrow)]
@@ -325,6 +356,7 @@ pub struct ForgeModules<'a> {
     pub workflow_validator: Vec<WorkflowValidator<'a>>,
     #[serde(rename = "jira:workflowPostFunction", default, borrow)]
     pub workflow_post_function: Vec<WorkflowPostFunction<'a>>,
+
     // Jira Service Management Modules
     #[serde(rename = "jiraServiceManagement:assetsImportType", default, borrow)]
     assets_import_type: Vec<AssetsImportType<'a>>,
@@ -362,6 +394,12 @@ pub struct ForgeModules<'a> {
     portal_header_menu_action: Vec<CommonKey<'a>>,
     #[serde(rename = "jiraServiceManagement:queuePage", default, borrow)]
     queue_page: Vec<CommonKey<'a>>,
+
+    // Rovo Modules
+    #[serde(rename = "rovo:agent", default, borrow)]
+    pub rovo_agent: Vec<RovoAgent<'a>>,
+    #[serde(rename = "action", default, borrow)]
+    pub action: Vec<Action<'a>>,
 
     // deserializing admin pages
     #[serde(flatten)]
@@ -458,7 +496,7 @@ pub enum FunctionTy<T> {
     WebTrigger(T),
 }
 
-// Struct used for tracking what scan a funtcion requires.
+// Struct used for tracking what scan a function requires.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entrypoint<'a, S = Unresolved> {
     pub function: FunctionRef<'a, S>,
@@ -528,6 +566,8 @@ impl<'a> ForgeModules<'a> {
             portal_subheader,
             queue_page,
             portal_header_menu_action,
+            rovo_agent: _,
+            action,
         } = self;
 
         // number of webtriggers are usually low, so it's better to just sort them and reuse
@@ -575,7 +615,7 @@ impl<'a> ForgeModules<'a> {
             m.export.append_functions(&mut invokable_functions);
         }
 
-        // Jira module functons
+        // Jira Module Functions
         custom_field.into_iter().for_each(|customfield| {
             customfield.value.append_functions(&mut invokable_functions);
 
@@ -651,7 +691,14 @@ impl<'a> ForgeModules<'a> {
             post.common_keys.append_functions(&mut invokable_functions);
         }
 
-        // JSM modules
+        // Rovo Module Functions
+        // No invokable functions for Rovo Agents but Action can have numerous user invokable functions
+        action.iter().for_each(|action| {
+            invokable_functions.extend(action.function);
+            // "Endpoint" variant of Action not being considered as an invokable function
+        });
+
+        // JSM Module Functions
         for assets in assets_import_type {
             assets
                 .common_keys
@@ -702,7 +749,7 @@ impl<'a> ForgeModules<'a> {
                 .binary_search_by_key(&func.key, |trigger| trigger.function)
                 .is_ok();
             let invokable = invokable_functions.contains(func.key);
-            // this checks whether the funton being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
+            // this checks whether the function being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
             // optionally: compass:adminPage could also be considered.
             let admin = jira_admin_page
                 .iter()
@@ -1027,5 +1074,87 @@ mod tests {
                 admin: false
             })
         );
+    }
+
+    // Test to check if Rovo modules can be deserialized properly from a sample manifest file.
+    #[test]
+    fn test_rovo_agent_deserialize() {
+        let json = r#"{
+            "app": {
+                "runtime": {
+                    "name": "nodejs18.x"
+                },
+                "id": "ari:cloud:ecosystem::app/test-id"
+            },
+            "modules": {
+                "rovo:agent": [{
+                    "key": "data-discoverability",
+                    "name": "Data Discoverability",
+                    "description": "Test description",
+                    "prompt": "You are a helpful assistant that helps users manage their project risks. \nYou can retrieve risks from the risk register, create new risks and update existing ones.",
+                    "conversationStarters": [
+                        "starter1",
+                        "starter2",
+                        "starter3"
+                    ],
+                    "actions": [
+                        "indexing-compass"
+                    ]
+                }],
+                "action": [{
+                    "key": "indexing-compass",
+                    "function": "compass-fn",
+                    "name": "example action",
+                    "actionVerb": "GET",
+                    "description": "Test action description",
+                    "inputs": {
+                        "data": {
+                            "title": "Data",
+                            "type": "string",
+                            "required": true,
+                            "description": "Test input description"
+                        }
+                    }
+                }],
+                "function": [{
+                    "key": "compass-fn",
+                    "handler": "index.compassDataProvider"
+                }]
+            },
+            "permissions": {
+                "scopes": [
+                    "read:component:compass"
+                ],
+                "external": {
+                    "fetch": {
+                        "backend": [
+                            "vnext-data-catalog.jira-dev.com"
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+
+        // Verify RovoAgent
+        assert_eq!(manifest.modules.rovo_agent.len(), 1);
+        let agent = &manifest.modules.rovo_agent[0];
+        assert_eq!(agent.key, "data-discoverability");
+        assert_eq!(agent.name, "Data Discoverability");
+        assert_eq!(agent.description, Some("Test description"));
+        assert_eq!(agent.prompt, "You are a helpful assistant that helps users manage their project risks. \nYou can retrieve risks from the risk register, create new risks and update existing ones.");
+        assert_eq!(
+            agent.conversation_starters,
+            vec!["starter1", "starter2", "starter3"]
+        );
+        assert_eq!(agent.actions, vec!["indexing-compass"]);
+
+        // Verify Action
+        assert_eq!(manifest.modules.action.len(), 1);
+        let action = &manifest.modules.action[0];
+        assert_eq!(action.key, "indexing-compass");
+        assert_eq!(action.function, Some("compass-fn"));
+        assert_eq!(action.endpoint, None);
     }
 }
