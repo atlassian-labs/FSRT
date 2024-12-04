@@ -17,6 +17,8 @@ trait ReportExt {
 
     fn contains_secret_vuln(&self, expected_len: usize) -> bool;
 
+    fn contains_perm_vuln(&self, expected_len: usize) -> bool;
+
     fn contains_vulns(&self, expected_len: i32) -> bool;
 
     fn contains_authz_vuln(&self, expected_len: usize) -> bool;
@@ -29,19 +31,28 @@ impl ReportExt for Report {
     }
 
     #[inline]
-    fn contains_secret_vuln(&self, expected_len: usize) -> bool {
+    fn contains_authz_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
             .iter()
-            .filter(|vuln| vuln.check_name().starts_with("Hardcoded-Secret"))
+            .filter(|vuln| vuln.check_name().contains("Authorizatio"))
             .count()
             == expected_len
     }
 
     #[inline]
-    fn contains_authz_vuln(&self, expected_len: usize) -> bool {
+    fn contains_secret_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
             .iter()
-            .filter(|vuln| vuln.check_name().starts_with("Custom-Check-Authorization"))
+            .filter(|vuln| vuln.check_name().starts_with("Hardcoded-Secret-"))
+            .count()
+            == expected_len
+    }
+
+    #[inline]
+    fn contains_perm_vuln(&self, expected_len: usize) -> bool {
+        self.into_vulns()
+            .iter()
+            .filter(|vuln| vuln.check_name() == "Least-Privilege")
             .count()
             == expected_len
     }
@@ -96,7 +107,6 @@ impl<'a> MockForgeProject<'a> {
         };
 
         for file in different_files {
-            println!("files {file:?}");
             let (file_name, file_source) = file.split_once('\n').unwrap();
             if file_name.trim() == "manifest.yml" || file_name.trim() == "manifest.yaml" {
                 continue;
@@ -148,12 +158,10 @@ pub(crate) fn scan_directory_test(
         .map(|f| serde_yaml::from_reader(f).expect("Failed to deserialize packages"))
         .unwrap_or_else(|_| vec![]);
 
-    match scan_directory(
-        PathBuf::new(),
-        &Args::parse(),
-        forge_test_proj,
-        &secret_packages,
-    ) {
+    let mut args = Args::parse();
+    args.check_permissions = true;
+
+    match scan_directory(PathBuf::new(), &args, forge_test_proj, &secret_packages) {
         Ok(report) => report,
         Err(err) => panic!("error while scanning {err:?}"),
     }
@@ -627,6 +635,141 @@ fn basic_authz_vuln() {
     );
 
     let scan_result = scan_directory_test(test_forge_project);
+    println!("vuln, {:#?}", scan_result);
     assert!(scan_result.contains_authz_vuln(1));
     assert!(scan_result.contains_vulns(1));
+}
+
+#[test]
+fn excess_scope() {
+    let mut test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro } from '@forge/ui';
+        import * as atlassian_jwt from 'atlassian-jwt';
+
+        function App() { 
+            
+        } 
+
+        export const run = render(<Macro app={<App />} />);
+        ",
+    );
+
+    test_forge_project
+        .test_manifest
+        .permissions
+        .scopes
+        .push("read:component:compass".into());
+
+    let scan_result = scan_directory_test(test_forge_project);
+    println!("scan_result {:#?}", scan_result);
+    assert!(scan_result.contains_perm_vuln(1));
+    assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
+fn correct_scopes() {
+    let mut test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro } from '@forge/ui';
+        import * as atlassian_jwt from 'atlassian-jwt';
+
+        function App() { 
+
+        const query = `query compass_query($test:CompassSearchTeamsInput!) {
+            compass {
+                searchTeams(input: $test) {
+                    ... on CompassSearchTeamsConnection{
+                    nodes {
+                    teamId
+                    }
+                }
+                }
+            }
+            }`
+            
+            const result = await api
+                .asApp()
+                .requestGraph(
+                query, {}, {}
+                );
+            const status = result.status;
+
+        } 
+
+        export const run = render(<Macro app={<App />} />);
+        ",
+    );
+
+    test_forge_project
+        .test_manifest
+        .permissions
+        .scopes
+        .push("read:component:compass".into());
+
+    let scan_result = scan_directory_test(test_forge_project);
+    println!("scan_result {:#?}", scan_result);
+    assert!(scan_result.contains_vulns(0))
+}
+
+#[test]
+fn excess_scope_with_fragments() {
+    let mut test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro } from '@forge/ui';
+        import * as atlassian_jwt from 'atlassian-jwt';
+
+        function App() { 
+            
+        } 
+
+        const check = `fragment componentParts on CompassCatalogQueryApi{ __typename } 
+        
+        query compass_query($test:CompassSearchTeamsInput!) { compass { ...componentParts } }`
+
+        export const run = render(<Macro app={<App />} />);
+        ",
+    );
+
+    test_forge_project
+        .test_manifest
+        .permissions
+        .scopes
+        .push("read:component:compass".into());
+
+    let scan_result = scan_directory_test(test_forge_project);
+    println!("scan_result {:#?}", scan_result);
+    assert!(scan_result.contains_perm_vuln(1));
+    assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
+fn correct_scopes_with_fragment() {
+    let mut test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro } from '@forge/ui';
+        import * as atlassian_jwt from 'atlassian-jwt';
+
+        function App() { 
+
+        const check = `fragment componentParts on CompassCatalogQueryApi{ searchTeams(input: $test) 
+            { ... on CompassSearchTeamsConnection{ nodes { teamId } } } } 
+        
+        query compass_query($test:CompassSearchTeamsInput!) { compass { ...componentParts } }`
+        
+        }
+
+        export const run = render(<Macro app={<App />} />);
+        ",
+    );
+
+    test_forge_project
+        .test_manifest
+        .permissions
+        .scopes
+        .push("read:component:compass".into());
+
+    let scan_result = scan_directory_test(test_forge_project);
+    println!("scan_result {:#?}", scan_result);
+    assert!(scan_result.contains_vulns(0))
 }
