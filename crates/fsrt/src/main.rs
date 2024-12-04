@@ -10,12 +10,13 @@ use forge_permission_resolver::permissions_resolver::{
 };
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt, fs,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
 };
 
+use graphql_parser::query::{parse_query, Definition, OperationDefinition, Selection};
 use tracing::{debug, warn};
 use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
@@ -26,7 +27,7 @@ use forge_analyzer::{
         PermissionVuln, SecretChecker,
     },
     ctx::ModId,
-    definitions::{DefId, PackageData},
+    definitions::{Const, DefId, PackageData, Value},
     interp::Interp,
     reporter::{Report, Reporter},
 };
@@ -34,6 +35,7 @@ use forge_analyzer::{
 use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait};
 use forge_loader::manifest::Entrypoint;
 use walkdir::WalkDir;
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Parser, Debug)]
@@ -90,6 +92,8 @@ pub enum Error {
     UnableToReport,
 }
 
+impl std::error::Error for Error {}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -99,7 +103,90 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+fn check_graphql_and_perms(val: &Value) -> Vec<&str> {
+    let mut operations = vec![];
+    match val {
+        Value::Const(Const::Literal(s)) => operations.extend(parse_graphql(s)),
+        Value::Phi(vals) => vals.iter().for_each(|val| match val {
+            Const::Literal(s) => operations.extend(parse_graphql(s)),
+        }),
+        _ => {}
+    }
+    // TODO : Build out permission resolver here
+
+    let permissions_resolver: HashMap<(&str, &str), &str> =
+        [(("compass", "searchTeams"), "read:component:compass")]
+            .into_iter()
+            .collect();
+
+    operations
+        .iter()
+        .filter_map(|f| permissions_resolver.get(f).copied())
+        .collect()
+}
+
+// returns (product, operationName)
+fn parse_graphql(s: &str) -> impl Iterator<Item = (&str, &str)> {
+    let mut operations = vec![];
+
+    // collect all fragments
+    if let std::result::Result::Ok(doc) = parse_query::<&str>(s) {
+        let fragments: HashMap<&str, &Vec<graphql_parser::query::Selection<'_, &str>>> = doc
+            .definitions
+            .iter()
+            .filter_map(|def| match def {
+                Definition::Fragment(fragment) => {
+                    Some((fragment.name, fragment.selection_set.items.as_ref()))
+                }
+                _ => None,
+            })
+            .collect();
+
+        doc.definitions.iter().for_each(|operation| {
+            if let Definition::Operation(op) = operation {
+                let possible_selection_set = match op {
+                    OperationDefinition::Mutation(mutation) => Some(&mutation.selection_set),
+                    OperationDefinition::Query(query) => Some(&query.selection_set),
+                    OperationDefinition::SelectionSet(set) => Some(set),
+                    _ => None,
+                };
+                // place all fragments in place of the fragment spread
+                if let Some(selection_set) = possible_selection_set {
+                    selection_set.items.iter().for_each(|selection| {
+                        if let Selection::Field(type_field) = selection {
+                            type_field
+                                .selection_set
+                                .items
+                                .iter()
+                                .for_each(|fragment_selections| {
+                                    if let Selection::Field(operation) = fragment_selections {
+                                        operations.push((type_field.name, operation.name))
+                                    } else if let Selection::FragmentSpread(fragment_spread) =
+                                        fragment_selections
+                                    {
+                                        // check to see if the fragment spread resolves as fragmemnt
+                                        if let Some(set) =
+                                            fragments.get(&fragment_spread.fragment_name)
+                                        {
+                                            set.iter().for_each(|operation_field| {
+                                                if let Selection::Field(operation) = operation_field
+                                                {
+                                                    operations
+                                                        .push((type_field.name, operation.name))
+                                                }
+                                            });
+                                        }
+                                    }
+                                });
+                        }
+                    })
+                }
+            }
+        })
+    }
+
+    operations.into_iter()
+}
 
 fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
     matches!(
@@ -349,7 +436,37 @@ pub(crate) fn scan_directory<'a>(
         }
     }
 
-    if run_permission_checker && !perm_interp.permissions.is_empty() {
+    let mut used_graphql_perms: Vec<&str> = definition_analysis_interp
+        .value_manager
+        .varid_to_value_with_proj
+        .values()
+        .flat_map(check_graphql_and_perms)
+        .collect();
+
+    let graphql_perms_varid: Vec<&str> = definition_analysis_interp
+        .value_manager
+        .varid_to_value
+        .values()
+        .flat_map(check_graphql_and_perms)
+        .collect();
+
+    let graphql_perms_defid: Vec<&str> = definition_analysis_interp
+        .value_manager
+        .defid_to_value
+        .values()
+        .flat_map(check_graphql_and_perms)
+        .collect();
+
+    used_graphql_perms.extend_from_slice(&graphql_perms_defid);
+    used_graphql_perms.extend_from_slice(&graphql_perms_varid);
+
+    let final_perms: Vec<&String> = perm_interp
+        .permissions
+        .iter()
+        .filter(|f| !used_graphql_perms.contains(&&***f))
+        .collect();
+
+    if run_permission_checker && !final_perms.is_empty() {
         reporter.add_vulnerabilities([PermissionVuln::new(perm_interp.permissions)]);
     }
 

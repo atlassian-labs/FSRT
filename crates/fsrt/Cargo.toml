@@ -25,3 +25,4 @@ tracing-subscriber.workspace = true
 tracing-tree.workspace = true
 tracing.workspace = true
 walkdir.workspace = true
+graphql-parser = "0.4.0"
