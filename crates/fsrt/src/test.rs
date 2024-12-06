@@ -237,7 +237,7 @@ fn with_multiple_files() {
     assert!(scan_result.has_no_vulns());
 }
 
-// secret checker integrationt tests
+// secret checker integration tests
 #[test]
 fn secret_vuln_default_import() {
     let test_forge_project = MockForgeProject::files_from_string(
@@ -772,4 +772,75 @@ fn correct_scopes_with_fragment() {
     let scan_result = scan_directory_test(test_forge_project);
     println!("scan_result {:#?}", scan_result);
     assert!(scan_result.contains_vulns(0))
+}
+
+#[test]
+#[ignore] // TODO: we've identified Rovo functions as user invokable but not yet if any vulnerabilities exist, remove this line when implemented
+fn rovo_function_basic_authz_vuln() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api, { route } from '@forge/api';
+
+
+        function getText({ text }) {
+        api.asApp().requestJira(route`rest/api/3/issue`);
+        return 'Hello, world!\n' + text;
+        }
+
+        function App() { 
+
+            getText({ text: 'test' })
+            
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        } 
+
+        export const run = render(<Macro app={<App />} />);
+        
+        // manifest.yaml 
+        modules:
+            rovo:agent:
+              - key: data-discoverability
+                name: Data Discoverability
+                description: Test agent description
+                prompt: Test prompt instructions
+                conversationStarters:
+                  - starter1
+                  - starter2
+                  - starter3
+                actions:
+                  - indexing-compass
+            action:
+              - key: indexing-compass
+                function: main
+                actionVerb: GET
+                description: Test action description
+                inputs:
+                  data:
+                    title: Data
+                    type: string
+                    required: true
+                    description: Test input description
+            function:
+              - key: main
+                handler: index.run
+
+          permissions:
+            scopes:
+              - 'read:component:compass'
+            external:
+              fetch:
+                backend:
+                  - test-backend.example.com
+          app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_authz_vuln(1));
+    assert!(scan_result.contains_vulns(1));
 }
