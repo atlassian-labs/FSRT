@@ -95,6 +95,11 @@ pub fn get_permission_resolver_confluence() -> (PermissionHashMap, HashMap<Strin
     get_permission_resolver(confluence_url)
 }
 
+pub fn get_permission_resolver_bitbucket() -> (PermissionHashMap, HashMap<String, Regex>) {
+    let bitbucket_url = "https://developer.atlassian.com/cloud/bitbucket/swagger.v3.json";
+    get_permission_resolver(bitbucket_url)
+}
+
 pub fn get_permission_resolver(url: &str) -> (PermissionHashMap, HashMap<String, Regex>) {
     let mut endpoint_map: PermissionHashMap = HashMap::default();
     let mut endpoint_regex: HashMap<String, Regex> = HashMap::default();
