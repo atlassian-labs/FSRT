@@ -85,6 +85,18 @@ pub fn check_url_for_permissions(
     vec![]
 }
 
+pub fn get_permission_resolver_jira_software() -> (PermissionHashMap, HashMap<String, Regex>) {
+    let jira_software_url = "https://developer.atlassian.com/cloud/jira/software/swagger.v3.json";
+    get_permission_resolver(jira_software_url)
+}
+
+pub fn get_permission_resolver_jira_service_management(
+) -> (PermissionHashMap, HashMap<String, Regex>) {
+    let jira_service_management_url =
+        "https://developer.atlassian.com/cloud/jira/service-desk/swagger.v3.json";
+    get_permission_resolver(jira_service_management_url)
+}
+
 pub fn get_permission_resolver_jira() -> (PermissionHashMap, HashMap<String, Regex>) {
     let jira_url = "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json";
     get_permission_resolver(jira_url)
@@ -265,4 +277,43 @@ mod test {
 
         assert_eq!(result, expected_permission);
     }
+
+    #[test]
+    fn test_get_organization() {
+        let (permission_map, regex_map) = get_permission_resolver_jira_service_management();
+        let url = "/rest/servicedeskapi/organization";
+        let request_type = RequestType::Get;
+        let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
+
+        println!("Permission Map: {:?}", permission_map);
+        println!("Regex Map: {:?}", regex_map);
+
+        assert!(!result.is_empty(), "Should have parsed permissions");
+        assert!(
+            result.contains(&String::from("manage:servicedesk-customer")),
+            "Should require manage:servicedesk-customer permission"
+        );
+    }
+
+    // TODO: this fails right now as the Jira Software swagger does not have the "x-atlassian-oauth2-scopes" in it that we parse for with serde
+    // #[test]
+    // fn test_get_issues_for_epic() {
+    //     let (permission_map, regex_map) = get_permission_resolver_jira_software();
+    //     let url = "/rest/agile/1.0/sprint/23";
+    //     let request_type = RequestType::Get;
+    //     let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
+
+    //     println!("Permission Map: {:?}", permission_map); // TODO: this does not give back any scopes?
+    //     println!("Regex Map: {:?}", regex_map);
+
+    //     assert!(!result.is_empty(), "Should have parsed permissions");
+
+    //     // let expected_permission: Vec<String> = vec![
+    //     //     String::from("read:epic:jira-software"),
+    //     //     String::from("read:issue-details:jira"),
+    //     //     String::from("read:jql:jira"),
+    //     // ];
+
+    //     // assert_eq!(result, expected_permission);
+    // }
 }

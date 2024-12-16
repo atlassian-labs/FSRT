@@ -617,6 +617,8 @@ enum LowerStage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntrinsicName {
+    RequestJiraSoftware,
+    RequestJiraServiceManagement,
     RequestConfluence,
     RequestJira,
     Other,
