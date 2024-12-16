@@ -1,17 +1,20 @@
 use core::fmt;
-use forge_permission_resolver::permissions_resolver::{check_url_for_permissions, RequestType};
+use forge_permission_resolver::permissions_resolver::{
+    check_url_for_permissions, PermissionHashMap, RequestType,
+};
 use forge_utils::FxHashMap;
 use itertools::Itertools;
+use regex::Regex;
 use smallvec::SmallVec;
 use std::{
     cmp::max,
+    collections::HashMap,
     collections::HashSet,
     iter::{self, zip},
     mem,
     ops::ControlFlow,
     path::PathBuf,
 };
-
 use tracing::{debug, info, warn};
 
 use crate::interp::ProjectionVec;
@@ -1094,6 +1097,10 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
 
             let (resolver, regex_map) = match intrinsic_func_type {
+                IntrinsicName::RequestJiraAny => (
+                    interp.jira_any_permission_resolver,
+                    interp.jira_any_regex_map,
+                ),
                 IntrinsicName::RequestJiraSoftware => (
                     interp.jira_software_permission_resolver,
                     interp.jira_software_regex_map,
@@ -1113,7 +1120,9 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     interp.bitbucket_permission_resolver,
                     interp.bitbucket_regex_map,
                 ),
-                _ => unreachable!("Invalid intrinsic function type"),
+                IntrinsicName::Other => {
+                    (&PermissionHashMap::new(), &HashMap::<String, Regex>::new())
+                }
             };
 
             if intrinsic_argument.first_arg.is_none() {
