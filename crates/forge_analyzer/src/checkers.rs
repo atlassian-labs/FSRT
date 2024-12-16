@@ -1092,6 +1092,29 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             let mut permissions_within_call: Vec<String> = vec![];
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
 
+            let (resolver, regex_map) = match intrinsic_func_type {
+                IntrinsicName::RequestJiraSoftware => (
+                    interp.jira_software_permission_resolver,
+                    interp.jira_software_regex_map,
+                ),
+                IntrinsicName::RequestJiraServiceManagement => (
+                    interp.jira_service_management_permission_resolver,
+                    interp.jira_service_management_regex_map,
+                ),
+                IntrinsicName::RequestConfluence => (
+                    interp.confluence_permission_resolver,
+                    interp.confluence_regex_map,
+                ),
+                IntrinsicName::RequestJira => {
+                    (interp.jira_permission_resolver, interp.jira_regex_map)
+                }
+                IntrinsicName::RequestBitbucket => (
+                    interp.bitbucket_permission_resolver,
+                    interp.bitbucket_regex_map,
+                ),
+                _ => unreachable!("Invalid intrinsic function type"),
+            };
+
             if intrinsic_argument.first_arg.is_none() {
                 interp.permissions.drain(..);
             } else {
@@ -1099,92 +1122,27 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     .first_arg
                     .iter()
                     .for_each(|first_arg_vec| {
-                        if let Some(second_arg_vec) = intrinsic_argument.second_arg.clone() {
-                            first_arg_vec.iter().for_each(|first_arg| {
-                                let first_arg = first_arg.replace(&['\"'][..], "");
-                                second_arg_vec.iter().for_each(|second_arg| {
-                                    if intrinsic_func_type
-                                        == IntrinsicName::RequestJiraServiceManagement
-                                    {
-                                        let permissions = check_url_for_permissions(
-                                            interp.jira_service_management_permission_resolver,
-                                            interp.jira_service_management_regex_map,
-                                            translate_request_type(Some(second_arg)),
-                                            &first_arg,
-                                        );
-                                        permissions_within_call.extend_from_slice(&permissions)
-                                    } else if intrinsic_func_type
-                                        == IntrinsicName::RequestConfluence
-                                    {
-                                        let permissions = check_url_for_permissions(
-                                            interp.confluence_permission_resolver,
-                                            interp.confluence_regex_map,
-                                            translate_request_type(Some(second_arg)),
-                                            &first_arg,
-                                        );
-                                        permissions_within_call.extend_from_slice(&permissions)
-                                    } else if intrinsic_func_type == IntrinsicName::RequestJira {
-                                        let permissions = check_url_for_permissions(
-                                            interp.jira_permission_resolver,
-                                            interp.jira_regex_map,
-                                            translate_request_type(Some(second_arg)),
-                                            &first_arg,
-                                        );
-                                        permissions_within_call.extend_from_slice(&permissions)
-                                    } else if intrinsic_func_type == IntrinsicName::RequestBitbucket
-                                    {
-                                        let permissions = check_url_for_permissions(
-                                            interp.bitbucket_permission_resolver,
-                                            interp.bitbucket_regex_map,
-                                            translate_request_type(Some(second_arg)),
-                                            &first_arg,
-                                        );
-                                        permissions_within_call.extend_from_slice(&permissions)
-                                    }
+                        first_arg_vec.iter().for_each(|first_arg| {
+                            let first_arg = first_arg.replace(&['\"'][..], "");
+                            let request_types = intrinsic_argument
+                                .second_arg
+                                .as_ref()
+                                .map(|args| {
+                                    args.iter()
+                                        .map(|arg| translate_request_type(Some(arg)))
+                                        .collect::<Vec<_>>()
+                                        .into_iter()
                                 })
-                            })
-                        } else {
-                            first_arg_vec.iter().for_each(|first_arg| {
-                                let first_arg = first_arg.replace(&['\"'][..], "");
-                                if intrinsic_func_type
-                                    == IntrinsicName::RequestJiraServiceManagement
-                                {
-                                    let permissions = check_url_for_permissions(
-                                        interp.jira_service_management_permission_resolver,
-                                        interp.jira_service_management_regex_map,
-                                        RequestType::Get,
-                                        &first_arg,
-                                    );
-                                    permissions_within_call.extend_from_slice(&permissions)
-                                } else if intrinsic_func_type == IntrinsicName::RequestConfluence {
-                                    let permissions = check_url_for_permissions(
-                                        interp.confluence_permission_resolver,
-                                        interp.confluence_regex_map,
-                                        RequestType::Get,
-                                        &first_arg,
-                                    );
-                                    permissions_within_call.extend_from_slice(&permissions)
-                                } else if intrinsic_func_type == IntrinsicName::RequestJira {
-                                    let permissions = check_url_for_permissions(
-                                        interp.jira_permission_resolver,
-                                        interp.jira_regex_map,
-                                        RequestType::Get,
-                                        &first_arg,
-                                    );
-                                    permissions_within_call.extend_from_slice(&permissions)
-                                } else if intrinsic_func_type == IntrinsicName::RequestBitbucket {
-                                    let permissions = check_url_for_permissions(
-                                        interp.bitbucket_permission_resolver,
-                                        interp.bitbucket_regex_map,
-                                        RequestType::Get,
-                                        &first_arg,
-                                    );
-                                    permissions_within_call.extend_from_slice(&permissions)
-                                }
-                            })
-                        }
-                    });
+                                .unwrap_or_else(|| vec![RequestType::Get].into_iter());
 
+                            for req_type in request_types {
+                                let permissions = check_url_for_permissions(
+                                    resolver, regex_map, req_type, &first_arg,
+                                );
+                                permissions_within_call.extend_from_slice(&permissions);
+                            }
+                        });
+                    });
                 interp
                     .permissions
                     .retain(|permissions| !permissions_within_call.contains(permissions));
