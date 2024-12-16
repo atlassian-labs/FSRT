@@ -991,6 +991,23 @@ impl FunctionAnalyzer<'_> {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
 
+        fn resolve_jira_api_type(url: &str) -> Option<IntrinsicName> {
+            match url {
+                url if url.starts_with("/rest/servicedeskapi/") => {
+                    Some(IntrinsicName::RequestJiraServiceManagement)
+                }
+                url if url.starts_with("/rest/agile/") => Some(IntrinsicName::RequestJiraSoftware),
+                // Accept Jira API v2.0 or v3.0
+                url if url.starts_with("/rest/api/3/") || url.starts_with("/rest/api/2/") => {
+                    Some(IntrinsicName::RequestJira)
+                }
+                _ => {
+                    warn!("Invalid Jira API URL format: {}", url);
+                    None
+                }
+            }
+        }
+
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
@@ -1000,15 +1017,35 @@ impl FunctionAnalyzer<'_> {
                     && Some(&ImportKind::Default)
                         == self.res.is_imported_from(def, "@forge/api") =>
             {
+                let first_arg = first_arg?;
+                let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
+
                 let function_name = if *last == "requestJira" {
-                    IntrinsicName::RequestJira
+                    // Resolve Jira API requests to either JSM/JS/Jira as all are bundled within requestJira()
+                    match first_arg {
+                        Expr::Tpl(template) => {
+                            let url = template
+                                .quasis
+                                .iter()
+                                .map(|quasi| quasi.raw.as_str())
+                                .collect::<String>();
+
+                            resolve_jira_api_type(&url).unwrap_or_else(|| {
+                                warn!("Falling back to generic Jira request");
+                                IntrinsicName::RequestJira // TODO: how should we handle this edge case?
+                            })
+                        }
+                        _ => {
+                            warn!("First parameter to requestJira() is invalid");
+                            IntrinsicName::RequestJira // TODO: how should we handle this edge case?
+                        }
+                    }
                 } else if *last == "requestBitbucket" {
                     IntrinsicName::RequestBitbucket
                 } else {
                     IntrinsicName::RequestConfluence
                 };
-                let first_arg = first_arg?;
-                let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
+
                 match classify_api_call(first_arg) {
                     ApiCallKind::Unknown => {
                         if is_as_app {
