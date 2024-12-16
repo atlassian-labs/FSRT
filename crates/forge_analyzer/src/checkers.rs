@@ -1093,6 +1093,10 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
 
             let (resolver, regex_map) = match intrinsic_func_type {
+                IntrinsicName::RequestJiraAny => (
+                    interp.jira_any_permission_resolver,
+                    interp.jira_any_regex_map,
+                ),
                 IntrinsicName::RequestJiraSoftware => (
                     interp.jira_software_permission_resolver,
                     interp.jira_software_regex_map,
