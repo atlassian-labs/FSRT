@@ -7,7 +7,7 @@ mod test;
 use clap::{Parser, ValueHint};
 use forge_permission_resolver::permissions_resolver::{
     get_permission_resolver_bitbucket, get_permission_resolver_confluence,
-    get_permission_resolver_jira,
+    get_permission_resolver_jira, get_permission_resolver_jira_service_management,
 };
 
 use std::{
@@ -275,6 +275,8 @@ pub(crate) fn scan_directory<'a>(
 
     let permissions = permissions_declared.into_iter().collect::<Vec<_>>();
 
+    let (jira_service_management_permission_resolver, jira_service_management_regex_map) =
+        get_permission_resolver_jira_service_management();
     let (jira_permission_resolver, jira_regex_map) = get_permission_resolver_jira();
     let (confluence_permission_resolver, confluence_regex_map) =
         get_permission_resolver_confluence();
@@ -285,6 +287,8 @@ pub(crate) fn scan_directory<'a>(
         false,
         true,
         permissions.clone(),
+        &jira_service_management_permission_resolver,
+        &jira_service_management_regex_map,
         &jira_permission_resolver,
         &jira_regex_map,
         &confluence_permission_resolver,
@@ -298,6 +302,8 @@ pub(crate) fn scan_directory<'a>(
         false,
         false,
         permissions.clone(),
+        &jira_service_management_permission_resolver,
+        &jira_service_management_regex_map,
         &jira_permission_resolver,
         &jira_regex_map,
         &confluence_permission_resolver,
@@ -310,6 +316,8 @@ pub(crate) fn scan_directory<'a>(
         false,
         false,
         permissions.clone(),
+        &jira_service_management_permission_resolver,
+        &jira_service_management_regex_map,
         &jira_permission_resolver,
         &jira_regex_map,
         &confluence_permission_resolver,
@@ -324,6 +332,8 @@ pub(crate) fn scan_directory<'a>(
         false,
         false,
         permissions.clone(),
+        &jira_service_management_permission_resolver,
+        &jira_service_management_regex_map,
         &jira_permission_resolver,
         &jira_regex_map,
         &confluence_permission_resolver,
@@ -338,6 +348,8 @@ pub(crate) fn scan_directory<'a>(
         false,
         true,
         permissions,
+        &jira_service_management_permission_resolver,
+        &jira_service_management_regex_map,
         &jira_permission_resolver,
         &jira_regex_map,
         &confluence_permission_resolver,
