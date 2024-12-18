@@ -321,7 +321,7 @@ pub struct ForgeModules<'a> {
     #[serde(rename = "macro", default, borrow)]
     macros: Vec<MacroMod<'a>>,
 
-    // Jira modules
+    // Jira Modules
     #[serde(rename = "jira:adminPage", default, borrow)]
     pub jira_admin_page: Vec<JiraAdminPage<'a>>,
     #[serde(rename = "jira:customField", default, borrow)]

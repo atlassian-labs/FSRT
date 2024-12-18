@@ -392,8 +392,10 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     pub permissions: Vec<String>,
     pub jira_permission_resolver: &'cx PermissionHashMap,
     pub confluence_permission_resolver: &'cx PermissionHashMap,
+    pub bitbucket_permission_resolver: &'cx PermissionHashMap,
     pub jira_regex_map: &'cx HashMap<String, Regex>,
     pub confluence_regex_map: &'cx HashMap<String, Regex>,
+    pub bitbucket_regex_map: &'cx HashMap<String, Regex>,
     _checker: PhantomData<C>,
 }
 
@@ -510,6 +512,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         jira_regex_map: &'cx HashMap<String, Regex>,
         confluence_permission_resolver: &'cx PermissionHashMap,
         confluence_regex_map: &'cx HashMap<String, Regex>,
+        bitbucket_permission_resolver: &'cx PermissionHashMap,
+        bitbucket_regex_map: &'cx HashMap<String, Regex>,
     ) -> Self {
         let call_graph = CallGraph::new(env);
 
@@ -538,8 +542,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             permissions,
             jira_permission_resolver,
             confluence_permission_resolver,
+            bitbucket_permission_resolver,
             jira_regex_map,
             confluence_regex_map,
+            bitbucket_regex_map,
             _checker: PhantomData,
             runner_visited: RefCell::new(FxHashSet::default()),
         }
