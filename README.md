@@ -12,15 +12,15 @@ A static analysis tool for finding common [Forge][1] vulnerabilities.
 Usage: fsrt [OPTIONS] [DIRS]...
 
 Arguments:
-  [DIRS]...  The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level directory, and that the source code is located in `src/`
+  [DIRS]...  The directory to scan. Assumes there is a `manifest.yaml` file in the top level directory, and that the source code is located in `src/`
 
   Options:
     -d, --debug
-        --dump-ir <DUMP_IR> Dump the IR for the specified function.
-    -dt, --dump-dt <DUMP_DOM_TREE> Dump the Dominator Tree for the specified app
-    -f, --function <FUNCTION>  A specific function to scan. Must be an entrypoint specified in `manifest.yml`
-    -h, --help                 Print help information
-    -V, --version              Print version information
+        --dump-ir <DUMP_IR>           Dump the IR for the specified function.
+    -dt, --dump-dt <DUMP_DOM_TREE>    Dump the Dominator Tree for the specified app
+    -f, --function <FUNCTION>         A specific function to scan. Must be an entrypoint specified in `manifest.yml`
+    -h, --help                        Print help information
+    -V, --version                     Print version information
 ```
 
 ## Installation
