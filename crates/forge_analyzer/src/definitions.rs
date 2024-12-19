@@ -619,6 +619,7 @@ enum LowerStage {
 pub enum IntrinsicName {
     RequestConfluence,
     RequestJira,
+    RequestBitbucket,
     Other,
 }
 
@@ -991,12 +992,16 @@ impl FunctionAnalyzer<'_> {
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
-                if (*last == *"requestJira" || *last == *"requestConfluence")
+                if (*last == *"requestJira"
+                    || *last == *"requestConfluence"
+                    || *last == *"requestBitbucket")
                     && Some(&ImportKind::Default)
                         == self.res.is_imported_from(def, "@forge/api") =>
             {
                 let function_name = if *last == "requestJira" {
                     IntrinsicName::RequestJira
+                } else if *last == "requestBitbucket" {
+                    IntrinsicName::RequestBitbucket
                 } else {
                     IntrinsicName::RequestConfluence
                 };

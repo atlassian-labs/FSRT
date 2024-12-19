@@ -1119,6 +1119,15 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                             &first_arg,
                                         );
                                         permissions_within_call.extend_from_slice(&permissions)
+                                    } else if intrinsic_func_type == IntrinsicName::RequestBitbucket
+                                    {
+                                        let permissions = check_url_for_permissions(
+                                            interp.bitbucket_permission_resolver,
+                                            interp.bitbucket_regex_map,
+                                            translate_request_type(Some(second_arg)),
+                                            &first_arg,
+                                        );
+                                        permissions_within_call.extend_from_slice(&permissions)
                                     }
                                 })
                             })
@@ -1141,6 +1150,14 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                         &first_arg,
                                     );
                                     permissions_within_call.extend_from_slice(&permissions)
+                                } else if intrinsic_func_type == IntrinsicName::RequestBitbucket {
+                                    let permissions = check_url_for_permissions(
+                                        interp.bitbucket_permission_resolver,
+                                        interp.bitbucket_regex_map,
+                                        RequestType::Get,
+                                        &first_arg,
+                                    );
+                                    permissions_within_call.extend_from_slice(&permissions)
                                 }
                             })
                         }
@@ -1150,8 +1167,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     .permissions
                     .retain(|permissions| !permissions_within_call.contains(permissions));
             }
-
-            // remvove all permissions that it finds
+            // remove all permissions that it finds
         }
         initial_state
     }
