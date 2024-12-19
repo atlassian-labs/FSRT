@@ -844,3 +844,47 @@ fn rovo_function_basic_authz_vuln() {
     assert!(scan_result.contains_authz_vuln(1));
     assert!(scan_result.contains_vulns(1));
 }
+
+#[test]
+fn authz_function_called_in_object_bitbucket() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
+        import api, { route, fetch } from '@forge/api';
+        const App = () => {
+            let testObject = {
+                someFunction() {
+                const res = api.asApp().requestBitbucket(route`/rest/api/3/test`);
+                return res;
+                }
+            }
+            testObject.someFunction()
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        };
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yaml
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+                handler: nothing
+                description: Inserts Hello world!
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []", // No permission scopes added here so we expect an issue to be raised from the requestBitbucket()
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    println!("scan_result {:#?}", scan_result);
+    assert!(scan_result.contains_vulns(1))
+}
