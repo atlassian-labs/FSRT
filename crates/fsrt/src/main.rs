@@ -17,7 +17,7 @@ use std::{
 };
 
 use graphql_parser::{
-    query::{Mutation, Query},
+    query::{Document, Mutation, Query, SelectionSet},
     schema::ObjectType,
 };
 
@@ -36,7 +36,7 @@ use forge_analyzer::{
         PermissionVuln, SecretChecker,
     },
     ctx::ModId,
-    definitions::{Const, DefId, PackageData, Value},
+    definitions::{self, Const, DefId, PackageData, Value},
     interp::Interp,
     reporter::{Report, Reporter},
 };
@@ -115,115 +115,121 @@ impl fmt::Display for Error {
     }
 }
 
-fn parse_grapqhql_schema<'a>(
-    s: &'a str,
-    schema_doc: &'a [graphql_parser::schema::Definition<'a, String>],
+fn parse_grapqhql_schema(
+    schema_doc: &[graphql_parser::schema::Definition<'_, String>],
+    query_doc: Vec<graphql_parser::query::Definition<'_, String>>,
 ) -> Vec<String> {
-    let mut permission_list = vec![];
+    let mut permission_list= vec![];
 
-    if let std::result::Result::Ok(query_doc) = parse_query::<&str>(s) {
-        // dequeue of (parsed_query_selection: SelectionSet, schema_type_field: Field)
-        let mut deq = VecDeque::from([]);
+    // dequeue of (parsed_query_selection: SelectionSet, schema_type_field: Field)
+    let mut deq: VecDeque<(&SelectionSet<'_, String>, &String)> = VecDeque::from([]);
 
-        let fragments: HashMap<&str, &Vec<graphql_parser::query::Selection<'_, &str>>> = query_doc
-            .definitions
-            .iter()
-            .filter_map(|def| match def {
-                Definition::Fragment(fragment) => {
-                    Some((fragment.name, fragment.selection_set.items.as_ref()))
+    // lifetime b
+    let fragments: HashMap<&String, &Vec<graphql_parser::query::Selection<'_, String>>> = query_doc
+        .iter()
+        .filter_map(|def| match def {
+            Definition::Fragment(fragment) => Some((&fragment.name, &fragment.selection_set.items)),
+            _ => None,
+        })
+        .collect();
+
+    // lifetime a
+    query_doc.iter().for_each(|def| match def {
+        Definition::Operation(OperationDefinition::Mutation(Mutation {
+            selection_set, ..
+        }))
+        | Definition::Operation(OperationDefinition::Query(Query { selection_set, .. })) => deq
+            .extend(selection_set.items.iter().filter_map(|item| {
+                let definition =
+                    if let Definition::Operation(OperationDefinition::Mutation(_)) = def {
+                        "Mutation"
+                    } else if let Definition::Operation(OperationDefinition::Query(_)) = def {
+                        "Query"
+                    } else {
+                        "Unkown"
+                    };
+
+                if let Selection::Field(Field { name, .. }) = &item {
+                    if let Some(QueryPermissionsAndNextSelection { selection_set, name_field, .. }) = test(schema_doc, name, definition, item) {
+                        return Some((selection_set, name_field));
+                    }
                 }
-                _ => None,
-            })
-            .collect();
 
-        query_doc.definitions.iter().for_each(|def| match def {
-            Definition::Operation(OperationDefinition::Mutation(Mutation {
-                selection_set,
-                ..
-            }))
-            | Definition::Operation(OperationDefinition::Query(Query { selection_set, .. })) => deq
-                .extend(selection_set.items.iter().filter_map(|item| {
-                    let definition =
-                        if let Definition::Operation(OperationDefinition::Mutation(_)) = def {
-                            "Mutation"
-                        } else if let Definition::Operation(OperationDefinition::Query(_)) = def {
-                            "Query"
-                        } else {
-                            "Unkown"
-                        };
+                None
+            })),
+        _ => {}
+    });
 
+    while let Some((query_set, schema_field)) = deq.pop_front() {
+        deq.extend(
+            query_set
+                .items
+                .iter()
+                .filter_map(|item| {
                     if let Selection::Field(Field { name, .. }) = &item {
-                        let field_type = get_type_or_typex_with_name(schema_doc, definition)
-                            .find(|field| field.name == *name);
-                        if let Selection::Field(field) = item {
-                            if let Some(field_type) = field_type {
-                                if let Type::NamedType(name) = &&field_type.field_type {
-                                    return Some((field.selection_set.clone(), name));
+                        if let Some(QueryPermissionsAndNextSelection { permissions, selection_set, name_field }) =
+                            test(schema_doc, name, &schema_field, item)
+                        {
+                            permission_list.extend(permissions);
+                            return Some(vec![(selection_set, name_field)]);
+                        }
+                    } else if let Selection::FragmentSpread(fragment_spread) = item {
+                        // check to see if the fragment spread resolves as fragmemnt
+                        if let Some(set) = fragments.get(&fragment_spread.fragment_name) {
+                            let mut selections = vec![];
+                            for selection in set.iter() {
+                                if let Selection::Field(Field { name, .. }) = selection {
+                                    if let Some(QueryPermissionsAndNextSelection { permissions, selection_set, name_field }) =
+                                        test(schema_doc, name, &schema_field, selection)
+                                    {
+                                        permission_list.extend(permissions);
+                                        selections.push((selection_set, name_field));
+                                    }
                                 }
                             }
+
+                            return Some(selections);
                         }
                     }
+
                     None
-                })),
-            _ => {}
-        });
-
-        while !deq.is_empty() {
-            let (query_set, schema_field) = deq.pop_front().unwrap();
-            deq.extend(
-                query_set
-                    .items
-                    .iter()
-                    .filter_map(|item| {
-                        if let Selection::Field(Field { name, .. }) = &item {
-                            let field_type = get_type_or_typex_with_name(schema_doc, schema_field)
-                                .find(|field| field.name == *name);
-
-                            if let Selection::Field(field) = item {
-                                if let Some(field_type) = field_type {
-                                    if let Type::NamedType(name) = &&field_type.field_type {
-                                        permission_list.extend(get_field_directives(field_type));
-                                        return Some(vec![(field.selection_set.clone(), name)]);
-                                    }
-                                }
-                            }
-                        } else if let Selection::FragmentSpread(fragment_spread) = item {
-                            // check to see if the fragment spread resolves as fragmemnt
-                            if let Some(set) = fragments.get(&fragment_spread.fragment_name) {
-                                let mut selections = vec![];
-                                for selection in set.iter() {
-                                    if let Selection::Field(Field { name, .. }) = selection {
-                                        let field_type =
-                                            get_type_or_typex_with_name(schema_doc, schema_field)
-                                                .find(|field| field.name == *name);
-
-                                        if let Selection::Field(field) = selection {
-                                            if let Some(field_type) = field_type {
-                                                if let Type::NamedType(name) =
-                                                    &&field_type.field_type
-                                                {
-                                                    permission_list
-                                                        .extend(get_field_directives(field_type));
-                                                    selections
-                                                        .push((field.selection_set.clone(), name));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                return Some(selections);
-                            }
-                        }
-
-                        None
-                    })
-                    .flatten(),
-            )
-        }
+                })
+                .flatten(),
+        )
     }
 
-    permission_list
+    vec![]
+}
+
+struct QueryPermissionsAndNextSelection<'a> {
+    permissions: Vec<&'a String>,
+    selection_set: &'a SelectionSet<'a, String>,
+    name_field: &'a String,
+}
+
+fn test<'a>(
+    definitions: &'a [graphql_parser::schema::Definition<'a, String>],
+    name: &'a str,
+    schema_field: &'a str,
+    selection: &'a Selection<'a, String>,
+) -> Option<QueryPermissionsAndNextSelection<'a>> {
+    let field_type =
+        get_type_or_typex_with_name(definitions, schema_field).find(|field| field.name == *name);
+
+    if let Selection::Field(field) = selection {
+        if let Some(field_type) = field_type {
+            if let Type::NamedType(name) = &field_type.field_type {
+                return Some(
+                    QueryPermissionsAndNextSelection {
+                        permissions: get_field_directives(field_type),
+                        selection_set: &field.selection_set,
+                        name_field: name
+                    }
+                );
+            }
+        }
+    }
+    None
 }
 
 fn get_type_or_typex_with_name<'a>(
@@ -232,7 +238,7 @@ fn get_type_or_typex_with_name<'a>(
 ) -> impl Iterator<Item = &'a graphql_parser::schema::Field<'a, String>> {
     definitions
         .iter()
-        .filter_map(move |def| match def {
+        .flat_map(move |def| match def {
             graphql_parser::schema::Definition::TypeDefinition(TypeDefinition::Object(
                 ObjectType { name, fields, .. },
             ))
@@ -240,16 +246,17 @@ fn get_type_or_typex_with_name<'a>(
                 ObjectTypeExtension { name, fields, .. },
             )) => {
                 if name == search_name {
-                    return Some(fields);
+                    return &fields[..];
                 }
-                None
+                &[]
             }
-            _ => None,
+            _ => &[],
         })
-        .flatten()
 }
 
-fn get_field_directives(field: &graphql_parser::schema::Field<'_, String>) -> Vec<String> {
+fn get_field_directives<'a>(
+    field: &'a graphql_parser::schema::Field<'_, String>,
+) -> Vec<&'a String> {
     let mut perm_vec = vec![];
     field.directives.iter().for_each(|directive| {
         if directive.name.as_str() == "scopes" {
@@ -258,7 +265,7 @@ fn get_field_directives(field: &graphql_parser::schema::Field<'_, String>) -> Ve
                     if let query::Value::List(val) = &arg.1 {
                         val.iter().for_each(|val| {
                             if let query::Value::Enum(en) = val {
-                                perm_vec.push(en.clone());
+                                perm_vec.push(en);
                             }
                         });
                     }
@@ -271,21 +278,34 @@ fn get_field_directives(field: &graphql_parser::schema::Field<'_, String>) -> Ve
 
 fn check_graphql_and_perms<'a>(
     val: &'a Value,
-    path: &'a graphql_parser::schema::Document<'a, String>,
-) -> Vec<String> {
+    path: &'a [graphql_parser::schema::Definition<'a, std::string::String>], // pass in the definitions here :) 
+) -> Vec<&'a String> {
     let mut operations = vec![];
 
     match val {
         Value::Const(Const::Literal(s)) => {
-            operations.extend(parse_grapqhql_schema(s, &path.definitions));
+            if let std::result::Result::Ok(Document { definitions, .. }) = parse_query::<String>(s) {
+                operations.extend(parse_grapqhql_schema(
+                    &path,
+                    definitions,
+                ));
+            }
+
         }
         Value::Phi(vals) => vals.iter().for_each(|val| match val {
             Const::Literal(s) => {
-                operations.extend(parse_grapqhql_schema(s, &path.definitions));
+                if let std::result::Result::Ok(Document { definitions, .. }) = parse_query::<String>(s) {
+                    operations.extend(parse_grapqhql_schema(
+                        &path,
+                        definitions,
+                    ));
+                    
+                }
             }
         }),
         _ => {}
     }
+
     // TODO : Build out permission resolver here
 
     operations
@@ -564,21 +584,21 @@ pub(crate) fn scan_directory<'a>(
             .value_manager
             .varid_to_value_with_proj
             .values()
-            .flat_map(|val| check_graphql_and_perms(val, &doc))
+            .flat_map(|val| check_graphql_and_perms(val, &doc.definitions))
             .collect();
 
         let graphql_perms_varid: Vec<String> = definition_analysis_interp
             .value_manager
             .varid_to_value
             .values()
-            .flat_map(|val| check_graphql_and_perms(val, &doc))
+            .flat_map(|val| check_graphql_and_perms(val, &doc.definitions))
             .collect();
 
         let graphql_perms_defid: Vec<String> = definition_analysis_interp
             .value_manager
             .defid_to_value
             .values()
-            .flat_map(|val| check_graphql_and_perms(val, &doc))
+            .flat_map(|val| check_graphql_and_perms(val, &doc.definitions))
             .collect();
 
         used_graphql_perms.extend_from_slice(&graphql_perms_defid);
