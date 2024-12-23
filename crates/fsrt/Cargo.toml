@@ -26,3 +26,6 @@ tracing-tree.workspace = true
 tracing.workspace = true
 walkdir.workspace = true
 graphql-parser = "0.4.0"
+create = "0.1.0"
+glob = "0.3.1"
+dirs = "5.0.1"
