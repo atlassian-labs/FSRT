@@ -996,7 +996,7 @@ impl FunctionAnalyzer<'_> {
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
                 if (*last == *"requestJira"
                     || *last == *"requestConfluence"
-                    || *last == *"requestBitbucket") // TODO: resolve Jira API requests to the correct permission map, here JSM (and likely JS) is bundled inside Jira
+                    || *last == *"requestBitbucket") // TODO: resolve Jira API requests to the correct permission map, JSM/JS/Jira all seem to be bundled inside requestJira?
                     && Some(&ImportKind::Default)
                         == self.res.is_imported_from(def, "@forge/api") =>
             {
