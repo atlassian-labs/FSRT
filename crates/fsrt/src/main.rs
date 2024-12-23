@@ -460,6 +460,8 @@ pub(crate) fn scan_directory<'a>(
         }
     }
 
+    // TODO: map permissions here for proj.env.all_strings, will implement after new API is merged in
+
     let mut used_graphql_perms: Vec<&str> = definition_analysis_interp
         .value_manager
         .varid_to_value_with_proj
