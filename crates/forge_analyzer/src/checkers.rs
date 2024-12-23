@@ -1103,7 +1103,15 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                             first_arg_vec.iter().for_each(|first_arg| {
                                 let first_arg = first_arg.replace(&['\"'][..], "");
                                 second_arg_vec.iter().for_each(|second_arg| {
-                                    if intrinsic_func_type
+                                    if intrinsic_func_type == IntrinsicName::RequestJiraSoftware {
+                                        let permissions = check_url_for_permissions(
+                                            interp.jira_software_permission_resolver,
+                                            interp.jira_software_regex_map,
+                                            translate_request_type(Some(second_arg)),
+                                            &first_arg,
+                                        );
+                                        permissions_within_call.extend_from_slice(&permissions)
+                                    } else if intrinsic_func_type
                                         == IntrinsicName::RequestJiraServiceManagement
                                     {
                                         let permissions = check_url_for_permissions(
@@ -1146,7 +1154,15 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                         } else {
                             first_arg_vec.iter().for_each(|first_arg| {
                                 let first_arg = first_arg.replace(&['\"'][..], "");
-                                if intrinsic_func_type
+                                if intrinsic_func_type == IntrinsicName::RequestJiraSoftware {
+                                    let permissions = check_url_for_permissions(
+                                        interp.jira_software_permission_resolver,
+                                        interp.jira_software_regex_map,
+                                        RequestType::Get,
+                                        &first_arg,
+                                    );
+                                    permissions_within_call.extend_from_slice(&permissions)
+                                } else if intrinsic_func_type
                                     == IntrinsicName::RequestJiraServiceManagement
                                 {
                                     let permissions = check_url_for_permissions(

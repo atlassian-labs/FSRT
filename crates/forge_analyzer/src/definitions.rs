@@ -617,6 +617,7 @@ enum LowerStage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntrinsicName {
+    RequestJiraSoftware,
     RequestJiraServiceManagement,
     RequestConfluence,
     RequestJira,
@@ -995,7 +996,7 @@ impl FunctionAnalyzer<'_> {
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
                 if (*last == *"requestJira"
                     || *last == *"requestConfluence"
-                    || *last == *"requestBitbucket")
+                    || *last == *"requestBitbucket") // TODO: resolve Jira API requests to the correct permission map, here JSM (and likely JS) is bundled inside Jira
                     && Some(&ImportKind::Default)
                         == self.res.is_imported_from(def, "@forge/api") =>
             {
