@@ -10,15 +10,24 @@ use forge_permission_resolver::permissions_resolver::{
     get_permission_resolver_jira, get_permission_resolver_jira_service_management,
     get_permission_resolver_jira_software,
 };
-
+use glob::glob;
 use std::{
-    collections::{HashMap, HashSet},
-    fmt, fs,
+    collections::{HashMap, HashSet, VecDeque},
+    env, fmt, fs,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
 };
 
-use graphql_parser::query::{parse_query, Definition, OperationDefinition, Selection};
+use graphql_parser::{
+    query::{Mutation, Query, SelectionSet},
+    schema::ObjectType,
+};
+
+use graphql_parser::{
+    parse_schema,
+    query::{self, parse_query, Definition, Field, OperationDefinition, Selection, Type},
+    schema::{ObjectTypeExtension, TypeDefinition, TypeExtension},
+};
 use tracing::{debug, warn};
 use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
@@ -70,6 +79,9 @@ pub struct Args {
     #[arg(long)]
     check_permissions: bool,
 
+    #[arg(long)]
+    graphql_schema_path: Option<PathBuf>,
+
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the source code is located in `src/`
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
@@ -105,89 +117,211 @@ impl fmt::Display for Error {
     }
 }
 
-fn check_graphql_and_perms(val: &Value) -> Vec<&str> {
+struct PermissionsAndNextSelection<'a, 'b> {
+    permission_vec: Vec<String>,
+    next_selection: NextSelection<'a, 'b>,
+}
+
+struct NextSelection<'a, 'b> {
+    selection_set: &'b SelectionSet<'b, &'b str>,
+    next_type: &'a str,
+}
+
+fn parse_grapqhql_schema<'a: 'b, 'b>(
+    schema_doc: &'a [graphql_parser::schema::Definition<'a, &'a str>],
+    query_doc: &'b [graphql_parser::query::Definition<'b, &'b str>],
+) -> Vec<String> {
+    let mut permission_list = vec![];
+
+    // dequeue of (parsed_query_selection: SelectionSet, schema_type_field: Field)
+    let mut deq = VecDeque::from([]);
+
+    let fragments: HashMap<&str, &Vec<graphql_parser::query::Selection<'_, &str>>> = query_doc
+        .iter()
+        .filter_map(|def| match def {
+            Definition::Fragment(fragment) => {
+                Some((fragment.name, fragment.selection_set.items.as_ref()))
+            }
+            _ => None,
+        })
+        .collect();
+
+    query_doc.iter().for_each(|def| match def {
+        Definition::Operation(OperationDefinition::Mutation(Mutation {
+            selection_set, ..
+        }))
+        | Definition::Operation(OperationDefinition::Query(Query { selection_set, .. })) => deq
+            .extend(selection_set.items.iter().filter_map(|item| {
+                let definition =
+                    if let Definition::Operation(OperationDefinition::Mutation(_)) = def {
+                        "Mutation"
+                    } else if let Definition::Operation(OperationDefinition::Query(_)) = def {
+                        "Query"
+                    } else {
+                        "Unkown"
+                    };
+
+                if let Selection::Field(field) = &item {
+                    if let Some(PermissionsAndNextSelection { next_selection, .. }) =
+                        get_permissions_and_next_selection(field, schema_doc, definition)
+                    {
+                        return Some(next_selection);
+                    };
+                }
+                None
+            })),
+        _ => {}
+    });
+
+    while let Some(NextSelection {
+        next_type: schema_field,
+        selection_set: query_set,
+    }) = deq.pop_front()
+    {
+        deq.extend(
+            query_set
+                .items
+                .iter()
+                .filter_map(|item| {
+                    if let Selection::Field(field) = &item {
+                        if let Some(PermissionsAndNextSelection {
+                            permission_vec,
+                            next_selection,
+                        }) = get_permissions_and_next_selection(field, schema_doc, schema_field)
+                        {
+                            permission_list.extend(permission_vec);
+                            return Some(vec![next_selection]);
+                        };
+                    } else if let Selection::FragmentSpread(fragment_spread) = item {
+                        // check to see if the fragment spread resolves as fragmemnt
+                        if let Some(set) = fragments.get(&fragment_spread.fragment_name) {
+                            return Some(
+                                set.iter()
+                                    .filter_map(|selection| {
+                                        if let Selection::Field(field) = selection {
+                                            if let Some(PermissionsAndNextSelection {
+                                                permission_vec,
+                                                next_selection,
+                                            }) = get_permissions_and_next_selection(
+                                                field,
+                                                schema_doc,
+                                                schema_field,
+                                            ) {
+                                                permission_list.extend(permission_vec);
+                                                return Some(next_selection);
+                                            };
+                                        }
+                                        None
+                                    })
+                                    .collect(),
+                            );
+                        }
+                    }
+
+                    None
+                })
+                .flatten(),
+        )
+    }
+
+    permission_list
+}
+
+fn get_permissions_and_next_selection<'a, 'b>(
+    field: &'b Field<'b, &'b str>,
+    schema_doc: &'a [graphql_parser::schema::Definition<'a, &'a str>],
+    schema_field: &'b str,
+) -> Option<PermissionsAndNextSelection<'a, 'b>> {
+    let field_type = get_type_or_typex_with_name(schema_doc, schema_field)
+        .find(|sub_field| sub_field.name == field.name);
+
+    if let Some(field_type) = field_type {
+        if let Type::NamedType(name) = &&field_type.field_type {
+            return Some(PermissionsAndNextSelection {
+                permission_vec: get_field_directives(field_type),
+                next_selection: NextSelection {
+                    selection_set: &field.selection_set,
+                    next_type: name,
+                },
+            });
+        }
+    }
+    None
+}
+
+fn get_type_or_typex_with_name<'a, 'b>(
+    definitions: &'a [graphql_parser::schema::Definition<'a, &'a str>],
+    search_name: &'b str,
+) -> impl Iterator<Item = &'a graphql_parser::schema::Field<'a, &'a str>> + use<'a, 'b> {
+    definitions
+        .iter()
+        .filter_map(move |def| match def {
+            graphql_parser::schema::Definition::TypeDefinition(TypeDefinition::Object(
+                ObjectType { name, fields, .. },
+            ))
+            | graphql_parser::schema::Definition::TypeExtension(TypeExtension::Object(
+                ObjectTypeExtension { name, fields, .. },
+            )) => {
+                if name == &search_name {
+                    return Some(fields);
+                }
+                None
+            }
+            _ => None,
+        })
+        .flatten()
+}
+
+fn get_field_directives<'a>(field: &'a graphql_parser::schema::Field<'_, &'a str>) -> Vec<String> {
+    let mut perm_vec = vec![];
+    field.directives.iter().for_each(|directive| {
+        if directive.name == "scopes" {
+            directive.arguments.iter().for_each(|arg| {
+                if arg.0 == "required" {
+                    if let query::Value::List(val) = &arg.1 {
+                        val.iter().for_each(|val| {
+                            if let query::Value::Enum(en) = val {
+                                perm_vec.push(en.to_string());
+                            }
+                        });
+                    }
+                }
+            });
+        }
+    });
+    perm_vec
+}
+
+fn check_graphql_and_perms<'a>(
+    val: &'a Value,
+    path: &'a graphql_parser::schema::Document<'a, &'a str>,
+) -> Vec<String> {
     let mut operations = vec![];
+
     match val {
-        Value::Const(Const::Literal(s)) => operations.extend(parse_graphql(s)),
+        Value::Const(Const::Literal(s)) => {
+            if let std::result::Result::Ok(query_doc) = parse_query::<&str>(s) {
+                operations.extend(parse_grapqhql_schema(
+                    &path.definitions,
+                    &query_doc.definitions,
+                ));
+            }
+        }
         Value::Phi(vals) => vals.iter().for_each(|val| match val {
-            Const::Literal(s) => operations.extend(parse_graphql(s)),
+            Const::Literal(s) => {
+                if let std::result::Result::Ok(query_doc) = parse_query::<&str>(s) {
+                    operations.extend(parse_grapqhql_schema(
+                        &path.definitions,
+                        &query_doc.definitions,
+                    ));
+                }
+            }
         }),
         _ => {}
     }
     // TODO : Build out permission resolver here
 
-    let permissions_resolver: HashMap<(&str, &str), &str> =
-        [(("compass", "searchTeams"), "read:component:compass")]
-            .into_iter()
-            .collect();
-
     operations
-        .iter()
-        .filter_map(|f| permissions_resolver.get(f).copied())
-        .collect()
-}
-
-// returns (product, operationName)
-fn parse_graphql(s: &str) -> impl Iterator<Item = (&str, &str)> {
-    let mut operations = vec![];
-
-    // collect all fragments
-    if let std::result::Result::Ok(doc) = parse_query::<&str>(s) {
-        let fragments: HashMap<&str, &Vec<graphql_parser::query::Selection<'_, &str>>> = doc
-            .definitions
-            .iter()
-            .filter_map(|def| match def {
-                Definition::Fragment(fragment) => {
-                    Some((fragment.name, fragment.selection_set.items.as_ref()))
-                }
-                _ => None,
-            })
-            .collect();
-
-        doc.definitions.iter().for_each(|operation| {
-            if let Definition::Operation(op) = operation {
-                let possible_selection_set = match op {
-                    OperationDefinition::Mutation(mutation) => Some(&mutation.selection_set),
-                    OperationDefinition::Query(query) => Some(&query.selection_set),
-                    OperationDefinition::SelectionSet(set) => Some(set),
-                    _ => None,
-                };
-                // place all fragments in place of the fragment spread
-                if let Some(selection_set) = possible_selection_set {
-                    selection_set.items.iter().for_each(|selection| {
-                        if let Selection::Field(type_field) = selection {
-                            type_field
-                                .selection_set
-                                .items
-                                .iter()
-                                .for_each(|fragment_selections| {
-                                    if let Selection::Field(operation) = fragment_selections {
-                                        operations.push((type_field.name, operation.name))
-                                    } else if let Selection::FragmentSpread(fragment_spread) =
-                                        fragment_selections
-                                    {
-                                        // check to see if the fragment spread resolves as fragmemnt
-                                        if let Some(set) =
-                                            fragments.get(&fragment_spread.fragment_name)
-                                        {
-                                            set.iter().for_each(|operation_field| {
-                                                if let Selection::Field(operation) = operation_field
-                                                {
-                                                    operations
-                                                        .push((type_field.name, operation.name))
-                                                }
-                                            });
-                                        }
-                                    }
-                                });
-                        }
-                    })
-                }
-            }
-        })
-    }
-
-    operations.into_iter()
 }
 
 fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
@@ -211,7 +345,7 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 #[tracing::instrument(level = "debug")]
 pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
-    opts: &Args,
+    opts: &mut Args,
     project: impl ForgeProjectTrait<'a> + std::fmt::Debug,
     secret_packages: &[PackageData],
 ) -> Result<Report> {
@@ -473,38 +607,61 @@ pub(crate) fn scan_directory<'a>(
         }
     }
 
-    let mut used_graphql_perms: Vec<&str> = definition_analysis_interp
-        .value_manager
-        .varid_to_value_with_proj
-        .values()
-        .flat_map(check_graphql_and_perms)
-        .collect();
+    let path = if let Some(ref mut path) = opts.graphql_schema_path {
+        path
+    } else {
+        let mut path: PathBuf = env::var("XDG_CONFIG_HOME")
+            .unwrap_or(env::var("HOME").unwrap_or_default() + "/.config")
+            .into();
 
-    let graphql_perms_varid: Vec<&str> = definition_analysis_interp
-        .value_manager
-        .varid_to_value
-        .values()
-        .flat_map(check_graphql_and_perms)
-        .collect();
+        path.push("fsrt/graphql-central-schema");
+        &mut path.to_owned()
+    };
 
-    let graphql_perms_defid: Vec<&str> = definition_analysis_interp
-        .value_manager
-        .defid_to_value
-        .values()
-        .flat_map(check_graphql_and_perms)
-        .collect();
+    path.push("schema/*/*.nadel");
 
-    used_graphql_perms.extend_from_slice(&graphql_perms_defid);
-    used_graphql_perms.extend_from_slice(&graphql_perms_varid);
+    let joined_schema = glob(path.to_str().unwrap_or_default())
+        .expect("Failed to read glob pattern")
+        .map(|path| fs::read_to_string(path.unwrap()).unwrap_or_default())
+        .collect::<Vec<String>>()
+        .join(" ");
 
-    let final_perms: Vec<&String> = perm_interp
-        .permissions
-        .iter()
-        .filter(|f| !used_graphql_perms.contains(&&***f))
-        .collect();
+    let ast = parse_schema::<&str>(&joined_schema);
 
-    if run_permission_checker && !final_perms.is_empty() {
-        reporter.add_vulnerabilities([PermissionVuln::new(perm_interp.permissions)]);
+    if let std::result::Result::Ok(doc) = ast {
+        let mut used_graphql_perms: Vec<String> = definition_analysis_interp
+            .value_manager
+            .varid_to_value_with_proj
+            .values()
+            .flat_map(|val| check_graphql_and_perms(val, &doc))
+            .collect();
+
+        let graphql_perms_varid: Vec<String> = definition_analysis_interp
+            .value_manager
+            .varid_to_value
+            .values()
+            .flat_map(|val| check_graphql_and_perms(val, &doc))
+            .collect();
+
+        let graphql_perms_defid: Vec<String> = definition_analysis_interp
+            .value_manager
+            .defid_to_value
+            .values()
+            .flat_map(|val| check_graphql_and_perms(val, &doc))
+            .collect();
+
+        used_graphql_perms.extend_from_slice(&graphql_perms_defid);
+        used_graphql_perms.extend_from_slice(&graphql_perms_varid);
+
+        let final_perms: Vec<&String> = perm_interp
+            .permissions
+            .iter()
+            .filter(|f| !used_graphql_perms.contains(&**f))
+            .collect();
+
+        if run_permission_checker && !final_perms.is_empty() {
+            reporter.add_vulnerabilities([PermissionVuln::new(perm_interp.permissions)]);
+        }
     }
 
     Ok(reporter.into_report())
@@ -537,7 +694,8 @@ fn main() -> Result<()> {
         };
 
         debug!(?dir);
-        let reporter_result = scan_directory(dir, &args, forge_project_from_dir, &secret_packages);
+        let reporter_result =
+            scan_directory(dir, &mut args, forge_project_from_dir, &secret_packages);
         match reporter_result {
             Result::Ok(report) => {
                 let report = serde_json::to_string(&report)?;
