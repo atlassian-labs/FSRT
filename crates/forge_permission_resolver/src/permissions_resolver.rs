@@ -35,6 +35,10 @@ struct RequestDetails {
         default
     )]
     permission: Vec<PermissionData>,
+
+    // For parsing Jira Software as that swagger doesn't follow "x-atlassian-oauth2-scopes" scope style
+    #[serde(default)]
+    security: Vec<SecurityData>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -42,6 +46,12 @@ struct PermissionData {
     // TODO: Replace these with the ForgePermissionEnum once it is merged in
     #[serde(default)]
     scopes: Vec<String>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct SecurityData {
+    #[serde(default, rename = "OAuth2")]
+    oauth2: Vec<String>,
 }
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
@@ -83,6 +93,11 @@ pub fn check_url_for_permissions(
         }
     }
     vec![]
+}
+
+pub fn get_permission_resolver_jira_software() -> (PermissionHashMap, HashMap<String, Regex>) {
+    let jira_software_url = "https://developer.atlassian.com/cloud/jira/software/swagger.v3.json";
+    get_permission_resolver(jira_software_url)
 }
 
 pub fn get_permission_resolver_jira_service_management(
@@ -199,12 +214,25 @@ fn get_request_type(
 }
 
 fn get_scopes(endpoint_data: &RequestDetails) -> Vec<String> {
-    endpoint_data
+    let mut scopes = endpoint_data
         .permission
         .iter()
         .flat_map(|data| &*data.scopes)
         .cloned()
-        .collect()
+        .collect::<Vec<_>>();
+
+    if scopes.is_empty() {
+        // For Jira Software if the initial scopes are empty, try the scopes from the security field
+        scopes.extend(
+            endpoint_data
+                .security
+                .iter()
+                .flat_map(|sec| &sec.oauth2)
+                .cloned(),
+        );
+    }
+
+    scopes
 }
 
 #[cfg(test)]
@@ -285,9 +313,6 @@ mod test {
         let request_type = RequestType::Get;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
 
-        println!("Permission Map: {:?}", permission_map);
-        println!("Regex Map: {:?}", regex_map);
-
         assert!(!result.is_empty(), "Should have parsed permissions");
         assert!(
             result.contains(&String::from("manage:servicedesk-customer")),
@@ -361,5 +386,36 @@ mod test {
             result.contains(&String::from("admin:repository:bitbucket")),
             "Should require admin:repository:bitbucket permission"
         );
+    }
+
+    #[test]
+    fn test_get_issues_for_epic() {
+        let (permission_map, regex_map) = get_permission_resolver_jira_software();
+        let url = "/rest/agile/1.0/sprint/23";
+        let request_type = RequestType::Get;
+        let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
+
+        assert!(!result.is_empty(), "Should have parsed permissions");
+        assert!(
+            result.contains(&String::from("read:sprint:jira-software")),
+            "Should require read:sprint:jira-software permission"
+        );
+    }
+
+    #[test]
+    fn test_get_all_boards() {
+        let (permission_map, regex_map) = get_permission_resolver_jira_software();
+        let url = "/rest/agile/1.0/board";
+        let request_type = RequestType::Get;
+        let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
+
+        assert!(!result.is_empty(), "Should have parsed permissions");
+
+        let expected_permission: Vec<String> = vec![
+            String::from("read:board-scope:jira-software"),
+            String::from("read:project:jira"),
+        ];
+
+        assert_eq!(result, expected_permission);
     }
 }
