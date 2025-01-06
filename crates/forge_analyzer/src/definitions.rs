@@ -146,7 +146,6 @@ pub fn run_resolver(
 
     // This for loop parses each token of each code statement in the file.
     for (curr_mod, module) in modules.iter_enumerated() {
-
         let mut string_collector = StringCollector { strings: vec![] };
 
         module.visit_children_with(&mut string_collector);
@@ -589,7 +588,7 @@ pub struct Environment {
     pub defs: Definitions,
     default_exports: FxHashMap<ModId, DefId>,
     pub resolver: ResolverTable,
-    pub all_strings: Vec<Atom>,
+    pub all_strings: Vec<String>,
 }
 
 struct ImportCollector<'cx> {
@@ -624,6 +623,7 @@ enum LowerStage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntrinsicName {
+    RequestJiraSoftware,
     RequestJiraServiceManagement,
     RequestConfluence,
     RequestJira,
@@ -3306,19 +3306,22 @@ impl Visit for GlobalCollector<'_> {
 }
 
 struct StringCollector {
-    strings: Vec<Atom>,
+    strings: Vec<String>,
 }
 
 impl Visit for StringCollector {
     fn visit_str(&mut self, n: &Str) {
-        self.add_str(n);
+        self.add_str(n.value.as_str().to_string());
+    }
+
+    fn visit_tpl(&mut self, n: &Tpl) {
+        self.add_str(n.quasis.iter().map(|val| val.raw.as_str()).collect());
     }
 }
 
 impl StringCollector {
-    pub fn add_str(&mut self, n: &Str) {
-        let a = n.value.clone();
-        self.strings.push(a);
+    pub fn add_str(&mut self, n: String) {
+        self.strings.push(n);
     }
 }
 

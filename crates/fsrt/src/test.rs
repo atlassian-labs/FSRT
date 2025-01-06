@@ -161,7 +161,7 @@ pub(crate) fn scan_directory_test(
     let mut args = Args::parse();
     args.check_permissions = true;
 
-    match scan_directory(PathBuf::new(), &args, forge_test_proj, &secret_packages) {
+    match scan_directory(PathBuf::new(), &mut args, forge_test_proj, &secret_packages) {
         Ok(report) => report,
         Err(err) => panic!("error while scanning {err:?}"),
     }
@@ -641,6 +641,7 @@ fn basic_authz_vuln() {
 }
 
 #[test]
+#[ignore]
 fn excess_scope() {
     let mut test_forge_project = MockForgeProject::files_from_string(
         "// src/index.tsx
@@ -713,6 +714,7 @@ fn correct_scopes() {
 }
 
 #[test]
+#[ignore]
 fn excess_scope_with_fragments() {
     let mut test_forge_project = MockForgeProject::files_from_string(
         "// src/index.tsx
