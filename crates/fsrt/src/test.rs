@@ -17,6 +17,7 @@ trait ReportExt {
 
     fn contains_secret_vuln(&self, expected_len: usize) -> bool;
 
+    #[cfg(feature = "graphql_schema")]
     fn contains_perm_vuln(&self, expected_len: usize) -> bool;
 
     fn contains_vulns(&self, expected_len: i32) -> bool;
@@ -48,6 +49,7 @@ impl ReportExt for Report {
             == expected_len
     }
 
+    #[cfg(feature = "graphql_schema")]
     #[inline]
     fn contains_perm_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
@@ -336,7 +338,6 @@ fn secret_vuln_object() {
     );
 
     let scan_result = scan_directory_test(test_forge_project);
-    println!("scan_result {scan_result:?}");
     assert!(scan_result.contains_secret_vuln(1));
     assert!(scan_result.contains_vulns(1))
 }
@@ -635,13 +636,12 @@ fn basic_authz_vuln() {
     );
 
     let scan_result = scan_directory_test(test_forge_project);
-    println!("vuln, {:#?}", scan_result);
     assert!(scan_result.contains_authz_vuln(1));
     assert!(scan_result.contains_vulns(1));
 }
 
+#[cfg(feature = "graphql_schema")]
 #[test]
-#[ignore]
 fn excess_scope() {
     let mut test_forge_project = MockForgeProject::files_from_string(
         "// src/index.tsx
@@ -663,13 +663,13 @@ fn excess_scope() {
         .push("read:component:compass".into());
 
     let scan_result = scan_directory_test(test_forge_project);
-    println!("scan_result {:#?}", scan_result);
     assert!(scan_result.contains_perm_vuln(1));
     assert!(scan_result.contains_vulns(1))
 }
 
+#[cfg(feature = "graphql_schema")]
 #[test]
-fn correct_scopes() {
+fn graphql_correct_scopes() {
     let mut test_forge_project = MockForgeProject::files_from_string(
         "// src/index.tsx
         import ForgeUI, { render, Macro } from '@forge/ui';
@@ -706,16 +706,15 @@ fn correct_scopes() {
         .test_manifest
         .permissions
         .scopes
-        .push("read:component:compass".into());
+        .push("compass:atlassian-external".into());
 
     let scan_result = scan_directory_test(test_forge_project);
-    println!("scan_result {:#?}", scan_result);
     assert!(scan_result.contains_vulns(0))
 }
 
+#[cfg(feature = "graphql_schema")]
 #[test]
-#[ignore]
-fn excess_scope_with_fragments() {
+fn graphql_excess_scope_with_fragments() {
     let mut test_forge_project = MockForgeProject::files_from_string(
         "// src/index.tsx
         import ForgeUI, { render, Macro } from '@forge/ui';
@@ -740,13 +739,13 @@ fn excess_scope_with_fragments() {
         .push("read:component:compass".into());
 
     let scan_result = scan_directory_test(test_forge_project);
-    println!("scan_result {:#?}", scan_result);
     assert!(scan_result.contains_perm_vuln(1));
     assert!(scan_result.contains_vulns(1))
 }
 
+#[cfg(feature = "graphql_schema")]
 #[test]
-fn correct_scopes_with_fragment() {
+fn graphql_correct_scopes_with_fragment() {
     let mut test_forge_project = MockForgeProject::files_from_string(
         "// src/index.tsx
         import ForgeUI, { render, Macro } from '@forge/ui';
@@ -769,10 +768,9 @@ fn correct_scopes_with_fragment() {
         .test_manifest
         .permissions
         .scopes
-        .push("read:component:compass".into());
+        .push("compass:atlassian-external".into());
 
     let scan_result = scan_directory_test(test_forge_project);
-    println!("scan_result {:#?}", scan_result);
     assert!(scan_result.contains_vulns(0))
 }
 
@@ -887,6 +885,5 @@ fn authz_function_called_in_object_bitbucket() {
     );
 
     let scan_result = scan_directory_test(test_forge_project);
-    println!("scan_result {:#?}", scan_result);
     assert!(scan_result.contains_vulns(1))
 }
