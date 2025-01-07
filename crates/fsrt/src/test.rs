@@ -600,7 +600,7 @@ fn basic_authz_vuln() {
 
 
         function getText({ text }) {
-        api.asApp().requestJira(route`rest/api/3/issue`);
+        api.asApp().requestJira(route`/rest/api/3/issue`);
         return 'Hello, world!\n' + text;
         }
 
@@ -786,7 +786,7 @@ fn rovo_function_basic_authz_vuln() {
 
 
         function getText({ text }) {
-        api.asApp().requestJira(route`rest/api/3/issue`);
+        api.asApp().requestJira(route`/rest/api/3/issue`);
         return 'Hello, world!\n' + text;
         }
 

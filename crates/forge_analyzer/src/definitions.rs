@@ -999,17 +999,18 @@ impl FunctionAnalyzer<'_> {
         }
 
         fn resolve_jira_api_type(url: &str) -> Option<IntrinsicName> {
+            // Pattern matching to classify, eg: api.[asApp | asUser]().requestJira(route`/rest/api/3/myself`);
             match url {
                 url if url.starts_with("/rest/servicedeskapi/") => {
                     Some(IntrinsicName::RequestJiraServiceManagement)
                 }
                 url if url.starts_with("/rest/agile/") => Some(IntrinsicName::RequestJiraSoftware),
                 // Accept Jira API v2.0 or v3.0
-                url if url.starts_with("/rest/api/3/") || url.starts_with("/rest/api/2/") => {
+                url if url.starts_with("/rest/api/2/") || url.starts_with("/rest/api/3/") => {
                     Some(IntrinsicName::RequestJira)
                 }
                 _ => {
-                    warn!("Invalid Jira API URL format: {}", url);
+                    warn!("Provided Jira API URL: {:?} is neither Jira, JS, JSM!", url);
                     None
                 }
             }
@@ -1030,21 +1031,19 @@ impl FunctionAnalyzer<'_> {
                 let function_name = if *last == "requestJira" {
                     // Resolve Jira API requests to either JSM/JS/Jira as all are bundled within requestJira()
                     match first_arg {
-                        Expr::Tpl(template) => {
-                            let url = template
-                                .quasis
-                                .iter()
-                                .map(|quasi| quasi.raw.as_str())
-                                .collect::<String>();
-
-                            resolve_jira_api_type(&url).unwrap_or_else(|| {
-                                warn!("Falling back to any Jira request");
-                                IntrinsicName::RequestJiraAny
-                            })
+                        Expr::TaggedTpl(TaggedTpl { tpl, .. }) => {
+                            if let Some(TplElement { raw, .. }) = tpl.quasis.first() {
+                                resolve_jira_api_type(raw).unwrap_or_else(|| {
+                                    // Conservatively assume any of Jira APIs may be used if we can't statically determine which one
+                                    warn!("Falling back to any Jira request");
+                                    IntrinsicName::RequestJiraAny
+                                })
+                            } else {
+                                panic!("No url identifiable to classify requestJira() type");
+                            }
                         }
                         _ => {
-                            // Conservatively assume any of Jira APIs may be used if we can't statically determine which one
-                            warn!("First parameter to requestJira() is invalid");
+                            warn!("Unable to classify requestJira() type");
                             IntrinsicName::RequestJiraAny
                         }
                     }
