@@ -5,6 +5,7 @@ use itertools::Itertools;
 use smallvec::SmallVec;
 use std::{
     cmp::max,
+    collections::HashSet,
     iter::{self, zip},
     mem,
     ops::ControlFlow,
@@ -1009,7 +1010,7 @@ impl PermissionDataflow {
     }
 }
 
-impl WithCallStack for PermissionVuln {
+impl WithCallStack for PermissionVuln<'_> {
     fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
 }
 
@@ -1206,12 +1207,12 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
     }
 }
 
-pub struct PermissionChecker {
+pub struct PermissionChecker<'a> {
     pub visit: bool,
-    pub vulns: Vec<PermissionVuln>,
+    pub vulns: Vec<PermissionVuln<'a>>,
 }
 
-impl PermissionChecker {
+impl<'a> PermissionChecker<'a> {
     pub fn new() -> Self {
         Self {
             visit: false,
@@ -1221,8 +1222,8 @@ impl PermissionChecker {
 
     pub fn into_vulns(
         mut self,
-        permissions: Vec<String>,
-    ) -> impl IntoIterator<Item = PermissionVuln> {
+        permissions: HashSet<&'a String>,
+    ) -> impl IntoIterator<Item = PermissionVuln<'a>> {
         if !permissions.is_empty() {
             self.vulns.resize(1, PermissionVuln::new(permissions));
         }
@@ -1230,13 +1231,13 @@ impl PermissionChecker {
     }
 }
 
-impl Default for PermissionChecker {
+impl Default for PermissionChecker<'_> {
     fn default() -> Self {
         PermissionChecker::new()
     }
 }
 
-impl fmt::Display for PermissionVuln {
+impl fmt::Display for PermissionVuln<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Permission vulnerability")
     }
@@ -1265,12 +1266,12 @@ impl JoinSemiLattice for PermissionTest {
 }
 
 #[derive(Debug, Clone)]
-pub struct PermissionVuln {
-    unused_permissions: Vec<String>,
+pub struct PermissionVuln<'a> {
+    unused_permissions: HashSet<&'a String>,
 }
 
-impl PermissionVuln {
-    pub fn new(unused_permissions: Vec<String>) -> PermissionVuln {
+impl PermissionVuln<'_> {
+    pub fn new(unused_permissions: HashSet<&'_ String>) -> PermissionVuln<'_> {
         PermissionVuln { unused_permissions }
     }
 }
@@ -1279,7 +1280,7 @@ pub struct DefinitionAnalysisRunner {
     pub needs_call: Vec<(DefId, Vec<Operand>, Vec<Value>)>,
 }
 
-impl<'cx> Runner<'cx> for PermissionChecker {
+impl<'cx> Runner<'cx> for PermissionChecker<'_> {
     type State = PermissionTest;
     type Dataflow = PermissionDataflow;
 
@@ -1295,11 +1296,11 @@ impl<'cx> Runner<'cx> for PermissionChecker {
     }
 }
 
-impl Checker<'_> for PermissionChecker {
-    type Vuln = PermissionVuln;
+impl<'a> Checker<'_> for PermissionChecker<'a> {
+    type Vuln = PermissionVuln<'a>;
 }
 
-impl IntoVuln for PermissionVuln {
+impl IntoVuln for PermissionVuln<'_> {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
         Vulnerability {
             check_name: "Least-Privilege".to_owned(),

@@ -21,6 +21,8 @@ Arguments:
     -f, --function <FUNCTION>         A specific function to scan. Must be an entrypoint specified in `manifest.yml`
     -h, --help                        Print help information
     -V, --version                     Print version information
+    --check-permissions               Runs the permission checker
+    --graphql-schema-path <LOCATION>  Uses the graphql schema in location; othwerwise selects ~/.config dir  
 ```
 
 ## Installation
@@ -62,6 +64,12 @@ until then you can test `fsrt` by manually invoking:
 
 ```sh
 fsrt ./test-apps/jira-damn-vulnerable-forge-app
+```
+
+Testing with a GraphQl Schema:
+
+```sh
+cargo test --features graphql_schema
 ```
 
 ## Contributions

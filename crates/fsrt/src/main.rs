@@ -20,7 +20,7 @@ use std::{
 
 use graphql_parser::{
     query::{Mutation, Query, SelectionSet},
-    schema::ObjectType,
+    schema::{EnumType, EnumValue, ObjectType},
 };
 
 use graphql_parser::{
@@ -118,7 +118,7 @@ impl fmt::Display for Error {
 }
 
 struct PermissionsAndNextSelection<'a, 'b> {
-    permission_vec: Vec<String>,
+    permission_vec: Vec<&'a str>,
     next_selection: NextSelection<'a, 'b>,
 }
 
@@ -130,7 +130,7 @@ struct NextSelection<'a, 'b> {
 fn parse_grapqhql_schema<'a: 'b, 'b>(
     schema_doc: &'a [graphql_parser::schema::Definition<'a, &'a str>],
     query_doc: &'b [graphql_parser::query::Definition<'b, &'b str>],
-) -> Vec<String> {
+) -> Vec<&'a str> {
     let mut permission_list = vec![];
 
     // dequeue of (parsed_query_selection: SelectionSet, schema_type_field: Field)
@@ -272,7 +272,7 @@ fn get_type_or_typex_with_name<'a, 'b>(
         .flatten()
 }
 
-fn get_field_directives<'a>(field: &'a graphql_parser::schema::Field<'_, &'a str>) -> Vec<String> {
+fn get_field_directives<'a>(field: &'a graphql_parser::schema::Field<'_, &'a str>) -> Vec<&'a str> {
     let mut perm_vec = vec![];
     field.directives.iter().for_each(|directive| {
         if directive.name == "scopes" {
@@ -281,7 +281,7 @@ fn get_field_directives<'a>(field: &'a graphql_parser::schema::Field<'_, &'a str
                     if let query::Value::List(val) = &arg.1 {
                         val.iter().for_each(|val| {
                             if let query::Value::Enum(en) = val {
-                                perm_vec.push(en.to_string());
+                                perm_vec.push(*en);
                             }
                         });
                     }
@@ -295,7 +295,7 @@ fn get_field_directives<'a>(field: &'a graphql_parser::schema::Field<'_, &'a str
 fn check_graphql_and_perms<'a>(
     val: &'a Value,
     path: &'a graphql_parser::schema::Document<'a, &'a str>,
-) -> Vec<String> {
+) -> Vec<&'a str> {
     let mut operations = vec![];
 
     match val {
@@ -488,7 +488,7 @@ pub(crate) fn scan_directory<'a>(
     );
     reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
 
-    let mut perm_interp = Interp::<PermissionChecker>::new(
+    let mut perm_interp = Interp::<PermissionChecker<'_>>::new(
         &proj.env,
         false,
         true,
@@ -618,6 +618,40 @@ pub(crate) fn scan_directory<'a>(
         &mut path.to_owned()
     };
 
+    let mut scope_path = path.clone();
+
+    scope_path.push("schema/shared/agg-shared-scopes.nadel");
+
+    let scope_map = fs::read_to_string(&scope_path).unwrap_or_default();
+
+    let ast = parse_schema::<&str>(&scope_map).unwrap_or_default();
+
+    let mut scope_name_to_oauth = HashMap::new();
+
+    ast.definitions.iter().for_each(|val| {
+        if let graphql_parser::schema::Definition::TypeDefinition(TypeDefinition::Enum(
+            EnumType { values, .. },
+        )) = val
+        {
+            values.iter().for_each(
+                |EnumValue {
+                     directives, name, ..
+                 }| {
+                    if let Some(directive) = directives.first() {
+                        if let graphql_parser::schema::Value::String(oauth_scope) = &directive
+                            .arguments
+                            .first()
+                            .expect("Should only be one directive")
+                            .1
+                        {
+                            scope_name_to_oauth.insert(*name, &**oauth_scope);
+                        }
+                    }
+                },
+            )
+        }
+    });
+
     path.push("schema/*/*.nadel");
 
     let joined_schema = glob(path.to_str().unwrap_or_default())
@@ -629,21 +663,21 @@ pub(crate) fn scan_directory<'a>(
     let ast = parse_schema::<&str>(&joined_schema);
 
     if let std::result::Result::Ok(doc) = ast {
-        let mut used_graphql_perms: Vec<String> = definition_analysis_interp
+        let mut used_graphql_perms: Vec<&str> = definition_analysis_interp
             .value_manager
             .varid_to_value_with_proj
             .values()
             .flat_map(|val| check_graphql_and_perms(val, &doc))
             .collect();
 
-        let graphql_perms_varid: Vec<String> = definition_analysis_interp
+        let graphql_perms_varid: Vec<&str> = definition_analysis_interp
             .value_manager
             .varid_to_value
             .values()
             .flat_map(|val| check_graphql_and_perms(val, &doc))
             .collect();
 
-        let graphql_perms_defid: Vec<String> = definition_analysis_interp
+        let graphql_perms_defid: Vec<&str> = definition_analysis_interp
             .value_manager
             .defid_to_value
             .values()
@@ -653,14 +687,26 @@ pub(crate) fn scan_directory<'a>(
         used_graphql_perms.extend_from_slice(&graphql_perms_defid);
         used_graphql_perms.extend_from_slice(&graphql_perms_varid);
 
-        let final_perms: Vec<&String> = perm_interp
+        let oauth_scopes: HashSet<&str> = used_graphql_perms
+            .iter()
+            .copied()
+            .filter_map(|val| {
+                if !scope_name_to_oauth.contains_key(&val) {
+                    warn!("Scope is not contained in the scope definitions")
+                }
+
+                scope_name_to_oauth.get(&val).copied()
+            })
+            .collect();
+
+        let final_perms: HashSet<&String> = perm_interp
             .permissions
             .iter()
-            .filter(|f| !used_graphql_perms.contains(&**f))
+            .filter(|f| !oauth_scopes.contains(f.as_str()))
             .collect();
 
         if run_permission_checker && !final_perms.is_empty() {
-            reporter.add_vulnerabilities([PermissionVuln::new(perm_interp.permissions)]);
+            reporter.add_vulnerabilities([PermissionVuln::new(final_perms)]);
         }
     }
 
