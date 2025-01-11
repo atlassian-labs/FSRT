@@ -1,9 +1,9 @@
 #![allow(dead_code, unused)]
 
 use std::borrow::BorrowMut;
-use std::env;
 use std::hash::Hash;
 use std::{borrow::Borrow, fmt, mem};
+use std::{env, string};
 
 use crate::utils::{calls_method, eq_prop_name};
 use forge_file_resolver::{FileResolver, ForgeResolver};
@@ -146,6 +146,11 @@ pub fn run_resolver(
 
     // This for loop parses each token of each code statement in the file.
     for (curr_mod, module) in modules.iter_enumerated() {
+        let mut string_collector = StringCollector { strings: vec![] };
+
+        module.visit_children_with(&mut string_collector);
+        environment.all_strings.extend(string_collector.strings);
+
         let mut export_collector = ExportCollector {
             res_table: &mut environment.resolver,
             curr_mod,
@@ -583,6 +588,7 @@ pub struct Environment {
     pub defs: Definitions,
     default_exports: FxHashMap<ModId, DefId>,
     pub resolver: ResolverTable,
+    pub all_strings: Vec<String>,
 }
 
 struct ImportCollector<'cx> {
@@ -3296,6 +3302,26 @@ impl Visit for GlobalCollector<'_> {
         }
 
         *self.res.def_mut(owner).expect_body() = body;
+    }
+}
+
+struct StringCollector {
+    strings: Vec<String>,
+}
+
+impl Visit for StringCollector {
+    fn visit_str(&mut self, n: &Str) {
+        self.add_str(n.value.as_str().to_string());
+    }
+
+    fn visit_tpl(&mut self, n: &Tpl) {
+        self.add_str(n.quasis.iter().map(|val| val.raw.as_str()).collect());
+    }
+}
+
+impl StringCollector {
+    pub fn add_str(&mut self, n: String) {
+        self.strings.push(n);
     }
 }
 
