@@ -1,16 +1,20 @@
 use core::fmt;
-use forge_permission_resolver::permissions_resolver::{check_url_for_permissions, RequestType};
+use forge_permission_resolver::permissions_resolver::{
+    check_url_for_permissions, PermissionHashMap, RequestType,
+};
 use forge_utils::FxHashMap;
 use itertools::Itertools;
 use smallvec::SmallVec;
 use std::{
     cmp::max,
+    collections::HashMap,
     iter::{self, zip},
     mem,
     ops::ControlFlow,
     path::PathBuf,
 };
 
+use regex::Regex;
 use tracing::{debug, info, warn};
 
 use crate::interp::ProjectionVec;
@@ -1112,7 +1116,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     interp.bitbucket_permission_resolver,
                     interp.bitbucket_regex_map,
                 ),
-                _ => unreachable!("Invalid intrinsic function type"),
+                _ => (&PermissionHashMap::new(), &HashMap::<String, Regex>::new()),
             };
 
             if intrinsic_argument.first_arg.is_none() {
