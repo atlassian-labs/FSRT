@@ -1001,11 +1001,24 @@ impl FunctionAnalyzer<'_> {
         fn resolve_jira_api_type(url: &str) -> Option<IntrinsicName> {
             // Pattern matching to classify, eg: api.[asApp | asUser]().requestJira(route`/rest/api/3/myself`);
             match url {
+                // JSM requests
                 url if url.starts_with("/rest/servicedeskapi/") => {
                     Some(IntrinsicName::RequestJiraServiceManagement)
                 }
-                url if url.starts_with("/rest/agile/") => Some(IntrinsicName::RequestJiraSoftware),
-                // Accept Jira API v2.0 or v3.0
+                // Jira Software requests from https://developer.atlassian.com/cloud/jira/software/rest/intro/#introduction
+                url if url.starts_with("/rest/agile/")
+                    || url.starts_with("/rest/devinfo/")
+                    || url.starts_with("/rest/featureflags/")
+                    || url.starts_with("/rest/deployments/")
+                    || url.starts_with("/rest/builds")
+                    || url.starts_with("/rest/remotelinks/")
+                    || url.starts_with("/rest/security/")
+                    || url.starts_with("/rest/operations/")
+                    || url.starts_with("/rest/devopscomponents/") =>
+                {
+                    Some(IntrinsicName::RequestJiraSoftware)
+                }
+                // Jira requests, accept Jira API v2.0 or v3.0
                 url if url.starts_with("/rest/api/2/") || url.starts_with("/rest/api/3/") => {
                     Some(IntrinsicName::RequestJira)
                 }
