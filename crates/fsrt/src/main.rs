@@ -626,6 +626,7 @@ pub(crate) fn scan_directory<'a>(
         .collect::<Vec<String>>()
         .join(" ");
 
+    let mut final_perms = perm_interp.permissions.clone();
     let ast = parse_schema::<&str>(&joined_schema);
 
     if let std::result::Result::Ok(doc) = ast {
@@ -653,15 +654,17 @@ pub(crate) fn scan_directory<'a>(
         used_graphql_perms.extend_from_slice(&graphql_perms_defid);
         used_graphql_perms.extend_from_slice(&graphql_perms_varid);
 
-        let final_perms: Vec<&String> = perm_interp
+        final_perms = perm_interp
             .permissions
             .iter()
-            .filter(|f| !used_graphql_perms.contains(&**f))
+            .filter(|f| !used_graphql_perms.contains(f))
+            .cloned()
             .collect();
+    }
 
-        if run_permission_checker && !final_perms.is_empty() {
-            reporter.add_vulnerabilities([PermissionVuln::new(perm_interp.permissions)]);
-        }
+    // TODO: should this be outside + use final_perms vs permissions?
+    if run_permission_checker && !final_perms.is_empty() {
+        reporter.add_vulnerabilities([PermissionVuln::new(final_perms)]);
     }
 
     Ok(reporter.into_report())

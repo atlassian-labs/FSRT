@@ -19,6 +19,8 @@ trait ReportExt {
 
     fn contains_perm_vuln(&self, expected_len: usize) -> bool;
 
+    fn vuln_description_contains(&self, check_name: &str, description_snippet: &str) -> bool;
+
     fn contains_vulns(&self, expected_len: i32) -> bool;
 
     fn contains_authz_vuln(&self, expected_len: usize) -> bool;
@@ -55,6 +57,17 @@ impl ReportExt for Report {
             .filter(|vuln| vuln.check_name() == "Least-Privilege")
             .count()
             == expected_len
+    }
+
+    #[inline]
+    fn vuln_description_contains(&self, check_name: &str, description_snippet: &str) -> bool {
+        self.into_vulns()
+            .iter()
+            .filter(|vuln| {
+                vuln.check_name() == check_name && vuln.description().contains(&description_snippet)
+            })
+            .count()
+            == 1
     }
 
     #[inline]
@@ -889,4 +902,58 @@ fn authz_function_called_in_object_bitbucket() {
     let scan_result = scan_directory_test(test_forge_project);
     println!("scan_result {:#?}", scan_result);
     assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
+fn extra_permission_bitbucket() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
+        import api, { route, fetch } from '@forge/api';
+        const App = () => {
+            let testObject = {
+                someFunction() {
+                const res = api.asUser().requestBitbucket(route`/repositories/mockworkspace/mockreposlug/default-reviewers/jcg`, {
+                    method: 'PUT',
+                    body: {}
+                });
+                return res;
+                }
+            }
+            testObject.someFunction()
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        };
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yaml
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+                handler: nothing
+                description: Inserts Hello world!
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes:
+              - 'admin:repository:bitbucket'
+              - 'unused:permission:defined'"
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    println!("scan_result {:#?}", scan_result);
+    assert!(
+        scan_result.contains_perm_vuln(1)
+            && scan_result.contains_vulns(1)
+            && scan_result
+                .vuln_description_contains("Least-Privilege", "unused:permission:defined")
+    );
 }
