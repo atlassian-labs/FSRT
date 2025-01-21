@@ -1307,10 +1307,7 @@ impl FunctionAnalyzer<'_> {
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first() {
-            if self.res.is_imported_from(id, "@forge/ui").map_or(
-                false,
-                |imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect"),
-            ) || calls_method(callee, "then")
+            if self.res.is_imported_from(id, "@forge/ui").is_some_and(|imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect")) || calls_method(callee, "then")
                 || calls_method(callee, "map")
                 || calls_method(callee, "foreach")
                 || calls_method(callee, "filter")

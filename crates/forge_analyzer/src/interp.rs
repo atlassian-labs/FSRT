@@ -185,7 +185,7 @@ pub trait Dataflow<'cx>: Sized {
             Successors::Return => {
                 if interp
                     .func_state(def)
-                    .map_or(true, |old_state| old_state < state)
+                    .is_none_or(|old_state| old_state < state)
                 {
                     interp.set_func_state(def, state);
                     let calls = interp.called_from(def);
