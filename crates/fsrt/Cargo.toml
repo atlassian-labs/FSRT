@@ -8,6 +8,9 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+graphql_schema = []
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
