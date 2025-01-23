@@ -4,7 +4,7 @@ import api, { route } from '@forge/api';
 
 // src/lib/get-text.ts
 function getText({ text }) {
-  api.asApp().requestJira(route`rest/api/3/issue`);
+  api.asApp().requestJira(route`/rest/api/3/issue`);
   return 'Hello, world!\n' + text;
 }
 
