@@ -623,6 +623,7 @@ enum LowerStage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntrinsicName {
+    RequestJiraAny,
     RequestJiraSoftware,
     RequestJiraServiceManagement,
     RequestConfluence,
@@ -997,6 +998,34 @@ impl FunctionAnalyzer<'_> {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
 
+        fn resolve_jira_api_type(url: &str) -> Option<IntrinsicName> {
+            // Pattern matching to classify, eg: api.[asApp | asUser]().requestJira(route`/rest/api/3/myself`);
+            match url {
+                // JSM requests
+                url if url.starts_with("/rest/servicedeskapi/") => {
+                    Some(IntrinsicName::RequestJiraServiceManagement)
+                }
+                // Jira Software requests from https://developer.atlassian.com/cloud/jira/software/rest/intro/#introduction
+                url if url.starts_with("/rest/agile/")
+                    || url.starts_with("/rest/devinfo/")
+                    || url.starts_with("/rest/featureflags/")
+                    || url.starts_with("/rest/deployments/")
+                    || url.starts_with("/rest/builds")
+                    || url.starts_with("/rest/remotelinks/")
+                    || url.starts_with("/rest/security/")
+                    || url.starts_with("/rest/operations/")
+                    || url.starts_with("/rest/devopscomponents/") =>
+                {
+                    Some(IntrinsicName::RequestJiraSoftware)
+                }
+                // Jira requests, accept Jira API v2.0 or v3.0
+                url if url.starts_with("/rest/api/2/") || url.starts_with("/rest/api/3/") => {
+                    Some(IntrinsicName::RequestJira)
+                }
+                _ => None,
+            }
+        }
+
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
@@ -1006,15 +1035,29 @@ impl FunctionAnalyzer<'_> {
                     && Some(&ImportKind::Default)
                         == self.res.is_imported_from(def, "@forge/api") =>
             {
+                let first_arg = first_arg?;
+                let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
+
                 let function_name = if *last == "requestJira" {
-                    IntrinsicName::RequestJira
+                    // Resolve Jira API requests to either JSM/JS/Jira as all are bundled within requestJira()
+                    match first_arg {
+                        Expr::TaggedTpl(TaggedTpl { tpl, .. }) => {
+                            tpl.quasis.first().map(|elem| &elem.raw)
+                        }
+                        Expr::Lit(Lit::Str(str_lit)) => Some(&str_lit.value),
+                        _ => None,
+                    }
+                    .and_then(|atom| resolve_jira_api_type(atom.as_ref()))
+                    .unwrap_or_else(|| {
+                        warn!("Could not resolve Jira API type, falling back to any Jira request");
+                        IntrinsicName::RequestJiraAny
+                    })
                 } else if *last == "requestBitbucket" {
                     IntrinsicName::RequestBitbucket
                 } else {
                     IntrinsicName::RequestConfluence
                 };
-                let first_arg = first_arg?;
-                let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
+
                 match classify_api_call(first_arg) {
                     ApiCallKind::Unknown => {
                         if is_as_app {

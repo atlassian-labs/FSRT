@@ -95,6 +95,26 @@ pub fn check_url_for_permissions(
     vec![]
 }
 
+pub fn get_permission_resolver_jira_any() -> (PermissionHashMap, HashMap<String, Regex>) {
+    // Combine all Jira variations to achieve a generic "any" Jira
+    let (jira_map, jira_regex) = get_permission_resolver_jira();
+    let (jsm_map, jsm_regex) = get_permission_resolver_jira_service_management();
+    let (js_map, js_regex) = get_permission_resolver_jira_software();
+
+    let mut combined_permission_map = PermissionHashMap::default();
+    let mut combined_regex_map = HashMap::default();
+
+    combined_permission_map.extend(jira_map);
+    combined_permission_map.extend(jsm_map);
+    combined_permission_map.extend(js_map);
+
+    combined_regex_map.extend(jira_regex);
+    combined_regex_map.extend(jsm_regex);
+    combined_regex_map.extend(js_regex);
+
+    (combined_permission_map, combined_regex_map)
+}
+
 pub fn get_permission_resolver_jira_software() -> (PermissionHashMap, HashMap<String, Regex>) {
     let jira_software_url = "https://developer.atlassian.com/cloud/jira/software/swagger.v3.json";
     get_permission_resolver(jira_software_url)
