@@ -658,7 +658,7 @@ pub(crate) fn scan_directory<'a>(
         .expect("Failed to read glob pattern")
         .map(|path| fs::read_to_string(path.unwrap()).unwrap_or_default())
         .collect::<Vec<String>>()
-        .join(" ");
+        .join("\n");
 
     let ast = parse_schema::<&str>(&joined_schema);
 
