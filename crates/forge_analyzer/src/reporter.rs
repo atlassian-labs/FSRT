@@ -26,6 +26,10 @@ impl Vulnerability {
     pub fn check_name(&self) -> &str {
         &self.check_name
     }
+
+    pub fn description(&self) -> &str {
+        &self.description
+    }
 }
 
 pub trait IntoVuln {
