@@ -1,22 +1,3 @@
-use core::fmt;
-use forge_permission_resolver::permissions_resolver::{
-    check_url_for_permissions, PermissionHashMap, RequestType,
-};
-use forge_utils::FxHashMap;
-use itertools::Itertools;
-use regex::Regex;
-use smallvec::SmallVec;
-use std::{
-    cmp::max,
-    collections::HashMap,
-    collections::HashSet,
-    iter::{self, zip},
-    mem,
-    ops::ControlFlow,
-    path::PathBuf,
-};
-use tracing::{debug, info, warn};
-
 use crate::interp::ProjectionVec;
 use crate::utils::projvec_from_str;
 use crate::{
@@ -36,6 +17,24 @@ use crate::{
     },
     worklist::WorkList,
 };
+use core::fmt;
+use forge_permission_resolver::permissions_resolver::{
+    check_url_for_permissions, PermissionHashMap, RequestType,
+};
+use forge_utils::FxHashMap;
+use itertools::Itertools;
+use regex::Regex;
+use smallvec::SmallVec;
+use std::{
+    cmp::max,
+    collections::HashMap,
+    collections::HashSet,
+    iter::{self, zip},
+    mem,
+    ops::ControlFlow,
+    path::PathBuf,
+};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Default)]
 pub enum Taint {

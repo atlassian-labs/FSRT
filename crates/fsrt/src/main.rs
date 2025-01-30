@@ -671,6 +671,7 @@ pub(crate) fn scan_directory<'a>(
         .collect::<Vec<String>>()
         .join("\n");
 
+    let mut final_perms: HashSet<&String> = perm_interp.permissions.iter().collect();
     let ast = parse_schema::<&str>(&joined_schema);
 
     if let std::result::Result::Ok(doc) = ast {
@@ -710,15 +711,15 @@ pub(crate) fn scan_directory<'a>(
             })
             .collect();
 
-        let final_perms: HashSet<&String> = perm_interp
+        final_perms = perm_interp
             .permissions
             .iter()
             .filter(|f| !oauth_scopes.contains(f.as_str()))
             .collect();
+    }
 
-        if run_permission_checker && !final_perms.is_empty() {
-            reporter.add_vulnerabilities([PermissionVuln::new(final_perms)]);
-        }
+    if run_permission_checker && !final_perms.is_empty() {
+        reporter.add_vulnerabilities([PermissionVuln::new(final_perms)]);
     }
 
     Ok(reporter.into_report())
