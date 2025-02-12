@@ -1119,6 +1119,9 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     interp.bitbucket_permission_resolver,
                     interp.bitbucket_regex_map,
                 ),
+                IntrinsicName::RequestCompass => {
+                    (interp.compass_permission_resolver, interp.compass_regex_map)
+                }
                 IntrinsicName::Other => {
                     (&PermissionHashMap::new(), &HashMap::<String, Regex>::new())
                 }
