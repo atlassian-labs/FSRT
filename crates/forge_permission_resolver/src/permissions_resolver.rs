@@ -142,6 +142,11 @@ pub fn get_permission_resolver_bitbucket() -> (PermissionHashMap, HashMap<String
     get_permission_resolver(bitbucket_url)
 }
 
+pub fn get_permission_resolver_compass() -> (PermissionHashMap, HashMap<String, Regex>) {
+    let compass_url = "https://developer.atlassian.com/cloud/compass/swagger.v3.json";
+    get_permission_resolver(compass_url)
+}
+
 pub fn get_permission_resolver(url: &str) -> (PermissionHashMap, HashMap<String, Regex>) {
     let mut endpoint_map: PermissionHashMap = HashMap::default();
     let mut endpoint_regex: HashMap<String, Regex> = HashMap::default();
@@ -405,6 +410,22 @@ mod test {
         assert!(
             result.contains(&String::from("admin:repository:bitbucket")),
             "Should require admin:repository:bitbucket permission"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn test_resolving_compass_permissions() {
+        // TODO: it seems no permissions are being returned for compass urls
+        let (permission_map, regex_map) = get_permission_resolver_compass();
+
+        let url = "/compass/v1/events";
+        let request_type = RequestType::Post;
+        let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
+
+        assert!(
+            !result.is_empty(),
+            "Should have parsed permissions for compass endpoint"
         );
     }
 

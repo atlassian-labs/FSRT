@@ -396,12 +396,14 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     pub jira_permission_resolver: &'cx PermissionHashMap,
     pub confluence_permission_resolver: &'cx PermissionHashMap,
     pub bitbucket_permission_resolver: &'cx PermissionHashMap,
+    pub compass_permission_resolver: &'cx PermissionHashMap,
     pub jira_any_regex_map: &'cx HashMap<String, Regex>,
     pub jira_software_regex_map: &'cx HashMap<String, Regex>,
     pub jira_service_management_regex_map: &'cx HashMap<String, Regex>,
     pub jira_regex_map: &'cx HashMap<String, Regex>,
     pub confluence_regex_map: &'cx HashMap<String, Regex>,
     pub bitbucket_regex_map: &'cx HashMap<String, Regex>,
+    pub compass_regex_map: &'cx HashMap<String, Regex>,
     _checker: PhantomData<C>,
 }
 
@@ -526,6 +528,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         confluence_regex_map: &'cx HashMap<String, Regex>,
         bitbucket_permission_resolver: &'cx PermissionHashMap,
         bitbucket_regex_map: &'cx HashMap<String, Regex>,
+        compass_permission_resolver: &'cx PermissionHashMap,
+        compass_regex_map: &'cx HashMap<String, Regex>,
     ) -> Self {
         let call_graph = CallGraph::new(env);
 
@@ -558,12 +562,14 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             jira_permission_resolver,
             confluence_permission_resolver,
             bitbucket_permission_resolver,
+            compass_permission_resolver,
             jira_any_regex_map,
             jira_software_regex_map,
             jira_service_management_regex_map,
             jira_regex_map,
             confluence_regex_map,
             bitbucket_regex_map,
+            compass_regex_map,
             _checker: PhantomData,
             runner_visited: RefCell::new(FxHashSet::default()),
         }
