@@ -1187,3 +1187,47 @@ fn no_extra_scope_bitbucket() {
     let scan_result = scan_directory_test(test_forge_project);
     assert!(scan_result.contains_vulns(0));
 }
+
+#[test] // Tests manifest with no extra scopes, we expect no vulns.
+fn graphql_compass() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
+        import graphqlGateway from '@atlassian/forge-graphql';
+
+        const App = () => {
+            const {
+                errors,
+                data
+            } = await graphqlGateway.compass.asApp().getComponent(1);
+
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        };
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yaml
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+                handler: nothing
+                description: Inserts Hello world!
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes:
+            ",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_authz_vuln(1));
+    dbg!(scan_result.into_vulns()[0].description());
+}
