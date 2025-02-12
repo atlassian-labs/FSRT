@@ -629,6 +629,7 @@ pub enum IntrinsicName {
     RequestConfluence,
     RequestJira,
     RequestBitbucket,
+    RequestCompass,
     Other,
 }
 
@@ -1192,6 +1193,25 @@ impl FunctionAnalyzer<'_> {
                 package.cloned().map(Intrinsic::SecretFunction)
             }
 
+            // graphqlGateway's compass
+            // import graphqlGateway from "@atlassian/forge-graphql";
+            // const { errors, data} = await graphqlGateway.compass.asApp().getComponent({ componentId });
+            // [PropPath::Def(def), PropPath::Static(ref compass), ref auth
+            [PropPath::Def(def), PropPath::Static(ref compass), ref authn @ .., PropPath::Static(ref function_name)]
+                if *compass == *"compass"
+                    && Some(&ImportKind::Default)
+                        == self.res.is_imported_from(def, "@atlassian/forge-graphql") =>
+            {
+                match authn.first() {
+                    Some(PropPath::MemberCall(name)) if name == "asApp" => {
+                        Some(Intrinsic::ApiCall(IntrinsicName::RequestCompass))
+                    }
+                    Some(PropPath::MemberCall(name)) if name == "asUser" => {
+                        Some(Intrinsic::SafeCall(IntrinsicName::RequestCompass))
+                    }
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
