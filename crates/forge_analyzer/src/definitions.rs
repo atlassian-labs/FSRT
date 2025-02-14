@@ -654,7 +654,7 @@ enum PropPath {
     Static(JsWord),
     MemberCall(JsWord),
     Unknown(Id),
-    Expr,
+    Expr(Option<Expr>),
     This,
     Super,
     Private(Id),
@@ -724,7 +724,7 @@ fn normalize_callee_expr(
                 | Lit::Num(_)
                 | Lit::BigInt(_)
                 | Lit::Regex(_)
-                | Lit::JSXText(_) => self.path.push(PropPath::Expr),
+                | Lit::JSXText(_) => self.path.push(PropPath::Expr(None)),
             }
         }
 
@@ -746,7 +746,7 @@ fn normalize_callee_expr(
                 }
                 Expr::Call(CallExpr { callee, .. }) => {
                     let Some(expr) = callee.as_expr() else {
-                        self.path.push(PropPath::Expr);
+                        self.path.push(PropPath::Expr(Some(n.clone())));
                         return;
                     };
                     match &**expr {
@@ -759,12 +759,12 @@ fn normalize_callee_expr(
                             self.path.push(PropPath::MemberCall(ident.sym.clone()));
                         }
                         _ => {
-                            self.path.push(PropPath::Expr);
+                            self.path.push(PropPath::Expr(Some(n.clone())));
                         }
                     }
                 }
 
-                _ => self.path.push(PropPath::Expr),
+                _ => self.path.push(PropPath::Expr(Some(n.clone()))),
             }
         }
     }
@@ -1026,65 +1026,84 @@ impl FunctionAnalyzer<'_> {
             }
         }
 
+        fn get_intrinsic(
+            first_arg: Option<&Expr>,
+            is_as_app: bool,
+            last: &Atom,
+        ) -> Option<Intrinsic> {
+            let first_arg = first_arg?;
+
+            let function_name = if *last == "requestJira" {
+                // Resolve Jira API requests to either JSM/JS/Jira as all are bundled within requestJira()
+                match first_arg {
+                    Expr::TaggedTpl(TaggedTpl { tpl, .. }) => {
+                        tpl.quasis.first().map(|elem| &elem.raw)
+                    }
+                    Expr::Lit(Lit::Str(str_lit)) => Some(&str_lit.value),
+                    _ => None,
+                }
+                .and_then(|atom| resolve_jira_api_type(atom.as_ref()))
+                .unwrap_or_else(|| {
+                    warn!("Could not resolve Jira API type, falling back to any Jira request");
+                    IntrinsicName::RequestJiraAny
+                })
+            } else if *last == "requestBitbucket" {
+                IntrinsicName::RequestBitbucket
+            } else {
+                IntrinsicName::RequestConfluence
+            };
+
+            match classify_api_call(first_arg) {
+                ApiCallKind::Unknown => {
+                    if is_as_app {
+                        Some(Intrinsic::ApiCall(function_name))
+                    } else {
+                        Some(Intrinsic::SafeCall(function_name))
+                    }
+                }
+                ApiCallKind::CustomField => {
+                    if is_as_app {
+                        Some(Intrinsic::ApiCustomField)
+                    } else {
+                        Some(Intrinsic::SafeCall(function_name))
+                    }
+                }
+                ApiCallKind::Fields => {
+                    if is_as_app {
+                        Some(Intrinsic::ApiCustomField)
+                    } else {
+                        Some(Intrinsic::UserFieldAccess)
+                    }
+                }
+                ApiCallKind::Trivial => Some(Intrinsic::SafeCall(function_name)),
+                ApiCallKind::Authorize => Some(Intrinsic::Authorize(function_name)),
+            }
+        }
+
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
+            [PropPath::Expr(ref n@ Some(ref expr)), PropPath::Static(ref last)] => {
+                if self.res.is_expr_imported_from(expr, self.module).is_some_and(
+                    |imp| matches!(imp, ImportKind::Named(s) if *s == *"asApp" || *s == *"asUser")) {
+                        let is_as_app = self.res.is_expr_imported_from(expr, self.module).is_some_and(
+                            |imp| matches!(imp, ImportKind::Named(s) if *s == *"asApp"));
+                    return get_intrinsic(first_arg, is_as_app, last);
+                }
+                None
+                }
             [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
-                if (*last == *"requestJira"
+                if ((*last == *"requestJira"
                     || *last == *"requestConfluence"
                     || *last == *"requestBitbucket")
                     && Some(&ImportKind::Default)
-                        == self.res.is_imported_from(def, "@forge/api") =>
+                        == self.res.is_imported_from(def, "@forge/api")) || self.res.is_imported_from(def, "@forge/api").is_some_and(
+                            |imp| matches!(imp, ImportKind::Named(s) if *s == *"asApp" || *s == *"asUser"),
+                        ) =>
             {
-                let first_arg = first_arg?;
                 let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
-
-                let function_name = if *last == "requestJira" {
-                    // Resolve Jira API requests to either JSM/JS/Jira as all are bundled within requestJira()
-                    match first_arg {
-                        Expr::TaggedTpl(TaggedTpl { tpl, .. }) => {
-                            tpl.quasis.first().map(|elem| &elem.raw)
-                        }
-                        Expr::Lit(Lit::Str(str_lit)) => Some(&str_lit.value),
-                        _ => None,
-                    }
-                    .and_then(|atom| resolve_jira_api_type(atom.as_ref()))
-                    .unwrap_or_else(|| {
-                        warn!("Could not resolve Jira API type, falling back to any Jira request");
-                        IntrinsicName::RequestJiraAny
-                    })
-                } else if *last == "requestBitbucket" {
-                    IntrinsicName::RequestBitbucket
-                } else {
-                    IntrinsicName::RequestConfluence
-                };
-
-                match classify_api_call(first_arg) {
-                    ApiCallKind::Unknown => {
-                        if is_as_app {
-                            Some(Intrinsic::ApiCall(function_name))
-                        } else {
-                            Some(Intrinsic::SafeCall(function_name))
-                        }
-                    }
-                    ApiCallKind::CustomField => {
-                        if is_as_app {
-                            Some(Intrinsic::ApiCustomField)
-                        } else {
-                            Some(Intrinsic::SafeCall(function_name))
-                        }
-                    }
-                    ApiCallKind::Fields => {
-                        if is_as_app {
-                            Some(Intrinsic::ApiCustomField)
-                        } else {
-                            Some(Intrinsic::UserFieldAccess)
-                        }
-                    }
-                    ApiCallKind::Trivial => Some(Intrinsic::SafeCall(function_name)),
-                    ApiCallKind::Authorize => Some(Intrinsic::Authorize(function_name)),
-                }
+                let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
+                get_intrinsic(first_arg, is_as_app, last)
             }
-
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
                 match self.res.is_imported_from(def, "@forge/api") {
                     Some(ImportKind::Named(name)) if *name == *"storage" => {
@@ -3873,6 +3892,21 @@ impl Environment {
             DefKind::Foreign(f) if f.module_name == *module_name => Some(&f.kind),
             _ => None,
         }
+    }
+
+    pub fn is_expr_imported_from(&self, n: &Expr, module: ModId) -> Option<&ImportKind> {
+        if let Expr::Call(CallExpr {
+            callee: Callee::Expr(expr),
+            ..
+        }) = n
+        {
+            if let Expr::Ident(id) = &**expr {
+                if let Some(defid) = self.recent_sym(id.sym.clone(), module) {
+                    return self.is_imported_from(defid, "@forge/api");
+                }
+            }
+        }
+        None
     }
 
     pub fn resolve_alias(&self, def: DefId) -> DefId {
