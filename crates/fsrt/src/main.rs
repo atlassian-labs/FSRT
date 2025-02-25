@@ -319,7 +319,6 @@ fn check_graphql_and_perms<'a>(
         }),
         _ => {}
     }
-    // TODO : Build out permission resolver here
 
     operations
 }
@@ -671,9 +670,16 @@ pub(crate) fn scan_directory<'a>(
         .collect::<Vec<String>>()
         .join("\n");
 
-    let mut final_perms: HashSet<&String> = perm_interp.permissions.iter().collect();
+    // excess Forge storage scopes should not increase the severity of an AuthZ vuln
+    let mut final_perms: HashSet<&String> = perm_interp
+        .permissions
+        .iter()
+        .filter(|x| **x != "report:personal-data" && **x != "storage:app")
+        .collect();
     let ast = parse_schema::<&str>(&joined_schema);
 
+    // Lack of coverage, since no apps use raw GraphQL currently.
+    #[cfg(any())]
     if let std::result::Result::Ok(doc) = ast {
         let mut used_graphql_perms: Vec<&str> = definition_analysis_interp
             .value_manager
