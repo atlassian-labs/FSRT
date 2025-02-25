@@ -1230,7 +1230,7 @@ impl<'a> PermissionChecker<'a> {
 
     pub fn into_vulns(
         mut self,
-        permissions: HashSet<&'a String>,
+        permissions: HashSet<&'a str>,
     ) -> impl IntoIterator<Item = PermissionVuln<'a>> {
         if !permissions.is_empty() {
             self.vulns.resize(1, PermissionVuln::new(permissions));
@@ -1275,11 +1275,11 @@ impl JoinSemiLattice for PermissionTest {
 
 #[derive(Debug, Clone)]
 pub struct PermissionVuln<'a> {
-    unused_permissions: HashSet<&'a String>,
+    unused_permissions: HashSet<&'a str>,
 }
 
 impl PermissionVuln<'_> {
-    pub fn new(unused_permissions: HashSet<&'_ String>) -> PermissionVuln<'_> {
+    pub fn new(unused_permissions: HashSet<&str>) -> PermissionVuln<'_> {
         PermissionVuln { unused_permissions }
     }
 }
