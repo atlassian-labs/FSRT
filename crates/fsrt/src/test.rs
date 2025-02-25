@@ -653,6 +653,197 @@ fn basic_authz_vuln() {
     assert!(scan_result.contains_vulns(1));
 }
 
+#[test]
+fn basic_authz_vuln_non_default() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { route, asApp } from '@forge/api';
+
+
+        function getText({ text }) {
+        asApp().requestJira(route`/rest/api/3/issue`);
+        return 'Hello, world!\n' + text;
+        }
+
+        function App() { 
+
+            getText({ text: 'test' })
+            
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        } 
+
+        export const run = render(<Macro app={<App />} />);
+        
+        // manifest.yaml 
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+                handler: nothing
+                description: Inserts Hello world!
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_authz_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
+#[test]
+fn basic_authz_vuln_non_default_renamed() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { route, asApp as pineapple } from '@forge/api';
+
+
+        function getText({ text }) {
+        pineapple().requestJira(route`/rest/api/3/issue`);
+        return 'Hello, world!\n' + text;
+        }
+
+        function App() { 
+
+            getText({ text: 'test' })
+            
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        } 
+
+        export const run = render(<Macro app={<App />} />);
+        
+        // manifest.yaml 
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+                handler: nothing
+                description: Inserts Hello world!
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_authz_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
+#[test]
+fn basic_authz_vuln_default_and_renamed_and() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api, {route, asApp as pineapple } from '@forge/api';
+
+
+        function getText({ text }) {
+        api.asApp().requestJira(route`/rest/api/3/issue`);
+        return 'Hello, world!\n' + text;
+        }
+
+        function App() { 
+
+            getText({ text: 'test' })
+            
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        } 
+
+        export const run = render(<Macro app={<App />} />);
+        
+        // manifest.yaml 
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+                handler: nothing
+                description: Inserts Hello world!
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_authz_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
+#[test]
+fn basic_false_authz_vuln_renamed() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { route, asApp as pineapple } from '@forge/api';
+
+
+        function getText({ text }) {
+        asApp().requestJira(route`/rest/api/3/issue`);
+        return 'Hello, world!\n' + text;
+        }
+
+        function App() { 
+
+            getText({ text: 'test' })
+            
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        } 
+
+        export const run = render(<Macro app={<App />} />);
+        
+        // manifest.yaml 
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+                handler: nothing
+                description: Inserts Hello world!
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(0));
+}
+
 #[cfg(feature = "graphql_schema")]
 #[test]
 fn excess_scope() {
