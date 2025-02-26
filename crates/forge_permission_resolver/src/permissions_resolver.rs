@@ -1,3 +1,4 @@
+use crate::permissions_resolver_compass::CompassPermissionResolver;
 use regex::Regex;
 use serde::Deserialize;
 use std::{cmp::Reverse, collections::HashMap, hash::Hash};
@@ -140,6 +141,10 @@ pub fn get_permission_resolver_confluence() -> (PermissionHashMap, HashMap<Strin
 pub fn get_permission_resolver_bitbucket() -> (PermissionHashMap, HashMap<String, Regex>) {
     let bitbucket_url = "https://api.bitbucket.org/swagger.json";
     get_permission_resolver(bitbucket_url)
+}
+
+pub fn get_permission_resolver_compass() -> CompassPermissionResolver {
+    CompassPermissionResolver::new()
 }
 
 pub fn get_permission_resolver(url: &str) -> (PermissionHashMap, HashMap<String, Regex>) {

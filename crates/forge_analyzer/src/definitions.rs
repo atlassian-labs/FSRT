@@ -621,7 +621,7 @@ enum LowerStage {
     Create,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntrinsicName {
     RequestJiraAny,
     RequestJiraSoftware,
@@ -629,7 +629,7 @@ pub enum IntrinsicName {
     RequestConfluence,
     RequestJira,
     RequestBitbucket,
-    RequestCompass,
+    RequestCompass(String),
     Other,
 }
 
@@ -1204,10 +1204,10 @@ impl FunctionAnalyzer<'_> {
             {
                 match authn.first() {
                     Some(PropPath::MemberCall(name)) if name == "asApp" => {
-                        Some(Intrinsic::ApiCall(IntrinsicName::RequestCompass))
+                        Some(Intrinsic::ApiCall(IntrinsicName::RequestCompass(function_name.to_string())))
                     }
                     Some(PropPath::MemberCall(name)) if name == "asUser" => {
-                        Some(Intrinsic::SafeCall(IntrinsicName::RequestCompass))
+                        Some(Intrinsic::SafeCall(IntrinsicName::RequestCompass(function_name.to_string())))
                     }
                     _ => None,
                 }
