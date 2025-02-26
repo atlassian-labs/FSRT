@@ -1050,7 +1050,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         if let Intrinsic::ApiCall(name) | Intrinsic::SafeCall(name) | Intrinsic::Authorize(name) =
             intrinsic
         {
-            intrinsic_argument.name = Some(*name);
+            intrinsic_argument.name = Some(name.clone());
             let (first, second) = (operands.first(), operands.get(1));
             if let Some(operand) = first {
                 match operand {
@@ -1092,9 +1092,21 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 }
             }
 
-            let mut permissions_within_call: Vec<String> = vec![];
             let intrinsic_func_type = intrinsic_argument.name.unwrap();
 
+            // Handle RequestCompass case first
+            if let IntrinsicName::RequestCompass(api_name) = intrinsic_func_type {
+                if let Some(required_permissions) =
+                    interp.compass_permission_resolver.get(&api_name)
+                {
+                    interp
+                        .permissions
+                        .retain(|permissions| !required_permissions.contains(permissions));
+                }
+                return initial_state;
+            }
+
+            let mut permissions_within_call: Vec<String> = vec![];
             let (resolver, regex_map) = match intrinsic_func_type {
                 IntrinsicName::RequestJiraAny => (
                     interp.jira_any_permission_resolver,
@@ -1119,7 +1131,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     interp.bitbucket_permission_resolver,
                     interp.bitbucket_regex_map,
                 ),
-                IntrinsicName::RequestCompass | IntrinsicName::Other => {
+                IntrinsicName::RequestCompass(_) | IntrinsicName::Other => {
                     (&PermissionHashMap::new(), &HashMap::<String, Regex>::new())
                 }
             };
