@@ -4,22 +4,22 @@ use tracing::warn;
 
 #[derive(Debug)]
 pub struct CompassPermissionResolver {
-    api_scopes_map: HashMap<String, Vec<String>>,
+    api_scopes_map: HashMap<&'static str, Vec<&'static str>>,
 }
 
 impl CompassPermissionResolver {
     /// Factory method to create a new `CompassPermissionResolver`
     pub fn new() -> Self {
-        let permissions = load_compass_api_scopes();
+        let scopes = load_compass_api_scopes();
         CompassPermissionResolver {
-            api_scopes_map: permissions,
+            api_scopes_map: scopes,
         }
     }
 
     /// Retrieves permissions for a given key. Prints a warning if the key is missing.
-    pub fn get(&self, key: &str) -> Option<&Vec<String>> {
-        if let Some(permissions) = self.api_scopes_map.get(key) {
-            Some(permissions)
+    pub fn get(&self, key: &str) -> Option<&[&str]> {
+        if let Some(scopes) = self.api_scopes_map.get(key) {
+            Some(scopes)
         } else {
             warn!(
                 "Warning: compass API '{}' not found in the api->scopes mapping.",
@@ -37,7 +37,7 @@ impl Default for CompassPermissionResolver {
 }
 
 // This is for handling https://developer.atlassian.com/cloud/compass/forge-graphql-toolkit/
-fn load_compass_api_scopes() -> HashMap<String, Vec<String>> {
+fn load_compass_api_scopes() -> HashMap<&'static str, Vec<&'static str>> {
     let file = include_str!("../../../compass-scopes.yaml");
     serde_yaml::from_str(file)
         .expect("Error: Failed to parse compass-scopes YAML file. Ensure it is properly formatted.")

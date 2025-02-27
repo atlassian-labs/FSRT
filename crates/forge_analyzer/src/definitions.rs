@@ -1197,16 +1197,16 @@ impl FunctionAnalyzer<'_> {
             // import graphqlGateway from "@atlassian/forge-graphql";
             // const { errors, data} = await graphqlGateway.compass.asApp().getComponent({ componentId });
             // [PropPath::Def(def), PropPath::Static(ref compass), ref auth
-            [PropPath::Def(def), PropPath::Static(ref compass), ref authn @ .., PropPath::Static(ref function_name)]
+            [PropPath::Def(def), PropPath::Static(ref compass), PropPath::MemberCall(ref authn), PropPath::Static(ref function_name)]
                 if *compass == *"compass"
                     && Some(&ImportKind::Default)
                         == self.res.is_imported_from(def, "@atlassian/forge-graphql") =>
             {
-                match authn.first() {
-                    Some(PropPath::MemberCall(name)) if name == "asApp" => {
+                match authn.as_str() {
+                    "asApp" => {
                         Some(Intrinsic::ApiCall(IntrinsicName::RequestCompass(function_name.to_string())))
                     }
-                    Some(PropPath::MemberCall(name)) if name == "asUser" => {
+                    "asUser" => {
                         Some(Intrinsic::SafeCall(IntrinsicName::RequestCompass(function_name.to_string())))
                     }
                     _ => None,

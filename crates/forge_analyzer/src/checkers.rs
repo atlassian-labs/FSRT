@@ -1096,12 +1096,10 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
 
             // Handle RequestCompass case first
             if let IntrinsicName::RequestCompass(api_name) = intrinsic_func_type {
-                if let Some(required_permissions) =
-                    interp.compass_permission_resolver.get(&api_name)
-                {
+                if let Some(oauth_scopes) = interp.compass_permission_resolver.get(&api_name) {
                     interp
                         .permissions
-                        .retain(|permissions| !required_permissions.contains(permissions));
+                        .retain(|p| !oauth_scopes.contains(&p.as_str()));
                 }
                 return initial_state;
             }
