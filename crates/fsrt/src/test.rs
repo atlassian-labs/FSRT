@@ -173,7 +173,8 @@ pub(crate) fn scan_directory_test(
         .map(|f| serde_yaml::from_reader(f).expect("Failed to deserialize packages"))
         .unwrap_or_else(|_| vec![]);
 
-    let mut args = Args::parse();
+    // disallow parsing arguments meant for test harness (e.g., --nocapture, --exact) from std::env::args()
+    let mut args = Args::parse_from(&[""]);
     args.check_permissions = true;
 
     match scan_directory(PathBuf::new(), &mut args, forge_test_proj, &secret_packages) {
@@ -1182,6 +1183,104 @@ fn no_extra_scope_bitbucket() {
         permissions:
             scopes:
               - 'admin:repository:bitbucket'"
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(0));
+}
+
+#[test] // Tests manifest with no extra scopes, we expect no vulns.
+fn graphql_compass() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
+        import graphqlGateway from '@atlassian/forge-graphql';
+
+        const App = () => {
+            const {
+                errors,
+                data
+            } = await graphqlGateway.compass.asApp().getComponent(1);
+
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        };
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yaml
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+                handler: nothing
+                description: Inserts Hello world!
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes:
+            ",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_authz_vuln(1));
+    dbg!(scan_result.into_vulns()[0].description());
+}
+
+#[test]
+fn graphqlgateway_compass() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
+        import api, { route, fetch } from '@forge/api';
+        import graphqlGateway from '@atlassian/forge-graphql';
+
+        const foo = async () => {
+            const {
+                errors,
+                data
+            } = await graphqlGateway.compass.asUser().getComponent({ id: '123' });
+            return data;
+        };
+        const App = () => {
+            let value = 'value'
+
+            let h = { headers: { authorization: 'test' } }
+            h.headers.authorization = process.env.SECRET
+            h.headers.authorization = `test ${value}`
+
+            fetch('url', h)
+            foo();
+
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        };
+        export const run = render(<Macro app={<App />} />)
+        // manifest.yaml
+        modules:
+          macro:
+            - key: basic-hello-world
+              function: main
+              title: basic
+              handler: nothing
+              description: Inserts Hello world!
+          function:
+            - key: main
+              handler: index.run
+        app:
+          id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+          scopes:
+            - read:component:compass",
     );
 
     let scan_result = scan_directory_test(test_forge_project);

@@ -6,9 +6,10 @@ mod test;
 
 use clap::{Parser, ValueHint};
 use forge_permission_resolver::permissions_resolver::{
-    get_permission_resolver_bitbucket, get_permission_resolver_confluence,
-    get_permission_resolver_jira, get_permission_resolver_jira_any,
-    get_permission_resolver_jira_service_management, get_permission_resolver_jira_software,
+    get_permission_resolver_bitbucket, get_permission_resolver_compass,
+    get_permission_resolver_confluence, get_permission_resolver_jira,
+    get_permission_resolver_jira_any, get_permission_resolver_jira_service_management,
+    get_permission_resolver_jira_software,
 };
 use glob::glob;
 use std::{
@@ -418,6 +419,7 @@ pub(crate) fn scan_directory<'a>(
     let (confluence_permission_resolver, confluence_regex_map) =
         get_permission_resolver_confluence();
     let (bitbucket_permission_resolver, bitbucket_regex_map) = get_permission_resolver_bitbucket();
+    let compass_permission_resolver = get_permission_resolver_compass();
 
     let mut definition_analysis_interp = Interp::<DefinitionAnalysisRunner>::new(
         &proj.env,
@@ -436,6 +438,7 @@ pub(crate) fn scan_directory<'a>(
         &confluence_regex_map,
         &bitbucket_permission_resolver,
         &bitbucket_regex_map,
+        &compass_permission_resolver,
     );
 
     let mut interp = Interp::new(
@@ -455,6 +458,7 @@ pub(crate) fn scan_directory<'a>(
         &confluence_regex_map,
         &bitbucket_permission_resolver,
         &bitbucket_regex_map,
+        &compass_permission_resolver,
     );
     let mut authn_interp = Interp::new(
         &proj.env,
@@ -473,6 +477,7 @@ pub(crate) fn scan_directory<'a>(
         &confluence_regex_map,
         &bitbucket_permission_resolver,
         &bitbucket_regex_map,
+        &compass_permission_resolver,
     );
 
     let mut reporter = Reporter::new();
@@ -493,6 +498,7 @@ pub(crate) fn scan_directory<'a>(
         &confluence_regex_map,
         &bitbucket_permission_resolver,
         &bitbucket_regex_map,
+        &compass_permission_resolver,
     );
     reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
 
@@ -513,6 +519,7 @@ pub(crate) fn scan_directory<'a>(
         &confluence_regex_map,
         &bitbucket_permission_resolver,
         &bitbucket_regex_map,
+        &compass_permission_resolver,
     );
     for func in &proj.funcs {
         let mut def_checker = DefinitionAnalysisRunner::new();
