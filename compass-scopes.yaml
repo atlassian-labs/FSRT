@@ -1,0 +1,101 @@
+# Sourced from https://developer.atlassian.com/cloud/compass/forge-graphql-toolkit/Classes/CompassRequests/
+# Required oauth scopes for compass graphql requests
+
+addEventSource:
+  - write:component:compass
+  - write:event:compass
+
+addLabels:
+  - write:component:compass
+
+attachDataManager:
+  - write:component:compass
+
+attachEventSource:
+  - write:component:compass
+
+createComponent:
+  - write:component:compass
+
+createCustomFieldDefinition:
+  - write:component:compass
+
+createEvent:
+  - write:event:compass
+
+createEventSource:
+  - write:event:compass
+
+createExternalAlias:
+  - write:component:compass
+
+createLink:
+  - write:component:compass
+
+createRelationship:
+  - write:component:compass
+
+deleteComponent:
+  - write:component:compass
+
+deleteExternalAlias:
+  - write:component:compass
+
+deleteLink:
+  - write:component:compass
+
+deleteRelationship:
+  - write:component:compass
+
+detachDataManager:
+  - write:component:compass
+
+detachEventSource:
+  - write:component:compass
+
+getAllComponentTypes:
+  - read:component:compass
+
+getComponent:
+  - read:component:compass
+
+getComponentByExternalAlias:
+  - read:component:compass
+
+getComponentsByReferences:
+  - read:component:compass
+
+getEventSource:
+  - read:event:compass
+
+insertMetricValueByExternalId:
+  - write:metric:compass
+
+removeLabels:
+  - write:component:compass
+
+searchComponents:
+  - read:component:compass
+
+syncComponentByExternalAlias:
+  - write:component:compass
+  - write:event:compass
+
+synchronizeLinkAssociations:
+  - write:component:compass
+  - write:event:compass
+  - write:metric:compass
+
+unlinkExternalSource:
+  - write:component:compass
+
+updateComponent:
+  - write:component:compass
+  - write:event:compass
+
+updateDataManager:
+  - write:component:compass
+
+updateEventSources:
+  - write:component:compass
+  - write:event:compass
