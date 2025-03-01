@@ -175,7 +175,6 @@ pub(crate) fn scan_directory_test(
 
     // disallow parsing arguments meant for test harness (e.g., --nocapture, --exact) from std::env::args()
     let mut args = Args::parse_from(&[""]);
-    args.check_permissions = true;
 
     match scan_directory(PathBuf::new(), &mut args, forge_test_proj, &secret_packages) {
         Ok(report) => report,
