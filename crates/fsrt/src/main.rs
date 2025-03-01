@@ -76,10 +76,6 @@ pub struct Args {
     #[arg(short, long)]
     out: Option<PathBuf>,
 
-    // Run the permission checker
-    #[arg(long)]
-    check_permissions: bool,
-
     #[arg(long)]
     graphql_schema_path: Option<PathBuf>,
 
@@ -379,7 +375,7 @@ pub(crate) fn scan_directory<'a>(
         .into_iter()
         .any(|remote| remote.contains_auth());
 
-    let run_permission_checker = opts.check_permissions && !transpiled_async;
+    let run_permission_checker = !transpiled_async;
 
     let permissions_declared: HashSet<String> =
         HashSet::from_iter(permission_scopes.iter().map(|s| s.replace('\"', "")));
