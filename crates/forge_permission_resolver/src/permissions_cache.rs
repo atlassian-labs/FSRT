@@ -13,8 +13,11 @@ use tracing::debug;
 const CACHE_EXPIRATION: Duration = Duration::from_secs(60 * 60 * 24 * 7); // 1 week
 
 fn default_cache_path() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".cache/fsrt")
+    if let Ok(home) = env::var("HOME") {
+        PathBuf::from(home).join(".cache/fsrt")
+    } else {
+        PathBuf::new()
+    }
 }
 
 /// Struct to hold cache-related settings
@@ -65,19 +68,19 @@ impl PermissionsCache {
                     if duration < self.config.ttl {
                         return true;
                     } else {
-                        println!(
+                        eprintln!(
                             "Cache file expired: {:?}, duration {:?} is greater than ttl {:?}",
                             path, duration, self.config.ttl
                         );
                     }
                 } else {
-                    println!("Failed to get elapsed time for cache file: {:?}", path);
+                    eprintln!("Failed to get elapsed time for cache file: {:?}", path);
                 }
             } else {
-                println!("Failed to get modified time for cache file: {:?}", path);
+                eprintln!("Failed to get modified time for cache file: {:?}", path);
             }
         } else {
-            println!("Failed to get metadata for cache file: {:?}", path);
+            eprintln!("Failed to get metadata for cache file: {:?}", path);
         }
         false
     }

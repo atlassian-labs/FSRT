@@ -26,20 +26,14 @@ impl From<SerializablePermissionHashMap> for PermissionHashMap {
         let deserialized_map: PermissionHashMap = serialized
             .map
             .into_iter()
-            .filter_map(|(key, v)| {
+            .map(|(key, v)| {
                 let mut parts = key.split("::");
-                let url = parts.next();
-                let req = parts.next();
-                if let (Some(url), Some(req)) = (url, req) {
-                    match req.parse::<RequestType>() {
-                        Ok(req_type) => Some(((url.to_string(), req_type), v)),
-                        Err(_) => {
-                            panic!("Failed to parse RequestType from: {}", req);
-                        }
-                    }
-                } else {
-                    panic!("Failed to split key: {}", key);
-                }
+                let url = parts.next().expect("Failed to split key");
+                let req = parts.next().expect("Failed to split key");
+                let req_type = req
+                    .parse::<RequestType>()
+                    .expect("Failed to parse RequestType");
+                ((url.to_string(), req_type), v)
             })
             .collect();
         deserialized_map

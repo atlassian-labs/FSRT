@@ -16,15 +16,15 @@ Arguments:
 
   Options:
     -d, --debug
-        --dump-ir <DUMP_IR>           Dump the IR for the specified function
-    -dt, --dump-dt <DUMP_DOM_TREE>    Dump the Dominator Tree for the specified app
-    -f, --function <FUNCTION>         A specific function to scan, must be an entrypoint specified in `manifest.yml`
-    -h, --help                        Print help information
-    -V, --version                     Print version information
-    --check-permissions               Runs the permission checker
-    --cached-permissions              Uses cached swagger permissions to avoid redownloading them
-    --cached-permissions-path         User designated cache location, if not specified defaults to ~/.cache 
-    --graphql-schema-path <LOCATION>  Uses the graphql schema in location; othwerwise selects ~/.config dir  
+        --dump-ir <DUMP_IR>                 Dump the IR for the specified function
+    -dt, --dump-dt <DUMP_DOM_TREE>          Dump the Dominator Tree for the specified app
+    -f, --function <FUNCTION>               A specific function to scan, must be an entrypoint specified in `manifest.yml`
+    -h, --help                              Print help information
+    -V, --version                           Print version information
+    --check-permissions                     Runs the permission checker
+    --cached-permissions                    Uses cached swagger permissions to avoid redownloading them
+    --cached-permissions-path <LOCATION>    Uses the designated cache location, otherwise selects ~/.cache dir 
+    --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir  
 ```
 
 ## Installation
