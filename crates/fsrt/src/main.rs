@@ -5,11 +5,14 @@ mod forge_project;
 mod test;
 
 use clap::{Parser, ValueHint};
-use forge_permission_resolver::permissions_resolver::{
-    get_permission_resolver_bitbucket, get_permission_resolver_compass,
-    get_permission_resolver_confluence, get_permission_resolver_jira,
-    get_permission_resolver_jira_any, get_permission_resolver_jira_service_management,
-    get_permission_resolver_jira_software,
+use forge_permission_resolver::{
+    permissions_cache::CacheConfig,
+    permissions_resolver::{
+        get_permission_resolver_bitbucket, get_permission_resolver_compass,
+        get_permission_resolver_confluence, get_permission_resolver_jira,
+        get_permission_resolver_jira_any, get_permission_resolver_jira_service_management,
+        get_permission_resolver_jira_software,
+    },
 };
 use glob::glob;
 use std::{
@@ -78,6 +81,14 @@ pub struct Args {
 
     #[arg(long)]
     graphql_schema_path: Option<PathBuf>,
+
+    /// If true, use cached permissions; otherwise, re-download and reparse Swagger files.
+    #[arg(long)]
+    cached_permissions: bool,
+
+    /// Path to store or load cached permissions. If not provided, defaults to `~/.cache/fsrt`.
+    #[arg(long)]
+    cached_permissions_path: Option<PathBuf>,
 
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the source code is located in `src/`
@@ -406,15 +417,22 @@ pub(crate) fn scan_directory<'a>(
 
     let permissions = permissions_declared.into_iter().collect::<Vec<_>>();
 
-    let (jira_any_permission_resolver, jira_any_regex_map) = get_permission_resolver_jira_any();
+    let config = CacheConfig::new(
+        opts.cached_permissions,
+        opts.cached_permissions_path.clone(),
+    );
+
+    let (jira_any_permission_resolver, jira_any_regex_map) =
+        get_permission_resolver_jira_any(&config);
     let (jira_software_permission_resolver, jira_software_regex_map) =
-        get_permission_resolver_jira_software();
+        get_permission_resolver_jira_software(&config);
     let (jira_service_management_permission_resolver, jira_service_management_regex_map) =
-        get_permission_resolver_jira_service_management();
-    let (jira_permission_resolver, jira_regex_map) = get_permission_resolver_jira();
+        get_permission_resolver_jira_service_management(&config);
+    let (jira_permission_resolver, jira_regex_map) = get_permission_resolver_jira(&config);
     let (confluence_permission_resolver, confluence_regex_map) =
-        get_permission_resolver_confluence();
-    let (bitbucket_permission_resolver, bitbucket_regex_map) = get_permission_resolver_bitbucket();
+        get_permission_resolver_confluence(&config);
+    let (bitbucket_permission_resolver, bitbucket_regex_map) =
+        get_permission_resolver_bitbucket(&config);
     let compass_permission_resolver = get_permission_resolver_compass();
 
     let mut definition_analysis_interp = Interp::<DefinitionAnalysisRunner>::new(

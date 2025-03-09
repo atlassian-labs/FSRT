@@ -1,8 +1,12 @@
-use crate::permissions_resolver_compass::CompassPermissionResolver;
+use crate::{
+    permissions_cache::{CacheConfig, PermissionsCache},
+    permissions_resolver_compass::CompassPermissionResolver,
+};
+
 use regex::Regex;
 use serde::Deserialize;
-use std::{cmp::Reverse, collections::HashMap, hash::Hash};
-use tracing::warn;
+use std::{cmp::Reverse, collections::HashMap, hash::Hash, str::FromStr};
+use tracing::{debug, warn};
 
 pub type PermissionHashMap = HashMap<(String, RequestType), Vec<String>>;
 
@@ -55,13 +59,29 @@ struct SecurityData {
     oauth2: Vec<String>,
 }
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug, Deserialize)]
 pub enum RequestType {
     Get,
     Patch,
     Post,
     Put,
     Delete,
+}
+
+// Implement `FromStr` for RequestType
+impl FromStr for RequestType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "get" => Ok(RequestType::Get),
+            "post" => Ok(RequestType::Post),
+            "patch" => Ok(RequestType::Patch),
+            "put" => Ok(RequestType::Put),
+            "delete" => Ok(RequestType::Delete),
+            _ => Err(()),
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -96,11 +116,13 @@ pub fn check_url_for_permissions(
     vec![]
 }
 
-pub fn get_permission_resolver_jira_any() -> (PermissionHashMap, HashMap<String, Regex>) {
+pub fn get_permission_resolver_jira_any(
+    config: &CacheConfig,
+) -> (PermissionHashMap, HashMap<String, Regex>) {
     // Combine all Jira variations to achieve a generic "any" Jira
-    let (jira_map, jira_regex) = get_permission_resolver_jira();
-    let (jsm_map, jsm_regex) = get_permission_resolver_jira_service_management();
-    let (js_map, js_regex) = get_permission_resolver_jira_software();
+    let (jira_map, jira_regex) = get_permission_resolver_jira(config);
+    let (jsm_map, jsm_regex) = get_permission_resolver_jira_service_management(config);
+    let (js_map, js_regex) = get_permission_resolver_jira_software(config);
 
     let mut combined_permission_map = PermissionHashMap::default();
     let mut combined_regex_map = HashMap::default();
@@ -116,42 +138,69 @@ pub fn get_permission_resolver_jira_any() -> (PermissionHashMap, HashMap<String,
     (combined_permission_map, combined_regex_map)
 }
 
-pub fn get_permission_resolver_jira_software() -> (PermissionHashMap, HashMap<String, Regex>) {
+pub fn get_permission_resolver_jira_software(
+    config: &CacheConfig,
+) -> (PermissionHashMap, HashMap<String, Regex>) {
     let jira_software_url = "https://developer.atlassian.com/cloud/jira/software/swagger.v3.json";
-    get_permission_resolver(jira_software_url)
+    get_permission_resolver(jira_software_url, "jira_software", config)
 }
 
 pub fn get_permission_resolver_jira_service_management(
+    config: &CacheConfig,
 ) -> (PermissionHashMap, HashMap<String, Regex>) {
     let jira_service_management_url =
         "https://developer.atlassian.com/cloud/jira/service-desk/swagger.v3.json";
-    get_permission_resolver(jira_service_management_url)
+    get_permission_resolver(
+        jira_service_management_url,
+        "jira_service_management",
+        config,
+    )
 }
 
-pub fn get_permission_resolver_jira() -> (PermissionHashMap, HashMap<String, Regex>) {
+pub fn get_permission_resolver_jira(
+    config: &CacheConfig,
+) -> (PermissionHashMap, HashMap<String, Regex>) {
     let jira_url = "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json";
-    get_permission_resolver(jira_url)
+    get_permission_resolver(jira_url, "jira", config)
 }
 
-pub fn get_permission_resolver_confluence() -> (PermissionHashMap, HashMap<String, Regex>) {
+pub fn get_permission_resolver_confluence(
+    config: &CacheConfig,
+) -> (PermissionHashMap, HashMap<String, Regex>) {
     let confluence_url = "https://developer.atlassian.com/cloud/confluence/swagger.v3.json";
-    get_permission_resolver(confluence_url)
+    get_permission_resolver(confluence_url, "confluence", config)
 }
 
-pub fn get_permission_resolver_bitbucket() -> (PermissionHashMap, HashMap<String, Regex>) {
+pub fn get_permission_resolver_bitbucket(
+    config: &CacheConfig,
+) -> (PermissionHashMap, HashMap<String, Regex>) {
     let bitbucket_url = "https://api.bitbucket.org/swagger.json";
-    get_permission_resolver(bitbucket_url)
+    get_permission_resolver(bitbucket_url, "bitbucket", config)
 }
 
 pub fn get_permission_resolver_compass() -> CompassPermissionResolver {
     CompassPermissionResolver::new()
 }
 
-pub fn get_permission_resolver(url: &str) -> (PermissionHashMap, HashMap<String, Regex>) {
+pub fn get_permission_resolver(
+    url: &str,
+    cache_key: &str,
+    config: &CacheConfig,
+) -> (PermissionHashMap, HashMap<String, Regex>) {
     let mut endpoint_map: PermissionHashMap = HashMap::default();
     let mut endpoint_regex: HashMap<String, Regex> = HashMap::default();
 
-    get_permisions_for(url, &mut endpoint_map, &mut endpoint_regex);
+    if config.use_cache() {
+        let cache = PermissionsCache::new(config.clone());
+        if cache.read(cache_key, &mut endpoint_map, &mut endpoint_regex) {
+            debug!("Cache hit for {}", cache_key);
+        } else {
+            get_permisions_for(url, &mut endpoint_map, &mut endpoint_regex);
+            cache.set(cache_key, &endpoint_map, &endpoint_regex);
+        }
+    } else {
+        get_permisions_for(url, &mut endpoint_map, &mut endpoint_regex);
+    }
 
     (endpoint_map, endpoint_regex)
 }
@@ -284,7 +333,7 @@ mod test {
 
     #[test]
     fn test_resolving_permssion_basic() {
-        let (permission_map, regex_map) = get_permission_resolver_jira();
+        let (permission_map, regex_map) = get_permission_resolver_jira(&CacheConfig::default());
         let url = "/rest/api/3/issue/27/attachments";
         let request_type = RequestType::Post;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
@@ -302,7 +351,8 @@ mod test {
 
     #[test]
     fn test_resolving_permssion_end_var() {
-        let (permission_map, regex_map) = get_permission_resolver_confluence();
+        let (permission_map, regex_map) =
+            get_permission_resolver_confluence(&CacheConfig::default());
         let url = "/wiki/rest/api/relation/1/from/1/2/to/3/4";
         let request_type = RequestType::Get;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
@@ -318,7 +368,7 @@ mod test {
 
     #[test]
     fn test_resolving_permssion_no_var() {
-        let (permission_map, regex_map) = get_permission_resolver_jira();
+        let (permission_map, regex_map) = get_permission_resolver_jira(&CacheConfig::default());
         let url = "/rest/api/3/issue/archive";
         let request_type = RequestType::Post;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
@@ -333,7 +383,8 @@ mod test {
 
     #[test]
     fn test_get_organization() {
-        let (permission_map, regex_map) = get_permission_resolver_jira_service_management();
+        let (permission_map, regex_map) =
+            get_permission_resolver_jira_service_management(&CacheConfig::default());
         let url = "/rest/servicedeskapi/organization";
         let request_type = RequestType::Get;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
@@ -347,7 +398,8 @@ mod test {
 
     #[test]
     fn test_resolving_default_reviewer_check_permissions() {
-        let (permission_map, regex_map) = get_permission_resolver_bitbucket();
+        let (permission_map, regex_map) =
+            get_permission_resolver_bitbucket(&CacheConfig::default());
         let url = "/repositories/mockworkspace/mockreposlug/default-reviewers/jcg";
         let request_type = RequestType::Get;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
@@ -364,7 +416,8 @@ mod test {
 
     #[test]
     fn test_resolving_default_reviewer_add_permissions() {
-        let (permission_map, regex_map) = get_permission_resolver_bitbucket();
+        let (permission_map, regex_map) =
+            get_permission_resolver_bitbucket(&CacheConfig::default());
         let url = "/repositories/mockworkspace/mockreposlug/default-reviewers/jcg";
         let request_type = RequestType::Put;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
@@ -381,7 +434,8 @@ mod test {
 
     #[test]
     fn test_resolving_repositories_workspace_permissions() {
-        let (permission_map, regex_map) = get_permission_resolver_bitbucket();
+        let (permission_map, regex_map) =
+            get_permission_resolver_bitbucket(&CacheConfig::default());
         let url = "/repositories/asecurityteam";
         let request_type = RequestType::Get;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
@@ -398,7 +452,8 @@ mod test {
 
     #[test]
     fn test_resolving_branch_restriction_permissions() {
-        let (permission_map, regex_map) = get_permission_resolver_bitbucket();
+        let (permission_map, regex_map) =
+            get_permission_resolver_bitbucket(&CacheConfig::default());
         let url = "/repositories/asecurityteam/mock/branch-restrictions";
         let request_type = RequestType::Get;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
@@ -415,7 +470,8 @@ mod test {
 
     #[test]
     fn test_get_issues_for_epic() {
-        let (permission_map, regex_map) = get_permission_resolver_jira_software();
+        let (permission_map, regex_map) =
+            get_permission_resolver_jira_software(&CacheConfig::default());
         let url = "/rest/agile/1.0/sprint/23";
         let request_type = RequestType::Get;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
@@ -429,7 +485,8 @@ mod test {
 
     #[test]
     fn test_get_all_boards() {
-        let (permission_map, regex_map) = get_permission_resolver_jira_software();
+        let (permission_map, regex_map) =
+            get_permission_resolver_jira_software(&CacheConfig::default());
         let url = "/rest/agile/1.0/board";
         let request_type = RequestType::Get;
         let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
