@@ -95,20 +95,6 @@ pub fn add_elements_to_intrinsic_struct(value: &Value, args: &mut Vec<String>) {
     }
 }
 
-pub fn trnaslate_request_type(request_type: Option<&str>) -> RequestType {
-    if let Some(request_type) = request_type {
-        match request_type {
-            "PATCH" => RequestType::Patch,
-            "PUT" => RequestType::Put,
-            "DELETE" => RequestType::Delete,
-            "POST" => RequestType::Post,
-            _ => RequestType::Get,
-        }
-    } else {
-        RequestType::Get
-    }
-}
-
 pub fn return_combinations_phi(exprs: Vec<Value>) -> Value {
     let exprs: Vec<Vec<String>> = exprs
         .iter()
