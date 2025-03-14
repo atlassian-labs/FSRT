@@ -21,3 +21,5 @@ ureq = { version = "2.9.6", features = ["json", "charset"] }
 
 [dev-dependencies]
 pretty_assertions.workspace = true
+filetime = "0.2"
+tempfile = "3.2"
