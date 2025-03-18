@@ -195,17 +195,17 @@ pub fn get_permission_resolver(
         if cache.read(cache_key, &mut endpoint_map, &mut endpoint_regex) {
             debug!("Cache hit for {}", cache_key);
         } else {
-            get_permisions_for(url, &mut endpoint_map, &mut endpoint_regex);
+            get_permissions_for(url, &mut endpoint_map, &mut endpoint_regex);
             cache.set(cache_key, &endpoint_map, &endpoint_regex);
         }
     } else {
-        get_permisions_for(url, &mut endpoint_map, &mut endpoint_regex);
+        get_permissions_for(url, &mut endpoint_map, &mut endpoint_regex);
     }
 
     (endpoint_map, endpoint_regex)
 }
 
-pub fn get_permisions_for(
+pub fn get_permissions_for(
     url: &str,
     endpoint_map_classic: &mut PermissionHashMap,
     endpoint_regex: &mut HashMap<String, Regex>,
@@ -224,7 +224,7 @@ pub fn get_permisions_for(
                 });
         }
     } else {
-        warn!("Failed to retreive the permission json");
+        warn!("Failed to retrieve the permission json");
     }
 }
 

@@ -1,7 +1,7 @@
 use regex::Regex;
 use std::collections::HashMap;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::permissions_resolver::PermissionHashMap;
@@ -12,37 +12,33 @@ use tracing::debug;
 
 const CACHE_EXPIRATION: Duration = Duration::from_secs(60 * 60 * 24 * 7); // 1 week
 
-fn default_cache_path() -> PathBuf {
-    if let Ok(home) = env::var("HOME") {
-        PathBuf::from(home).join(".cache/fsrt")
-    } else {
-        PathBuf::new()
-    }
+fn default_cache_path() -> Option<PathBuf> {
+    env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache/fsrt"))
 }
 
 /// Struct to hold cache-related settings
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct CacheConfig {
-    use_cache: bool,
     cache_path: Option<PathBuf>,
-    ttl: Duration,
 }
 
 impl CacheConfig {
     pub fn new(use_cache: bool, cache_path: Option<PathBuf>) -> Self {
         CacheConfig {
-            use_cache,
-            cache_path: Some(cache_path.unwrap_or_else(default_cache_path)),
-            ttl: CACHE_EXPIRATION,
+            cache_path: if use_cache {
+                cache_path.or_else(default_cache_path)
+            } else {
+                None
+            },
         }
     }
 
     pub fn use_cache(&self) -> bool {
-        self.use_cache
+        self.cache_path.is_some()
     }
 
-    pub fn cache_path(&self) -> &PathBuf {
-        self.cache_path.as_ref().unwrap()
+    pub fn cache_path(&self) -> Option<&Path> {
+        self.cache_path.as_deref()
     }
 }
 
@@ -55,22 +51,24 @@ impl PermissionsCache {
         PermissionsCache { config }
     }
 
-    fn get_cache_path(&self, key: &str) -> PathBuf {
-        let mut path = self.config.cache_path().clone();
-        path.push(key);
-        path
+    fn get_cache_path(&self, key: &str) -> Option<PathBuf> {
+        self.config.cache_path().map(|path| {
+            let mut full_path = path.to_path_buf();
+            full_path.push(key);
+            full_path
+        })
     }
 
     fn is_cache_valid(&self, path: &PathBuf) -> bool {
         if let Ok(metadata) = fs::metadata(path) {
             if let Ok(modified) = metadata.modified() {
                 if let Ok(duration) = modified.elapsed() {
-                    if duration < self.config.ttl {
+                    if duration < CACHE_EXPIRATION {
                         return true;
                     } else {
                         eprintln!(
                             "Cache file expired: {:?}, duration {:?} is greater than ttl {:?}",
-                            path, duration, self.config.ttl
+                            path, duration, CACHE_EXPIRATION
                         );
                     }
                 } else {
@@ -94,8 +92,10 @@ impl PermissionsCache {
         if !self.config.use_cache() {
             return false;
         }
-
-        let cache_path = self.get_cache_path(key).with_extension("json");
+        let cache_path = match self.get_cache_path(key) {
+            Some(path) => path.with_extension("json"),
+            None => return false,
+        };
 
         if !self.is_cache_valid(&cache_path) {
             return false;
@@ -133,8 +133,10 @@ impl PermissionsCache {
         if !self.config.use_cache() {
             return false;
         }
-
-        let cache_path = self.get_cache_path(key).with_extension("json");
+        let cache_path = match self.get_cache_path(key) {
+            Some(path) => path.with_extension("json"),
+            None => return false,
+        };
 
         let cache_dir = cache_path.parent().unwrap();
         if fs::create_dir_all(cache_dir).is_err() {
@@ -219,7 +221,10 @@ mod tests {
         assert!(cache.set("test_key", &permission_map, &regex_map));
 
         // Manually set the cache file's modified time to be expired
-        let cache_file_path = cache.get_cache_path("test_key").with_extension("json");
+        let cache_file_path = cache
+            .get_cache_path("test_key")
+            .unwrap()
+            .with_extension("json");
         let one_week_ago = std::time::SystemTime::now() - CACHE_EXPIRATION - Duration::from_secs(1);
         filetime::set_file_mtime(
             &cache_file_path,
@@ -235,9 +240,7 @@ mod tests {
 
     #[test]
     fn test_cache_disabled() {
-        let temp_dir = tempdir().unwrap();
-        let cache_path = temp_dir.path().to_path_buf();
-        let config = CacheConfig::new(false, Some(cache_path.clone()));
+        let config = CacheConfig::new(false, None);
 
         let mut permission_map: PermissionHashMap = HashMap::new();
         permission_map.insert(
@@ -248,7 +251,7 @@ mod tests {
         let mut regex_map: HashMap<String, Regex> = HashMap::new();
         regex_map.insert("test".to_string(), Regex::new(r"^\d+$").unwrap());
 
-        let cache = PermissionsCache::new(config.clone());
+        let cache = PermissionsCache::new(config);
 
         // Test writing to cache should fail because cache is disabled
         assert!(!cache.set("test_key", &permission_map, &regex_map));
