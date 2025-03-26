@@ -6,7 +6,7 @@ use crate::{
 use regex::Regex;
 use serde::Deserialize;
 use std::{cmp::Reverse, collections::HashMap, hash::Hash, str::FromStr};
-use tracing::{debug, warn};
+use tracing::debug;
 
 pub type PermissionHashMap = HashMap<(String, RequestType), Vec<String>>;
 
@@ -190,41 +190,64 @@ pub fn get_permission_resolver(
     let mut endpoint_map: PermissionHashMap = HashMap::default();
     let mut endpoint_regex: HashMap<String, Regex> = HashMap::default();
 
-    if config.use_cache() {
-        let cache = PermissionsCache::new(config.clone());
-        if cache.read(cache_key, &mut endpoint_map, &mut endpoint_regex) {
-            debug!("Cache hit for {}", cache_key);
-        } else {
-            get_permissions_for(url, &mut endpoint_map, &mut endpoint_regex);
-            cache.set(cache_key, &endpoint_map, &endpoint_regex);
-        }
-    } else {
-        get_permissions_for(url, &mut endpoint_map, &mut endpoint_regex);
-    }
+    get_permissions_for(
+        url,
+        cache_key,
+        config,
+        &mut endpoint_map,
+        &mut endpoint_regex,
+    );
 
     (endpoint_map, endpoint_regex)
 }
 
 pub fn get_permissions_for(
     url: &str,
+    cache_key: &str,
+    config: &CacheConfig,
     endpoint_map_classic: &mut PermissionHashMap,
     endpoint_regex: &mut HashMap<String, Regex>,
 ) {
-    if let Result::Ok(response) = ureq::get(url).call() {
-        let data: SwaggerReponse = response.into_json().unwrap();
-        for (key, endpoint_data) in &data.paths {
-            let endpoint_data = get_request_type(endpoint_data, key);
-            endpoint_data
-                .into_iter()
-                .for_each(|(key, request, permissions)| {
-                    let regex = Regex::new(&find_regex_for_endpoint(&key)).unwrap();
+    let cache = PermissionsCache::new(config.clone());
 
-                    endpoint_regex.insert(key.clone(), regex);
-                    endpoint_map_classic.insert((key, request), permissions);
-                });
+    if config.use_cache() {
+        if let Some(raw_response) = cache.read(cache_key) {
+            debug!("Cache hit for {}", cache_key);
+            let data: SwaggerReponse = serde_json::from_str(&raw_response).unwrap();
+            parse_swagger_response(data, endpoint_map_classic, endpoint_regex);
+            return;
         }
-    } else {
-        warn!("Failed to retrieve the permission json");
+    }
+
+    ureq::get(url)
+        .call()
+        .map_err(|e| panic!("Failed to retrieve the permission json: {}", e)) // Handle fetch failure
+        .and_then(|response| {
+            let raw_response = response.into_string().unwrap();
+            let data: SwaggerReponse = serde_json::from_str(&raw_response).unwrap();
+            parse_swagger_response(data, endpoint_map_classic, endpoint_regex);
+            cache
+                .set(cache_key, &raw_response)
+                .map_err(|e| panic!("Failed to write to cache: {}", e))
+        })
+        .unwrap();
+}
+
+fn parse_swagger_response(
+    response: SwaggerReponse,
+    endpoint_map_classic: &mut PermissionHashMap,
+    endpoint_regex: &mut HashMap<String, Regex>,
+) {
+    for (key, endpoint_data) in response.paths {
+        let endpoint_data = get_request_type(&endpoint_data, &key);
+        endpoint_data
+            .into_iter()
+            .for_each(|(key, request, permissions)| {
+                let regex = Regex::new(&find_regex_for_endpoint(&key)).unwrap();
+
+                endpoint_regex.insert(key.clone(), regex);
+                endpoint_map_classic.insert((key, request), permissions);
+            });
     }
 }
 

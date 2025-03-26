@@ -1,13 +1,8 @@
-use regex::Regex;
-use std::collections::HashMap;
-use std::env;
+use std::fs;
+use std::io::Error;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-
-use crate::permissions_resolver::PermissionHashMap;
-use crate::serde::{SerializablePermissionHashMap, ToStringMap};
-use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::{env, io};
 use tracing::debug;
 
 const CACHE_EXPIRATION: Duration = Duration::from_secs(60 * 60 * 24 * 7); // 1 week
@@ -83,88 +78,41 @@ impl PermissionsCache {
         false
     }
 
-    pub fn read(
-        &self,
-        key: &str,
-        permission_map: &mut PermissionHashMap,
-        regex_map: &mut HashMap<String, Regex>,
-    ) -> bool {
-        if !self.config.use_cache() {
-            return false;
-        }
-        let cache_path = match self.get_cache_path(key) {
-            Some(path) => path.with_extension("json"),
-            None => return false,
-        };
+    pub fn read(&self, key: &str) -> Option<String> {
+        let cache_path = self.get_cache_path(key)?.with_extension("json");
 
         if !self.is_cache_valid(&cache_path) {
-            return false;
+            return None;
         }
         debug!("cache_path: {:?}", cache_path);
 
-        let mut file = match File::open(&cache_path) {
-            Ok(file) => file,
-            Err(_) => return false,
-        };
-
-        let mut contents = String::new();
-        if file.read_to_string(&mut contents).is_err() {
-            return false;
-        }
-
-        match serde_json::from_str::<(SerializablePermissionHashMap, HashMap<String, String>)>(
-            &contents,
-        ) {
-            Ok((perm_map, reg_map)) => {
-                *permission_map = perm_map.into();
-                *regex_map = HashMap::<String, Regex>::from_string_map(reg_map);
-                true
-            }
-            Err(_) => false,
-        }
+        fs::read_to_string(&cache_path).ok()
     }
 
-    pub fn set(
-        &self,
-        key: &str,
-        permission_map: &PermissionHashMap,
-        regex_map: &HashMap<String, Regex>,
-    ) -> bool {
+    pub fn set(&self, key: &str, response: &str) -> io::Result<()> {
         if !self.config.use_cache() {
-            return false;
-        }
-        let cache_path = match self.get_cache_path(key) {
-            Some(path) => path.with_extension("json"),
-            None => return false,
-        };
-
-        let cache_dir = cache_path.parent().unwrap();
-        if fs::create_dir_all(cache_dir).is_err() {
-            return false;
+            return Ok(()); // Ignore caching and return success
         }
 
-        let serializable_perm_map: SerializablePermissionHashMap = permission_map.into();
-        let serializable_regex_map = regex_map.to_string_map();
-        let data =
-            serde_json::to_string_pretty(&(serializable_perm_map, serializable_regex_map)).unwrap();
+        let cache_path = self
+            .get_cache_path(key)
+            .map(|path| path.with_extension("json"))
+            .ok_or_else(|| Error::new(io::ErrorKind::Other, "Invalid cache path"))?;
 
-        let mut file = match File::create(&cache_path) {
-            Ok(file) => file,
-            Err(_) => return false,
-        };
+        let cache_dir = cache_path
+            .parent()
+            .ok_or_else(|| Error::new(io::ErrorKind::Other, "Failed to get cache directory"))?;
 
-        if file.write_all(data.as_bytes()).is_err() {
-            return false;
-        }
+        fs::create_dir_all(cache_dir)?;
+        fs::write(&cache_path, response)?;
 
-        true
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::permissions_resolver::{PermissionHashMap, RequestType};
     use filetime;
     use tempfile::tempdir;
 
@@ -173,31 +121,16 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let cache_path = temp_dir.path().to_path_buf();
         let config = CacheConfig::new(true, Some(cache_path.clone()));
-
-        let mut permission_map: PermissionHashMap = HashMap::new();
-        permission_map.insert(
-            ("/test/path".to_string(), RequestType::Get),
-            vec!["read:test".to_string()],
-        );
-
-        let mut regex_map: HashMap<String, Regex> = HashMap::new();
-        regex_map.insert("test".to_string(), Regex::new(r"^\d+$").unwrap());
-
+        let response = r#"{"paths":{}}"#.to_string();
         let cache = PermissionsCache::new(config.clone());
 
         // Test writing to cache
-        assert!(cache.set("test_key", &permission_map, &regex_map));
+        assert!(cache.set("test_key", &response).is_ok());
 
         // Test reading from cache
-        let mut read_permission_map: PermissionHashMap = HashMap::new();
-        let mut read_regex_map: HashMap<String, Regex> = HashMap::new();
-        assert!(cache.read("test_key", &mut read_permission_map, &mut read_regex_map));
+        let read_response = cache.read("test_key").unwrap();
 
-        assert_eq!(permission_map, read_permission_map);
-        assert_eq!(regex_map.len(), read_regex_map.len());
-        for (key, regex) in regex_map {
-            assert_eq!(regex.as_str(), read_regex_map.get(&key).unwrap().as_str());
-        }
+        assert_eq!(response, read_response);
     }
 
     #[test]
@@ -205,20 +138,11 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let cache_path = temp_dir.path().to_path_buf();
         let config = CacheConfig::new(true, Some(cache_path.clone()));
-
-        let mut permission_map: PermissionHashMap = HashMap::new();
-        permission_map.insert(
-            ("/test/path".to_string(), RequestType::Get),
-            vec!["read:test".to_string()],
-        );
-
-        let mut regex_map: HashMap<String, Regex> = HashMap::new();
-        regex_map.insert("test".to_string(), Regex::new(r"^\d+$").unwrap());
-
+        let response = r#"{"paths":{}}"#.to_string();
         let cache = PermissionsCache::new(config.clone());
 
         // Test writing to cache
-        assert!(cache.set("test_key", &permission_map, &regex_map));
+        assert!(cache.set("test_key", &response).is_ok());
 
         // Manually set the cache file's modified time to be expired
         let cache_file_path = cache
@@ -233,32 +157,18 @@ mod tests {
         .unwrap();
 
         // Test reading from cache should fail due to expiration
-        let mut read_permission_map: PermissionHashMap = HashMap::new();
-        let mut read_regex_map: HashMap<String, Regex> = HashMap::new();
-        assert!(!cache.read("test_key", &mut read_permission_map, &mut read_regex_map));
+        assert!(cache.read("test_key").is_none());
     }
 
     #[test]
     fn test_cache_disabled() {
         let config = CacheConfig::new(false, None);
-
-        let mut permission_map: PermissionHashMap = HashMap::new();
-        permission_map.insert(
-            ("/test/path".to_string(), RequestType::Get),
-            vec!["read:test".to_string()],
-        );
-
-        let mut regex_map: HashMap<String, Regex> = HashMap::new();
-        regex_map.insert("test".to_string(), Regex::new(r"^\d+$").unwrap());
-
+        let response = r#"{"paths":{}}"#.to_string();
         let cache = PermissionsCache::new(config);
 
-        // Test writing to cache should fail because cache is disabled
-        assert!(!cache.set("test_key", &permission_map, &regex_map));
-
+        // Test writing to cache should return ok even the cache is disabled
+        assert!(cache.set("test_key", &response).is_ok());
         // Test reading from cache should fail because cache is disabled
-        let mut read_permission_map: PermissionHashMap = HashMap::new();
-        let mut read_regex_map: HashMap<String, Regex> = HashMap::new();
-        assert!(!cache.read("test_key", &mut read_permission_map, &mut read_regex_map));
+        assert!(cache.read("test_key").is_none());
     }
 }
