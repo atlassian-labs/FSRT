@@ -354,10 +354,7 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 }
 
 fn check_perm(perm: &str) -> bool {
-    match perm {
-        "store::app" | "report:personal-data" => false,
-        _ => true,
-    }
+    !matches!(perm, "store::app" | "report:personal-data")
 }
 
 #[tracing::instrument(level = "debug")]
