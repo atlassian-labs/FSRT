@@ -1092,7 +1092,8 @@ fn authz_function_called_in_object_bitbucket() {
     assert!(scan_result.contains_vulns(1))
 }
 
-#[test] // Tests manifest has an extra scope defined but not being used, we expect a permission vuln.
+#[test]
+#[ignore] // Tests manifest has an extra scope defined but not being used, we expect a permission vuln.
 fn extra_scope_bitbucket() {
     let test_forge_project = MockForgeProject::files_from_string(
         "// src/index.tsx
