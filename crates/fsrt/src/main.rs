@@ -11,7 +11,7 @@ use forge_permission_resolver::{
         get_permission_resolver_bitbucket, get_permission_resolver_compass,
         get_permission_resolver_confluence, get_permission_resolver_jira,
         get_permission_resolver_jira_any, get_permission_resolver_jira_service_management,
-        get_permission_resolver_jira_software,
+        get_permission_resolver_jira_software, PermMap,
     },
 };
 use glob::glob;
@@ -89,6 +89,10 @@ pub struct Args {
     /// Path to store or load cached permissions. If not provided, defaults to `~/.cache/fsrt`.
     #[arg(long)]
     cached_permissions_path: Option<PathBuf>,
+
+    /// List of scanners to enable. Defaults to all of them.
+    #[arg(long)]
+    scanners: Option<String>,
 
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the source code is located in `src/`
@@ -349,6 +353,13 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
         })
 }
 
+fn check_perm(perm: &str) -> bool {
+    match perm {
+        "store::app" | "report:personal-data" => false,
+        _ => true,
+    }
+}
+
 #[tracing::instrument(level = "debug")]
 pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
@@ -358,8 +369,30 @@ pub(crate) fn scan_directory<'a>(
 ) -> Result<Report> {
     let paths = project.get_paths();
     let manifest = project.get_manifest();
-    let mut proj =
-        project.with_files_and_sourceroot(Path::new("src"), paths.clone(), secret_packages);
+    let requested_permissions = manifest.permissions;
+    let permissions_declared = requested_permissions
+        .scopes
+        .iter()
+        .map(|s| s.replace('\"', ""))
+        .filter(|s| check_perm(s))
+        .collect::<Vec<_>>();
+    let permset = permissions_declared
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<HashSet<_>>();
+    let mut perm_map = PermMap::new(&permset);
+    let contains_remote_auth_token = manifest
+        .remotes
+        .unwrap_or_default()
+        .into_iter()
+        .any(|remote| remote.contains_auth());
+
+    let mut proj = project.with_files_and_sourceroot(
+        Path::new("src"),
+        paths.clone(),
+        secret_packages,
+        &mut perm_map,
+    );
 
     let name = manifest.app.name.unwrap_or_default();
 
@@ -377,19 +410,7 @@ pub(crate) fn scan_directory<'a>(
         warn!("Unable to scan due to transpiled async");
         Err(Error::TranspiledAsyncError)?;
     }
-
-    let requested_permissions = manifest.permissions;
-    let permission_scopes = requested_permissions.scopes;
-    let contains_remote_auth_token = manifest
-        .remotes
-        .unwrap_or_default()
-        .into_iter()
-        .any(|remote| remote.contains_auth());
-
     let run_permission_checker = !transpiled_async;
-
-    let permissions_declared: HashSet<String> =
-        HashSet::from_iter(permission_scopes.iter().map(|s| s.replace('\"', "")));
 
     let funcrefs = manifest
         .modules
@@ -415,12 +436,12 @@ pub(crate) fn scan_directory<'a>(
         std::process::exit(0);
     }
 
-    let permissions = permissions_declared.into_iter().collect::<Vec<_>>();
+    let permissions = permissions_declared
+        .into_iter()
+        .filter(|s| check_perm(s))
+        .collect::<Vec<_>>();
 
-    let config = CacheConfig::new(
-        opts.cached_permissions,
-        opts.cached_permissions_path.clone(),
-    );
+    let config = CacheConfig::new(true, opts.cached_permissions_path.clone());
 
     let (jira_any_permission_resolver, jira_any_regex_map) =
         get_permission_resolver_jira_any(&config);
@@ -434,6 +455,8 @@ pub(crate) fn scan_directory<'a>(
     let (bitbucket_permission_resolver, bitbucket_regex_map) =
         get_permission_resolver_bitbucket(&config);
     let compass_permission_resolver = get_permission_resolver_compass();
+
+    let perm_map = PermMap::new(&permissions.iter().map(String::as_str).collect());
 
     let mut definition_analysis_interp = Interp::<DefinitionAnalysisRunner>::new(
         &proj.env,
@@ -740,8 +763,15 @@ pub(crate) fn scan_directory<'a>(
 
         final_perms = &final_perms - &oauth_scopes;
     }
+    debug!("perms: {:?}", perm_map.unused_scopes());
 
-    if run_permission_checker && !final_perms.is_empty() {
+    if run_permission_checker
+        && !final_perms.is_empty()
+        && perm_map.unused_scopes() != perm_map.declared_scopes()
+    {
+        let final_perms = final_perms
+            .into_iter()
+            .filter(|&s| perm_map.unused_scopes().iter().any(|unused| unused == s));
         reporter.add_vulnerabilities([PermissionVuln::new(final_perms)]);
     }
 

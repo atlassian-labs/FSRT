@@ -1,9 +1,10 @@
-use std::fs;
-use std::io::Error;
+use crate::permissions_resolver::SwaggerResponse;
+use std::fs::{self, File};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{env, io};
-use tracing::debug;
+use tracing::{debug, warn};
 
 const CACHE_EXPIRATION: Duration = Duration::from_secs(60 * 60 * 24 * 7); // 1 week
 
@@ -12,7 +13,7 @@ fn default_cache_path() -> Option<PathBuf> {
 }
 
 /// Struct to hold cache-related settings
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheConfig {
     cache_path: Option<PathBuf>,
 }
@@ -37,6 +38,55 @@ impl CacheConfig {
     }
 }
 
+impl Default for CacheConfig {
+    fn default() -> Self {
+        CacheConfig {
+            cache_path: default_cache_path(),
+        }
+    }
+}
+
+
+// ...existing code...
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Service {
+    JiraSoftware,
+    JiraServiceManagement,
+    Jira,
+    Confluence,
+    Bitbucket,
+}
+
+impl Service {
+    pub fn url(&self) -> &'static str {
+        match self {
+            Service::JiraSoftware => {
+                "https://developer.atlassian.com/cloud/jira/software/swagger.v3.json"
+            }
+            Service::JiraServiceManagement => {
+                "https://developer.atlassian.com/cloud/jira/service-desk/swagger.v3.json"
+            }
+            Service::Jira => {
+                "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json"
+            }
+            Service::Confluence => {
+                "https://developer.atlassian.com/cloud/confluence/swagger.v3.json"
+            }
+            Service::Bitbucket => "https://api.bitbucket.org/swagger.json",
+        }
+    }
+    pub fn filename(&self) -> &'static str {
+        match self {
+            Service::JiraSoftware => "jira_software.json",
+            Service::JiraServiceManagement => "jira_service_management.json",
+            Service::Jira => "jira.json",
+            Service::Confluence => "confluence.json",
+            Service::Bitbucket => "bitbucket.json",
+        }
+    }
+}
+#[derive(Default)]
 pub struct PermissionsCache {
     config: CacheConfig,
 }
@@ -78,6 +128,45 @@ impl PermissionsCache {
         false
     }
 
+    pub fn service_api(&self, service: Service) -> SwaggerResponse {
+        let url = service.url();
+        let filename = service.filename();
+        if self.config.use_cache() {
+            if let Some(cache_path) = self.get_cache_path(filename) {
+                if self.is_cache_valid(&cache_path) {
+                    if let Ok(file) = File::open(&cache_path) {
+                        if let Ok(swagger_response) = serde_json::from_reader(BufReader::new(file))
+                        {
+                            return swagger_response;
+                        }
+                    }
+                }
+            }
+        }
+        let resp = ureq::get(url)
+            .call()
+            .unwrap_or_else(|err| panic!("Failed to fetch swagger url: {url}. error: {err}"));
+        let raw = resp
+            .into_string()
+            .unwrap_or_else(|err| panic!("Failed to parse JSON response from {url}. error: {err}"));
+        let swagger: SwaggerResponse = serde_json::from_str(&raw)
+            .unwrap_or_else(|err| panic!("Failed to deserialize JSON response: {err}"));
+        if self.config.use_cache() {
+            if let Some(cache_path) = self.get_cache_path(filename) {
+                let cache_dir = cache_path.parent().unwrap();
+                if fs::create_dir_all(cache_dir).is_ok() {
+                    if let Err(e) = fs::write(&cache_path, raw) {
+                        warn!(
+                            "Failed to write cache file: {:?}, error: {:?}",
+                            cache_path, e
+                        );
+                    }
+                }
+            }
+        }
+        swagger
+    }
+
     pub fn read(&self, key: &str) -> Option<String> {
         let cache_path = self.get_cache_path(key)?.with_extension("json");
 
@@ -97,11 +186,11 @@ impl PermissionsCache {
         let cache_path = self
             .get_cache_path(key)
             .map(|path| path.with_extension("json"))
-            .ok_or_else(|| Error::new(io::ErrorKind::Other, "Invalid cache path"))?;
+            .ok_or_else(|| io::Error::other("Invalid cache path"))?;
 
         let cache_dir = cache_path
             .parent()
-            .ok_or_else(|| Error::new(io::ErrorKind::Other, "Failed to get cache directory"))?;
+            .ok_or_else(|| io::Error::other("Failed to get cache directory"))?;
 
         fs::create_dir_all(cache_dir)?;
         fs::write(&cache_path, response)?;

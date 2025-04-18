@@ -1,17 +1,23 @@
 use crate::{
-    permissions_cache::{CacheConfig, PermissionsCache},
+    permissions_cache::{CacheConfig, PermissionsCache, Service},
     permissions_resolver_compass::CompassPermissionResolver,
 };
 
 use regex::Regex;
 use serde::Deserialize;
-use std::{cmp::Reverse, collections::HashMap, hash::Hash, str::FromStr};
+use std::{
+    cmp::Reverse,
+    collections::{HashMap, HashSet},
+    hash::Hash,
+    mem,
+    str::FromStr,
+};
 use tracing::debug;
 
 pub type PermissionHashMap = HashMap<(String, RequestType), Vec<String>>;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct SwaggerReponse {
+pub struct SwaggerResponse {
     #[serde(default)]
     paths: HashMap<String, Endpoint>,
 }
@@ -88,6 +94,217 @@ impl FromStr for RequestType {
 pub enum PermissionType {
     Classic = 0,
     Granular = 1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct EndpointPerms {
+    get: Vec<String>,
+    put: Vec<String>,
+    post: Vec<String>,
+    delete: Vec<String>,
+    patch: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PermMap {
+    // path id -> matcher, perms
+    paths: Vec<(Regex, EndpointPerms)>,
+    // scope -> possible matching urls
+    possible_urls: HashMap<String, Vec<u32>>,
+    declared_scopes: Vec<String>,
+    unused_scopes: Vec<String>,
+}
+
+impl EndpointPerms {
+    fn is_empty(&self) -> bool {
+        self.get.is_empty()
+            && self.put.is_empty()
+            && self.post.is_empty()
+            && self.delete.is_empty()
+            && self.patch.is_empty()
+    }
+
+    fn perms(&self) -> impl Iterator<Item = &str> + '_ {
+        self.get
+            .iter()
+            .chain(self.put.iter())
+            .chain(self.post.iter())
+            .chain(self.delete.iter())
+            .chain(self.patch.iter())
+            .map(String::as_str)
+    }
+}
+
+impl RequestDetails {
+    fn matching_paths(self, scopes: &HashSet<&str>) -> Vec<String> {
+        let mut permissions = self
+            .permission
+            .into_iter()
+            .flat_map(|p| p.scopes)
+            .filter(|s| scopes.contains(&**s))
+            .collect::<Vec<_>>();
+        for perm in self.security.into_iter().flat_map(|s| s.oauth2) {
+            if scopes.contains(&*perm) && !permissions.contains(&perm) {
+                permissions.push(perm);
+            }
+        }
+        permissions
+    }
+}
+
+impl PermMap {
+    pub fn new(scopes: &HashSet<&str>) -> Self {
+        let permissions_cache = PermissionsCache::default();
+        let jira_software = permissions_cache.service_api(Service::JiraSoftware);
+        let jira_service_management = permissions_cache.service_api(Service::JiraServiceManagement);
+        let jira = permissions_cache.service_api(Service::Jira);
+        let confluence = permissions_cache.service_api(Service::Confluence);
+        let bitbucket = permissions_cache.service_api(Service::Bitbucket);
+        Self::with_iter(
+            jira_software
+                .paths
+                .into_iter()
+                .chain(jira_service_management.paths)
+                .chain(jira.paths)
+                .chain(confluence.paths)
+                .chain(bitbucket.paths),
+            scopes,
+        )
+    }
+
+    #[inline]
+    pub fn declared_scopes(&self) -> &[String] {
+        &self.declared_scopes
+    }
+
+    #[inline]
+    pub fn unused_scopes(&self) -> &[String] {
+        &self.unused_scopes
+    }
+
+    #[inline]
+    pub fn clear_scopes(&mut self) {
+        self.unused_scopes.clear();
+    }
+
+    pub fn clear_readonly_scopes(&mut self) {
+        self.unused_scopes.retain(|s| s.contains("write:"));
+    }
+
+    fn with_iter(
+        resp: impl IntoIterator<Item = (String, Endpoint)>,
+        scopes: &HashSet<&str>,
+    ) -> Self {
+        let declared_scopes = scopes.iter().map(|&s| s.to_owned()).collect::<Vec<_>>();
+        let unused_scopes = declared_scopes.clone();
+        let mut this = Self {
+            paths: vec![],
+            possible_urls: scopes
+                .iter()
+                .map(|&s| (s.to_owned(), Vec::<u32>::new()))
+                .collect::<HashMap<_, Vec<_>>>(),
+            declared_scopes,
+            unused_scopes,
+        };
+        for (path, endpoint) in resp {
+            let mut endpoint_perms = EndpointPerms::default();
+            if let Some(get) = endpoint.get {
+                endpoint_perms.get = get.matching_paths(scopes);
+            }
+            if let Some(put) = endpoint.put {
+                endpoint_perms.put = put.matching_paths(scopes);
+            }
+            if let Some(post) = endpoint.post {
+                endpoint_perms.post = post.matching_paths(scopes);
+            }
+            if let Some(delete) = endpoint.delete {
+                endpoint_perms.delete = delete.matching_paths(scopes);
+            }
+            if let Some(patch) = endpoint.patch {
+                endpoint_perms.patch = patch.matching_paths(scopes);
+            }
+            if endpoint_perms.is_empty() {
+                continue;
+            }
+            let regex = Regex::new(&find_regex_for_endpoint(&path)).unwrap();
+            this.paths.push((regex, endpoint_perms));
+        }
+        this.paths
+            .sort_unstable_by_key(|(regex, _)| Reverse(regex.as_str().len()));
+        for (idx, endpoint_perms) in this.paths.iter().map(|(_, perms)| perms).enumerate() {
+            for scope in endpoint_perms.perms() {
+                this.possible_urls.get_mut(scope).unwrap().push(idx as u32);
+            }
+        }
+        this
+    }
+
+    pub fn use_scope(&mut self, url: String, request: RequestType) {
+        let mut unused_scopes = mem::take(&mut self.unused_scopes);
+        for scope in self.matching_scopes(url, request) {
+            unused_scopes.retain(|s| s != scope);
+        }
+        self.unused_scopes = unused_scopes;
+    }
+
+    pub fn use_all_scopes(&mut self, url: String) {
+        let mut unused_scopes = mem::take(&mut self.unused_scopes);
+        for scope in self.all_scopes_for_url(url) {
+            unused_scopes.retain(|s| s != scope);
+        }
+        self.unused_scopes = unused_scopes;
+    }
+
+    pub fn matching_scopes(
+        &self,
+        mut url: String,
+        request_type: RequestType,
+    ) -> impl Iterator<Item = &str> + '_ {
+        url.push('-');
+        self.paths
+            .iter()
+            .flat_map(move |(regex, endpoint_perms)| {
+                if !regex.is_match(&url) {
+                    return [].iter();
+                }
+                match request_type {
+                    RequestType::Get => endpoint_perms.get.iter(),
+                    RequestType::Put => endpoint_perms.put.iter(),
+                    RequestType::Post => endpoint_perms.post.iter(),
+                    RequestType::Delete => endpoint_perms.delete.iter(),
+                    RequestType::Patch => endpoint_perms.patch.iter(),
+                }
+            })
+            .map(String::as_str)
+    }
+
+    pub fn all_scopes_for_url(&self, mut url: String) -> impl Iterator<Item = &str> + '_ {
+        static EMPTY: EndpointPerms = EndpointPerms {
+            get: vec![],
+            put: vec![],
+            post: vec![],
+            delete: vec![],
+            patch: vec![],
+        };
+        url.push('-');
+        self.paths.iter().flat_map(move |(regex, endpoint_perms)| {
+            if !regex.is_match(&url) {
+                return EMPTY.perms();
+            }
+            endpoint_perms.perms()
+        })
+    }
+
+    pub fn possible_urls_for_scope(
+        &self,
+        scope: &str,
+    ) -> impl Iterator<Item = &Regex> + use<'_> + '_ {
+        self.possible_urls
+            .get(scope)
+            .into_iter()
+            .flatten()
+            .map(|&v| &self.paths[v as usize].0)
+    }
 }
 
 pub fn check_url_for_permissions(
@@ -213,7 +430,7 @@ pub fn get_permissions_for(
     if config.use_cache() {
         if let Some(raw_response) = cache.read(cache_key) {
             debug!("Cache hit for {}", cache_key);
-            let data: SwaggerReponse = serde_json::from_str(&raw_response).unwrap();
+            let data: SwaggerResponse = serde_json::from_str(&raw_response).unwrap();
             parse_swagger_response(data, endpoint_map_classic, endpoint_regex);
             return;
         }
@@ -224,7 +441,7 @@ pub fn get_permissions_for(
         .map_err(|e| panic!("Failed to retrieve the permission json: {}", e)) // Handle fetch failure
         .and_then(|response| {
             let raw_response = response.into_string().unwrap();
-            let data: SwaggerReponse = serde_json::from_str(&raw_response).unwrap();
+            let data: SwaggerResponse = serde_json::from_str(&raw_response).unwrap();
             parse_swagger_response(data, endpoint_map_classic, endpoint_regex);
             cache
                 .set(cache_key, &raw_response)
@@ -234,7 +451,7 @@ pub fn get_permissions_for(
 }
 
 fn parse_swagger_response(
-    response: SwaggerReponse,
+    response: SwaggerResponse,
     endpoint_map_classic: &mut PermissionHashMap,
     endpoint_regex: &mut HashMap<String, Regex>,
 ) {

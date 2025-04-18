@@ -7,6 +7,7 @@ use std::{env, string};
 
 use crate::utils::{calls_method, eq_prop_name};
 use forge_file_resolver::{FileResolver, ForgeResolver};
+use forge_permission_resolver::permissions_resolver::{PermMap, RequestType};
 use forge_utils::{create_newtype, FxHashMap};
 use std::collections::{HashMap, HashSet};
 use swc_core::common::pass::define;
@@ -141,6 +142,7 @@ pub fn run_resolver(
     modules: &TiSlice<ModId, Module>,
     file_resolver: &ForgeResolver,
     secret_packages: &[PackageData],
+    perm_map: &mut PermMap,
 ) -> Environment {
     let mut environment = Environment::new();
 
@@ -237,6 +239,10 @@ pub fn run_resolver(
             parent: None,
         };
         module.visit_with(&mut collector);
+        module.visit_with(&mut PermCheck {
+            res: &mut environment,
+            env: perm_map,
+        });
     }
 
     // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump.
@@ -2270,6 +2276,102 @@ struct LocalDefiner<'cx> {
     module: ModId,
     func: DefId,
     body: Body,
+}
+
+struct PermCheck<'cx> {
+    res: &'cx mut Environment,
+    env: &'cx mut PermMap,
+}
+
+impl<'cx> Visit for PermCheck<'cx> {
+    noop_visit_type!();
+    fn visit_call_expr(&mut self, n: &CallExpr) {
+        if let Callee::Expr(expr) = &n.callee {
+            if let Expr::Member(ident) = &**expr {
+                if let Some(x) = ident.prop.as_ident() {
+                    if x.sym == "requestJira"
+                        || x.sym == "requestBitbucket"
+                        || x.sym == "requestConfluence"
+                    {
+                        if let [arg, opts @ ..] = &n.args[..] {
+                            if opts.len() > 1 {
+                                n.visit_children_with(self);
+                                return;
+                            }
+                            let mut request_ty = Some(RequestType::Get);
+                            if let Some(ExprOrSpread { spread: _, expr }) = opts.first() {
+                                if let Expr::Object(obj) = &**expr {
+                                    for prop in &obj.props {
+                                        if let PropOrSpread::Prop(prop) = prop {
+                                            if let Prop::KeyValue(KeyValueProp { key, value }) =
+                                                &**prop
+                                            {
+                                                if let PropName::Ident(ident) = key {
+                                                    if ident.sym == "method" {
+                                                        if let Expr::Lit(Lit::Str(Str {
+                                                            value: str,
+                                                            ..
+                                                        })) = &**value
+                                                        {
+                                                            if *str == *"GET" {
+                                                                request_ty = Some(RequestType::Get);
+                                                            } else if *str == *"POST" {
+                                                                request_ty =
+                                                                    Some(RequestType::Post);
+                                                            } else if *str == *"PUT" {
+                                                                request_ty = Some(RequestType::Put);
+                                                            } else if *str == *"DELETE" {
+                                                                request_ty =
+                                                                    Some(RequestType::Delete);
+                                                            } else if *str == *"PATCH" {
+                                                                request_ty =
+                                                                    Some(RequestType::Patch);
+                                                            } 
+                                                        } else {
+                                                            request_ty = None;
+                                                        }
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if let Expr::Lit(Lit::Str(str)) = &*arg.expr {
+                                if let Some(request_ty) = request_ty {
+                                    self.env.use_scope(str.value.to_string(), request_ty);
+                                } else {
+                                    self.env.use_all_scopes(str.value.to_string());
+                                }
+                            } else if let Expr::TaggedTpl(TaggedTpl { tpl, .. }) = &*arg.expr {
+                                let mut s = String::new();
+                                for elem in &tpl.quasis {
+                                    s.push_str(elem.raw.as_str());
+                                }
+                                if s.is_empty() {
+                                    if request_ty == Some(RequestType::Get) {
+                                        self.env.clear_readonly_scopes();
+                                    } else {
+                                        self.env.clear_scopes();
+                                    }
+                                } else if let Some(request_ty) = request_ty {
+                                    self.env.use_scope(s, request_ty);
+                                } else {
+                                    self.env.clear_scopes();
+                                }
+                            } else if request_ty == Some(RequestType::Get) {
+                                self.env.clear_readonly_scopes();
+                            } else {
+                                self.env.clear_scopes();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        n.visit_children_with(self);
+    }
 }
 
 impl Visit for LocalDefiner<'_> {

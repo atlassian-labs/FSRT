@@ -66,7 +66,7 @@ impl ReportExt for Report {
         self.into_vulns()
             .iter()
             .filter(|vuln| {
-                vuln.check_name() == check_name && vuln.description().contains(&description_snippet)
+                vuln.check_name() == check_name && vuln.description().contains(description_snippet)
             })
             .count()
             == 1
@@ -174,7 +174,7 @@ pub(crate) fn scan_directory_test(
         .unwrap_or_else(|_| vec![]);
 
     // disallow parsing arguments meant for test harness (e.g., --nocapture, --exact) from std::env::args()
-    let mut args = Args::parse_from(&[""]);
+    let mut args = Args::parse_from([""]);
 
     match scan_directory(PathBuf::new(), &mut args, forge_test_proj, &secret_packages) {
         Ok(report) => report,

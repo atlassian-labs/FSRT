@@ -1285,12 +1285,14 @@ impl JoinSemiLattice for PermissionTest {
 
 #[derive(Debug, Clone)]
 pub struct PermissionVuln<'a> {
-    unused_permissions: HashSet<&'a str>,
+    unused_permissions: Vec<&'a str>,
 }
 
-impl PermissionVuln<'_> {
-    pub fn new(unused_permissions: HashSet<&str>) -> PermissionVuln<'_> {
-        PermissionVuln { unused_permissions }
+impl<'a> PermissionVuln<'a> {
+    pub fn new(unused_permissions: impl IntoIterator<Item = &'a str> + 'a) -> Self {
+        PermissionVuln {
+            unused_permissions: unused_permissions.into_iter().collect(),
+        }
     }
 }
 
@@ -1322,11 +1324,8 @@ impl IntoVuln for PermissionVuln<'_> {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
         Vulnerability {
             check_name: "Least-Privilege".to_owned(),
-            description: format!(
-                "Unused permissions listed in manifest file: {:?}",
-                self.unused_permissions
-            ),
-            recommendation: "Remove permissions in manifest file that are not needed.",
+            description: "Unused permissions listed in manifest file. Please remove the unused permissions or provide a justification for the unused permissions.".to_string(),
+            recommendation: "Remove the unused permissions in manifest file or add a comment explaining why the permissions are needed.",
             proof: format!(
                 "Unused permissions found in manifest.yml: {:?}",
                 self.unused_permissions
