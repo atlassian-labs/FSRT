@@ -1017,7 +1017,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         })?;
         self.set_body(body);
         self.run(resolved_def);
-        checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
+        _ = checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
         self.runner_visited.borrow_mut().clear();
         Ok(())
     }

@@ -2,6 +2,7 @@ use crate::{collect_sourcefiles, ResolvedEntryPoint};
 use forge_analyzer::ctx::AppCtx;
 use forge_analyzer::definitions::{run_resolver, Environment, PackageData};
 use forge_loader::manifest::{Entrypoint, ForgeManifest, Resolved};
+use forge_permission_resolver::permissions_resolver::PermMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,6 +25,7 @@ pub(crate) trait ForgeProjectTrait<'a> {
         src: P,
         iter: I,
         secret_packages: &[PackageData],
+        perm_map: &mut PermMap,
     ) -> ForgeProject<'_> {
         let sm = Arc::<SourceMap>::default();
         let target = EsVersion::latest();
@@ -57,7 +59,12 @@ pub(crate) trait ForgeProjectTrait<'a> {
         });
         let keys = ctx.module_ids().collect::<Vec<_>>();
         debug!(?keys);
-        let env = run_resolver(ctx.modules(), ctx.file_resolver(), secret_packages);
+        let env = run_resolver(
+            ctx.modules(),
+            ctx.file_resolver(),
+            secret_packages,
+            perm_map,
+        );
         ForgeProject {
             sm,
             ctx,
