@@ -2303,10 +2303,12 @@ impl<'cx> Visit for PermCheck<'cx> {
                                 if let Expr::Object(obj) = &**expr {
                                     for prop in &obj.props {
                                         if let PropOrSpread::Prop(prop) = prop {
-                                            if let Prop::KeyValue(KeyValueProp { key, value }) =
-                                                &**prop
+                                            if let Prop::KeyValue(KeyValueProp {
+                                                key: PropName::Ident(ident),
+                                                value,
+                                            }) = &**prop
                                             {
-                                                if let PropName::Ident(ident) = key {
+                                                {
                                                     if ident.sym == "method" {
                                                         if let Expr::Lit(Lit::Str(Str {
                                                             value: str,
@@ -2326,7 +2328,7 @@ impl<'cx> Visit for PermCheck<'cx> {
                                                             } else if *str == *"PATCH" {
                                                                 request_ty =
                                                                     Some(RequestType::Patch);
-                                                            } 
+                                                            }
                                                         } else {
                                                             request_ty = None;
                                                         }

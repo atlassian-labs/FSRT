@@ -46,7 +46,6 @@ impl Default for CacheConfig {
     }
 }
 
-
 // ...existing code...
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
