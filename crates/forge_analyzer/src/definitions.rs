@@ -2283,7 +2283,7 @@ struct PermCheck<'cx> {
     env: &'cx mut PermMap,
 }
 
-impl<'cx> Visit for PermCheck<'cx> {
+impl Visit for PermCheck<'_> {
     noop_visit_type!();
     fn visit_call_expr(&mut self, n: &CallExpr) {
         if let Callee::Expr(expr) = &n.callee {
