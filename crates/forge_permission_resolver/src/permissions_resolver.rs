@@ -260,6 +260,9 @@ impl PermMap {
         mut url: String,
         request_type: RequestType,
     ) -> impl Iterator<Item = &str> + '_ {
+        if let Some(x) = url.find('?') {
+            url.truncate(x)
+        }
         url.push('-');
         self.paths
             .iter()
@@ -286,6 +289,9 @@ impl PermMap {
             delete: vec![],
             patch: vec![],
         };
+        if let Some(x) = url.find('?') {
+            url.truncate(x);
+        }
         url.push('-');
         self.paths.iter().flat_map(move |(regex, endpoint_perms)| {
             if !regex.is_match(&url) {
