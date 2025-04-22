@@ -354,7 +354,7 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 }
 
 fn check_perm(perm: &str) -> bool {
-    !matches!(perm, "store::app" | "report:personal-data")
+    !matches!(perm, "storage:app" | "report:personal-data")
 }
 
 #[tracing::instrument(level = "debug")]
@@ -366,6 +366,7 @@ pub(crate) fn scan_directory<'a>(
 ) -> Result<Report> {
     let paths = project.get_paths();
     let manifest = project.get_manifest();
+    let id = manifest.app.id;
     let requested_permissions = manifest.permissions;
     let permissions_declared = requested_permissions
         .scopes
@@ -438,7 +439,10 @@ pub(crate) fn scan_directory<'a>(
         .filter(|s| check_perm(s))
         .collect::<Vec<_>>();
 
-    let config = CacheConfig::new(true, opts.cached_permissions_path.clone());
+    let config = CacheConfig::new(
+        opts.cached_permissions || std::env::var_os("FSRT_CACHE").is_some_and(|s| !s.is_empty()),
+        opts.cached_permissions_path.clone(),
+    );
 
     let (jira_any_permission_resolver, jira_any_regex_map) =
         get_permission_resolver_jira_any(&config);
@@ -452,8 +456,6 @@ pub(crate) fn scan_directory<'a>(
     let (bitbucket_permission_resolver, bitbucket_regex_map) =
         get_permission_resolver_bitbucket(&config);
     let compass_permission_resolver = get_permission_resolver_compass();
-
-    let perm_map = PermMap::new(&permissions.iter().map(String::as_str).collect());
 
     let mut definition_analysis_interp = Interp::<DefinitionAnalysisRunner>::new(
         &proj.env,
@@ -712,12 +714,12 @@ pub(crate) fn scan_directory<'a>(
         .join("\n");
 
     // excess Forge storage scopes should not increase the severity of an AuthZ vuln
-    let mut final_perms: HashSet<&str> = perm_interp
-        .permissions
-        .iter()
-        .map(|x| &**x)
-        .filter(|x| *x != "report:personal-data" && *x != "storage:app")
-        .collect();
+    // let mut final_perms: HashSet<&str> = perm_interp
+    //     .permissions
+    //     .iter()
+    //     .map(|x| &**x)
+    //     .filter(|x| *x != "report:personal-data" && *x != "storage:app")
+    //     .collect();
     let ast = parse_schema::<&str>(&joined_schema);
 
     // Lack of coverage, since no apps use raw GraphQL currently.
@@ -746,30 +748,33 @@ pub(crate) fn scan_directory<'a>(
         used_graphql_perms.extend_from_slice(&graphql_perms_defid);
         used_graphql_perms.extend_from_slice(&graphql_perms_varid);
 
-        let oauth_scopes: HashSet<&str> = used_graphql_perms
-            .iter()
-            .copied()
-            .filter_map(|val| {
-                if !scope_name_to_oauth.contains_key(&val) {
-                    warn!("Scope is not contained in the scope definitions")
-                }
+        // let oauth_scopes: HashSet<&str> = used_graphql_perms
+        //     .iter()
+        //     .copied()
+        //     .filter_map(|val| {
+        //         if !scope_name_to_oauth.contains_key(&val) {
+        //             warn!("Scope is not contained in the scope definitions")
+        //         }
+        //
+        //         scope_name_to_oauth.get(&val).copied()
+        //     })
+        //     .collect();
 
-                scope_name_to_oauth.get(&val).copied()
-            })
-            .collect();
-
-        final_perms = &final_perms - &oauth_scopes;
+        //final_perms = &final_perms - &oauth_scopes;
     }
     debug!("perms: {:?}", perm_map.unused_scopes());
-
+    // let final_perms = final_perms
+    //     .into_iter()
+    //     .filter(|&s| perm_map.unused_scopes().iter().any(|unused| unused == s)).collect::<Vec<_>>();
+    //
     if run_permission_checker
-        && !final_perms.is_empty()
+        // && !final_perms.is_empty()
+        && !perm_map.unused_scopes().is_empty()
         && perm_map.unused_scopes() != perm_map.declared_scopes()
     {
-        let final_perms = final_perms
-            .into_iter()
-            .filter(|&s| perm_map.unused_scopes().iter().any(|unused| unused == s));
-        reporter.add_vulnerabilities([PermissionVuln::new(final_perms)]);
+        reporter.add_vulnerabilities([PermissionVuln::new(
+            perm_map.unused_scopes().iter().map(String::as_str),
+        )]);
     }
 
     Ok(reporter.into_report())
