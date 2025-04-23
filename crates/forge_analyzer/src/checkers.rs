@@ -453,6 +453,7 @@ impl IntoVuln for AuthZVuln {
             severity: Severity::High,
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
+            marketplace_security_requirement: "Requirement 1.2",
             date: reporter.current_date(),
         }
     }
@@ -733,6 +734,7 @@ impl IntoVuln for AuthNVuln {
             severity: Severity::High,
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
+            marketplace_security_requirement: "Requirement 1.1",
             date: reporter.current_date(),
         }
     }
@@ -904,6 +906,7 @@ impl IntoVuln for SecretVuln {
             recommendation: "Use secrets as enviornment variables instead of hardcoding them.",
             proof: format!("Hardcoded secret found in found via {}", self.stack),
             severity: Severity::High,
+            marketplace_security_requirement: "Requirement 2.5",
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
             date: reporter.current_date(),
@@ -1333,6 +1336,7 @@ impl IntoVuln for PermissionVuln<'_> {
             severity: Severity::Low,
             app_key: reporter.app_key().to_string(),
             app_name: reporter.app_name().to_string(),
+            marketplace_security_requirement: "Requirement 2.4",
             date: reporter.current_date(),
         }
     }

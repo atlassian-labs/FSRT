@@ -19,6 +19,7 @@ pub struct Vulnerability {
     pub(crate) severity: Severity,
     pub(crate) app_key: String,
     pub(crate) app_name: String,
+    pub(crate) marketplace_security_requirement: &'static str,
     pub(crate) date: Date,
 }
 

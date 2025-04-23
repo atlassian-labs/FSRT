@@ -366,7 +366,6 @@ pub(crate) fn scan_directory<'a>(
 ) -> Result<Report> {
     let paths = project.get_paths();
     let manifest = project.get_manifest();
-    let id = manifest.app.id;
     let requested_permissions = manifest.permissions;
     let permissions_declared = requested_permissions
         .scopes
