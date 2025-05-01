@@ -1,4 +1,4 @@
-use crate::{forge_project::ForgeProjectTrait, scan_directory, Args};
+use crate::{Args, forge_project::ForgeProjectTrait, scan_directory};
 use clap::Parser;
 use forge_analyzer::definitions::PackageData;
 use forge_analyzer::reporter::Report;

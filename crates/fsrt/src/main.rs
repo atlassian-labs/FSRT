@@ -8,10 +8,10 @@ use clap::{Parser, ValueHint};
 use forge_permission_resolver::{
     permissions_cache::CacheConfig,
     permissions_resolver::{
-        get_permission_resolver_bitbucket, get_permission_resolver_compass,
+        PermMap, get_permission_resolver_bitbucket, get_permission_resolver_compass,
         get_permission_resolver_confluence, get_permission_resolver_jira,
         get_permission_resolver_jira_any, get_permission_resolver_jira_service_management,
-        get_permission_resolver_jira_software, PermMap,
+        get_permission_resolver_jira_software,
     },
 };
 use glob::glob;
@@ -29,11 +29,11 @@ use graphql_parser::{
 
 use graphql_parser::{
     parse_schema,
-    query::{self, parse_query, Definition, Field, OperationDefinition, Selection, Type},
+    query::{self, Definition, Field, OperationDefinition, Selection, Type, parse_query},
     schema::{ObjectTypeExtension, TypeDefinition, TypeExtension},
 };
 use tracing::{debug, warn};
-use tracing_subscriber::{prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, prelude::*};
 use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{

@@ -1143,7 +1143,10 @@ mod tests {
         assert_eq!(agent.key, "data-discoverability");
         assert_eq!(agent.name, "Data Discoverability");
         assert_eq!(agent.description, Some("Test description"));
-        assert_eq!(agent.prompt, "You are a helpful assistant that helps users manage their project risks. \nYou can retrieve risks from the risk register, create new risks and update existing ones.");
+        assert_eq!(
+            agent.prompt,
+            "You are a helpful assistant that helps users manage their project risks. \nYou can retrieve risks from the risk register, create new risks and update existing ones."
+        );
         assert_eq!(
             agent.conversation_starters,
             vec!["starter1", "starter2", "starter3"]
