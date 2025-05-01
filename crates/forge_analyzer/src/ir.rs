@@ -14,13 +14,13 @@ use std::mem;
 use std::num::NonZeroUsize;
 use std::slice;
 
-use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
+use forge_utils::create_newtype;
 use itertools::Itertools;
 use petgraph::algo::dominators;
+use smallvec::SmallVec;
 use smallvec::smallvec;
 use smallvec::smallvec_inline;
-use smallvec::SmallVec;
 use swc_core::common::SyntaxContext;
 use swc_core::ecma::ast;
 use swc_core::ecma::ast::BinaryOp;

@@ -8,16 +8,16 @@ use std::{env, string};
 use crate::utils::{calls_method, eq_prop_name};
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_permission_resolver::permissions_resolver::{PermMap, RequestType};
-use forge_utils::{create_newtype, FxHashMap};
+use forge_utils::{FxHashMap, create_newtype};
 use std::collections::{HashMap, HashSet};
 use swc_core::ecma::utils::var;
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use swc_core::ecma::ast::{MethodKind, PrivateMethod};
 use swc_core::{
-    common::{Span, SyntaxContext, DUMMY_SP},
+    common::{DUMMY_SP, Span, SyntaxContext},
     ecma::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
@@ -42,7 +42,7 @@ use swc_core::{
         },
         atoms::Atom,
         utils::{function, ident::IdentLike},
-        visit::{noop_visit_type, Visit, VisitWith},
+        visit::{Visit, VisitWith, noop_visit_type},
     },
 };
 use tracing::{debug, field::debug, info, instrument, warn};
@@ -52,8 +52,8 @@ use crate::ir::VarId;
 use crate::{
     ctx::ModId,
     ir::{
-        Base, BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, Rvalue, Template,
-        Terminator, VarKind, Variable, RETURN_VAR, STARTING_BLOCK,
+        Base, BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, RETURN_VAR,
+        Rvalue, STARTING_BLOCK, Template, Terminator, VarKind, Variable,
     },
 };
 
@@ -1088,7 +1088,10 @@ impl FunctionAnalyzer<'_> {
 
         match *callee {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
-            [PropPath::Expr(ref n@ Some(ref expr)), PropPath::Static(ref last)] => {
+            [
+                PropPath::Expr(ref n @ Some(ref expr)),
+                PropPath::Static(ref last),
+            ] => {
                 if self.res.is_expr_imported_from(expr, self.module).is_some_and(
                     |imp| matches!(imp, ImportKind::Named(s) if *s == *"asApp" || *s == *"asUser")) {
                         let is_as_app = self.res.is_expr_imported_from(expr, self.module).is_some_and(
@@ -1096,15 +1099,18 @@ impl FunctionAnalyzer<'_> {
                     return get_intrinsic(first_arg, is_as_app, last);
                 }
                 None
-                }
-            [PropPath::Def(def), ref authn @ .., PropPath::Static(ref last)]
-                if ((*last == *"requestJira"
-                    || *last == *"requestConfluence"
-                    || *last == *"requestBitbucket")
-                    && Some(&ImportKind::Default)
-                        == self.res.is_imported_from(def, "@forge/api")) || self.res.is_imported_from(def, "@forge/api").is_some_and(
-                            |imp| matches!(imp, ImportKind::Named(s) if *s == *"asApp" || *s == *"asUser"),
-                        ) =>
+            }
+            [
+                PropPath::Def(def),
+                ref authn @ ..,
+                PropPath::Static(ref last),
+            ] if ((*last == *"requestJira"
+                || *last == *"requestConfluence"
+                || *last == *"requestBitbucket")
+                && Some(&ImportKind::Default) == self.res.is_imported_from(def, "@forge/api"))
+                || self.res.is_imported_from(def, "@forge/api").is_some_and(
+                    |imp| matches!(imp, ImportKind::Named(s) if *s == *"asApp" || *s == *"asUser"),
+                ) =>
             {
                 let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
                 let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
@@ -1131,7 +1137,11 @@ impl FunctionAnalyzer<'_> {
             }
             //[PropPath::Def(def), PropPath::Static(a), PropPath::Static(b)]
             // 1. Star, identifier, method
-            [PropPath::Def(def), PropPath::Static(ref identifier), PropPath::Static(ref method)] => {
+            [
+                PropPath::Def(def),
+                PropPath::Static(ref identifier),
+                PropPath::Static(ref method),
+            ] => {
                 // case where function requires object to be invoked first
                 // example: import * as cryptoJS from 'crypto-js';
                 // var aes = cryptoJS.AES.encrypt('Secret message', 'secret password');
@@ -1202,18 +1212,22 @@ impl FunctionAnalyzer<'_> {
             // import graphqlGateway from "@atlassian/forge-graphql";
             // const { errors, data} = await graphqlGateway.compass.asApp().getComponent({ componentId });
             // [PropPath::Def(def), PropPath::Static(ref compass), ref auth
-            [PropPath::Def(def), PropPath::Static(ref compass), PropPath::MemberCall(ref authn), PropPath::Static(ref function_name)]
-                if *compass == *"compass"
-                    && Some(&ImportKind::Default)
-                        == self.res.is_imported_from(def, "@atlassian/forge-graphql") =>
+            [
+                PropPath::Def(def),
+                PropPath::Static(ref compass),
+                PropPath::MemberCall(ref authn),
+                PropPath::Static(ref function_name),
+            ] if *compass == *"compass"
+                && Some(&ImportKind::Default)
+                    == self.res.is_imported_from(def, "@atlassian/forge-graphql") =>
             {
                 match authn.as_str() {
-                    "asApp" => {
-                        Some(Intrinsic::ApiCall(IntrinsicName::RequestCompass(function_name.to_string())))
-                    }
-                    "asUser" => {
-                        Some(Intrinsic::SafeCall(IntrinsicName::RequestCompass(function_name.to_string())))
-                    }
+                    "asApp" => Some(Intrinsic::ApiCall(IntrinsicName::RequestCompass(
+                        function_name.to_string(),
+                    ))),
+                    "asUser" => Some(Intrinsic::SafeCall(IntrinsicName::RequestCompass(
+                        function_name.to_string(),
+                    ))),
                     _ => None,
                 }
             }
@@ -3017,7 +3031,11 @@ fn as_resolver_def<'a>(
     else {
         return None;
     };
-    let [ExprOrSpread { expr: name, .. }, ExprOrSpread { expr: args, .. }] = &*call.args else {
+    let [
+        ExprOrSpread { expr: name, .. },
+        ExprOrSpread { expr: args, .. },
+    ] = &*call.args
+    else {
         return None;
     };
     match &**name {
@@ -3109,7 +3127,10 @@ impl Visit for Lowerer<'_> {
     fn visit_call_expr(&mut self, n: &CallExpr) {
         if let Some(expr) = n.callee.as_expr() {
             if let Some((objid, ResolverDef::FnDef)) = as_resolver(expr, self.res, self.curr_mod) {
-                if let [ExprOrSpread { expr: name, .. }, ExprOrSpread { expr: args, .. }] = &*n.args
+                if let [
+                    ExprOrSpread { expr: name, .. },
+                    ExprOrSpread { expr: args, .. },
+                ] = &*n.args
                 {
                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**name {
                         let fname = value.clone();
@@ -3154,8 +3175,10 @@ impl Visit for Lowerer<'_> {
                     if let Some((objid, kind)) = as_resolver(expr, self.res, self.curr_mod) {
                         match kind {
                             ResolverDef::FnDef => {
-                                if let [ExprOrSpread { expr: name, .. }, ExprOrSpread { expr: args, .. }] =
-                                    &**args
+                                if let [
+                                    ExprOrSpread { expr: name, .. },
+                                    ExprOrSpread { expr: args, .. },
+                                ] = &**args
                                 {
                                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
                                         let fname = value.clone();

@@ -27,7 +27,7 @@ use crate::{
     definitions::{Const, DefId, Environment, Value},
     ir::{
         Base, BasicBlock, BasicBlockId, Body, Inst, Intrinsic, Location, Operand, Projection,
-        Rvalue, Successors, VarId, Variable, STARTING_BLOCK,
+        Rvalue, STARTING_BLOCK, Successors, VarId, Variable,
     },
     worklist::WorkList,
 };

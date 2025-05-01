@@ -1,14 +1,14 @@
-use crate::{collect_sourcefiles, ResolvedEntryPoint};
+use crate::{ResolvedEntryPoint, collect_sourcefiles};
 use forge_analyzer::ctx::AppCtx;
-use forge_analyzer::definitions::{run_resolver, Environment, PackageData};
+use forge_analyzer::definitions::{Environment, PackageData, run_resolver};
 use forge_loader::manifest::{Entrypoint, ForgeManifest, Resolved};
 use forge_permission_resolver::permissions_resolver::PermMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use swc_core::common::{Globals, Mark, SourceFile, SourceMap, GLOBALS};
+use swc_core::common::{GLOBALS, Globals, Mark, SourceFile, SourceMap};
 use swc_core::ecma::ast::EsVersion;
-use swc_core::ecma::parser::{parse_file_as_module, Syntax, TsSyntax};
+use swc_core::ecma::parser::{Syntax, TsSyntax, parse_file_as_module};
 use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::visit::VisitMutWith;
 use tracing::debug;

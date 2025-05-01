@@ -19,7 +19,7 @@ use crate::{
 };
 use core::fmt;
 use forge_permission_resolver::permissions_resolver::{
-    check_url_for_permissions, PermissionHashMap, RequestType,
+    PermissionHashMap, RequestType, check_url_for_permissions,
 };
 use forge_utils::FxHashMap;
 use itertools::Itertools;
@@ -354,8 +354,11 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
     ) -> ControlFlow<(), Self::State> {
         for inst in &block.insts {
             if let Inst::Assign(l, _r) = inst {
-                if let [Projection::Computed(Base::Var(fst)), Projection::Computed(Base::Var(snd)), ..] =
-                    *l.projections
+                if let [
+                    Projection::Computed(Base::Var(fst)),
+                    Projection::Computed(Base::Var(snd)),
+                    ..,
+                ] = *l.projections
                 {
                     if curr_state.get(fst.0 as usize).copied() == Some(Taint::Yes)
                         && curr_state.get(snd.0 as usize).copied() == Some(Taint::Yes)
@@ -447,7 +450,10 @@ impl IntoVuln for AuthZVuln {
         self.stack.hash(&mut hasher);
         Vulnerability {
             check_name: format!("Custom-Check-Authorization-{}", hasher.finish()),
-            description: format!("Authorization bypass detected through {} in {:?}.", self.entry_func, self.file),
+            description: format!(
+                "Authorization bypass detected through {} in {:?}.",
+                self.entry_func, self.file
+            ),
             recommendation: "Use the authorize API _https://developer.atlassian.com/platform/forge/runtime-reference/authorize-api/_ or manually authorize the user via the product REST APIs.",
             proof: format!("Unauthorized API call via asApp() found via {}", self.stack),
             severity: Severity::High,
@@ -728,9 +734,15 @@ impl IntoVuln for AuthNVuln {
         self.stack.hash(&mut hasher);
         Vulnerability {
             check_name: format!("Custom-Check-Authentication-{}", hasher.finish()),
-            description: format!("Insufficient Authentication through webhook {} in {:?}.", self.entry_func, self.file),
+            description: format!(
+                "Insufficient Authentication through webhook {} in {:?}.",
+                self.entry_func, self.file
+            ),
             recommendation: "Properly authenticate incoming webhooks and ensure that any shared secrets are stored in Forge Secure Storage.",
-            proof: format!("Unauthenticated API call via asApp() found via {}", self.stack),
+            proof: format!(
+                "Unauthenticated API call via asApp() found via {}",
+                self.stack
+            ),
             severity: Severity::High,
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),

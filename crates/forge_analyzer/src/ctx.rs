@@ -2,8 +2,8 @@ use std::path::Path;
 use std::{borrow::Borrow, hash::Hash, path::PathBuf};
 
 use forge_file_resolver::{FileResolver, ForgeResolver};
-use forge_utils::create_newtype;
 use forge_utils::FxHashMap;
+use forge_utils::create_newtype;
 use petgraph::prelude::NodeIndex;
 use petgraph::stable_graph::DefaultIx;
 use swc_core::ecma::ast::{Id, Module};
