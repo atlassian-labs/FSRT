@@ -111,18 +111,17 @@ impl PermissionsCache {
                         return true;
                     } else {
                         eprintln!(
-                            "Cache file expired: {:?}, duration {:?} is greater than ttl {:?}",
-                            path, duration, CACHE_EXPIRATION
+                            "Cache file expired: {path:?}, duration {duration:?} is greater than ttl {CACHE_EXPIRATION:?}"
                         );
                     }
                 } else {
-                    eprintln!("Failed to get elapsed time for cache file: {:?}", path);
+                    eprintln!("Failed to get elapsed time for cache file: {path:?}");
                 }
             } else {
-                eprintln!("Failed to get modified time for cache file: {:?}", path);
+                eprintln!("Failed to get modified time for cache file: {path:?}");
             }
         } else {
-            eprintln!("Failed to get metadata for cache file: {:?}", path);
+            eprintln!("Failed to get metadata for cache file: {path:?}");
         }
         false
     }
@@ -146,7 +145,8 @@ impl PermissionsCache {
             .call()
             .unwrap_or_else(|err| panic!("Failed to fetch swagger url: {url}. error: {err}"));
         let raw = resp
-            .into_string()
+            .into_body()
+            .read_to_string()
             .unwrap_or_else(|err| panic!("Failed to parse JSON response from {url}. error: {err}"));
         let swagger: SwaggerResponse = serde_json::from_str(&raw)
             .unwrap_or_else(|err| panic!("Failed to deserialize JSON response: {err}"));
