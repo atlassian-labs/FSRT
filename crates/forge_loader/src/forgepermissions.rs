@@ -38,7 +38,7 @@ pub enum ForgePermissions {
     ManageConfluenceConfiguration,
     #[serde(rename = "read:content.metadata:confluence")]
     ReadContentMetadataConfluence,
-    #[serde(rename = "read:confluence-content.permission")]
+    #[serde(rename = "read:confluence-groups")]
     ReadConfluenceGroups,
     #[serde(rename = "write:confluence-groups")]
     WriteConfluenceGroups,

@@ -10,7 +10,7 @@ use swc_core::common::{Globals, Mark, SourceFile, SourceMap, GLOBALS};
 use swc_core::ecma::ast::EsVersion;
 use swc_core::ecma::parser::{parse_file_as_module, Syntax, TsSyntax};
 use swc_core::ecma::transforms::base::resolver;
-use swc_core::ecma::visit::FoldWith;
+use swc_core::ecma::visit::VisitMutWith;
 use tracing::debug;
 
 pub(crate) trait ForgeProjectTrait<'a> {
@@ -38,7 +38,7 @@ pub(crate) trait ForgeProjectTrait<'a> {
                 let src = self.load_file(p.clone(), sourcemap);
                 debug!("loaded sourcemap");
                 let mut recovered_errors = vec![];
-                let module = parse_file_as_module(
+                let mut module = parse_file_as_module(
                     src.as_ref(),
                     Syntax::Typescript(TsSyntax {
                         tsx: true,
@@ -52,7 +52,7 @@ pub(crate) trait ForgeProjectTrait<'a> {
                 .unwrap();
                 debug!("finished parsing");
                 let mut hygeine = resolver(Mark::new(), Mark::new(), true);
-                let module = module.fold_with(&mut hygeine);
+                module.visit_mut_with(&mut hygeine);
                 ctx.load_module(p, module);
                 ctx
             })

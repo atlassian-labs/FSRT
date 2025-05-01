@@ -29,7 +29,6 @@ use swc_core::ecma::ast::Lit;
 use swc_core::ecma::ast::Null;
 use swc_core::ecma::ast::Number;
 use swc_core::ecma::ast::UnaryOp;
-use swc_core::ecma::atoms::JsWord;
 use swc_core::ecma::{ast::Id, atoms::Atom};
 use typed_index_collections::TiVec;
 
@@ -170,7 +169,7 @@ pub enum Inst {
 
 #[derive(Clone, Debug, Default)]
 pub enum Literal {
-    Str(JsWord),
+    Str(Atom),
     JSXText(Atom),
     Bool(bool),
     Null,
@@ -267,7 +266,7 @@ impl From<VarId> for Variable {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum Projection {
-    Known(JsWord),
+    Known(Atom),
     Computed(Base),
 }
 
@@ -729,7 +728,7 @@ impl Body {
 
     pub(crate) fn resolve_prop(&mut self, bb: BasicBlockId, opnd: Operand) -> Projection {
         match opnd {
-            Operand::Lit(lit) => Projection::Known(lit.as_jsword()),
+            Operand::Lit(lit) => Projection::Known(lit.as_atom()),
             Operand::Var(var) if var.projections.is_empty() => Projection::Computed(var.base),
             Operand::Var(_) => {
                 Projection::Computed(Base::Var(self.push_tmp(bb, Rvalue::Read(opnd), None)))
@@ -860,13 +859,13 @@ impl Variable {
     }
 
     #[inline]
-    pub(crate) fn add_known(&mut self, lit: JsWord) {
+    pub(crate) fn add_known(&mut self, lit: Atom) {
         self.projections.push(Projection::Known(lit));
     }
 }
 
 impl Literal {
-    fn as_jsword(&self) -> JsWord {
+    fn as_atom(&self) -> Atom {
         match self {
             Literal::Str(s) => s.clone(),
             Literal::Bool(b) => b.to_string().into(),
@@ -1105,7 +1104,7 @@ impl fmt::Display for Template {
         for quasi in &self.quasis {
             write!(f, "{quasi}")?;
             if let Some(expr) = exprs.next() {
-                write!(f, "{{{}}}", expr)?;
+                write!(f, "{{{expr}}}")?;
             }
         }
         Ok(())

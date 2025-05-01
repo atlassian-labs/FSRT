@@ -16,7 +16,7 @@ use forge_utils::{FxHashMap, FxHashSet};
 use itertools::Itertools;
 use regex::Regex;
 use smallvec::SmallVec;
-use swc_core::ecma::atoms::JsWord;
+use swc_core::ecma::atoms::Atom;
 use tracing::{debug, instrument, warn};
 
 use crate::definitions::DefKind;
@@ -359,7 +359,7 @@ pub(crate) struct Frame {
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) enum EntryKind {
     Function(String),
-    Resolver(String, JsWord),
+    Resolver(String, Atom),
     #[default]
     Empty,
 }

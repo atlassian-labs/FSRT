@@ -114,7 +114,7 @@ pub fn return_combinations_phi(exprs: Vec<Value>) -> Value {
         let mut new_combinations = Vec::new();
         for combo in &combinations {
             for item in &list {
-                new_combinations.push(format!("{}{}", combo, item));
+                new_combinations.push(format!("{combo}{item}"));
             }
         }
         combinations = new_combinations;

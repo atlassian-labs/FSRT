@@ -97,15 +97,15 @@ pub fn dump_dom_tree(output: &mut dyn Write, _env: &Environment, body: &Body) ->
 
     writeln!(output, "Idoms in format of <bb: bb's idom>")?;
     for (block, idom) in body.dominator_tree().idom[..num_blocks].iter().enumerate() {
-        writeln!(output, "{}: {:?}", block, idom)?;
+        writeln!(output, "{block}: {idom:?}")?;
     }
 
     writeln!(output, "----------------------------------------------")?;
     for (block, _) in body.dominator_tree().idom[..num_blocks].iter().enumerate() {
-        write!(output, "Blocks that bb{} Dominates: ", block)?;
+        write!(output, "Blocks that bb{block} Dominates: ")?;
         for i in 0..num_blocks {
             if body.dominates(BasicBlockId(block as u32), BasicBlockId(i as u32)) {
-                write!(output, "{}, ", i)?;
+                write!(output, "{i}, ")?;
             }
         }
         writeln!(output)?;
@@ -113,10 +113,10 @@ pub fn dump_dom_tree(output: &mut dyn Write, _env: &Environment, body: &Body) ->
 
     writeln!(output, "----------------------------------------------")?;
     for (block, _) in body.dominator_tree().idom[..num_blocks].iter().enumerate() {
-        write!(output, "bb{}'s Dominators: ", block)?;
+        write!(output, "bb{block}'s Dominators: ")?;
         for i in 0..num_blocks {
             if body.dominates(BasicBlockId(i as u32), BasicBlockId(block as u32)) {
-                write!(output, "{}, ", i)?;
+                write!(output, "{i}, ")?;
             }
         }
         writeln!(output)?;

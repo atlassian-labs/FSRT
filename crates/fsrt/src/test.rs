@@ -138,7 +138,7 @@ impl<'a> MockForgeProject<'a> {
         let file_name = p.into();
         let source_file = self
             .cm
-            .new_source_file(FileName::Real(file_name.clone()), source.into());
+            .new_source_file(Arc::new(FileName::Real(file_name.clone())), source.into());
 
         self.files_name_to_source.insert(file_name, source_file);
     }

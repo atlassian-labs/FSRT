@@ -444,14 +444,14 @@ pub fn get_permissions_for(
 
     ureq::get(url)
         .call()
-        .map_err(|e| panic!("Failed to retrieve the permission json: {}", e)) // Handle fetch failure
+        .map_err(|e| panic!("Failed to retrieve the permission json: {e}")) // Handle fetch failure
         .and_then(|response| {
-            let raw_response = response.into_string().unwrap();
+            let raw_response = response.into_body().read_to_string().unwrap();
             let data: SwaggerResponse = serde_json::from_str(&raw_response).unwrap();
             parse_swagger_response(data, endpoint_map_classic, endpoint_regex);
             cache
                 .set(cache_key, &raw_response)
-                .map_err(|e| panic!("Failed to write to cache: {}", e))
+                .map_err(|e| panic!("Failed to write to cache: {e}"))
         })
         .unwrap();
 }
@@ -477,7 +477,7 @@ fn parse_swagger_response(
 pub fn find_regex_for_endpoint(key: &str) -> String {
     let mut regex_str = String::new();
     let mut prev_index = 0;
-    for (i, char) in key.chars().enumerate() {
+    for (i, char) in key.char_indices() {
         if char == '{' {
             regex_str += &key[prev_index..i];
         } else if char == '}' {

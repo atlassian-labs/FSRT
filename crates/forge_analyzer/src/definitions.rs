@@ -10,7 +10,6 @@ use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_permission_resolver::permissions_resolver::{PermMap, RequestType};
 use forge_utils::{create_newtype, FxHashMap};
 use std::collections::{HashMap, HashSet};
-use swc_core::common::pass::define;
 use swc_core::ecma::utils::var;
 
 use itertools::Itertools;
@@ -27,7 +26,7 @@ use swc_core::{
             CondExpr, Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll,
             ExportDecl, ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier,
             ExportSpecifier, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForHead, ForInStmt,
-            ForOfStmt, ForStmt, Function, Id, Ident, IfStmt, Import, ImportDecl,
+            ForOfStmt, ForStmt, Function, Id, Ident, IdentName, IfStmt, Import, ImportDecl,
             ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, JSXAttrName,
             JSXAttrOrSpread, JSXAttrValue, JSXElement, JSXElementChild, JSXElementName, JSXExpr,
             JSXExprContainer, JSXFragment, JSXMemberExpr, JSXNamespacedName, JSXObject,
@@ -41,7 +40,7 @@ use swc_core::{
             TsTypeAssertion, UnaryExpr, UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclarator,
             WhileStmt, WithStmt, YieldExpr,
         },
-        atoms::{Atom, JsWord},
+        atoms::Atom,
         utils::{function, ident::IdentLike},
         visit::{noop_visit_type, Visit, VisitWith},
     },
@@ -105,17 +104,17 @@ struct Symbol {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SymbolExport {
     module: ModId,
-    name: JsWord,
+    name: Atom,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolverTable {
     defs: TiVec<DefId, DefRes>,
-    pub names: TiVec<DefId, JsWord>,
+    pub names: TiVec<DefId, Atom>,
     pub global: TiVec<ModId, DefId>,
-    recent_names: FxHashMap<(JsWord, ModId), DefId>,
-    exported_names: FxHashMap<(JsWord, ModId), DefId>,
-    default_export_names: FxHashMap<(JsWord, ModId), DefId>,
+    recent_names: FxHashMap<(Atom, ModId), DefId>,
+    exported_names: FxHashMap<(Atom, ModId), DefId>,
+    default_export_names: FxHashMap<(Atom, ModId), DefId>,
     symbol_to_id: FxHashMap<Symbol, DefId>,
     global_defid_to_value: FxHashMap<DefId, Value>,
     parent: FxHashMap<DefId, DefId>,
@@ -325,7 +324,7 @@ pub fn update_rvalue(rvalue: &mut Rvalue, updated_vars: &HashMap<VarId, VarId>) 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Class {
     def: DefId,
-    pub pub_members: Vec<(JsWord, DefId)>,
+    pub pub_members: Vec<(Atom, DefId)>,
     constructor: Option<DefId>,
 }
 
@@ -345,7 +344,7 @@ enum ObjTy {
 
 struct Object {
     def: DefId,
-    pub_members: Vec<(JsWord, DefId)>,
+    pub_members: Vec<(Atom, DefId)>,
     ty: ObjTy,
 }
 
@@ -380,7 +379,7 @@ impl Class {
     /// ```
     pub fn find_member<N: ?Sized>(&self, name: &N) -> Option<DefId>
     where
-        JsWord: PartialEq<N>,
+        Atom: PartialEq<N>,
     {
         self.pub_members
             .iter()
@@ -396,13 +395,13 @@ create_newtype! {
 pub enum ImportKind {
     Star,
     Default,
-    Named(JsWord),
+    Named(Atom),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForeignItem {
     kind: ImportKind,
-    module_name: JsWord,
+    module_name: Atom,
 }
 
 type DefKey = DefKind<FuncId, ObjId, ForeignId>;
@@ -589,7 +588,7 @@ pub struct Definitions {
 
 #[derive(Debug, Clone, Default)]
 pub struct Environment {
-    exports: TiVec<ModId, Vec<(JsWord, DefId)>>,
+    exports: TiVec<ModId, Vec<(Atom, DefId)>>,
     pub global: TiVec<ModId, DefId>,
     pub defs: Definitions,
     default_exports: FxHashMap<ModId, DefId>,
@@ -602,14 +601,14 @@ struct ImportCollector<'cx> {
     file_resolver: &'cx ForgeResolver,
     foreign_defs: &'cx mut TiVec<ForeignId, ForeignItem>,
     curr_mod: ModId,
-    current_import: JsWord,
+    current_import: Atom,
     in_foreign_import: bool,
 }
 
 struct ExportCollector<'cx> {
     res_table: &'cx mut ResolverTable,
     curr_mod: ModId,
-    exports: Vec<(JsWord, DefId)>,
+    exports: Vec<(Atom, DefId)>,
     default: Option<DefId>,
 }
 
@@ -658,8 +657,8 @@ struct Lowerer<'cx> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum PropPath {
     Def(DefId),
-    Static(JsWord),
-    MemberCall(JsWord),
+    Static(Atom),
+    MemberCall(Atom),
     Unknown(Id),
     Expr(Option<Expr>),
     This,
@@ -694,8 +693,8 @@ fn normalize_callee_expr(
                 MemberProp::Ident(n) => {
                     self.path.push(PropPath::Static(n.sym.clone()));
                 }
-                MemberProp::PrivateName(PrivateName { id, .. }) => {
-                    self.path.push(PropPath::Private(id.to_id()))
+                MemberProp::PrivateName(PrivateName { name, .. }) => {
+                    self.path.push(PropPath::Private(name.to_id()))
                 }
                 MemberProp::Computed(ComputedPropName { expr, .. }) => {
                     let old_prop = mem::replace(&mut self.in_prop, true);
@@ -798,7 +797,7 @@ impl ResolverTable {
     }
 
     #[inline]
-    fn recent_sym(&self, sym: JsWord, module: ModId) -> Option<DefId> {
+    fn recent_sym(&self, sym: Atom, module: ModId) -> Option<DefId> {
         self.recent_names.get(&(sym, module)).copied()
     }
 
@@ -837,13 +836,13 @@ impl ResolverTable {
         self.sym_id(id.clone(), module)
     }
 
-    fn reserve_def(&mut self, name: JsWord, module: ModId) -> DefId {
+    fn reserve_def(&mut self, name: Atom, module: ModId) -> DefId {
         self.defs.push_and_get_key(DefRes::default());
         self.names.push_and_get_key(name);
         self.owning_module.push_and_get_key(module)
     }
 
-    fn add_anon(&mut self, def: DefRes, name: JsWord, module: ModId) -> DefId {
+    fn add_anon(&mut self, def: DefRes, name: Atom, module: ModId) -> DefId {
         let defid = self.defs.push_and_get_key(def);
         let defid2 = self.owning_module.push_and_get_key(module);
         debug_assert_eq!(
@@ -1001,7 +1000,7 @@ impl FunctionAnalyzer<'_> {
     }
 
     fn as_intrinsic(&self, callee: &[PropPath], first_arg: Option<&Expr>) -> Option<Intrinsic> {
-        fn is_storage_read(prop: &JsWord) -> bool {
+        fn is_storage_read(prop: &Atom) -> bool {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
 
@@ -1252,9 +1251,10 @@ impl FunctionAnalyzer<'_> {
             return obj;
         };
         match prop {
-            MemberProp::Ident(id) | MemberProp::PrivateName(PrivateName { id, .. }) => {
-                let id = id.to_id();
-                var.projections.push(Projection::Known(id.0));
+            MemberProp::Ident(IdentName { sym: name, .. })
+            | MemberProp::PrivateName(PrivateName { name, .. }) => {
+                let id = name.trim_start();
+                var.projections.push(Projection::Known(id.into()));
             }
             MemberProp::Computed(ComputedPropName { expr, .. }) => {
                 let opnd = self.lower_expr(expr, None);
@@ -1292,7 +1292,7 @@ impl FunctionAnalyzer<'_> {
                     let mut rhs = rhs.clone();
                     match prop {
                         ObjectPatProp::KeyValue(KeyValuePatProp { key, value }) => match key {
-                            PropName::Ident(Ident { sym: prop, .. })
+                            PropName::Ident(IdentName { sym: prop, .. })
                             | PropName::Str(Str { value: prop, .. }) => {
                                 let prop = Projection::Known(prop.clone());
                                 rhs.projections.push(prop);
@@ -1502,7 +1502,7 @@ impl FunctionAnalyzer<'_> {
             JSXAttrOrSpread::JSXAttr(jsx_attr) => {
                 if let JSXAttrName::Ident(ident_value) = &jsx_attr.name {
                     if let Some(JSXAttrValue::JSXExprContainer(jsx_expr)) = &jsx_attr.value {
-                        self.lower_jsx_handler(jsx_expr, ident_value);
+                        self.lower_jsx_handler(jsx_expr, &ident_value.clone().into());
                     }
                 }
             }
@@ -1591,8 +1591,8 @@ impl FunctionAnalyzer<'_> {
                 Operand::with_var(var)
             }
             JSXElementName::JSXMemberExpr(mem) => self.lower_jsx_member(mem),
-            JSXElementName::JSXNamespacedName(JSXNamespacedName { ns, name }) => {
-                let ns = ns.to_id();
+            JSXElementName::JSXNamespacedName(JSXNamespacedName { ns, name, .. }) => {
+                let ns = ns.sym.to_id();
                 let Some(def) = self.res.sym_to_id(ns.clone(), self.module) else {
                     warn!("unknown symbol: {}", ns.0);
                     return Literal::Undef.into();
@@ -1673,9 +1673,10 @@ impl FunctionAnalyzer<'_> {
                                                     .push(Projection::Known(str.value.clone()));
                                             }
                                             PropName::Ident(ident) => {
-                                                let def_id_prop = self
-                                                    .res
-                                                    .get_or_insert_sym(ident.to_id(), self.module);
+                                                let def_id_prop = self.res.get_or_insert_sym(
+                                                    ident.sym.to_id(),
+                                                    self.module,
+                                                );
                                                 let cls = self.res.def_mut(def_id).expect_class();
                                                 cls.pub_members
                                                     .push((key.as_symbol().unwrap(), def_id_prop));
@@ -1726,7 +1727,7 @@ impl FunctionAnalyzer<'_> {
                 let mut super_var = Variable::SUPER;
                 match prop {
                     SuperProp::Ident(id) => {
-                        let id = id.to_id().0;
+                        let id = id.sym.to_id().0;
                         super_var.projections.push(Projection::Known(id));
                     }
                     SuperProp::Computed(ComputedPropName { expr, .. }) => {
@@ -1889,7 +1890,7 @@ impl FunctionAnalyzer<'_> {
             Expr::Paren(ParenExpr { expr, .. }) => self.lower_expr(expr, None),
             Expr::JSXMember(mem) => self.lower_jsx_member(mem),
             Expr::JSXNamespacedName(JSXNamespacedName { ns, name, .. }) => {
-                let mut ident = self.lower_ident(ns);
+                let mut ident = self.lower_ident(&ns.clone().into());
                 if let Operand::Var(var) = &mut ident {
                     var.projections.push(Projection::Known(name.sym.clone()));
                 }
@@ -1914,7 +1915,7 @@ impl FunctionAnalyzer<'_> {
             | Expr::TsAs(TsAsExpr { expr, .. })
             | Expr::TsInstantiation(TsInstantiation { expr, .. })
             | Expr::TsSatisfies(TsSatisfiesExpr { expr, .. }) => self.lower_expr(expr, None),
-            Expr::PrivateName(PrivateName { id, .. }) => todo!(),
+            Expr::PrivateName(PrivateName { name, .. }) => todo!(),
             Expr::OptChain(OptChainExpr { base, .. }) => match &**base {
                 OptChainBase::Call(OptCall { callee, args, .. }) => {
                     self.lower_call(callee.as_ref().into(), args)
@@ -2466,14 +2467,14 @@ impl Visit for FunctionCollector<'_> {
                         match &*n.right {
                             Expr::Fn(n) => {
                                 if let Some(defid) =
-                                    self.res.get_sym(ident_property.to_id(), self.module)
+                                    self.res.get_sym(ident_property.sym.to_id(), self.module)
                                 {
                                     self.handle_function(&n.function, Some(defid));
                                 }
                             }
                             Expr::Class(class) => {
                                 if let Some(defid) =
-                                    self.res.get_sym(ident_property.to_id(), self.module)
+                                    self.res.get_sym(ident_property.sym.to_id(), self.module)
                                 {
                                     self.curr_class = Some(defid);
                                 }
@@ -2811,7 +2812,7 @@ impl Visit for FunctionCollector<'_> {
                                 self.parent = self.res.get_prop_from_ident(
                                     self.module,
                                     id.to_id(),
-                                    key_ident,
+                                    &key_ident.clone().into(),
                                 );
                                 self.handle_function(function, None);
                                 self.parent = former_parent;
@@ -3008,7 +3009,7 @@ fn as_resolver_def<'a>(
     call: &'a CallExpr,
     res: &Environment,
     module: ModId,
-) -> Option<(DefId, &'a JsWord, &'a Expr)> {
+) -> Option<(DefId, &'a Atom, &'a Expr)> {
     let Some((objid, ResolverDef::FnDef)) = call
         .callee
         .as_expr()
@@ -3271,16 +3272,16 @@ impl Visit for Lowerer<'_> {
 }
 
 trait AsSymbol {
-    fn expect_symbol(&self) -> JsWord {
+    fn expect_symbol(&self) -> Atom {
         self.as_symbol().unwrap()
     }
-    fn as_symbol(&self) -> Option<JsWord>;
+    fn as_symbol(&self) -> Option<Atom>;
 }
 
 impl AsSymbol for PropName {
-    fn as_symbol(&self) -> Option<JsWord> {
+    fn as_symbol(&self) -> Option<Atom> {
         match self {
-            PropName::Str(Str { value: sym, .. }) | PropName::Ident(Ident { sym, .. }) => {
+            PropName::Str(Str { value: sym, .. }) | PropName::Ident(IdentName { sym, .. }) => {
                 Some(sym.clone())
             }
             PropName::Num(_) | PropName::Computed(_) | PropName::BigInt(_) => None,
@@ -3569,14 +3570,14 @@ impl Visit for ExportCollector<'_> {
                     if let MemberProp::Ident(ident_property) = &mem_expr.prop {
                         match &*n.right {
                             Expr::Fn(FnExpr { ident, function }) => {
-                                self.add_export(DefRes::Function(()), ident_property.to_id());
+                                self.add_export(DefRes::Function(()), ident_property.sym.to_id());
                             }
                             Expr::Class(_) => {
-                                self.add_export(DefRes::Class(()), ident_property.to_id());
+                                self.add_export(DefRes::Class(()), ident_property.sym.to_id());
                             }
                             Expr::Ident(ident) => {
                                 let export_defid =
-                                    self.add_export(DefRes::Undefined, ident_property.to_id());
+                                    self.add_export(DefRes::Undefined, ident_property.sym.to_id());
                                 self.res_table
                                     .exported_names
                                     .insert((ident.sym.clone(), self.curr_mod), export_defid);
@@ -3752,7 +3753,7 @@ impl Environment {
     }
 
     #[inline]
-    fn recent_sym(&self, sym: JsWord, module: ModId) -> Option<DefId> {
+    fn recent_sym(&self, sym: Atom, module: ModId) -> Option<DefId> {
         self.resolver.recent_sym(sym, module)
     }
 
@@ -3817,7 +3818,7 @@ impl Environment {
         }
     }
 
-    fn add_anonymous(&mut self, name: impl Into<JsWord>, kind: AnonType, module: ModId) -> DefId {
+    fn add_anonymous(&mut self, name: impl Into<Atom>, kind: AnonType, module: ModId) -> DefId {
         match kind {
             AnonType::Obj => {
                 let id = self
@@ -3931,7 +3932,7 @@ impl Environment {
         }
     }
 
-    fn lookup_prop(&self, obj: DefId, prop: &JsWord) -> Option<DefId> {
+    fn lookup_prop(&self, obj: DefId, prop: &Atom) -> Option<DefId> {
         match self.def_ref(obj) {
             DefKind::GlobalObj(obj) | DefKind::Class(obj) | DefKind::Resolver(obj) => {
                 obj.find_member(prop)
@@ -4003,7 +4004,7 @@ impl Environment {
     }
 
     // takes in Definition ID and returns tuple with import module and type of import
-    pub fn as_foreign_import(&self, def: DefId) -> Option<(JsWord, ImportKind)> {
+    pub fn as_foreign_import(&self, def: DefId) -> Option<(Atom, ImportKind)> {
         let DefKind::Foreign(f) = self.def_ref(def) else {
             return None;
         };
@@ -4051,7 +4052,7 @@ impl Environment {
     }
 
     #[instrument(level = "debug", skip(self))]
-    pub fn resolver_defs(&self, def: DefId) -> Vec<(JsWord, DefId)> {
+    pub fn resolver_defs(&self, def: DefId) -> Vec<(Atom, DefId)> {
         let def = {
             let new_def = self.resolve_alias(def);
             #[cfg(debug_assertions)]
@@ -4074,7 +4075,7 @@ impl Environment {
         }
     }
 
-    fn resolve_local_export(&self, module: ModId, name: &JsWord) -> Option<DefId> {
+    fn resolve_local_export(&self, module: ModId, name: &Atom) -> Option<DefId> {
         match &**name {
             "default" => self.default_exports.get(&module).copied(),
             _ => self.exports.get(module).and_then(|exports| {
@@ -4163,7 +4164,7 @@ trait AsId {
     fn as_id(&self) -> Id;
 }
 
-fn export_name_to_jsword(expname: &ModuleExportName) -> JsWord {
+fn export_name_to_jsword(expname: &ModuleExportName) -> Atom {
     match expname {
         ModuleExportName::Ident(ident) => ident.to_id().0,
         ModuleExportName::Str(str) => str.value.clone(),
