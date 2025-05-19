@@ -552,7 +552,7 @@ impl<'a> ForgeModules<'a> {
             project_settings_page,
             ui_modifications,
             workflow_validator,
-            workflow_post_function,
+            workflow_post_function: _,
             assets_import_type,
             extra: _,
             org_panel,
@@ -685,10 +685,6 @@ impl<'a> ForgeModules<'a> {
 
         for valid in workflow_validator {
             valid.common_keys.append_functions(&mut invokable_functions);
-        }
-
-        for post in workflow_post_function {
-            post.common_keys.append_functions(&mut invokable_functions);
         }
 
         // Rovo Module Functions
