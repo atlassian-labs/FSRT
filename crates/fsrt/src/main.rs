@@ -407,7 +407,8 @@ pub(crate) fn scan_directory<'a>(
         warn!("Unable to scan due to transpiled async");
         Err(Error::TranspiledAsyncError)?;
     }
-    let run_permission_checker = !transpiled_async;
+    // FIXME: Find Custom UI path instead
+    let run_permission_checker = !transpiled_async && manifest.resources.is_empty();
 
     let funcrefs = manifest
         .modules

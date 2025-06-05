@@ -450,6 +450,12 @@ pub struct Module<'a> {
     extra: FxHashMap<String, serde_yaml::Value>,
 }
 
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct Resource<'a> {
+    pub key: &'a str,
+    pub path: &'a str,
+}
+
 /// The representation of a Forge app's `manifest.yml`
 ///
 /// Contains the [properties] that are needed to find function entrypoints
@@ -464,6 +470,8 @@ pub struct ForgeManifest<'a> {
     #[serde(borrow)]
     pub permissions: Perms<'a>,
     pub remotes: Option<Vec<Remotes>>,
+    #[serde(default, borrow)]
+    pub resources: Vec<Resource<'a>>,
 }
 
 impl<'a> ForgeManifest<'a> {
