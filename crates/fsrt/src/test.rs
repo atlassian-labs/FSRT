@@ -1286,3 +1286,34 @@ fn graphqlgateway_compass() {
     let scan_result = scan_directory_test(test_forge_project);
     assert!(scan_result.contains_vulns(0));
 }
+
+#[test]
+fn kvs_is_valid_authn() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import { kvs } from '@forge/kvs';
+        import api from '@forge/api';
+
+
+        export const src = () => {
+            kvs.getSecret();
+            api.asApp().requestJira('/rest/api/3/issue/40');
+        };
+        
+        // manifest.yml 
+        modules:
+            webtrigger:
+              - key: basic-hello-world
+                function: main
+            function:
+              - key: main
+                handler: index.src
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(0))
+}
