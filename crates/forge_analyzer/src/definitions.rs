@@ -1117,11 +1117,20 @@ impl FunctionAnalyzer<'_> {
                 get_intrinsic(first_arg, is_as_app, last)
             }
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
-                match self.res.is_imported_from(def, "@forge/api") {
-                    Some(ImportKind::Named(name)) if *name == *"storage" => {
-                        Some(Intrinsic::StorageRead)
+                if let Some(api) = self.res.is_imported_from(def, "@forge/api") {
+                    match api {
+                        ImportKind::Named(name) if *name == *"storage" => {
+                            Some(Intrinsic::StorageRead)
+                        }
+                        _ => None,
                     }
-                    _ => None,
+                } else if let Some(kvs) = self.res.is_imported_from(def, "@forge/kvs") {
+                    match kvs {
+                        ImportKind::Named(name) if *name == *"kvs" => Some(Intrinsic::StorageRead),
+                        _ => None,
+                    }
+                } else {
+                    None
                 }
             }
             [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/api").is_some() => {
