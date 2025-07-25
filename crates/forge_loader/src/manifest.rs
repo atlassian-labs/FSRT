@@ -546,7 +546,7 @@ impl<'a> ForgeModules<'a> {
             space_settings,
             macros,
             jira_admin_page,
-            custom_field_type,
+            custom_field_type: _,
             dashboard_background_script,
             dashboard_gadget,
             jira_global_page,
@@ -630,23 +630,6 @@ impl<'a> ForgeModules<'a> {
             customfield.value.append_functions(&mut invokable_functions);
             customfield
                 .common_keys
-                .append_functions(&mut invokable_functions);
-        });
-
-        custom_field_type.into_iter().for_each(|custom_field_type| {
-            custom_field_type
-                .common_keys
-                .append_functions(&mut invokable_functions);
-
-            custom_field_type
-                .edit
-                .append_functions(&mut invokable_functions);
-            custom_field_type
-                .context_config
-                .append_functions(&mut invokable_functions);
-
-            custom_field_type
-                .value
                 .append_functions(&mut invokable_functions);
         });
 
