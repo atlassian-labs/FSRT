@@ -357,6 +357,10 @@ fn check_perm(perm: &str) -> bool {
     !matches!(perm, "storage:app" | "report:personal-data")
 }
 
+fn get_empty_report() -> Report {
+    Reporter::new().into_report()
+}
+
 #[tracing::instrument(level = "debug")]
 pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
@@ -807,6 +811,12 @@ fn main() -> Result<()> {
         };
 
         debug!(?dir);
+
+        if let Some(path) = &args.out {
+            let report = serde_json::to_string(&get_empty_report())?;
+            fs::write(path, report)?;
+        }
+    
         let reporter_result =
             scan_directory(dir, &mut args, forge_project_from_dir, &secret_packages);
         match reporter_result {
