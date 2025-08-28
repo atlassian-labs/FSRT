@@ -433,13 +433,13 @@ pub fn get_permissions_for(
 ) {
     let cache = PermissionsCache::new(config.clone());
 
-    if config.use_cache() {
-        if let Some(raw_response) = cache.read(cache_key) {
-            debug!("Cache hit for {}", cache_key);
-            let data: SwaggerResponse = serde_json::from_str(&raw_response).unwrap();
-            parse_swagger_response(data, endpoint_map_classic, endpoint_regex);
-            return;
-        }
+    if config.use_cache()
+        && let Some(raw_response) = cache.read(cache_key)
+    {
+        debug!("Cache hit for {}", cache_key);
+        let data: SwaggerResponse = serde_json::from_str(&raw_response).unwrap();
+        parse_swagger_response(data, endpoint_map_classic, endpoint_regex);
+        return;
     }
 
     ureq::get(url)

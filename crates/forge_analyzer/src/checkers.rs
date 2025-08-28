@@ -353,20 +353,17 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
         curr_state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
         for inst in &block.insts {
-            if let Inst::Assign(l, _r) = inst {
-                if let [
+            if let Inst::Assign(l, _r) = inst
+                && let [
                     Projection::Computed(Base::Var(fst)),
                     Projection::Computed(Base::Var(snd)),
                     ..,
                 ] = *l.projections
-                {
-                    if curr_state.get(fst.0 as usize).copied() == Some(Taint::Yes)
-                        && curr_state.get(snd.0 as usize).copied() == Some(Taint::Yes)
-                    {
-                        info!("Prototype pollution vuln detected");
-                        return ControlFlow::Break(());
-                    }
-                }
+                && curr_state.get(fst.0 as usize).copied() == Some(Taint::Yes)
+                && curr_state.get(snd.0 as usize).copied() == Some(Taint::Yes)
+            {
+                info!("Prototype pollution vuln detected");
+                return ControlFlow::Break(());
             }
         }
         ControlFlow::Continue(curr_state.clone())
@@ -1083,27 +1080,25 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                 );
                             } else if let Some(VarKind::GlobalRef(def)) =
                                 interp.body().vars.get(varid)
-                            {
-                                if let Some(value @ Value::Const(_)) =
+                                && let Some(value @ Value::Const(_)) =
                                     interp.value_manager.defid_to_value.get(def)
-                                {
-                                    add_elements_to_intrinsic_struct(
-                                        value,
-                                        intrinsic_argument.first_arg.insert(vec![]),
-                                    );
-                                }
+                            {
+                                add_elements_to_intrinsic_struct(
+                                    value,
+                                    intrinsic_argument.first_arg.insert(vec![]),
+                                );
                             }
                         }
                     }
                 }
             }
-            if let Some(Operand::Var(variable)) = second {
-                if let Base::Var(varid) = variable.base {
-                    let mut method_vec = ProjectionVec::new();
-                    method_vec.push(Projection::Known("method".into()));
-                    if let Some(value) = interp.get_value(_def, varid, Some(method_vec)) {
-                        self.handle_second_arg(value, &mut intrinsic_argument);
-                    }
+            if let Some(Operand::Var(variable)) = second
+                && let Base::Var(varid) = variable.base
+            {
+                let mut method_vec = ProjectionVec::new();
+                method_vec.push(Projection::Known("method".into()));
+                if let Some(value) = interp.get_value(_def, varid, Some(method_vec)) {
+                    self.handle_second_arg(value, &mut intrinsic_argument);
                 }
             }
 
@@ -1472,42 +1467,40 @@ impl<'cx> Dataflow<'cx> for DefinitionAnalysisRunner {
                 // this piece is definition analysis largely for global variables since they are not assigned a VarId, so we use the DefId
                 match rvalue {
                     Rvalue::Call(Operand::Var(variable), _) => {
-                        if let Base::Var(varid) = variable.base {
-                            if let Some(VarKind::GlobalRef(defid)) = interp.body().vars.get(varid) {
-                                if let Base::Var(varid_to_assign) = var.base {
-                                    interp
-                                        .value_manager
-                                        .expected_return_values
-                                        .insert(*defid, (def, varid_to_assign));
-                                }
-                            }
+                        if let Base::Var(varid) = variable.base
+                            && let Some(VarKind::GlobalRef(defid)) = interp.body().vars.get(varid)
+                            && let Base::Var(varid_to_assign) = var.base
+                        {
+                            interp
+                                .value_manager
+                                .expected_return_values
+                                .insert(*defid, (def, varid_to_assign));
                         }
                     }
                     Rvalue::Read(_operand) => {
-                        if let Rvalue::Read(Operand::Lit(Literal::Str(str))) = rvalue {
-                            if let Base::Var(varid) = var.base {
-                                if let Some(VarKind::GlobalRef(def)) = interp.body().vars.get(varid)
-                                {
-                                    interp.value_manager.defid_to_value.insert(
-                                        *def,
-                                        Value::Const(Const::Literal(str.to_string())),
-                                    );
-                                } else if let Some(VarKind::LocalDef(def)) =
-                                    interp.body().vars.get(varid)
-                                {
-                                    interp.value_manager.defid_to_value.insert(
-                                        *def,
-                                        Value::Const(Const::Literal(str.to_string())),
-                                    );
-                                } else if let Some(&VarKind::Temp {
-                                    parent: Some(defid_parent),
-                                }) = interp.body().vars.get(varid)
-                                {
-                                    interp.value_manager.defid_to_value.insert(
-                                        defid_parent,
-                                        Value::Const(Const::Literal(str.to_string())),
-                                    );
-                                }
+                        if let Rvalue::Read(Operand::Lit(Literal::Str(str))) = rvalue
+                            && let Base::Var(varid) = var.base
+                        {
+                            if let Some(VarKind::GlobalRef(def)) = interp.body().vars.get(varid) {
+                                interp
+                                    .value_manager
+                                    .defid_to_value
+                                    .insert(*def, Value::Const(Const::Literal(str.to_string())));
+                            } else if let Some(VarKind::LocalDef(def)) =
+                                interp.body().vars.get(varid)
+                            {
+                                interp
+                                    .value_manager
+                                    .defid_to_value
+                                    .insert(*def, Value::Const(Const::Literal(str.to_string())));
+                            } else if let Some(&VarKind::Temp {
+                                parent: Some(defid_parent),
+                            }) = interp.body().vars.get(varid)
+                            {
+                                interp.value_manager.defid_to_value.insert(
+                                    defid_parent,
+                                    Value::Const(Const::Literal(str.to_string())),
+                                );
                             }
                         }
                         /* should be expanded to include all cases ... */
@@ -1536,31 +1529,31 @@ impl<'cx> Dataflow<'cx> for DefinitionAnalysisRunner {
             let mut args = args.clone();
             args.reverse();
             for (varid, varkind) in function_var.iter_enumerated() {
-                if let VarKind::GlobalRef(_) = varkind {
-                    if let Some(operand) = args.pop() {
-                        interp.add_value(def, varid, operand.clone());
-                        interp
-                            .body()
-                            .vars
-                            .iter_enumerated()
-                            .for_each(|(varid_alt, varkind_alt)| {
-                                let defult_projections = Variable::from(varid_alt);
+                if let VarKind::GlobalRef(_) = varkind
+                    && let Some(operand) = args.pop()
+                {
+                    interp.add_value(def, varid, operand.clone());
+                    interp
+                        .body()
+                        .vars
+                        .iter_enumerated()
+                        .for_each(|(varid_alt, varkind_alt)| {
+                            let defult_projections = Variable::from(varid_alt);
 
-                                if let (Some(defid_alt), Some(defid)) = (
-                                    get_defid_from_varkind(varkind_alt),
-                                    get_defid_from_varkind(varkind),
-                                ) {
-                                    if defid == defid_alt && varid_alt != varid {
-                                        interp.add_value_with_projection(
-                                            def,
-                                            varid_alt,
-                                            operand.clone(),
-                                            defult_projections.projections,
-                                        );
-                                    }
-                                }
-                            })
-                    }
+                            if let (Some(defid_alt), Some(defid)) = (
+                                get_defid_from_varkind(varkind_alt),
+                                get_defid_from_varkind(varkind),
+                            ) && defid == defid_alt
+                                && varid_alt != varid
+                            {
+                                interp.add_value_with_projection(
+                                    def,
+                                    varid_alt,
+                                    operand.clone(),
+                                    defult_projections.projections,
+                                );
+                            }
+                        })
                 }
             }
         }
@@ -1571,14 +1564,12 @@ impl<'cx> Dataflow<'cx> for DefinitionAnalysisRunner {
         }
 
         for (varid, varkind) in interp.body().vars.clone().iter_enumerated() {
-            if &VarKind::Ret == varkind {
-                if let Some((defid_calling_func, varid_calling_func)) =
+            if &VarKind::Ret == varkind
+                && let Some((defid_calling_func, varid_calling_func)) =
                     interp.value_manager.expected_return_values.get(&def)
-                {
-                    if let Some(value) = interp.get_value(def, varid, None) {
-                        interp.add_value(*defid_calling_func, *varid_calling_func, value.clone());
-                    }
-                }
+                && let Some(value) = interp.get_value(def, varid, None)
+            {
+                interp.add_value(*defid_calling_func, *varid_calling_func, value.clone());
             }
         }
 

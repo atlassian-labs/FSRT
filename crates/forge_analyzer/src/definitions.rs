@@ -281,11 +281,11 @@ pub fn run_resolver(
 pub fn update_rvalue(rvalue: &mut Rvalue, updated_vars: &HashMap<VarId, VarId>) {
     // Updates the VarId in the instruction to persist the changes made by the SSA Form Loop.
     let update_var = |variable: &mut Variable| {
-        if let Some(op_var_id) = variable.as_var_id() {
-            if let Some(updated_var_id) = updated_vars.get(&op_var_id) {
-                let mut base = &mut variable.base;
-                *base = Base::Var(*updated_var_id);
-            }
+        if let Some(op_var_id) = variable.as_var_id()
+            && let Some(updated_var_id) = updated_vars.get(&op_var_id)
+        {
+            let mut base = &mut variable.base;
+            *base = Base::Var(*updated_var_id);
         }
     };
 
@@ -1372,59 +1372,53 @@ impl FunctionAnalyzer<'_> {
     }
 
     fn resolve_class_prop(&self, ident: &Ident) -> Option<&Class> {
-        if let Some(defid) = self.res.sym_to_id(ident.to_id(), self.module) {
-            if let Some(potential_class) = self.body.class_instantiations.get(&defid) {
-                if let Some(DefKind::Class(class_id)) = self.res.defs.defs.get(*potential_class) {
-                    return self.res.defs.classes.get(*class_id);
-                }
-            }
+        if let Some(defid) = self.res.sym_to_id(ident.to_id(), self.module)
+            && let Some(potential_class) = self.body.class_instantiations.get(&defid)
+            && let Some(DefKind::Class(class_id)) = self.res.defs.defs.get(*potential_class)
+        {
+            return self.res.defs.classes.get(*class_id);
         }
         None
     }
 
     fn get_operand_for_call(&mut self, expr: &Expr) -> Operand {
-        if let Expr::Ident(ident) = expr {
-            if let Some(DefKind::Class(class)) = self.res.sym_to_def(ident.to_id(), self.module) {
-                let id = ident.to_id();
-                if let Some((_, def_constructor)) = class
-                    .pub_members
-                    .iter()
-                    .find(|(name, defid)| name == "constructor")
-                {
-                    let var = self.body.get_or_insert_global(*def_constructor);
-                    return Operand::with_var(var);
-                }
+        if let Expr::Ident(ident) = expr
+            && let Some(DefKind::Class(class)) = self.res.sym_to_def(ident.to_id(), self.module)
+        {
+            let id = ident.to_id();
+            if let Some((_, def_constructor)) = class
+                .pub_members
+                .iter()
+                .find(|(name, defid)| name == "constructor")
+            {
+                let var = self.body.get_or_insert_global(*def_constructor);
+                return Operand::with_var(var);
             }
         }
-        if let Expr::Member(MemberExpr { obj, prop, .. }) = expr {
-            if let Expr::Ident(ident) = &**obj {
-                if let Some(class) = self.resolve_class_prop(ident) {
-                    if let MemberProp::Ident(ident) = prop {
-                        if let Some((_, def_constructor)) = class
-                            .pub_members
-                            .iter()
-                            .find(|(name, defid)| name == &ident.sym)
-                        {
-                            let var = self.body.get_or_insert_global(*def_constructor);
-                            return Operand::with_var(var);
-                        }
-                    }
-                }
-            }
+        if let Expr::Member(MemberExpr { obj, prop, .. }) = expr
+            && let Expr::Ident(ident) = &**obj
+            && let Some(class) = self.resolve_class_prop(ident)
+            && let MemberProp::Ident(ident) = prop
+            && let Some((_, def_constructor)) = class
+                .pub_members
+                .iter()
+                .find(|(name, defid)| name == &ident.sym)
+        {
+            let var = self.body.get_or_insert_global(*def_constructor);
+            return Operand::with_var(var);
         }
         self.lower_expr(expr, None)
     }
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
         let props = normalize_callee_expr(callee, self.res, self.module);
-        if let Some(&PropPath::Def(id)) = props.first() {
-            if self.res.is_imported_from(id, "@forge/ui").is_some_and(|imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect")) || calls_method(callee, "then")
+        if let Some(&PropPath::Def(id)) = props.first()
+            && (self.res.is_imported_from(id, "@forge/ui").is_some_and(|imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect")) || calls_method(callee, "then")
                 || calls_method(callee, "map")
                 || calls_method(callee, "foreach")
                 || calls_method(callee, "filter")
-                || calls_method(callee, "catch")
-            {
-                if let [ExprOrSpread { expr, .. }] = args {
+                || calls_method(callee, "catch"))
+                && let [ExprOrSpread { expr, .. }] = args {
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, .. }) => match &**body {
                             BlockStmtOrExpr::BlockStmt(stmt) => {
@@ -1445,8 +1439,6 @@ impl FunctionAnalyzer<'_> {
                         _ => {}
                     }
                 }
-            }
-        }
         let lowered_args = args
             .iter()
             .enumerate()
@@ -1523,10 +1515,10 @@ impl FunctionAnalyzer<'_> {
     fn lower_jsx_attr(&mut self, n: &JSXElement) {
         n.opening.attrs.iter().for_each(|attr| match attr {
             JSXAttrOrSpread::JSXAttr(jsx_attr) => {
-                if let JSXAttrName::Ident(ident_value) = &jsx_attr.name {
-                    if let Some(JSXAttrValue::JSXExprContainer(jsx_expr)) = &jsx_attr.value {
-                        self.lower_jsx_handler(jsx_expr, &ident_value.clone().into());
-                    }
+                if let JSXAttrName::Ident(ident_value) = &jsx_attr.name
+                    && let Some(JSXAttrValue::JSXExprContainer(jsx_expr)) = &jsx_attr.value
+                {
+                    self.lower_jsx_handler(jsx_expr, &ident_value.clone().into());
                 }
             }
             JSXAttrOrSpread::SpreadElement(_) => {}
@@ -2310,90 +2302,78 @@ struct PermCheck<'cx> {
 impl Visit for PermCheck<'_> {
     noop_visit_type!();
     fn visit_call_expr(&mut self, n: &CallExpr) {
-        if let Callee::Expr(expr) = &n.callee {
-            if let Expr::Member(ident) = &**expr {
-                if let Some(x) = ident.prop.as_ident() {
-                    if x.sym == "requestJira"
-                        || x.sym == "requestBitbucket"
-                        || x.sym == "requestConfluence"
+        if let Callee::Expr(expr) = &n.callee
+            && let Expr::Member(ident) = &**expr
+            && let Some(x) = ident.prop.as_ident()
+            && (x.sym == "requestJira"
+                || x.sym == "requestBitbucket"
+                || x.sym == "requestConfluence")
+            && let [arg, opts @ ..] = &n.args[..]
+        {
+            if opts.len() > 1 {
+                n.visit_children_with(self);
+                return;
+            }
+            let mut request_ty = Some(RequestType::Get);
+            if let Some(ExprOrSpread { spread: _, expr }) = opts.first()
+                && let Expr::Object(obj) = &**expr
+            {
+                for prop in &obj.props {
+                    if let PropOrSpread::Prop(prop) = prop
+                        && let Prop::KeyValue(KeyValueProp {
+                            key: PropName::Ident(ident),
+                            value,
+                        }) = &**prop
                     {
-                        if let [arg, opts @ ..] = &n.args[..] {
-                            if opts.len() > 1 {
-                                n.visit_children_with(self);
-                                return;
-                            }
-                            let mut request_ty = Some(RequestType::Get);
-                            if let Some(ExprOrSpread { spread: _, expr }) = opts.first() {
-                                if let Expr::Object(obj) = &**expr {
-                                    for prop in &obj.props {
-                                        if let PropOrSpread::Prop(prop) = prop {
-                                            if let Prop::KeyValue(KeyValueProp {
-                                                key: PropName::Ident(ident),
-                                                value,
-                                            }) = &**prop
-                                            {
-                                                {
-                                                    if ident.sym == "method" {
-                                                        if let Expr::Lit(Lit::Str(Str {
-                                                            value: str,
-                                                            ..
-                                                        })) = &**value
-                                                        {
-                                                            if *str == *"GET" {
-                                                                request_ty = Some(RequestType::Get);
-                                                            } else if *str == *"POST" {
-                                                                request_ty =
-                                                                    Some(RequestType::Post);
-                                                            } else if *str == *"PUT" {
-                                                                request_ty = Some(RequestType::Put);
-                                                            } else if *str == *"DELETE" {
-                                                                request_ty =
-                                                                    Some(RequestType::Delete);
-                                                            } else if *str == *"PATCH" {
-                                                                request_ty =
-                                                                    Some(RequestType::Patch);
-                                                            }
-                                                        } else {
-                                                            request_ty = None;
-                                                        }
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
+                        {
+                            if ident.sym == "method" {
+                                if let Expr::Lit(Lit::Str(Str { value: str, .. })) = &**value {
+                                    if *str == *"GET" {
+                                        request_ty = Some(RequestType::Get);
+                                    } else if *str == *"POST" {
+                                        request_ty = Some(RequestType::Post);
+                                    } else if *str == *"PUT" {
+                                        request_ty = Some(RequestType::Put);
+                                    } else if *str == *"DELETE" {
+                                        request_ty = Some(RequestType::Delete);
+                                    } else if *str == *"PATCH" {
+                                        request_ty = Some(RequestType::Patch);
                                     }
-                                }
-                            }
-                            if let Expr::Lit(Lit::Str(str)) = &*arg.expr {
-                                if let Some(request_ty) = request_ty {
-                                    self.env.use_scope(str.value.to_string(), request_ty);
                                 } else {
-                                    self.env.use_all_scopes(str.value.to_string());
+                                    request_ty = None;
                                 }
-                            } else if let Expr::TaggedTpl(TaggedTpl { tpl, .. }) = &*arg.expr {
-                                let mut s = String::new();
-                                for elem in &tpl.quasis {
-                                    s.push_str(elem.raw.as_str());
-                                }
-                                if s.is_empty() {
-                                    if request_ty == Some(RequestType::Get) {
-                                        self.env.clear_readonly_scopes();
-                                    } else {
-                                        self.env.clear_scopes();
-                                    }
-                                } else if let Some(request_ty) = request_ty {
-                                    self.env.use_scope(s, request_ty);
-                                } else {
-                                    self.env.clear_scopes();
-                                }
-                            } else if request_ty == Some(RequestType::Get) {
-                                self.env.clear_readonly_scopes();
-                            } else {
-                                self.env.clear_scopes();
+                                break;
                             }
                         }
                     }
                 }
+            }
+            if let Expr::Lit(Lit::Str(str)) = &*arg.expr {
+                if let Some(request_ty) = request_ty {
+                    self.env.use_scope(str.value.to_string(), request_ty);
+                } else {
+                    self.env.use_all_scopes(str.value.to_string());
+                }
+            } else if let Expr::TaggedTpl(TaggedTpl { tpl, .. }) = &*arg.expr {
+                let mut s = String::new();
+                for elem in &tpl.quasis {
+                    s.push_str(elem.raw.as_str());
+                }
+                if s.is_empty() {
+                    if request_ty == Some(RequestType::Get) {
+                        self.env.clear_readonly_scopes();
+                    } else {
+                        self.env.clear_scopes();
+                    }
+                } else if let Some(request_ty) = request_ty {
+                    self.env.use_scope(s, request_ty);
+                } else {
+                    self.env.clear_scopes();
+                }
+            } else if request_ty == Some(RequestType::Get) {
+                self.env.clear_readonly_scopes();
+            } else {
+                self.env.clear_scopes();
             }
         }
         n.visit_children_with(self);
@@ -2410,24 +2390,16 @@ impl Visit for LocalDefiner<'_> {
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
         n.name.visit_with(self);
-        if let Some(Expr::New(new_expr)) = n.init.as_deref() {
-            if let Pat::Ident(ident) = &n.name {
-                if let Some(defid_variable) = self.res.sym_to_id(ident.to_id(), self.module) {
-                    if let Expr::Ident(ident) = &*new_expr.callee {
-                        if let Some(DefKind::Class(class)) =
-                            self.res.sym_to_def(ident.to_id(), self.module)
-                        {
-                            if let Some(defid_class) =
-                                self.res.sym_to_id(ident.to_id(), self.module)
-                            {
-                                self.body
-                                    .class_instantiations
-                                    .insert(defid_variable, defid_class);
-                            }
-                        }
-                    }
-                }
-            }
+        if let Some(Expr::New(new_expr)) = n.init.as_deref()
+            && let Pat::Ident(ident) = &n.name
+            && let Some(defid_variable) = self.res.sym_to_id(ident.to_id(), self.module)
+            && let Expr::Ident(ident) = &*new_expr.callee
+            && let Some(DefKind::Class(class)) = self.res.sym_to_def(ident.to_id(), self.module)
+            && let Some(defid_class) = self.res.sym_to_id(ident.to_id(), self.module)
+        {
+            self.body
+                .class_instantiations
+                .insert(defid_variable, defid_class);
         }
     }
 
@@ -2467,44 +2439,41 @@ impl Visit for FunctionCollector<'_> {
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
         if let Some(ident) = ident_from_assign_expr(n) {
             if ident.sym == "module" {
-                if let Some(mem_expr) = mem_expr_from_assign(n) {
-                    if let MemberProp::Ident(ident_property) = &mem_expr.prop {
-                        if ident_property.sym == "exports" {
-                            match &*n.right {
-                                Expr::Fn(FnExpr { ident, function }) => self.handle_function(
-                                    function,
-                                    self.res.default_export(self.module),
-                                ),
-                                Expr::Class(ClassExpr { ident, class }) => {
-                                    self.curr_class = self.res.default_export(self.module)
-                                }
-                                // do not worry about idents here ...
-                                _ => {}
-                            }
+                if let Some(mem_expr) = mem_expr_from_assign(n)
+                    && let MemberProp::Ident(ident_property) = &mem_expr.prop
+                    && ident_property.sym == "exports"
+                {
+                    match &*n.right {
+                        Expr::Fn(FnExpr { ident, function }) => {
+                            self.handle_function(function, self.res.default_export(self.module))
                         }
+                        Expr::Class(ClassExpr { ident, class }) => {
+                            self.curr_class = self.res.default_export(self.module)
+                        }
+                        // do not worry about idents here ...
+                        _ => {}
                     }
                 }
-            } else if ident.sym == "exports" {
-                if let Some(mem_expr) = mem_expr_from_assign(n) {
-                    if let MemberProp::Ident(ident_property) = &mem_expr.prop {
-                        match &*n.right {
-                            Expr::Fn(n) => {
-                                if let Some(defid) =
-                                    self.res.get_sym(ident_property.sym.to_id(), self.module)
-                                {
-                                    self.handle_function(&n.function, Some(defid));
-                                }
-                            }
-                            Expr::Class(class) => {
-                                if let Some(defid) =
-                                    self.res.get_sym(ident_property.sym.to_id(), self.module)
-                                {
-                                    self.curr_class = Some(defid);
-                                }
-                            }
-                            _ => {}
+            } else if ident.sym == "exports"
+                && let Some(mem_expr) = mem_expr_from_assign(n)
+                && let MemberProp::Ident(ident_property) = &mem_expr.prop
+            {
+                match &*n.right {
+                    Expr::Fn(n) => {
+                        if let Some(defid) =
+                            self.res.get_sym(ident_property.sym.to_id(), self.module)
+                        {
+                            self.handle_function(&n.function, Some(defid));
                         }
                     }
+                    Expr::Class(class) => {
+                        if let Some(defid) =
+                            self.res.get_sym(ident_property.sym.to_id(), self.module)
+                        {
+                            self.curr_class = Some(defid);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -2529,116 +2498,113 @@ impl Visit for FunctionCollector<'_> {
     }
 
     fn visit_constructor(&mut self, n: &Constructor) {
-        if let Some(class_def) = self.curr_class {
-            if let DefKind::Class(class) = self.res.clone().def_ref(class_def) {
-                if let Some((_, owner)) = &class
-                    .pub_members
-                    .iter()
-                    .find(|(name, defid)| name == "constructor")
-                {
-                    let mut argdef = ArgDefiner {
-                        res: self.res,
-                        module: self.module,
-                        func: *owner,
-                        body: Body::with_owner(*owner),
-                        current_arg: Default::default(),
-                    };
-                    n.params.visit_with(&mut argdef);
-                    let body = argdef.body;
-                    let mut localdef = LocalDefiner {
-                        res: self.res,
-                        module: self.module,
-                        func: *owner,
-                        body,
-                    };
-                    n.body.visit_children_with(&mut localdef);
-                    let body = localdef.body;
-                    let mut analyzer = FunctionAnalyzer {
-                        res: self.res,
-                        module: self.module,
-                        current_def: *owner,
-                        assigning_to: None,
-                        secret_packages: self.secret_packages,
-                        body,
-                        block: BasicBlockId::default(),
-                        operand_stack: vec![],
-                        in_lhs: false,
-                    };
-                    if let Some(BlockStmt { stmts, .. }) = &n.body {
-                        analyzer.lower_stmts(stmts);
-                        let mut body = analyzer.body;
+        if let Some(class_def) = self.curr_class
+            && let DefKind::Class(class) = self.res.clone().def_ref(class_def)
+            && let Some((_, owner)) = &class
+                .pub_members
+                .iter()
+                .find(|(name, defid)| name == "constructor")
+        {
+            let mut argdef = ArgDefiner {
+                res: self.res,
+                module: self.module,
+                func: *owner,
+                body: Body::with_owner(*owner),
+                current_arg: Default::default(),
+            };
+            n.params.visit_with(&mut argdef);
+            let body = argdef.body;
+            let mut localdef = LocalDefiner {
+                res: self.res,
+                module: self.module,
+                func: *owner,
+                body,
+            };
+            n.body.visit_children_with(&mut localdef);
+            let body = localdef.body;
+            let mut analyzer = FunctionAnalyzer {
+                res: self.res,
+                module: self.module,
+                current_def: *owner,
+                assigning_to: None,
+                secret_packages: self.secret_packages,
+                body,
+                block: BasicBlockId::default(),
+                operand_stack: vec![],
+                in_lhs: false,
+            };
+            if let Some(BlockStmt { stmts, .. }) = &n.body {
+                analyzer.lower_stmts(stmts);
+                let mut body = analyzer.body;
 
-                        let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
-                        for (id, block) in body.blocks.iter_enumerated() {
-                            if !block.set_term_called {
-                                blocks_to_update.push(id);
-                            }
-                        }
-                        for id in blocks_to_update {
-                            body.set_terminator(id, Terminator::Ret);
-                        }
-
-                        *self.res.def_mut(*owner).expect_body() = body;
+                let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+                for (id, block) in body.blocks.iter_enumerated() {
+                    if !block.set_term_called {
+                        blocks_to_update.push(id);
                     }
                 }
+                for id in blocks_to_update {
+                    body.set_terminator(id, Terminator::Ret);
+                }
+
+                *self.res.def_mut(*owner).expect_body() = body;
             }
         }
     }
 
     fn visit_class_method(&mut self, n: &ClassMethod) {
-        if let Some(class_def) = self.curr_class {
-            if let DefKind::Class(class) = self.res.clone().def_ref(class_def) {
-                if let Some((_, owner)) = &class.pub_members.iter().find(|(name, defid)| {
-                    if let PropName::Ident(ident) = &n.key {
-                        return name == &ident.sym;
-                    }
-                    false
-                }) {
-                    let mut argdef = ArgDefiner {
-                        res: self.res,
-                        module: self.module,
-                        func: *owner,
-                        body: Body::with_owner(*owner),
-                        current_arg: Default::default(),
-                    };
-                    n.function.params.visit_with(&mut argdef);
-                    let body = argdef.body;
-                    let mut localdef = LocalDefiner {
-                        res: self.res,
-                        module: self.module,
-                        func: *owner,
-                        body,
-                    };
-                    n.function.body.visit_children_with(&mut localdef);
-                    let body = localdef.body;
-                    let mut analyzer = FunctionAnalyzer {
-                        res: self.res,
-                        module: self.module,
-                        current_def: *owner,
-                        secret_packages: self.secret_packages,
-                        assigning_to: None,
-                        body,
-                        block: BasicBlockId::default(),
-                        operand_stack: vec![],
-                        in_lhs: false,
-                    };
-                    if let Some(BlockStmt { stmts, .. }) = &n.function.body {
-                        analyzer.lower_stmts(stmts);
-                        let mut body = analyzer.body;
+        if let Some(class_def) = self.curr_class
+            && let DefKind::Class(class) = self.res.clone().def_ref(class_def)
+            && let Some((_, owner)) = &class.pub_members.iter().find(|(name, defid)| {
+                if let PropName::Ident(ident) = &n.key {
+                    return name == &ident.sym;
+                }
+                false
+            })
+        {
+            let mut argdef = ArgDefiner {
+                res: self.res,
+                module: self.module,
+                func: *owner,
+                body: Body::with_owner(*owner),
+                current_arg: Default::default(),
+            };
+            n.function.params.visit_with(&mut argdef);
+            let body = argdef.body;
+            let mut localdef = LocalDefiner {
+                res: self.res,
+                module: self.module,
+                func: *owner,
+                body,
+            };
+            n.function.body.visit_children_with(&mut localdef);
+            let body = localdef.body;
+            let mut analyzer = FunctionAnalyzer {
+                res: self.res,
+                module: self.module,
+                current_def: *owner,
+                secret_packages: self.secret_packages,
+                assigning_to: None,
+                body,
+                block: BasicBlockId::default(),
+                operand_stack: vec![],
+                in_lhs: false,
+            };
+            if let Some(BlockStmt { stmts, .. }) = &n.function.body {
+                analyzer.lower_stmts(stmts);
+                let mut body = analyzer.body;
 
-                        let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
-                        for (id, block) in body.blocks.iter_enumerated() {
-                            if !block.set_term_called {
-                                blocks_to_update.push(id);
-                            }
-                        }
-                        for id in blocks_to_update {
-                            body.set_terminator(id, Terminator::Ret);
-                        }
-
-                        *self.res.def_mut(*owner).expect_body() = body;
+                let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+                for (id, block) in body.blocks.iter_enumerated() {
+                    if !block.set_term_called {
+                        blocks_to_update.push(id);
                     }
                 }
+                for id in blocks_to_update {
+                    body.set_terminator(id, Terminator::Ret);
+                }
+
+                *self.res.def_mut(*owner).expect_body() = body;
             }
         }
     }
@@ -2828,19 +2794,18 @@ impl Visit for FunctionCollector<'_> {
             }
             Some(Expr::Object(object_lit)) => {
                 object_lit.props.iter().for_each(|prop| {
-                    if let PropOrSpread::Prop(prop) = prop {
-                        if let Prop::Method(MethodProp { key, function }) = &**prop {
-                            if let Some(key_ident) = key.as_ident() {
-                                let former_parent = self.parent;
-                                self.parent = self.res.get_prop_from_ident(
-                                    self.module,
-                                    id.to_id(),
-                                    &key_ident.clone().into(),
-                                );
-                                self.handle_function(function, None);
-                                self.parent = former_parent;
-                            }
-                        }
+                    if let PropOrSpread::Prop(prop) = prop
+                        && let Prop::Method(MethodProp { key, function }) = &**prop
+                        && let Some(key_ident) = key.as_ident()
+                    {
+                        let former_parent = self.parent;
+                        self.parent = self.res.get_prop_from_ident(
+                            self.module,
+                            id.to_id(),
+                            &key_ident.clone().into(),
+                        );
+                        self.handle_function(function, None);
+                        self.parent = former_parent;
                     }
                 });
             }
@@ -3065,22 +3030,18 @@ impl Visit for Lowerer<'_> {
     }
 
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
-        if let Some(ident) = ident_from_assign_expr(n) {
-            if ident.sym == "module" {
-                if let Some(mem_expr) = mem_expr_from_assign(n) {
-                    if let MemberProp::Ident(ident_property) = &mem_expr.prop {
-                        if ident_property.sym == "exports" {
-                            if let Expr::Class(ClassExpr { ident, class }) = &*n.right {
-                                if let Some(defid) = self.res.default_export(self.curr_mod) {
-                                    self.curr_class = Some(defid);
-                                }
-                                n.visit_children_with(self);
-                                self.curr_class = None;
-                            }
-                        }
-                    }
-                }
+        if let Some(ident) = ident_from_assign_expr(n)
+            && ident.sym == "module"
+            && let Some(mem_expr) = mem_expr_from_assign(n)
+            && let MemberProp::Ident(ident_property) = &mem_expr.prop
+            && ident_property.sym == "exports"
+            && let Expr::Class(ClassExpr { ident, class }) = &*n.right
+        {
+            if let Some(defid) = self.res.default_export(self.curr_mod) {
+                self.curr_class = Some(defid);
             }
+            n.visit_children_with(self);
+            self.curr_class = None;
         }
         n.visit_children_with(self);
     }
@@ -3107,50 +3068,45 @@ impl Visit for Lowerer<'_> {
 
     fn visit_constructor(&mut self, n: &Constructor) {
         n.visit_children_with(self);
-        if let Some(class_def) = self.curr_class {
-            if let DefKind::Class(class) = self.res.def_mut(class_def) {
-                if let PropName::Ident(ident) = &n.key {
-                    let owner =
-                        self.res
-                            .add_anonymous("__CONSTRUCTOR", AnonType::Closure, self.curr_mod);
-                    self.res.add_class_method(n.key.clone(), class_def, owner);
-                }
-            }
+        if let Some(class_def) = self.curr_class
+            && let DefKind::Class(class) = self.res.def_mut(class_def)
+            && let PropName::Ident(ident) = &n.key
+        {
+            let owner = self
+                .res
+                .add_anonymous("__CONSTRUCTOR", AnonType::Closure, self.curr_mod);
+            self.res.add_class_method(n.key.clone(), class_def, owner);
         }
     }
 
     fn visit_class_method(&mut self, n: &ClassMethod) {
         n.visit_children_with(self);
-        if let Some(class_def) = self.curr_class {
-            if let DefKind::Class(class) = self.res.def_mut(class_def) {
-                if let PropName::Ident(ident) = &n.key {
-                    let owner =
-                        self.res
-                            .add_anonymous("__CLASSMETHOD", AnonType::Closure, self.curr_mod);
-                    self.res.add_class_method(n.key.clone(), class_def, owner);
-                }
-            }
+        if let Some(class_def) = self.curr_class
+            && let DefKind::Class(class) = self.res.def_mut(class_def)
+            && let PropName::Ident(ident) = &n.key
+        {
+            let owner = self
+                .res
+                .add_anonymous("__CLASSMETHOD", AnonType::Closure, self.curr_mod);
+            self.res.add_class_method(n.key.clone(), class_def, owner);
         }
     }
 
     fn visit_call_expr(&mut self, n: &CallExpr) {
-        if let Some(expr) = n.callee.as_expr() {
-            if let Some((objid, ResolverDef::FnDef)) = as_resolver(expr, self.res, self.curr_mod) {
-                if let [
-                    ExprOrSpread { expr: name, .. },
-                    ExprOrSpread { expr: args, .. },
-                ] = &*n.args
-                {
-                    if let Expr::Lit(Lit::Str(Str { value, .. })) = &**name {
-                        let fname = value.clone();
-                        let new_def =
-                            self.res
-                                .add_anonymous(fname.clone(), AnonType::Closure, self.curr_mod);
-                        let class = self.res.def_mut(objid).expect_class();
-                        class.pub_members.push((fname, new_def));
-                    }
-                }
-            }
+        if let Some(expr) = n.callee.as_expr()
+            && let Some((objid, ResolverDef::FnDef)) = as_resolver(expr, self.res, self.curr_mod)
+            && let [
+                ExprOrSpread { expr: name, .. },
+                ExprOrSpread { expr: args, .. },
+            ] = &*n.args
+            && let Expr::Lit(Lit::Str(Str { value, .. })) = &**name
+        {
+            let fname = value.clone();
+            let new_def = self
+                .res
+                .add_anonymous(fname.clone(), AnonType::Closure, self.curr_mod);
+            let class = self.res.def_mut(objid).expect_class();
+            class.pub_members.push((fname, new_def));
         }
     }
 
@@ -3188,28 +3144,27 @@ impl Visit for Lowerer<'_> {
                                     ExprOrSpread { expr: name, .. },
                                     ExprOrSpread { expr: args, .. },
                                 ] = &**args
+                                    && let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr
                                 {
-                                    if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
-                                        let fname = value.clone();
-                                        let member_def = match &**args {
-                                            Expr::Fn(_) | Expr::Arrow(_) => self.res.add_anonymous(
+                                    let fname = value.clone();
+                                    let member_def = match &**args {
+                                        Expr::Fn(_) | Expr::Arrow(_) => self.res.add_anonymous(
+                                            fname.clone(),
+                                            AnonType::Closure,
+                                            self.curr_mod,
+                                        ),
+                                        Expr::Ident(id) => self.get_or_insert_sym(id.to_id()),
+                                        _ => {
+                                            warn!("unknown function def: {:?}", args);
+                                            self.res.add_anonymous(
                                                 fname.clone(),
-                                                AnonType::Closure,
+                                                AnonType::Unknown,
                                                 self.curr_mod,
-                                            ),
-                                            Expr::Ident(id) => self.get_or_insert_sym(id.to_id()),
-                                            _ => {
-                                                warn!("unknown function def: {:?}", args);
-                                                self.res.add_anonymous(
-                                                    fname.clone(),
-                                                    AnonType::Unknown,
-                                                    self.curr_mod,
-                                                )
-                                            }
-                                        };
-                                        let class = self.res.def_mut(objid).expect_class();
-                                        class.pub_members.push((fname, member_def));
-                                    }
+                                            )
+                                        }
+                                    };
+                                    let class = self.res.def_mut(objid).expect_class();
+                                    class.pub_members.push((fname, member_def));
                                 }
                             }
                             ResolverDef::Handler => {
@@ -3569,54 +3524,49 @@ impl Visit for ExportCollector<'_> {
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
         if let Some(ident) = ident_from_assign_expr(n) {
             if ident.sym == "module" {
-                if let Some(mem_expr) = mem_expr_from_assign(n) {
-                    if let MemberProp::Ident(ident_property) = &mem_expr.prop {
-                        if ident_property.sym == "exports" {
-                            match &*n.right {
-                                Expr::Fn(FnExpr { ident, function }) => {
-                                    self.add_default(
-                                        DefRes::Function(()),
-                                        ident.as_ref().map(Ident::to_id),
-                                    );
-                                }
-                                Expr::Class(ClassExpr { ident, class }) => {
-                                    self.add_default(
-                                        DefRes::Class(()),
-                                        ident.as_ref().map(Ident::to_id),
-                                    );
-                                }
-                                Expr::Ident(ident) => {
-                                    let default_id = self.add_default(DefRes::Undefined, None);
-                                    // adding the default export, so we can resolve it during the lowering
-                                    self.res_table
-                                        .exported_names
-                                        .insert((ident.sym.clone(), self.curr_mod), default_id);
-                                }
-                                _ => {}
-                            }
+                if let Some(mem_expr) = mem_expr_from_assign(n)
+                    && let MemberProp::Ident(ident_property) = &mem_expr.prop
+                    && ident_property.sym == "exports"
+                {
+                    match &*n.right {
+                        Expr::Fn(FnExpr { ident, function }) => {
+                            self.add_default(
+                                DefRes::Function(()),
+                                ident.as_ref().map(Ident::to_id),
+                            );
                         }
+                        Expr::Class(ClassExpr { ident, class }) => {
+                            self.add_default(DefRes::Class(()), ident.as_ref().map(Ident::to_id));
+                        }
+                        Expr::Ident(ident) => {
+                            let default_id = self.add_default(DefRes::Undefined, None);
+                            // adding the default export, so we can resolve it during the lowering
+                            self.res_table
+                                .exported_names
+                                .insert((ident.sym.clone(), self.curr_mod), default_id);
+                        }
+                        _ => {}
                     }
                 }
-            } else if ident.sym == "exports" {
-                if let Some(mem_expr) = mem_expr_from_assign(n) {
-                    if let MemberProp::Ident(ident_property) = &mem_expr.prop {
-                        match &*n.right {
-                            Expr::Fn(FnExpr { ident, function }) => {
-                                self.add_export(DefRes::Function(()), ident_property.sym.to_id());
-                            }
-                            Expr::Class(_) => {
-                                self.add_export(DefRes::Class(()), ident_property.sym.to_id());
-                            }
-                            Expr::Ident(ident) => {
-                                let export_defid =
-                                    self.add_export(DefRes::Undefined, ident_property.sym.to_id());
-                                self.res_table
-                                    .exported_names
-                                    .insert((ident.sym.clone(), self.curr_mod), export_defid);
-                            }
-                            _ => {}
-                        }
+            } else if ident.sym == "exports"
+                && let Some(mem_expr) = mem_expr_from_assign(n)
+                && let MemberProp::Ident(ident_property) = &mem_expr.prop
+            {
+                match &*n.right {
+                    Expr::Fn(FnExpr { ident, function }) => {
+                        self.add_export(DefRes::Function(()), ident_property.sym.to_id());
                     }
+                    Expr::Class(_) => {
+                        self.add_export(DefRes::Class(()), ident_property.sym.to_id());
+                    }
+                    Expr::Ident(ident) => {
+                        let export_defid =
+                            self.add_export(DefRes::Undefined, ident_property.sym.to_id());
+                        self.res_table
+                            .exported_names
+                            .insert((ident.sym.clone(), self.curr_mod), export_defid);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -3689,10 +3639,10 @@ impl Visit for ExportCollector<'_> {
 }
 
 fn ident_from_assign_expr(n: &AssignExpr) -> Option<Ident> {
-    if let Some(mem_expr) = mem_expr_from_assign(n) {
-        if let Expr::Ident(ident) = &*mem_expr.obj {
-            return Some(ident.clone());
-        }
+    if let Some(mem_expr) = mem_expr_from_assign(n)
+        && let Expr::Ident(ident) = &*mem_expr.obj
+    {
+        return Some(ident.clone());
     }
     None
 }
@@ -3843,10 +3793,10 @@ impl Environment {
     }
 
     fn add_class_method(&mut self, n: PropName, class_def: DefId, owner: DefId) {
-        if let DefKind::Class(class) = self.def_mut(class_def) {
-            if let PropName::Ident(ident) = &n {
-                class.pub_members.push((ident.sym.to_owned(), owner));
-            }
+        if let DefKind::Class(class) = self.def_mut(class_def)
+            && let PropName::Ident(ident) = &n
+        {
+            class.pub_members.push((ident.sym.to_owned(), owner));
         }
     }
 
@@ -4056,12 +4006,10 @@ impl Environment {
             callee: Callee::Expr(expr),
             ..
         }) = n
+            && let Expr::Ident(id) = &**expr
+            && let Some(defid) = self.recent_sym(id.sym.clone(), module)
         {
-            if let Expr::Ident(id) = &**expr {
-                if let Some(defid) = self.recent_sym(id.sym.clone(), module) {
-                    return self.is_imported_from(defid, "@forge/api");
-                }
-            }
+            return self.is_imported_from(defid, "@forge/api");
         }
         None
     }
