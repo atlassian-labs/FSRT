@@ -906,10 +906,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 if let Base::Var(varid) = var.base {
                     if let Some(value) = self.get_value(def, varid, Some(var.projections.clone())) {
                         return matches!(value, Value::Const(_) | Value::Phi(_));
-                    } else if let Some(VarKind::GlobalRef(def)) = self.body().vars.get(varid) {
-                        if let Some(value) = self.value_manager.defid_to_value.get(def) {
-                            return matches!(value, Value::Const(_) | Value::Phi(_));
-                        }
+                    } else if let Some(VarKind::GlobalRef(def)) = self.body().vars.get(varid)
+                        && let Some(value) = self.value_manager.defid_to_value.get(def)
+                    {
+                        return matches!(value, Value::Const(_) | Value::Phi(_));
                     }
                 }
                 false

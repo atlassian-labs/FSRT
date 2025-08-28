@@ -9,10 +9,10 @@ use itertools::Itertools;
 use swc_core::ecma::ast::{Expr, Lit, MemberProp};
 
 pub fn calls_method(n: CalleeRef<'_>, name: &str) -> bool {
-    if let CalleeRef::Expr(Expr::Member(mem)) = &n {
-        if let MemberProp::Ident(ident) = &mem.prop {
-            return ident.sym == *name;
-        }
+    if let CalleeRef::Expr(Expr::Member(mem)) = &n
+        && let MemberProp::Ident(ident) = &mem.prop
+    {
+        return ident.sym == *name;
     }
     false
 }
