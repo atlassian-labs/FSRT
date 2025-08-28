@@ -129,17 +129,13 @@ impl PermissionsCache {
     pub fn service_api(&self, service: Service) -> SwaggerResponse {
         let url = service.url();
         let filename = service.filename();
-        if self.config.use_cache() {
-            if let Some(cache_path) = self.get_cache_path(filename) {
-                if self.is_cache_valid(&cache_path) {
-                    if let Ok(file) = File::open(&cache_path) {
-                        if let Ok(swagger_response) = serde_json::from_reader(BufReader::new(file))
-                        {
-                            return swagger_response;
-                        }
-                    }
-                }
-            }
+        if self.config.use_cache()
+            && let Some(cache_path) = self.get_cache_path(filename)
+            && self.is_cache_valid(&cache_path)
+            && let Ok(file) = File::open(&cache_path)
+            && let Ok(swagger_response) = serde_json::from_reader(BufReader::new(file))
+        {
+            return swagger_response;
         }
         let resp = ureq::get(url)
             .call()
@@ -150,17 +146,17 @@ impl PermissionsCache {
             .unwrap_or_else(|err| panic!("Failed to parse JSON response from {url}. error: {err}"));
         let swagger: SwaggerResponse = serde_json::from_str(&raw)
             .unwrap_or_else(|err| panic!("Failed to deserialize JSON response: {err}"));
-        if self.config.use_cache() {
-            if let Some(cache_path) = self.get_cache_path(filename) {
-                let cache_dir = cache_path.parent().unwrap();
-                if fs::create_dir_all(cache_dir).is_ok() {
-                    if let Err(e) = fs::write(&cache_path, raw) {
-                        warn!(
-                            "Failed to write cache file: {:?}, error: {:?}",
-                            cache_path, e
-                        );
-                    }
-                }
+        if self.config.use_cache()
+            && let Some(cache_path) = self.get_cache_path(filename)
+        {
+            let cache_dir = cache_path.parent().unwrap();
+            if fs::create_dir_all(cache_dir).is_ok()
+                && let Err(e) = fs::write(&cache_path, raw)
+            {
+                warn!(
+                    "Failed to write cache file: {:?}, error: {:?}",
+                    cache_path, e
+                );
             }
         }
         swagger

@@ -173,13 +173,12 @@ fn parse_grapqhql_schema<'a: 'b, 'b>(
                         "Unkown"
                     };
 
-                if let Selection::Field(field) = &item {
-                    if let Some(PermissionsAndNextSelection { next_selection, .. }) =
+                if let Selection::Field(field) = &item
+                    && let Some(PermissionsAndNextSelection { next_selection, .. }) =
                         get_permissions_and_next_selection(field, schema_doc, definition)
-                    {
-                        return Some(next_selection);
-                    };
-                }
+                {
+                    return Some(next_selection);
+                };
                 None
             })),
         _ => {}
@@ -210,19 +209,19 @@ fn parse_grapqhql_schema<'a: 'b, 'b>(
                             return Some(
                                 set.iter()
                                     .filter_map(|selection| {
-                                        if let Selection::Field(field) = selection {
-                                            if let Some(PermissionsAndNextSelection {
+                                        if let Selection::Field(field) = selection
+                                            && let Some(PermissionsAndNextSelection {
                                                 permission_vec,
                                                 next_selection,
                                             }) = get_permissions_and_next_selection(
                                                 field,
                                                 schema_doc,
                                                 schema_field,
-                                            ) {
-                                                permission_list.extend(permission_vec);
-                                                return Some(next_selection);
-                                            };
-                                        }
+                                            )
+                                        {
+                                            permission_list.extend(permission_vec);
+                                            return Some(next_selection);
+                                        };
                                         None
                                     })
                                     .collect(),
@@ -247,16 +246,16 @@ fn get_permissions_and_next_selection<'a, 'b>(
     let field_type = get_type_or_typex_with_name(schema_doc, schema_field)
         .find(|sub_field| sub_field.name == field.name);
 
-    if let Some(field_type) = field_type {
-        if let Type::NamedType(name) = &&field_type.field_type {
-            return Some(PermissionsAndNextSelection {
-                permission_vec: get_field_directives(field_type),
-                next_selection: NextSelection {
-                    selection_set: &field.selection_set,
-                    next_type: name,
-                },
-            });
-        }
+    if let Some(field_type) = field_type
+        && let Type::NamedType(name) = &&field_type.field_type
+    {
+        return Some(PermissionsAndNextSelection {
+            permission_vec: get_field_directives(field_type),
+            next_selection: NextSelection {
+                selection_set: &field.selection_set,
+                next_type: name,
+            },
+        });
     }
     None
 }
@@ -289,14 +288,14 @@ fn get_field_directives<'a>(field: &'a graphql_parser::schema::Field<'_, &'a str
     field.directives.iter().for_each(|directive| {
         if directive.name == "scopes" {
             directive.arguments.iter().for_each(|arg| {
-                if arg.0 == "required" {
-                    if let query::Value::List(val) = &arg.1 {
-                        val.iter().for_each(|val| {
-                            if let query::Value::Enum(en) = val {
-                                perm_vec.push(*en);
-                            }
-                        });
-                    }
+                if arg.0 == "required"
+                    && let query::Value::List(val) = &arg.1
+                {
+                    val.iter().for_each(|val| {
+                        if let query::Value::Enum(en) = val {
+                            perm_vec.push(*en);
+                        }
+                    });
                 }
             });
         }
@@ -355,6 +354,10 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 
 fn check_perm(perm: &str) -> bool {
     !matches!(perm, "storage:app" | "report:personal-data")
+}
+
+fn get_empty_report() -> Report {
+    Reporter::new().into_report()
 }
 
 #[tracing::instrument(level = "debug")]
@@ -690,15 +693,14 @@ pub(crate) fn scan_directory<'a>(
                 |EnumValue {
                      directives, name, ..
                  }| {
-                    if let Some(directive) = directives.first() {
-                        if let graphql_parser::schema::Value::String(oauth_scope) = &directive
+                    if let Some(directive) = directives.first()
+                        && let graphql_parser::schema::Value::String(oauth_scope) = &directive
                             .arguments
                             .first()
                             .expect("Should only be one directive")
                             .1
-                        {
-                            scope_name_to_oauth.insert(*name, &**oauth_scope);
-                        }
+                    {
+                        scope_name_to_oauth.insert(*name, &**oauth_scope);
                     }
                 },
             )
@@ -807,6 +809,12 @@ fn main() -> Result<()> {
         };
 
         debug!(?dir);
+
+        if let Some(path) = &args.out {
+            let report = serde_json::to_string(&get_empty_report())?;
+            fs::write(path, report)?;
+        }
+
         let reporter_result =
             scan_directory(dir, &mut args, forge_project_from_dir, &secret_packages);
         match reporter_result {
