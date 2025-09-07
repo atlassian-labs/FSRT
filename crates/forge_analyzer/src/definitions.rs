@@ -409,7 +409,7 @@ type DefRef<'a> = DefKind<&'a Body, &'a Class, &'a ForeignItem>;
 type DefMut<'a> = DefKind<&'a mut Body, &'a mut Class, &'a mut ForeignItem>;
 type DefRes<I = ForeignId> = DefKind<(), (), I>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DefKind<F, O, I> {
     Arg,
     Function(F),
@@ -470,13 +470,8 @@ pub enum DefKind<F, O, I> {
     // Example: `module` in import * as 'foo' from 'module'
     // Local modules only.
     ModuleNs(ModId),
+    #[default]
     Undefined,
-}
-
-impl<F, O, I> Default for DefKind<F, O, I> {
-    fn default() -> Self {
-        Self::Undefined
-    }
 }
 
 impl<F, O, I> DefKind<F, O, I> {
