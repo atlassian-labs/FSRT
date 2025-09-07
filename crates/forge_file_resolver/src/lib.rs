@@ -121,7 +121,7 @@ impl ForgeResolver {
             self.modules
                 .iter()
                 .zip(&self.no_ext)
-                .position(|(modpath, no_ext)| (*modpath == path || *no_ext == path_no_extension))
+                .position(|(modpath, no_ext)| *modpath == path || *no_ext == path_no_extension)
         } else {
             self.modules.iter().position(|modpath| *modpath == path)
         }
