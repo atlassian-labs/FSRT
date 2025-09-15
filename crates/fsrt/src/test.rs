@@ -979,13 +979,11 @@ fn graphql_correct_scopes_with_fragment() {
 }
 
 #[test]
-#[ignore] // TODO: we've identified Rovo functions as user invokable but not yet if any vulnerabilities exist, remove this line when implemented
 fn rovo_function_basic_authz_vuln() {
     let test_forge_project = MockForgeProject::files_from_string(
         "// src/index.jsx
         import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
         import api, { route } from '@forge/api';
-
 
         function getText({ text }) {
         api.asApp().requestJira(route`/rest/api/3/issue`);
@@ -1005,7 +1003,7 @@ fn rovo_function_basic_authz_vuln() {
 
         export const run = render(<Macro app={<App />} />);
         
-        // manifest.yaml 
+        // manifest.yml 
         modules:
             rovo:agent:
               - key: data-discoverability
@@ -1013,18 +1011,18 @@ fn rovo_function_basic_authz_vuln() {
                 description: Test agent description
                 prompt: Test prompt instructions
                 conversationStarters:
-                  - starter1
-                  - starter2
-                  - starter3
+                - starter1
+                - starter2
+                - starter3
                 actions:
-                  - indexing-compass
+                - indexing-compass
             action:
               - key: indexing-compass
                 function: main
                 actionVerb: GET
                 description: Test action description
                 inputs:
-                  data:
+                data:
                     title: Data
                     type: string
                     required: true
@@ -1032,15 +1030,14 @@ fn rovo_function_basic_authz_vuln() {
             function:
               - key: main
                 handler: index.run
-
-          permissions:
+        permissions:
             scopes:
               - 'read:component:compass'
             external:
-              fetch:
+                fetch:
                 backend:
                   - test-backend.example.com
-          app:
+        app:
             id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986",
     );
 
