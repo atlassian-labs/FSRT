@@ -44,13 +44,13 @@ Installing from source:
 ```sh
 git clone https://github.com/atlassian-labs/FSRT.git
 cd FSRT
-cargo install --path crates/fsrt
+cargo install --path crates/fsrt --locked
 ```
 
 or alternatively:
 
 ```text
-cargo install --git https://github.com/atlassian-labs/FSRT
+cargo install --git https://github.com/atlassian-labs/FSRT --locked
 ```
 
 ## Tests
