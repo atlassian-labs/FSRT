@@ -795,6 +795,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     None => {
                         if self.is_obj(varid) {
                             Value::Object(varid)
+                        } else if let Some(defid) = self.body().get_defid_from_var(varid)
+                            && let Some(val) = self.value_manager.defid_to_value.get(&defid)
+                        {
+                            val.clone()
                         } else {
                             Value::Unknown
                         }
@@ -947,11 +951,13 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         let mut dataflow = C::Dataflow::with_interp(self);
         let mut worklist = WorkList::new();
 
+        // funcs then are pushed after
+        worklist.push_front_blocks(self.env, func_def, self.call_all);
+
+        // global should be first
         for global_def in &self.env().global {
             worklist.push_front_blocks(self.env, *global_def, self.call_all);
         }
-
-        worklist.push_front_blocks(self.env, func_def, self.call_all);
         let old_body = self.curr_body.get();
         while let Some((def, block_id)) = worklist.pop_front() {
             let arguments = self.callstack_arguments.pop();

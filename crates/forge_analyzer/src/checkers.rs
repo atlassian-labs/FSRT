@@ -1,3 +1,4 @@
+#![allow(dead_code, unused)]
 use crate::interp::ProjectionVec;
 use crate::utils::projvec_from_str;
 use crate::{
