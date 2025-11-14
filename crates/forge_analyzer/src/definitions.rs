@@ -3450,8 +3450,22 @@ impl Visit for GlobalCollector<'_> {
         let mut all_module_items = Vec::new();
 
         for item in &n.body {
-            if let ModuleItem::Stmt(stmt) = item {
-                all_module_items.push(stmt.clone());
+            match item {
+                // TODO handle all cases
+                ModuleItem::Stmt(stmt) => all_module_items.push(stmt.clone()),
+                ModuleItem::ModuleDecl(mod_decl) => match mod_decl {
+                    ModuleDecl::ExportDecl(export_decl) => {
+                        all_module_items.push(Stmt::Decl(export_decl.decl.clone()))
+                    }
+                    ModuleDecl::ExportAll(_)
+                    | ModuleDecl::ExportDefaultDecl(_)
+                    | ModuleDecl::ExportDefaultExpr(_)
+                    | ModuleDecl::ExportNamed(_)
+                    | ModuleDecl::TsExportAssignment(_)
+                    | ModuleDecl::Import(_)
+                    | ModuleDecl::TsImportEquals(_)
+                    | ModuleDecl::TsNamespaceExport(_) => {}
+                },
             }
         }
         analyzer.lower_stmts(all_module_items.as_slice());
