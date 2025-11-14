@@ -4265,3 +4265,37 @@ impl PartialEq<str> for ImportKind {
         }
     }
 }
+
+impl PartialEq<str> for Value {
+    #[inline]
+    fn eq(&self, other: &str) -> bool {
+        match self {
+            Self::Const(Const::Literal(s)) => **s == *other,
+            Self::Phi(v) if !v.is_empty() => v.iter().all(|x| *x == *other),
+            Self::Uninit | Self::Unknown | Self::Object(_) | Self::Phi(_) => false,
+        }
+    }
+}
+
+impl PartialEq<Value> for str {
+    #[inline]
+    fn eq(&self, other: &Value) -> bool {
+        *other == *self
+    }
+}
+
+impl PartialEq<str> for Const {
+    #[inline]
+    fn eq(&self, other: &str) -> bool {
+        match self {
+            Self::Literal(s) => **s == *other,
+        }
+    }
+}
+
+impl PartialEq<Const> for str {
+    #[inline]
+    fn eq(&self, other: &Const) -> bool {
+        *other == *self
+    }
+}
