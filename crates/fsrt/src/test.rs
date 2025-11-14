@@ -1231,6 +1231,201 @@ fn graphql_compass() {
 }
 
 #[test]
+fn global_secret_vuln() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
+        import api, { route, fetch } from '@forge/api';
+        import graphqlGateway from '@atlassian/forge-graphql';
+
+        const secret = 'test';
+
+        const App = () => {
+            let value = 'value'
+
+            let h = { headers: { authorization: secret } }
+
+            fetch('url', h)
+            foo();
+
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        };
+        export const run = render(<Macro app={<App />} />)
+        // manifest.yaml
+        modules:
+          macro:
+            - key: basic-hello-world
+              function: main
+              title: basic
+              handler: nothing
+              description: Inserts Hello world!
+          function:
+            - key: main
+              handler: index.run
+        app:
+          id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+          scopes:
+            - read:component:compass",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
+#[test]
+fn global_secret_no_vuln() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
+        import api, { route, fetch } from '@forge/api';
+        import graphqlGateway from '@atlassian/forge-graphql';
+
+        const secret = process.env.SECRET;
+
+        const App = () => {
+            let value = 'value'
+
+            let h = { headers: { authorization: secret } }
+
+            fetch('url', h)
+            foo();
+
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        };
+        export const run = render(<Macro app={<App />} />)
+        // manifest.yaml
+        modules:
+          macro:
+            - key: basic-hello-world
+              function: main
+              title: basic
+              handler: nothing
+              description: Inserts Hello world!
+          function:
+            - key: main
+              handler: index.run
+        app:
+          id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+          scopes:
+            - read:component:compass",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(0));
+}
+
+#[test]
+fn global_secret_vuln_reset() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
+        import api, { route, fetch } from '@forge/api';
+        import graphqlGateway from '@atlassian/forge-graphql';
+
+        const secret = 'test';
+
+        const App = () => {
+            let value = 'value'
+
+            let h = { headers: { authorization: secret } }
+
+            let secret = process.ENV.secret;
+
+            fetch('url', h)
+            foo();
+
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        };
+        export const run = render(<Macro app={<App />} />)
+        // manifest.yaml
+        modules:
+          macro:
+            - key: basic-hello-world
+              function: main
+              title: basic
+              handler: nothing
+              description: Inserts Hello world!
+          function:
+            - key: main
+              handler: index.run
+        app:
+          id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+          scopes:
+            - read:component:compass",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(0));
+}
+
+#[test]
+fn global_secret_vuln_alternate_file() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "//src/constants.tsx
+        
+        export const secret = 'SECRET'
+        
+        //src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
+        import api, { route, fetch } from '@forge/api';
+        import { secret } from './constants';
+        import graphqlGateway from '@atlassian/forge-graphql';
+
+        const App = () => {
+            let value = 'value'
+
+            let h = { headers: { authorization: secret } }
+
+            fetch('url', h)
+            foo();
+
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        };
+        export const run = render(<Macro app={<App />} />)
+        // manifest.yaml
+        modules:
+          macro:
+            - key: basic-hello-world
+              function: main
+              title: basic
+              handler: nothing
+              description: Inserts Hello world!
+          function:
+            - key: main
+              handler: index.run
+        app:
+          id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+          scopes:
+            - read:component:compass",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
+#[test]
 fn graphqlgateway_compass() {
     let test_forge_project = MockForgeProject::files_from_string(
         "// src/index.tsx
