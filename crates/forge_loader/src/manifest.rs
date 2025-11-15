@@ -435,6 +435,94 @@ impl Remotes {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Providers {
+    #[serde(default)]
+    pub auth: Option<Vec<OAuthProvider>>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct OAuthProvider {
+    pub key: String,
+    #[serde(default)]
+    pub actions: Option<OAuthActions>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct OAuthActions {
+    #[serde(default)]
+    pub authorization: Option<AuthorizationAction>,
+    #[serde(default)]
+    pub exchange: Option<ExchangeAction>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AuthorizationAction {
+    #[serde(default, rename = "queryParameters")]
+    pub query_params: Option<FxHashMap<String, String>>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ExchangeAction {
+    #[serde(default)]
+    pub overrides: Option<OAuthOverride>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct OAuthOverride {
+    #[serde(default)]
+    pub headers: Option<FxHashMap<String, String>>,
+    #[serde(default)]
+    pub body: Option<FxHashMap<String, String>>,
+}
+
+impl OAuthProvider {
+    pub fn find_hardcoded_secrets(&self) -> Vec<(String, String, String)> {
+        let mut secrets = Vec::new();
+        let sensitive_keywords = ["secret", "token", "password", "authorization", "api-key", "apikey", "credential"];
+
+        if let Some(actions) = &self.actions {
+            // Checking if there are hardcoded secrets in the query parameters
+            if let Some(authorization) = &actions.authorization {
+                if let Some(query_params) = &authorization.query_params {
+                    for (key, value) in query_params {
+                        if sensitive_keywords.iter().any(|s| key.to_lowercase().contains(s)) {
+                            if is_hardcoded_variable(value) {
+                                secrets.push((format!("providers.auth[{}].actions.authorization.queryParams.{}", self.key, key), key.clone(), value.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+            // Checking if there are hardcoded secrets in the exchange action
+            if let Some(exchange) = &actions.exchange {
+                if let Some(overrides) = &exchange.overrides {
+                    if let Some(headers) = &overrides.headers {
+                        for (key, value) in headers {
+                            if sensitive_keywords.iter().any(|s| key.to_lowercase().contains(s)) {
+                                if is_hardcoded_variable(value) {
+                                    secrets.push((format!("providers.auth[{}].actions.exchange.overrides.headers.{}", self.key, key), key.clone(), value.clone()));
+                                }
+                            }
+                        }
+                    }
+                    if let Some(body) = &overrides.body {
+                        for (key, value) in body {
+                            if sensitive_keywords.iter().any(|s| key.to_lowercase().contains(s)) {
+                                if is_hardcoded_variable(value) {
+                                    secrets.push((format!("providers.auth[{}].actions.exchange.overrides.body.{}", self.key, key), key.clone(), value.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        secrets
+    }
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct AppInfo<'a> {
     pub name: Option<&'a str>,
     pub id: &'a str,
@@ -472,6 +560,8 @@ pub struct ForgeManifest<'a> {
     pub remotes: Option<Vec<Remotes>>,
     #[serde(default, borrow)]
     pub resources: Vec<Resource<'a>>,
+    #[serde(default)]
+    pub providers: Option<Providers>,
 }
 
 impl<'a> ForgeManifest<'a> {
@@ -814,6 +904,11 @@ impl<'a> TryFrom<FunctionMod<'a>> for FunctionRef<'a> {
     }
 }
 
+fn is_hardcoded_variable(value: &str) -> bool {
+    let value = value.trim();
+    !(value.starts_with("{{") && value.ends_with("}}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1146,5 +1241,76 @@ mod tests {
         assert_eq!(action.key, "indexing-compass");
         assert_eq!(action.function, Some("compass-fn"));
         assert_eq!(action.endpoint, None);
+    }
+
+    // Test to check if hardcoded secrets are detected properly in OAuth2 Provider
+    #[test]
+    fn test_oauth_provider_hardcoded_secrets() {
+        let json = r#"{
+            "app": {
+                "name": "My App",
+                "id": "ari:cloud:ecosystem::app/test-id"
+            },
+            "modules": {},
+            "permissions": {
+                "scopes": []
+            },
+            "providers": {
+                "auth": [
+                    {
+                        "key": "oauth-provider-1",
+                        "actions": {
+                            "authorization": {
+                                "queryParameters": {
+                                    "client_id": "{{client_id}}",
+                                    "client_secret": "hardcoded_secret_value"
+                                }
+                            },
+                            "exchange": {
+                                "overrides": {
+                                    "headers": {
+                                        "Authorization": "Bearer hardcoded_token_value"
+                                    },
+                                    "body": {
+                                        "api_key": "{{api_key}}",
+                                        "password": "hardcoded_password_value"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        }"#;
+
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        let providers = manifest.providers.unwrap();
+        let auth_providers = providers.auth.unwrap();
+
+        let mut secrets_found = Vec::new();
+        for provider in auth_providers {
+            let findings = provider.find_hardcoded_secrets();
+            secrets_found.extend(findings);
+        }
+
+        let secrets_expected = vec![
+            (
+                "providers.auth[oauth-provider-1].actions.authorization.queryParams.client_secret".to_string(),
+                "client_secret".to_string(),
+                "hardcoded_secret_value".to_string(),
+            ),
+            (
+                "providers.auth[oauth-provider-1].actions.exchange.overrides.headers.Authorization".to_string(),
+                "Authorization".to_string(),
+                "Bearer hardcoded_token_value".to_string(),
+            ),
+            (
+                "providers.auth[oauth-provider-1].actions.exchange.overrides.body.password".to_string(),
+                "password".to_string(),
+                "hardcoded_password_value".to_string(),
+            ),
+        ];
+
+        assert_eq!(secrets_found, secrets_expected);
     }
 }
