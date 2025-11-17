@@ -491,54 +491,66 @@ impl OAuthProvider {
         if let Some(actions) = &self.actions {
             // Checking if there are hardcoded secrets in the query parameters
             if let Some(authorization) = &actions.authorization
-                && let Some(query_params) = &authorization.query_params {
-                    for (key, value) in query_params {
+                && let Some(query_params) = &authorization.query_params
+            {
+                for (key, value) in query_params {
+                    if sensitive_keywords
+                        .iter()
+                        .any(|s| key.to_lowercase().contains(s))
+                        && is_hardcoded_variable(value)
+                    {
+                        secrets.push((
+                            format!(
+                                "providers.auth[{}].actions.authorization.queryParams.{}",
+                                self.key, key
+                            ),
+                            key.clone(),
+                            value.clone(),
+                        ));
+                    }
+                }
+            }
+            // Checking if there are hardcoded secrets in the exchange action
+            if let Some(exchange) = &actions.exchange
+                && let Some(overrides) = &exchange.overrides
+            {
+                if let Some(headers) = &overrides.headers {
+                    for (key, value) in headers {
                         if sensitive_keywords
                             .iter()
                             .any(|s| key.to_lowercase().contains(s))
-                            && is_hardcoded_variable(value) {
-                                secrets.push((
-                                    format!(
-                                        "providers.auth[{}].actions.authorization.queryParams.{}",
-                                        self.key, key
-                                    ),
-                                    key.clone(),
-                                    value.clone(),
-                                ));
-                            }
-                    }
-                }
-            // Checking if there are hardcoded secrets in the exchange action
-            if let Some(exchange) = &actions.exchange
-                && let Some(overrides) = &exchange.overrides {
-                    if let Some(headers) = &overrides.headers {
-                        for (key, value) in headers {
-                            if sensitive_keywords
-                                .iter()
-                                .any(|s| key.to_lowercase().contains(s))
-                                && is_hardcoded_variable(value) {
-                                    secrets.push((format!("providers.auth[{}].actions.exchange.overrides.headers.{}", self.key, key), key.clone(), value.clone()));
-                                }
-                        }
-                    }
-                    if let Some(body) = &overrides.body {
-                        for (key, value) in body {
-                            if sensitive_keywords
-                                .iter()
-                                .any(|s| key.to_lowercase().contains(s))
-                                && is_hardcoded_variable(value) {
-                                    secrets.push((
-                                        format!(
-                                            "providers.auth[{}].actions.exchange.overrides.body.{}",
-                                            self.key, key
-                                        ),
-                                        key.clone(),
-                                        value.clone(),
-                                    ));
-                                }
+                            && is_hardcoded_variable(value)
+                        {
+                            secrets.push((
+                                format!(
+                                    "providers.auth[{}].actions.exchange.overrides.headers.{}",
+                                    self.key, key
+                                ),
+                                key.clone(),
+                                value.clone(),
+                            ));
                         }
                     }
                 }
+                if let Some(body) = &overrides.body {
+                    for (key, value) in body {
+                        if sensitive_keywords
+                            .iter()
+                            .any(|s| key.to_lowercase().contains(s))
+                            && is_hardcoded_variable(value)
+                        {
+                            secrets.push((
+                                format!(
+                                    "providers.auth[{}].actions.exchange.overrides.body.{}",
+                                    self.key, key
+                                ),
+                                key.clone(),
+                                value.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
         }
 
         secrets

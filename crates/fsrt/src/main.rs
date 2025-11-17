@@ -564,14 +564,15 @@ pub(crate) fn scan_directory<'a>(
     let mut secret_checker = SecretChecker::new();
 
     if let Some(providers) = &manifest.providers
-        && let Some(auth_providers) = &providers.auth {
-            for provider in auth_providers {
-                let secrets = provider.find_hardcoded_secrets();
-                for (location, field_name, _value) in secrets {
-                    secret_checker.add_manifest_secret(location, field_name);
-                }
+        && let Some(auth_providers) = &providers.auth
+    {
+        for provider in auth_providers {
+            let secrets = provider.find_hardcoded_secrets();
+            for (location, field_name, _value) in secrets {
+                secret_checker.add_manifest_secret(location, field_name);
             }
         }
+    }
 
     for func in &proj.funcs {
         let mut def_checker = DefinitionAnalysisRunner::new();
