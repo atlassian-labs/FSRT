@@ -478,16 +478,34 @@ pub struct OAuthOverride {
 impl OAuthProvider {
     pub fn find_hardcoded_secrets(&self) -> Vec<(String, String, String)> {
         let mut secrets = Vec::new();
-        let sensitive_keywords = ["secret", "token", "password", "authorization", "api-key", "apikey", "credential"];
+        let sensitive_keywords = [
+            "secret",
+            "token",
+            "password",
+            "authorization",
+            "api-key",
+            "apikey",
+            "credential",
+        ];
 
         if let Some(actions) = &self.actions {
             // Checking if there are hardcoded secrets in the query parameters
             if let Some(authorization) = &actions.authorization {
                 if let Some(query_params) = &authorization.query_params {
                     for (key, value) in query_params {
-                        if sensitive_keywords.iter().any(|s| key.to_lowercase().contains(s)) {
+                        if sensitive_keywords
+                            .iter()
+                            .any(|s| key.to_lowercase().contains(s))
+                        {
                             if is_hardcoded_variable(value) {
-                                secrets.push((format!("providers.auth[{}].actions.authorization.queryParams.{}", self.key, key), key.clone(), value.clone()));
+                                secrets.push((
+                                    format!(
+                                        "providers.auth[{}].actions.authorization.queryParams.{}",
+                                        self.key, key
+                                    ),
+                                    key.clone(),
+                                    value.clone(),
+                                ));
                             }
                         }
                     }
@@ -498,7 +516,10 @@ impl OAuthProvider {
                 if let Some(overrides) = &exchange.overrides {
                     if let Some(headers) = &overrides.headers {
                         for (key, value) in headers {
-                            if sensitive_keywords.iter().any(|s| key.to_lowercase().contains(s)) {
+                            if sensitive_keywords
+                                .iter()
+                                .any(|s| key.to_lowercase().contains(s))
+                            {
                                 if is_hardcoded_variable(value) {
                                     secrets.push((format!("providers.auth[{}].actions.exchange.overrides.headers.{}", self.key, key), key.clone(), value.clone()));
                                 }
@@ -507,9 +528,19 @@ impl OAuthProvider {
                     }
                     if let Some(body) = &overrides.body {
                         for (key, value) in body {
-                            if sensitive_keywords.iter().any(|s| key.to_lowercase().contains(s)) {
+                            if sensitive_keywords
+                                .iter()
+                                .any(|s| key.to_lowercase().contains(s))
+                            {
                                 if is_hardcoded_variable(value) {
-                                    secrets.push((format!("providers.auth[{}].actions.exchange.overrides.body.{}", self.key, key), key.clone(), value.clone()));
+                                    secrets.push((
+                                        format!(
+                                            "providers.auth[{}].actions.exchange.overrides.body.{}",
+                                            self.key, key
+                                        ),
+                                        key.clone(),
+                                        value.clone(),
+                                    ));
                                 }
                             }
                         }
@@ -1295,17 +1326,20 @@ mod tests {
 
         let secrets_expected = vec![
             (
-                "providers.auth[oauth-provider-1].actions.authorization.queryParams.client_secret".to_string(),
+                "providers.auth[oauth-provider-1].actions.authorization.queryParams.client_secret"
+                    .to_string(),
                 "client_secret".to_string(),
                 "hardcoded_secret_value".to_string(),
             ),
             (
-                "providers.auth[oauth-provider-1].actions.exchange.overrides.headers.Authorization".to_string(),
+                "providers.auth[oauth-provider-1].actions.exchange.overrides.headers.Authorization"
+                    .to_string(),
                 "Authorization".to_string(),
                 "Bearer hardcoded_token_value".to_string(),
             ),
             (
-                "providers.auth[oauth-provider-1].actions.exchange.overrides.body.password".to_string(),
+                "providers.auth[oauth-provider-1].actions.exchange.overrides.body.password"
+                    .to_string(),
                 "password".to_string(),
                 "hardcoded_password_value".to_string(),
             ),
