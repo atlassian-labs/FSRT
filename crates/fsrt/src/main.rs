@@ -562,7 +562,7 @@ pub(crate) fn scan_directory<'a>(
     );
 
     let mut secret_checker = SecretChecker::new();
-    
+
     if let Some(providers) = &manifest.providers {
         if let Some(auth_providers) = &providers.auth {
             for provider in auth_providers {

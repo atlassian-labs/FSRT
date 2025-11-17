@@ -1314,3 +1314,96 @@ fn kvs_is_valid_authn() {
     let scan_result = scan_directory_test(test_forge_project);
     assert!(scan_result.contains_vulns(0))
 }
+
+#[test]
+fn secrets_hardcoded_in_manifest_query_params() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Text } from '@forge/ui';
+        
+        function App() { 
+            return (
+                <Text>Hello world!</Text>
+            );
+        }
+        
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yml
+app:
+    id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+modules:
+    function:
+      - key: main
+        handler: index.run
+permissions:
+    scopes: []
+providers:
+    auth:
+      - key: oauth-provider
+        name: Oauth Provider
+        actions:
+            authorization:
+                remote: oauth-apis
+                path: /oauth2
+                queryParameters:
+                    client_id: '{{client_id}}'
+                    client_secret: 'harcoded_secret'
+                    grant_type: client_credentials
+        ",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
+#[test]
+fn secrets_hardcoded_in_manifest_exchange() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Text } from '@forge/ui';
+        
+        function App() { 
+            return (
+                <Text>Hello world!</Text>
+            );
+        }
+        
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yml
+app:
+    id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+modules:
+    function:
+      - key: main
+        handler: index.run
+permissions:
+    scopes: []
+providers:
+    auth:
+      - key: oauth-provider
+        name: Oauth Provider
+        actions:
+            authorization:
+                remote: oauth-apis
+                path: /oauth2
+            exchange:
+                remote: linear-api
+                path: oauth/token
+                overrides:
+                    headers:
+                        content-type: application/x-www-form-urlencoded
+                    body:
+                        client_id: 'hardcoded_id'
+                        client_secret: 'hardcoded_secret'
+                        grant_type: client_credentials
+                        token: '{{not_hardcoded_token}}'
+        ",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
