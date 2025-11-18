@@ -305,6 +305,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
 
 pub struct PrototypePollutionChecker;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Default)]
 enum PrototypePollutionState {
     Yes,
@@ -844,6 +845,11 @@ impl SecretChecker {
         // TODO: make this an associated function on the Checker trait.
         self.vulns.into_iter()
     }
+
+    pub fn add_manifest_secret(&mut self, location: String, field_name: String) {
+        let vuln = SecretVuln::from_manifest(location, field_name);
+        self.vulns.push(vuln);
+    }
 }
 
 impl Default for SecretChecker {
@@ -884,6 +890,14 @@ impl SecretVuln {
             stack,
             entry_func,
             file,
+        }
+    }
+
+    fn from_manifest(location: String, field_name: String) -> Self {
+        Self {
+            stack: format!("manifest.yml: {}", field_name),
+            entry_func: location,
+            file: PathBuf::from("manifest.yml"),
         }
     }
 }
