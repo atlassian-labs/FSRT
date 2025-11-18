@@ -159,6 +159,7 @@ pub struct TeamPage<'a> {
 }
 
 // Confluence Modules
+#[allow(dead_code)]
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ContentAction<'a> {
     #[serde(flatten, borrow)]
@@ -453,6 +454,8 @@ pub struct OAuthActions {
     pub authorization: Option<AuthorizationAction>,
     #[serde(default)]
     pub exchange: Option<ExchangeAction>,
+    #[serde(default)]
+    pub refresh: Option<RefreshAction>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -463,6 +466,12 @@ pub struct AuthorizationAction {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ExchangeAction {
+    #[serde(default)]
+    pub overrides: Option<OAuthOverride>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RefreshAction {
     #[serde(default)]
     pub overrides: Option<OAuthOverride>,
 }
@@ -542,6 +551,47 @@ impl OAuthProvider {
                             secrets.push((
                                 format!(
                                     "providers.auth[{}].actions.exchange.overrides.body.{}",
+                                    self.key, key
+                                ),
+                                key.clone(),
+                                value.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+            // Checking if there are hardcoded secrets in the exchange action
+            if let Some(refresh) = &actions.refresh
+                && let Some(overrides) = &refresh.overrides
+            {
+                if let Some(headers) = &overrides.headers {
+                    for (key, value) in headers {
+                        if sensitive_keywords
+                            .iter()
+                            .any(|s| key.to_lowercase().contains(s))
+                            && is_hardcoded_variable(value)
+                        {
+                            secrets.push((
+                                format!(
+                                    "providers.auth[{}].actions.refresh.overrides.headers.{}",
+                                    self.key, key
+                                ),
+                                key.clone(),
+                                value.clone(),
+                            ));
+                        }
+                    }
+                }
+                if let Some(body) = &overrides.body {
+                    for (key, value) in body {
+                        if sensitive_keywords
+                            .iter()
+                            .any(|s| key.to_lowercase().contains(s))
+                            && is_hardcoded_variable(value)
+                        {
+                            secrets.push((
+                                format!(
+                                    "providers.auth[{}].actions.refresh.overrides.body.{}",
                                     self.key, key
                                 ),
                                 key.clone(),
@@ -940,8 +990,11 @@ impl<'a> TryFrom<FunctionMod<'a>> for FunctionRef<'a> {
 }
 
 fn is_hardcoded_variable(value: &str) -> bool {
-    let value = value.trim();
-    !(value.starts_with("{{") && value.ends_with("}}"))
+    if let Some(start) = value.find("{{") {
+        !(value[start + 2..].contains("}}"))
+    } else {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -1311,6 +1364,16 @@ mod tests {
                                         "password": "hardcoded_password_value"
                                     }
                                 }
+                            },
+                            "refresh": {
+                                "overrides": {
+                                    "headers": {
+                                        "refresh-token": "hardcoded_token_value"
+                                    },
+                                    "body": {
+                                        "client_secret": "hardcoded_refresh_secret_value"
+                                    }
+                                }
                             }
                         }
                     }
@@ -1347,8 +1410,26 @@ mod tests {
                 "password".to_string(),
                 "hardcoded_password_value".to_string(),
             ),
+            (
+                "providers.auth[oauth-provider-1].actions.refresh.overrides.headers.refresh-token"
+                    .to_string(),
+                "refresh-token".to_string(),
+                "hardcoded_token_value".to_string(),
+            ),
+            (
+                "providers.auth[oauth-provider-1].actions.refresh.overrides.body.client_secret"
+                    .to_string(),
+                "client_secret".to_string(),
+                "hardcoded_refresh_secret_value".to_string(),
+            ),
         ];
 
         assert_eq!(secrets_found, secrets_expected);
+
+        assert!(!is_hardcoded_variable(
+            "Basic {{http_basic_auth_credentials}}",
+        ));
+        assert!(!is_hardcoded_variable("{{prefix}}_{{suffix}}"));
+        assert!(!is_hardcoded_variable("     {{client_secret}}     "));
     }
 }

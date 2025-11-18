@@ -305,6 +305,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
 
 pub struct PrototypePollutionChecker;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Default)]
 enum PrototypePollutionState {
     Yes,
