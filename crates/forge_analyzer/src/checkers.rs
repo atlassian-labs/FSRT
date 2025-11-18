@@ -997,6 +997,18 @@ impl<'cx> Runner<'cx> for SecretChecker {
                                 SecretVuln::new(interp.callstack(), interp.env(), interp.entry());
                             info!("Found a vuln!");
                             self.vulns.push(vuln);
+                        } else if let Some(Value::Const(_) | Value::Phi(_)) = interp.get_value(
+                            def,
+                            *varid,
+                            projvec_from_str("X-Automation-Webhook-Token").into(),
+                        ) && interp
+                            .get_value(def, *varid_argument, Some(projvec_from_str("method")))
+                            .is_some_and(|x| *x == *"POST")
+                        {
+                            let vuln =
+                                SecretVuln::new(interp.callstack(), interp.env(), interp.entry());
+                            info!("Webhook token found!");
+                            self.vulns.push(vuln);
                         }
                     }
                 }

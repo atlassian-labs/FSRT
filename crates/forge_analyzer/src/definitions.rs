@@ -3450,8 +3450,22 @@ impl Visit for GlobalCollector<'_> {
         let mut all_module_items = Vec::new();
 
         for item in &n.body {
-            if let ModuleItem::Stmt(stmt) = item {
-                all_module_items.push(stmt.clone());
+            match item {
+                // TODO handle all cases
+                ModuleItem::Stmt(stmt) => all_module_items.push(stmt.clone()),
+                ModuleItem::ModuleDecl(mod_decl) => match mod_decl {
+                    ModuleDecl::ExportDecl(export_decl) => {
+                        all_module_items.push(Stmt::Decl(export_decl.decl.clone()))
+                    }
+                    ModuleDecl::ExportAll(_)
+                    | ModuleDecl::ExportDefaultDecl(_)
+                    | ModuleDecl::ExportDefaultExpr(_)
+                    | ModuleDecl::ExportNamed(_)
+                    | ModuleDecl::TsExportAssignment(_)
+                    | ModuleDecl::Import(_)
+                    | ModuleDecl::TsImportEquals(_)
+                    | ModuleDecl::TsNamespaceExport(_) => {}
+                },
             }
         }
         analyzer.lower_stmts(all_module_items.as_slice());
@@ -4249,5 +4263,39 @@ impl PartialEq<str> for ImportKind {
             ImportKind::Default => other == "default",
             ImportKind::Named(name) => name == other,
         }
+    }
+}
+
+impl PartialEq<str> for Value {
+    #[inline]
+    fn eq(&self, other: &str) -> bool {
+        match self {
+            Self::Const(Const::Literal(s)) => **s == *other,
+            Self::Phi(v) if !v.is_empty() => v.iter().all(|x| *x == *other),
+            Self::Uninit | Self::Unknown | Self::Object(_) | Self::Phi(_) => false,
+        }
+    }
+}
+
+impl PartialEq<Value> for str {
+    #[inline]
+    fn eq(&self, other: &Value) -> bool {
+        *other == *self
+    }
+}
+
+impl PartialEq<str> for Const {
+    #[inline]
+    fn eq(&self, other: &str) -> bool {
+        match self {
+            Self::Literal(s) => **s == *other,
+        }
+    }
+}
+
+impl PartialEq<Const> for str {
+    #[inline]
+    fn eq(&self, other: &Const) -> bool {
+        *other == *self
     }
 }
