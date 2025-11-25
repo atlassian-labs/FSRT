@@ -39,7 +39,7 @@ use tracing_tree::HierarchicalLayer;
 use forge_analyzer::{
     checkers::{
         AuthZChecker, AuthenticateChecker, DefinitionAnalysisRunner, PermissionChecker,
-        PermissionVuln, SecretChecker,
+        PermissionVuln, SecretChecker, SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -568,8 +568,9 @@ pub(crate) fn scan_directory<'a>(
     {
         for provider in auth_providers {
             let secrets = provider.find_hardcoded_secrets();
-            for (location, field_name, _value) in secrets {
-                secret_checker.add_manifest_secret(location, field_name);
+            for location in secrets {
+                let field_name = location.rsplit('.').next().unwrap_or("").to_string();
+                secret_checker.add_manifest_secret(location, field_name, SecretType::OAuthProvider);
             }
         }
     }
