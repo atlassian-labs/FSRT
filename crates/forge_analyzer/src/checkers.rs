@@ -846,8 +846,13 @@ impl SecretChecker {
         self.vulns.into_iter()
     }
 
-    pub fn add_manifest_secret(&mut self, location: String, field_name: String) {
-        let vuln = SecretVuln::from_manifest(location, field_name);
+    pub fn add_manifest_secret(
+        &mut self,
+        location: String,
+        field_name: String,
+        secret_type: SecretType,
+    ) {
+        let vuln = SecretVuln::from_manifest(location, field_name, secret_type);
         self.vulns.push(vuln);
     }
 }
@@ -858,11 +863,18 @@ impl Default for SecretChecker {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretType {
+    OAuthProvider,
+    Regular,
+}
+
 #[derive(Debug)]
 pub struct SecretVuln {
     stack: String,
     entry_func: String,
     file: PathBuf,
+    secret_type: SecretType,
 }
 
 impl SecretVuln {
@@ -890,14 +902,16 @@ impl SecretVuln {
             stack,
             entry_func,
             file,
+            secret_type: SecretType::Regular,
         }
     }
 
-    fn from_manifest(location: String, field_name: String) -> Self {
+    fn from_manifest(location: String, field_name: String, secret_type: SecretType) -> Self {
         Self {
             stack: format!("manifest.yml: {}", field_name),
             entry_func: location,
             file: PathBuf::from("manifest.yml"),
+            secret_type,
         }
     }
 }
@@ -920,13 +934,30 @@ impl IntoVuln for SecretVuln {
             .for_each(|comp| comp.hash(&mut hasher));
         self.entry_func.hash(&mut hasher);
         self.stack.hash(&mut hasher);
+
+        let recommendation = match self.secret_type {
+            SecretType::OAuthProvider => {
+                "Configure the OAuth Provider secrets in your OAuth Provider settings and use runtime templates (e.g. {{client_secret}} to reference secrets securely as opposed to hardcoding them directly in the codebase. See https://developer.atlassian.com/platform/forge/runtime-reference/storage-api-secret/ for more details.)"
+            }
+            SecretType::Regular => {
+                "Use secrets as enviornment variables instead of hardcoding them."
+            }
+        };
+
+        let check_name = match self.secret_type {
+            SecretType::OAuthProvider => {
+                format!("Hardcoded-Secret-OAuth-Provider-{}", hasher.finish())
+            }
+            SecretType::Regular => format!("Hardcoded-Secret-{}", hasher.finish()),
+        };
+
         Vulnerability {
-            check_name: format!("Hardcoded-Secret-{}", hasher.finish()),
+            check_name,
             description: format!(
                 "Hardcoded secret found within codebase {} in {:?}.",
                 self.entry_func, self.file
             ),
-            recommendation: "Use secrets as enviornment variables instead of hardcoding them.",
+            recommendation,
             proof: format!("Hardcoded secret found in found via {}", self.stack),
             severity: Severity::High,
             marketplace_security_requirement: "Requirement 5.0",
