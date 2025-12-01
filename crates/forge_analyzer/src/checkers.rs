@@ -946,9 +946,12 @@ impl IntoVuln for SecretVuln {
 
         let check_name = match self.secret_type {
             SecretType::OAuthProvider => {
-                format!("Hardcoded-Secret-OAuth-Provider-{}", hasher.finish())
+                format!(
+                    "Custom-Check-Hardcoded-Secret-OAuth-Provider-{}",
+                    hasher.finish()
+                )
             }
-            SecretType::Regular => format!("Hardcoded-Secret-{}", hasher.finish()),
+            SecretType::Regular => format!("Custom-Check-Hardcoded-Secret-{}", hasher.finish()),
         };
 
         Vulnerability {

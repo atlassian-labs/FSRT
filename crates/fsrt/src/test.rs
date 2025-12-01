@@ -37,7 +37,7 @@ impl ReportExt for Report {
     fn contains_authz_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
             .iter()
-            .filter(|vuln| vuln.check_name().contains("Authorizatio"))
+            .filter(|vuln| vuln.check_name().contains("Authorization"))
             .count()
             == expected_len
     }
@@ -46,7 +46,10 @@ impl ReportExt for Report {
     fn contains_secret_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
             .iter()
-            .filter(|vuln| vuln.check_name().starts_with("Hardcoded-Secret-"))
+            .filter(|vuln| {
+                vuln.check_name()
+                    .starts_with("Custom-Check-Hardcoded-Secret-")
+            })
             .count()
             == expected_len
     }
