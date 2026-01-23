@@ -963,7 +963,7 @@ impl IntoVuln for SecretVuln {
             recommendation,
             proof: format!("Hardcoded secret found in found via {}", self.stack),
             severity: Severity::High,
-            marketplace_security_requirement: "Requirement 5.0",
+            marketplace_security_requirement: "Requirement 5",
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
             date: reporter.current_date(),
