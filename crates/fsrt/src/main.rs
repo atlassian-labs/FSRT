@@ -39,7 +39,7 @@ use tracing_tree::HierarchicalLayer;
 use forge_analyzer::{
     checkers::{
         AuthZChecker, AuthenticateChecker, DefinitionAnalysisRunner, PermissionChecker,
-        PermissionVuln, SecretChecker,
+        PermissionVuln, SecretChecker, SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -560,6 +560,21 @@ pub(crate) fn scan_directory<'a>(
         &bitbucket_regex_map,
         &compass_permission_resolver,
     );
+
+    let mut secret_checker = SecretChecker::new();
+
+    if let Some(providers) = &manifest.providers
+        && let Some(auth_providers) = &providers.auth
+    {
+        for provider in auth_providers {
+            let secrets = provider.find_hardcoded_secrets();
+            for location in secrets {
+                let field_name = location.rsplit('.').next().unwrap_or("").to_string();
+                secret_checker.add_manifest_secret(location, field_name, SecretType::OAuthProvider);
+            }
+        }
+    }
+
     for func in &proj.funcs {
         let mut def_checker = DefinitionAnalysisRunner::new();
         if let Err(err) = definition_analysis_interp.run_checker(
@@ -601,7 +616,6 @@ pub(crate) fn scan_directory<'a>(
                 perm_interp.value_manager.defid_to_value;
         }
 
-        let mut checker = SecretChecker::new();
         secret_interp.value_manager.varid_to_value =
             definition_analysis_interp.value_manager.varid_to_value;
         secret_interp.value_manager.varid_to_value_with_proj = definition_analysis_interp
@@ -611,13 +625,11 @@ pub(crate) fn scan_directory<'a>(
             definition_analysis_interp.value_manager.defid_to_value;
         if let Err(err) = secret_interp.run_checker(
             func.def_id,
-            &mut checker,
+            &mut secret_checker,
             func.path.clone(),
             func.func_name.to_owned(),
         ) {
             warn!("error while running secret checker: {err}");
-        } else {
-            reporter.add_vulnerabilities(checker.into_vulns());
         }
         definition_analysis_interp.value_manager.varid_to_value =
             secret_interp.value_manager.varid_to_value;
@@ -662,6 +674,8 @@ pub(crate) fn scan_directory<'a>(
             reporter.add_vulnerabilities(checker.into_vulns());
         }
     }
+
+    reporter.add_vulnerabilities(secret_checker.into_vulns());
 
     let path = if let Some(ref mut path) = opts.graphql_schema_path {
         path
