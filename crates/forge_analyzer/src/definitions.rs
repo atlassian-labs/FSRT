@@ -69,12 +69,12 @@ create_newtype! {
     pub struct DefId(u32);
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Const {
     Literal(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Value {
     Uninit,
     Unknown,
