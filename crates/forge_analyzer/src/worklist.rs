@@ -4,14 +4,14 @@ use forge_utils::FxHashSet;
 use tracing::debug;
 
 use crate::{
-    definitions::{DefId, Environment},
+    definitions::{DefId, Environment, Value},
     ir::BasicBlockId,
 };
 
 #[derive(Debug, Clone)]
 pub struct WorkList<V, W> {
-    worklist: VecDeque<(V, W)>,
-    visited: FxHashSet<V>,
+    pub worklist: VecDeque<(V, W)>,
+    pub visited: FxHashSet<V>,
 }
 
 impl<V, W> WorkList<V, W>
@@ -67,11 +67,11 @@ where
 
 impl<V, W> WorkList<V, W>
 where
-    V: Eq + Hash + Copy,
+    V: Eq + Hash + Clone,
 {
     #[inline]
     pub fn push_back(&mut self, v: V, w: W) {
-        if self.visited.insert(v) {
+        if self.visited.insert(v.clone()) {
             self.worklist.push_back((v, w));
         }
     }
@@ -82,22 +82,24 @@ where
     }
 }
 
-impl WorkList<DefId, BasicBlockId> {
+impl WorkList<(DefId, Option<Vec<Value>>), BasicBlockId> {
     #[inline]
     pub(crate) fn push_front_blocks(
         &mut self,
         env: &Environment,
         def: DefId,
+        args: Option<Vec<Value>>,
         visit_all: bool,
     ) -> bool {
-        if self.visited.insert(def) || visit_all {
+        let key = (def, args);
+        if self.visited.insert(key.clone()) || visit_all {
             debug!("adding function: {}", env.def_name(def));
             let body = env.def_ref(def).expect_body();
-            let blocks = body.iter_block_keys().map(|bb| (def, bb)).rev();
+            let blocks = body.iter_block_keys().map(|bb| (key.clone(), bb)).rev();
             self.worklist.reserve(blocks.len());
             for work in blocks {
                 debug!(?work, "push_front_blocks");
-                self.worklist.push_front((work.0, work.1));
+                self.worklist.push_front(work);
             }
             return true;
         }

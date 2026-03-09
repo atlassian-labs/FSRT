@@ -8,13 +8,10 @@ use crate::{
     },
     ir::{
         Base, BasicBlock, BasicBlockId, Inst, Intrinsic, Literal, Location, Operand, Projection,
-        Rvalue, VarId, VarKind, Variable,
+        VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    utils::{
-        add_elements_to_intrinsic_struct, convert_operand_to_raw, get_defid_from_varkind,
-        translate_request_type,
-    },
+    utils::{add_elements_to_intrinsic_struct, convert_operand_to_raw, translate_request_type},
     worklist::WorkList,
 };
 use core::fmt;
@@ -89,15 +86,23 @@ impl<'cx> Dataflow<'cx> for TaintDataflow {
 
     fn transfer_call<C: Runner<'cx, State = Self::State>>(
         &mut self,
-        _interp: &Interp<'cx, C>,
-        _def: DefId,
-        _loc: Location,
-        _block: &'cx BasicBlock,
-        _callee: &'cx Operand,
+        interp: &Interp<'cx, C>,
+        def: DefId,
+        loc: Location,
+        block: &'cx BasicBlock,
+        callee: &'cx Operand,
         initial_state: Self::State,
-        _oprands: SmallVec<[crate::ir::Operand; 4]>,
+        oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
-        initial_state
+        self.super_transfer_call(
+            interp,
+            def,
+            loc,
+            block,
+            callee,
+            initial_state,
+            oprands.clone(),
+        )
     }
 
     fn transfer_intrinsic<C: Runner<'cx, State = Self::State>>(
@@ -124,6 +129,7 @@ impl<'cx> Dataflow<'cx> for TaintDataflow {
     ) -> Self::State {
         match inst {
             Inst::Assign(l, v) => {
+                interp.add_value_to_definition(def, l.clone(), v.clone());
                 let Some(var) = l.as_var_id() else {
                     return initial_state;
                 };
@@ -258,7 +264,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         }
     }
 
-    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
+    fn transfer_call<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
@@ -266,24 +272,26 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
-        _operands: SmallVec<[crate::ir::Operand; 4]>,
+        oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
+        let state =
+            self.super_transfer_call(interp, def, loc, _block, callee, initial_state, oprands);
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
-            return initial_state;
+            return state;
         };
         match interp.func_state(callee_def) {
-            Some(state) => {
-                if state == AuthorizeState::Yes {
+            Some(func_state) => {
+                if func_state == AuthorizeState::Yes {
                     debug!("Found call to authorize at {def:?} {loc:?}");
                 }
-                initial_state.join(&state)
+                state.join(&func_state)
             }
             None => {
                 let callee_name = interp.env().def_name(callee_def);
                 let caller_name = interp.env().def_name(def);
                 debug!("Found call to {callee_name} at {def:?} {caller_name}");
                 self.needs_call.push(callee_def);
-                initial_state
+                state
             }
         }
     }
@@ -294,11 +302,12 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
+        args: Option<Vec<Value>>,
     ) {
-        self.super_join_term(interp, def, block, state, worklist);
+        self.super_join_term(interp, def, block, state, worklist, args);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, interp.call_all);
+            worklist.push_front_blocks(interp.env(), def, None, interp.call_all);
         }
     }
 }
@@ -572,7 +581,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         }
     }
 
-    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
+    fn transfer_call<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
@@ -580,24 +589,33 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
-        _operands: SmallVec<[crate::ir::Operand; 4]>,
+        oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
+        let state = self.super_transfer_call(
+            interp,
+            def,
+            loc,
+            _block,
+            callee,
+            initial_state,
+            oprands.clone(),
+        );
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
-            return initial_state;
+            return state;
         };
         match interp.func_state(callee_def) {
-            Some(state) => {
-                if state == Authenticated::Yes {
+            Some(func_state) => {
+                if func_state == Authenticated::Yes {
                     debug!("Found call to authenticate at {def:?} {loc:?}");
                 }
-                initial_state.join(&state)
+                state.join(&func_state)
             }
             None => {
                 let callee_name = interp.env().def_name(callee_def);
                 let caller_name = interp.env().def_name(def);
                 debug!("Found call to {callee_name} at {def:?} {caller_name}");
                 self.needs_call.push(callee_def);
-                initial_state
+                state
             }
         }
     }
@@ -608,11 +626,12 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
+        args: Option<Vec<Value>>,
     ) {
-        self.super_join_term(interp, def, block, state, worklist);
+        self.super_join_term(interp, def, block, state, worklist, args);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, interp.call_all);
+            worklist.push_front_blocks(interp.env(), def, None, interp.call_all);
         }
     }
 }
@@ -800,18 +819,20 @@ impl<'cx> Dataflow<'cx> for SecretDataflow {
         initial_state
     }
 
-    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
+    fn transfer_call<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
-        _def: DefId,
-        _loc: Location,
+        def: DefId,
+        loc: Location,
         _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
-        _operands: SmallVec<[crate::ir::Operand; 4]>,
+        oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
+        let state =
+            self.super_transfer_call(interp, def, loc, _block, callee, initial_state, oprands);
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
-            return initial_state;
+            return state;
         };
         self.needs_call.push(callee_def);
         SecretState::ALL
@@ -823,11 +844,12 @@ impl<'cx> Dataflow<'cx> for SecretDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
+        args: Option<Vec<Value>>,
     ) {
-        self.super_join_term(interp, def, block, state, worklist);
+        self.super_join_term(interp, def, block, state, worklist, args);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, interp.call_all);
+            worklist.push_front_blocks(interp.env(), def, None, interp.call_all);
         }
     }
 }
@@ -1241,25 +1263,34 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         initial_state
     }
 
-    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
+    fn transfer_call<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
-        _loc: Location,
+        loc: Location,
         _block: &'cx BasicBlock,
         callee: &'cx crate::ir::Operand,
         initial_state: Self::State,
-        operands: SmallVec<[crate::ir::Operand; 4]>,
+        oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
+        let state = self.super_transfer_call(
+            interp,
+            def,
+            loc,
+            _block,
+            callee,
+            initial_state,
+            oprands.clone(),
+        );
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
-            return initial_state;
+            return state;
         };
 
         let callee_name = interp.env().def_name(callee_def);
         let caller_name = interp.env().def_name(def);
         debug!("Found call to {callee_name} at {def:?} {caller_name}");
-        self.needs_call.push((callee_def, operands.into_vec()));
-        initial_state
+        self.needs_call.push((callee_def, oprands.into_vec()));
+        state
     }
 
     fn transfer_block<C: Runner<'cx, State = Self::State>>(
@@ -1286,11 +1317,12 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
+        args: Option<Vec<Value>>,
     ) {
-        self.super_join_term(interp, def, block, state, worklist);
+        self.super_join_term(interp, def, block, state, worklist, args);
         for (def, _arguments) in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, interp.call_all);
+            worklist.push_front_blocks(interp.env(), def, None, interp.call_all);
         }
     }
 }
@@ -1464,14 +1496,23 @@ impl<'cx> Dataflow<'cx> for DefinitionAnalysisRunner {
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
-        _loc: Location,
-        _block: &'cx BasicBlock,
+        loc: Location,
+        block: &'cx BasicBlock,
         callee: &'cx Operand,
         initial_state: Self::State,
-        operands: SmallVec<[Operand; 4]>,
+        oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
+        let state = self.super_transfer_call(
+            interp,
+            def,
+            loc,
+            block,
+            callee,
+            initial_state,
+            oprands.clone(),
+        );
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
-            return initial_state;
+            return state;
         };
 
         let callee_name = interp.env().def_name(callee_def);
@@ -1480,7 +1521,7 @@ impl<'cx> Dataflow<'cx> for DefinitionAnalysisRunner {
 
         let mut all_values_to_be_pushed = vec![];
 
-        for operand in &operands {
+        for operand in &oprands {
             match operand.clone() {
                 Operand::Lit(_) => {
                     if let Some(lit_value) = convert_operand_to_raw(&operand.clone()) {
@@ -1504,135 +1545,7 @@ impl<'cx> Dataflow<'cx> for DefinitionAnalysisRunner {
             }
         }
         self.needs_call
-            .push((callee_def, operands.into_vec(), all_values_to_be_pushed));
-        initial_state
-    }
-
-    fn transfer_inst<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        loc: Location,
-        block: &'cx BasicBlock,
-        inst: &'cx Inst,
-        initial_state: Self::State,
-    ) -> Self::State {
-        match inst {
-            Inst::Expr(rvalue) => {
-                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
-            }
-            Inst::Assign(var, rvalue) => {
-                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state);
-
-                // this piece is definition analysis largely for global variables since they are not assigned a VarId, so we use the DefId
-                match rvalue {
-                    Rvalue::Call(Operand::Var(variable), _) => {
-                        if let Base::Var(varid) = variable.base
-                            && let Some(VarKind::GlobalRef(defid)) = interp.body().vars.get(varid)
-                            && let Base::Var(varid_to_assign) = var.base
-                        {
-                            interp
-                                .value_manager
-                                .expected_return_values
-                                .insert(*defid, (def, varid_to_assign));
-                        }
-                    }
-                    Rvalue::Read(_operand) => {
-                        if let Rvalue::Read(Operand::Lit(Literal::Str(str))) = rvalue
-                            && let Base::Var(varid) = var.base
-                        {
-                            if let Some(VarKind::GlobalRef(def)) = interp.body().vars.get(varid) {
-                                interp
-                                    .value_manager
-                                    .defid_to_value
-                                    .insert(*def, Value::Const(Const::Literal(str.to_string())));
-                            } else if let Some(VarKind::LocalDef(def)) =
-                                interp.body().vars.get(varid)
-                            {
-                                interp
-                                    .value_manager
-                                    .defid_to_value
-                                    .insert(*def, Value::Const(Const::Literal(str.to_string())));
-                            } else if let Some(&VarKind::Temp {
-                                parent: Some(defid_parent),
-                            }) = interp.body().vars.get(varid)
-                            {
-                                interp.value_manager.defid_to_value.insert(
-                                    defid_parent,
-                                    Value::Const(Const::Literal(str.to_string())),
-                                );
-                            }
-                        }
-                        /* should be expanded to include all cases ... */
-                        interp.add_value_to_definition(def, var.clone(), rvalue.clone());
-                    }
-                    _ => interp.add_value_to_definition(def, var.clone(), rvalue.clone()),
-                }
-                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
-            }
-        }
-    }
-
-    fn transfer_block<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        bb: BasicBlockId,
-        block: &'cx BasicBlock,
-        initial_state: Self::State,
-        arguments: Option<Vec<Value>>,
-    ) -> Self::State {
-        let mut state = initial_state;
-        let mut function_var = interp.curr_body.get().unwrap().vars.clone();
-        function_var.pop();
-        if let Some(args) = arguments {
-            let mut args = args.clone();
-            args.reverse();
-            for (varid, varkind) in function_var.iter_enumerated() {
-                if let VarKind::GlobalRef(_) = varkind
-                    && let Some(operand) = args.pop()
-                {
-                    interp.add_value(def, varid, operand.clone());
-                    interp
-                        .body()
-                        .vars
-                        .iter_enumerated()
-                        .for_each(|(varid_alt, varkind_alt)| {
-                            let defult_projections = Variable::from(varid_alt);
-
-                            if let (Some(defid_alt), Some(defid)) = (
-                                get_defid_from_varkind(varkind_alt),
-                                get_defid_from_varkind(varkind),
-                            ) && defid == defid_alt
-                                && varid_alt != varid
-                            {
-                                interp.add_value_with_projection(
-                                    def,
-                                    varid_alt,
-                                    operand.clone(),
-                                    defult_projections.projections,
-                                );
-                            }
-                        })
-                }
-            }
-        }
-
-        for (stmt, inst) in block.iter().enumerate() {
-            let loc = Location::new(bb, stmt as u32);
-            state = self.transfer_inst(interp, def, loc, block, inst, state);
-        }
-
-        for (varid, varkind) in interp.body().vars.clone().iter_enumerated() {
-            if &VarKind::Ret == varkind
-                && let Some((defid_calling_func, varid_calling_func)) =
-                    interp.value_manager.expected_return_values.get(&def)
-                && let Some(value) = interp.get_value(def, varid, None)
-            {
-                interp.add_value(*defid_calling_func, *varid_calling_func, value.clone());
-            }
-        }
-
+            .push((callee_def, oprands.into_vec(), all_values_to_be_pushed));
         state
     }
 
@@ -1642,12 +1555,12 @@ impl<'cx> Dataflow<'cx> for DefinitionAnalysisRunner {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
+        args: Option<Vec<Value>>,
     ) {
-        self.super_join_term(interp, def, block, state, worklist);
+        self.super_join_term(interp, def, block, state, worklist, args);
         for (def, _arguments, values) in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, interp.call_all);
-            interp.callstack_arguments.push(values.clone());
+            worklist.push_front_blocks(interp.env(), def, Some(values), interp.call_all);
         }
     }
 }

@@ -21,7 +21,10 @@ use tracing::{debug, instrument, warn};
 
 use crate::definitions::DefKind;
 use crate::ir::{BinOp, Literal, VarKind};
-use crate::utils::{convert_lit_to_raw, projvec_from_projvec, return_combinations_phi};
+use crate::utils::{
+    convert_lit_to_raw, convert_operand_to_raw, get_defid_from_varkind, projvec_from_projvec,
+    return_combinations_phi,
+};
 use crate::{
     checkers::IntrinsicArguments,
     definitions::{Const, DefId, Environment, Value},
@@ -84,12 +87,59 @@ pub trait Dataflow<'cx>: Sized {
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
-        loc: Location,
-        block: &'cx BasicBlock,
+        _loc: Location,
+        _block: &'cx BasicBlock,
         callee: &'cx Operand,
         initial_state: Self::State,
         oprands: SmallVec<[crate::ir::Operand; 4]>,
-    ) -> Self::State;
+    ) -> Self::State {
+        self.super_transfer_call(interp, def, _loc, _block, callee, initial_state, oprands)
+    }
+
+    fn super_transfer_call<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &Interp<'cx, C>,
+        def: DefId,
+        _loc: Location,
+        _block: &'cx BasicBlock,
+        callee: &'cx Operand,
+        initial_state: Self::State,
+        oprands: SmallVec<[crate::ir::Operand; 4]>,
+    ) -> Self::State {
+        let mut all_values_to_be_pushed = vec![];
+
+        for operand in &oprands {
+            match operand.clone() {
+                Operand::Lit(_) => {
+                    if let Some(lit_value) = convert_operand_to_raw(&operand.clone()) {
+                        all_values_to_be_pushed.push(Value::Const(Const::Literal(lit_value)));
+                    } else {
+                        all_values_to_be_pushed.push(Value::Unknown)
+                    }
+                }
+                Operand::Var(var) => match var.base {
+                    Base::Var(varid) => {
+                        if let Some(value) =
+                            interp.get_value(def, varid, Some(ProjectionVec::new()))
+                        {
+                            all_values_to_be_pushed.push(value.clone());
+                        } else {
+                            all_values_to_be_pushed.push(Value::Unknown)
+                        }
+                    }
+                    _ => all_values_to_be_pushed.push(Value::Unknown),
+                },
+            }
+        }
+        if let Some((callee_def, _body)) = interp.body().resolve_call(interp.env(), callee) {
+            interp
+                .value_manager
+                .expecting_value
+                .borrow_mut()
+                .push_back((callee_def, all_values_to_be_pushed));
+        }
+        initial_state
+    }
 
     fn transfer_rvalue<C: Runner<'cx, State = Self::State>>(
         &mut self,
@@ -140,7 +190,8 @@ pub trait Dataflow<'cx>: Sized {
             Inst::Expr(rvalue) => {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
-            Inst::Assign(_, rvalue) => {
+            Inst::Assign(var, rvalue) => {
+                interp.add_value_to_definition(def, var.clone(), rvalue.clone());
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
         }
@@ -169,9 +220,10 @@ pub trait Dataflow<'cx>: Sized {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
+        args: Option<Vec<Value>>,
     ) {
-        self.super_join_term(interp.borrow_mut(), def, block, state, worklist);
+        self.super_join_term(interp.borrow_mut(), def, block, state, worklist, args);
     }
 
     fn super_join_term<C: Runner<'cx, State = Self::State>>(
@@ -180,7 +232,8 @@ pub trait Dataflow<'cx>: Sized {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<DefId, BasicBlockId>,
+        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
+        args: Option<Vec<Value>>,
     ) {
         match block.successors() {
             Successors::Return => {
@@ -193,8 +246,8 @@ pub trait Dataflow<'cx>: Sized {
                     let name = interp.env().def_name(def);
                     debug!("{name} {def:?} is called from {calls:?}");
                     for &(def, loc) in calls {
-                        if worklist.visited(&def) {
-                            worklist.push_back_force(def, loc.block);
+                        if worklist.visited(&(def, args.clone())) {
+                            worklist.push_back_force((def, args.clone()), loc.block);
                         }
                     }
                 }
@@ -202,15 +255,15 @@ pub trait Dataflow<'cx>: Sized {
             Successors::One(succ) => {
                 let mut succ_state = interp.block_state_mut(def, succ);
                 if succ_state.join_changed(&state) {
-                    worklist.push_back(def, succ);
+                    worklist.push_back((def, args), succ);
                 }
             }
             Successors::Two(succ1, succ2) => {
                 if interp.block_state_mut(def, succ1).join_changed(&state) {
-                    worklist.push_back(def, succ1);
+                    worklist.push_back((def, args.clone()), succ1);
                 }
                 if interp.block_state_mut(def, succ2).join_changed(&state) {
-                    worklist.push_back(def, succ2);
+                    worklist.push_back((def, args), succ2);
                 }
             }
         }
@@ -326,8 +379,12 @@ pub trait Runner<'cx>: Sized {
         match block.successors() {
             Successors::Return => ControlFlow::Continue(curr_state),
             Successors::One(succ) => {
-                let bb = interp.body().block(id);
-                self.visit_block(interp, def, succ, bb, &curr_state)
+                if !interp.runner_visited.borrow().contains(&(def, succ)) {
+                    let bb = interp.body().block(succ);
+                    self.visit_block(interp, def, succ, bb, &curr_state)
+                } else {
+                    ControlFlow::Continue(curr_state)
+                }
             }
             Successors::Two(succ1, succ2) => {
                 let bb = interp.body().block(succ1);
@@ -388,7 +445,6 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     checker_visited: RefCell<FxHashSet<DefId>>,
     callstack: RefCell<Vec<Frame>>,
     pub(crate) runner_visited: RefCell<FxHashSet<(DefId, BasicBlockId)>>,
-    pub callstack_arguments: Vec<Vec<Value>>,
     pub value_manager: ValueManager,
     pub permissions: Vec<String>,
     pub jira_any_permission_resolver: &'cx PermissionHashMap,
@@ -412,7 +468,7 @@ pub struct ValueManager {
     pub varid_to_value_with_proj: DefinitionAnalysisMapProjection,
     pub varid_to_value: DefinitionAnalysisMap,
     pub defid_to_value: FxHashMap<DefId, Value>,
-    pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
+    pub expecting_value: RefCell<VecDeque<(DefId, Vec<Value>)>>,
     pub expected_return_values: HashMap<DefId, (DefId, VarId)>,
 }
 
@@ -442,14 +498,38 @@ impl ValueManager {
         var_id: VarId,
         projection_vec: ProjectionVec,
     ) -> Option<&Value> {
+        self.get_var_with_projection_internal(
+            def_id_func,
+            var_id,
+            projection_vec,
+            &mut FxHashSet::default(),
+        )
+    }
+
+    fn get_var_with_projection_internal(
+        &self,
+        def_id_func: DefId,
+        var_id: VarId,
+        projection_vec: ProjectionVec,
+        visited: &mut FxHashSet<VarId>,
+    ) -> Option<&Value> {
+        if !visited.insert(var_id) {
+            return None;
+        }
         if let Some(value) =
             self.varid_to_value_with_proj
                 .get(&(def_id_func, var_id, projection_vec.clone()))
         {
             Some(value)
-        } else if let Some(Value::Object(var_id)) = self.varid_to_value.get(&(def_id_func, var_id))
+        } else if let Some(Value::Object(next_var_id)) =
+            self.varid_to_value.get(&(def_id_func, var_id))
         {
-            self.get_var_with_projection(def_id_func, *var_id, projection_vec)
+            self.get_var_with_projection_internal(
+                def_id_func,
+                *next_var_id,
+                projection_vec,
+                visited,
+            )
         } else {
             None
         }
@@ -545,14 +625,13 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             states: RefCell::new(BTreeMap::new()),
             dataflow_visited: FxHashSet::default(),
             checker_visited: RefCell::new(FxHashSet::default()),
-            callstack_arguments: Vec::new(),
             callstack: RefCell::new(Vec::new()),
             value_manager: ValueManager {
                 varid_to_value: DefinitionAnalysisMap::default(),
                 varid_to_value_with_proj: DefinitionAnalysisMapProjection::default(),
                 defid_to_value: FxHashMap::default(),
                 expected_return_values: HashMap::default(),
-                expecting_value: VecDeque::default(),
+                expecting_value: RefCell::new(VecDeque::default()),
             },
             permissions,
             jira_any_permission_resolver,
@@ -641,6 +720,37 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             projections,
         } = lval
         {
+            // this piece is definition analysis largely for global variables since they are not assigned a VarId, so we use the DefId
+            match &rvalue {
+                Rvalue::Call(Operand::Var(variable), _) => {
+                    if let Base::Var(callee_varid) = variable.base
+                        && let Some(VarKind::GlobalRef(defid)) = self.body().vars.get(callee_varid)
+                    {
+                        self.value_manager
+                            .expected_return_values
+                            .insert(*defid, (defid_block, varid));
+                    }
+                }
+                Rvalue::Read(Operand::Lit(Literal::Str(str))) => {
+                    if let Some(VarKind::GlobalRef(def)) = self.body().vars.get(varid) {
+                        self.value_manager
+                            .defid_to_value
+                            .insert(*def, Value::Const(Const::Literal(str.to_string())));
+                    } else if let Some(VarKind::LocalDef(def)) = self.body().vars.get(varid) {
+                        self.value_manager
+                            .defid_to_value
+                            .insert(*def, Value::Const(Const::Literal(str.to_string())));
+                    } else if let Some(&VarKind::Temp {
+                        parent: Some(defid_parent),
+                    }) = self.body().vars.get(varid)
+                    {
+                        self.value_manager
+                            .defid_to_value
+                            .insert(defid_parent, Value::Const(Const::Literal(str.to_string())));
+                    }
+                }
+                _ => {}
+            }
             let (varid, projections) = self.get_farthest_obj(defid_block, varid, projections);
             let rval_value = self.value_from_rval(defid_block, rvalue);
             if let Some(existing_lval) = self
@@ -949,31 +1059,85 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         }
         self.dataflow_visited.insert(func_def);
         let mut dataflow = C::Dataflow::with_interp(self);
-        let mut worklist = WorkList::new();
+        let mut worklist: WorkList<(DefId, Option<Vec<Value>>), BasicBlockId> = WorkList::new();
 
         // funcs then are pushed after
-        worklist.push_front_blocks(self.env, func_def, self.call_all);
+        worklist.push_front_blocks(self.env, func_def, None, self.call_all);
 
         // global should be first
         for global_def in &self.env().global {
-            worklist.push_front_blocks(self.env, *global_def, self.call_all);
+            worklist.push_front_blocks(self.env, *global_def, None, self.call_all);
         }
         let old_body = self.curr_body.get();
-        while let Some((def, block_id)) = worklist.pop_front() {
-            let arguments = self.callstack_arguments.pop();
+        while let Some(((def, arguments), block_id)) = worklist.pop_front() {
             let name = self.env.def_name(def);
             debug!("Dataflow: {name} - {block_id}");
             self.dataflow_visited.insert(def);
             let func = self.env().def_ref(def).expect_body();
             self.curr_body.set(Some(func));
+
+            if block_id == STARTING_BLOCK {
+                let mut function_var = func.vars.clone();
+                function_var.pop();
+                if let Some(args_vec) = &arguments {
+                    let mut args_vec = args_vec.clone();
+                    args_vec.reverse();
+                    for (varid, varkind) in function_var.iter_enumerated() {
+                        if (matches!(varkind, VarKind::Arg(_))
+                            || matches!(varkind, VarKind::GlobalRef(_)))
+                            && let Some(operand) = args_vec.pop()
+                        {
+                            self.add_value(def, varid, operand.clone());
+                            func.vars
+                                .iter_enumerated()
+                                .for_each(|(varid_alt, varkind_alt)| {
+                                    let default_projections = Variable::from(varid_alt);
+
+                                    if let (Some(defid_alt), Some(defid_arg)) = (
+                                        get_defid_from_varkind(varkind_alt),
+                                        get_defid_from_varkind(varkind),
+                                    ) && defid_arg == defid_alt
+                                        && varid_alt != varid
+                                    {
+                                        self.add_value_with_projection(
+                                            def,
+                                            varid_alt,
+                                            operand.clone(),
+                                            default_projections.projections,
+                                        );
+                                    }
+                                })
+                        }
+                    }
+                }
+            }
+
             let mut before_state = self.block_state(def, block_id);
             let block = func.block(block_id);
             for &pred in func.predecessors(block_id) {
                 before_state = before_state.join(&self.block_state(def, pred));
             }
-            let state =
-                dataflow.transfer_block(self, def, block_id, block, before_state, arguments);
-            dataflow.join_term(self, def, block, state, &mut worklist);
+            let state = dataflow.transfer_block(
+                self,
+                def,
+                block_id,
+                block,
+                before_state,
+                arguments.clone(),
+            );
+
+            if matches!(block.successors(), Successors::Return) {
+                for (varid, varkind) in func.vars.iter_enumerated() {
+                    if &VarKind::Ret == varkind
+                        && let Some((defid_calling_func, varid_calling_func)) =
+                            self.value_manager.expected_return_values.get(&def)
+                        && let Some(value) = self.get_value(def, varid, None)
+                    {
+                        self.add_value(*defid_calling_func, *varid_calling_func, value.clone());
+                    }
+                }
+            }
+            dataflow.join_term(self, def, block, state, &mut worklist, arguments);
         }
 
         if self.call_uncalled {
@@ -981,32 +1145,86 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             let all_functions_set = FxHashSet::from_iter(all_functions.iter());
 
             for def in all_functions_set {
-                if !worklist.visited(def) {
+                if !worklist.visited(&(*def, None)) {
                     let body = self.env.def_ref(*def).expect_body();
-                    let blocks = body.iter_block_keys().map(|bb| (def, bb)).rev();
+                    let blocks = body.iter_block_keys().map(|bb| ((*def, None), bb)).rev();
                     worklist.reserve(blocks.len());
                     for work in blocks {
                         debug!(?work, "push_front_blocks");
-                        worklist.push_back_force(*work.0, work.1);
+                        worklist.push_back_force(work.0, work.1);
                     }
                 }
             }
 
-            while let Some((def, block_id)) = worklist.pop_front() {
-                let arguments = self.callstack_arguments.pop();
+            while let Some(((def, arguments), block_id)) = worklist.pop_front() {
                 let name = self.env.def_name(def);
                 debug!("Dataflow: {name} - {block_id}");
                 self.dataflow_visited.insert(def);
                 let func = self.env().def_ref(def).expect_body();
                 self.curr_body.set(Some(func));
+
+                if block_id == STARTING_BLOCK {
+                    let mut function_var = func.vars.clone();
+                    function_var.pop();
+                    if let Some(args_vec) = &arguments {
+                        let mut args_vec = args_vec.clone();
+                        args_vec.reverse();
+                        for (varid, varkind) in function_var.iter_enumerated() {
+                            if (matches!(varkind, VarKind::Arg(_))
+                                || matches!(varkind, VarKind::GlobalRef(_)))
+                                && let Some(operand) = args_vec.pop()
+                            {
+                                self.add_value(def, varid, operand.clone());
+                                func.vars
+                                    .iter_enumerated()
+                                    .for_each(|(varid_alt, varkind_alt)| {
+                                        let default_projections = Variable::from(varid_alt);
+
+                                        if let (Some(defid_alt), Some(defid_arg)) = (
+                                            get_defid_from_varkind(varkind_alt),
+                                            get_defid_from_varkind(varkind),
+                                        ) && defid_arg == defid_alt
+                                            && varid_alt != varid
+                                        {
+                                            self.add_value_with_projection(
+                                                def,
+                                                varid_alt,
+                                                operand.clone(),
+                                                default_projections.projections,
+                                            );
+                                        }
+                                    })
+                            }
+                        }
+                    }
+                }
+
                 let mut before_state = self.block_state(def, block_id);
                 let block = func.block(block_id);
                 for &pred in func.predecessors(block_id) {
                     before_state = before_state.join(&self.block_state(def, pred));
                 }
-                let state =
-                    dataflow.transfer_block(self, def, block_id, block, before_state, arguments);
-                dataflow.join_term(self, def, block, state, &mut worklist);
+                let state = dataflow.transfer_block(
+                    self,
+                    def,
+                    block_id,
+                    block,
+                    before_state,
+                    arguments.clone(),
+                );
+
+                if matches!(block.successors(), Successors::Return) {
+                    for (varid, varkind) in func.vars.iter_enumerated() {
+                        if &VarKind::Ret == varkind
+                            && let Some((defid_calling_func, varid_calling_func)) =
+                                self.value_manager.expected_return_values.get(&def)
+                            && let Some(value) = self.get_value(def, varid, None)
+                        {
+                            self.add_value(*defid_calling_func, *varid_calling_func, value.clone());
+                        }
+                    }
+                }
+                dataflow.join_term(self, def, block, state, &mut worklist, arguments);
             }
         }
 
