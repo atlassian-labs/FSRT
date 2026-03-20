@@ -54,6 +54,11 @@ where
     {
         self.visited.contains(key)
     }
+
+    #[inline]
+    pub fn push_back_force(&mut self, v: V, w: W) {
+        self.worklist.push_back((v, w));
+    }
 }
 
 impl<V, W> Default for WorkList<V, W>
@@ -67,18 +72,13 @@ where
 
 impl<V, W> WorkList<V, W>
 where
-    V: Eq + Hash + Clone,
+    V: Eq + Hash + Copy,
 {
     #[inline]
     pub fn push_back(&mut self, v: V, w: W) {
-        if self.visited.insert(v.clone()) {
+        if self.visited.insert(v) {
             self.worklist.push_back((v, w));
         }
-    }
-
-    #[inline]
-    pub fn push_back_force(&mut self, v: V, w: W) {
-        self.worklist.push_back((v, w));
     }
 }
 

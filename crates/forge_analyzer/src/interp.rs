@@ -253,18 +253,11 @@ pub trait Dataflow<'cx>: Sized {
                 }
             }
             Successors::One(succ) => {
-                let mut succ_state = interp.block_state_mut(def, succ);
-                if succ_state.join_changed(&state) {
-                    worklist.push_back((def, args), succ);
-                }
+                interp.block_state_mut(def, succ).join_changed(&state);
             }
             Successors::Two(succ1, succ2) => {
-                if interp.block_state_mut(def, succ1).join_changed(&state) {
-                    worklist.push_back((def, args.clone()), succ1);
-                }
-                if interp.block_state_mut(def, succ2).join_changed(&state) {
-                    worklist.push_back((def, args), succ2);
-                }
+                interp.block_state_mut(def, succ1).join_changed(&state);
+                interp.block_state_mut(def, succ2).join_changed(&state);
             }
         }
     }
@@ -470,11 +463,24 @@ pub struct ValueManager {
     pub defid_to_value: FxHashMap<DefId, Value>,
     pub expecting_value: RefCell<VecDeque<(DefId, Vec<Value>)>>,
     pub expected_return_values: HashMap<DefId, (DefId, VarId)>,
+    changed: bool,
 }
 
 impl ValueManager {
+    pub fn reset_changed(&mut self) {
+        self.changed = false;
+    }
+
+    pub fn has_changed(&self) -> bool {
+        self.changed
+    }
+
     pub fn insert_var(&mut self, def_id_func: DefId, var_id: VarId, value: Value) {
-        self.varid_to_value.insert((def_id_func, var_id), value);
+        let key = (def_id_func, var_id);
+        if self.varid_to_value.get(&key) != Some(&value) {
+            self.changed = true;
+        }
+        self.varid_to_value.insert(key, value);
     }
 
     pub fn insert_var_with_projection(
@@ -485,11 +491,21 @@ impl ValueManager {
         value: Value,
     ) {
         if projection_vec.is_empty() {
-            self.varid_to_value.insert((def_id_func, var_id), value);
+            self.insert_var(def_id_func, var_id, value);
         } else {
-            self.varid_to_value_with_proj
-                .insert((def_id_func, var_id, projection_vec), value);
+            let key = (def_id_func, var_id, projection_vec);
+            if self.varid_to_value_with_proj.get(&key) != Some(&value) {
+                self.changed = true;
+            }
+            self.varid_to_value_with_proj.insert(key, value);
         }
+    }
+
+    pub fn insert_defid_value(&mut self, def_id: DefId, value: Value) {
+        if self.defid_to_value.get(&def_id) != Some(&value) {
+            self.changed = true;
+        }
+        self.defid_to_value.insert(def_id, value);
     }
 
     pub fn get_var_with_projection(
@@ -632,6 +648,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 defid_to_value: FxHashMap::default(),
                 expected_return_values: HashMap::default(),
                 expecting_value: RefCell::new(VecDeque::default()),
+                changed: false,
             },
             permissions,
             jira_any_permission_resolver,
@@ -732,21 +749,16 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     }
                 }
                 Rvalue::Read(Operand::Lit(Literal::Str(str))) => {
+                    let val = Value::Const(Const::Literal(str.to_string()));
                     if let Some(VarKind::GlobalRef(def)) = self.body().vars.get(varid) {
-                        self.value_manager
-                            .defid_to_value
-                            .insert(*def, Value::Const(Const::Literal(str.to_string())));
+                        self.value_manager.insert_defid_value(*def, val);
                     } else if let Some(VarKind::LocalDef(def)) = self.body().vars.get(varid) {
-                        self.value_manager
-                            .defid_to_value
-                            .insert(*def, Value::Const(Const::Literal(str.to_string())));
+                        self.value_manager.insert_defid_value(*def, val);
                     } else if let Some(&VarKind::Temp {
                         parent: Some(defid_parent),
                     }) = self.body().vars.get(varid)
                     {
-                        self.value_manager
-                            .defid_to_value
-                            .insert(defid_parent, Value::Const(Const::Literal(str.to_string())));
+                        self.value_manager.insert_defid_value(defid_parent, val);
                     }
                 }
                 _ => {}
@@ -834,10 +846,17 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                                 .range_mut(start_exists..),
                         };
 
+                        let mut any_changed = false;
                         for (_, value) in query_exists.filter(|((_, _, projections), _)| {
                             !projections_transferred.contains(projections)
                         }) {
+                            if *value != Value::Unknown {
+                                any_changed = true;
+                            }
                             *value = Value::Unknown
+                        }
+                        if any_changed {
+                            self.value_manager.changed = true;
                         }
                     }
                     _ => {}
@@ -1075,6 +1094,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             self.dataflow_visited.insert(def);
             let func = self.env().def_ref(def).expect_body();
             self.curr_body.set(Some(func));
+            self.value_manager.reset_changed();
 
             if block_id == STARTING_BLOCK {
                 let mut function_var = func.vars.clone();
@@ -1162,6 +1182,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 self.dataflow_visited.insert(def);
                 let func = self.env().def_ref(def).expect_body();
                 self.curr_body.set(Some(func));
+                self.value_manager.reset_changed();
 
                 if block_id == STARTING_BLOCK {
                     let mut function_var = func.vars.clone();
