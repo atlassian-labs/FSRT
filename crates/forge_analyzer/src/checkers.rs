@@ -11,7 +11,7 @@ use crate::{
         VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    utils::{add_elements_to_intrinsic_struct, convert_operand_to_raw, translate_request_type},
+    utils::{add_elements_to_intrinsic_struct, translate_request_type},
     worklist::WorkList,
 };
 use core::fmt;
@@ -171,7 +171,6 @@ impl<'cx> Dataflow<'cx> for TaintDataflow {
         bb: BasicBlockId,
         block: &'cx BasicBlock,
         mut initial_state: Self::State,
-        _arguments: Option<Vec<Value>>,
     ) -> Self::State {
         if initial_state.len() < interp.body().vars.len() {
             initial_state.resize(interp.body().vars.len(), Taint::Unknown);
@@ -302,12 +301,11 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
-        args: Option<Vec<Value>>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
-        self.super_join_term(interp, def, block, state, worklist, args);
+        self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, None, interp.call_all);
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
     }
 }
@@ -626,12 +624,11 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
-        args: Option<Vec<Value>>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
-        self.super_join_term(interp, def, block, state, worklist, args);
+        self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, None, interp.call_all);
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
     }
 }
@@ -844,12 +841,11 @@ impl<'cx> Dataflow<'cx> for SecretDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
-        args: Option<Vec<Value>>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
-        self.super_join_term(interp, def, block, state, worklist, args);
+        self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, None, interp.call_all);
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
     }
 }
@@ -1300,7 +1296,6 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         bb: BasicBlockId,
         block: &'cx BasicBlock,
         initial_state: Self::State,
-        _arguments: Option<Vec<Value>>,
     ) -> Self::State {
         let mut state = initial_state;
 
@@ -1317,12 +1312,11 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
-        args: Option<Vec<Value>>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
-        self.super_join_term(interp, def, block, state, worklist, args);
+        self.super_join_term(interp, def, block, state, worklist);
         for (def, _arguments) in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, None, interp.call_all);
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
     }
 }
@@ -1399,7 +1393,7 @@ impl<'a> PermissionVuln<'a> {
 }
 
 pub struct DefinitionAnalysisRunner {
-    pub needs_call: Vec<(DefId, Vec<Operand>, Vec<Value>)>,
+    pub needs_call: Vec<DefId>,
 }
 
 impl<'cx> Runner<'cx> for PermissionChecker<'_> {
@@ -1502,15 +1496,8 @@ impl<'cx> Dataflow<'cx> for DefinitionAnalysisRunner {
         initial_state: Self::State,
         oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
-        let state = self.super_transfer_call(
-            interp,
-            def,
-            loc,
-            block,
-            callee,
-            initial_state,
-            oprands.clone(),
-        );
+        let state =
+            self.super_transfer_call(interp, def, loc, block, callee, initial_state, oprands);
         let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
             return state;
         };
@@ -1519,33 +1506,7 @@ impl<'cx> Dataflow<'cx> for DefinitionAnalysisRunner {
         let caller_name = interp.env().def_name(def);
         debug!("Found call to {callee_name} at {def:?} {caller_name}");
 
-        let mut all_values_to_be_pushed = vec![];
-
-        for operand in &oprands {
-            match operand.clone() {
-                Operand::Lit(_) => {
-                    if let Some(lit_value) = convert_operand_to_raw(&operand.clone()) {
-                        all_values_to_be_pushed.push(Value::Const(Const::Literal(lit_value)));
-                    } else {
-                        all_values_to_be_pushed.push(Value::Unknown)
-                    }
-                }
-                Operand::Var(var) => match var.base {
-                    Base::Var(varid) => {
-                        if let Some(value) =
-                            interp.get_value(def, varid, Some(ProjectionVec::new()))
-                        {
-                            all_values_to_be_pushed.push(value.clone());
-                        } else {
-                            all_values_to_be_pushed.push(Value::Unknown)
-                        }
-                    }
-                    _ => all_values_to_be_pushed.push(Value::Unknown),
-                },
-            }
-        }
-        self.needs_call
-            .push((callee_def, oprands.into_vec(), all_values_to_be_pushed));
+        self.needs_call.push(callee_def);
         state
     }
 
@@ -1555,12 +1516,11 @@ impl<'cx> Dataflow<'cx> for DefinitionAnalysisRunner {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
-        args: Option<Vec<Value>>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
-        self.super_join_term(interp, def, block, state, worklist, args);
-        for (def, _arguments, values) in self.needs_call.drain(..) {
-            worklist.push_front_blocks(interp.env(), def, Some(values), interp.call_all);
+        self.super_join_term(interp, def, block, state, worklist);
+        for def in self.needs_call.drain(..) {
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
         }
     }
 }

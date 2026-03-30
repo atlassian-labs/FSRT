@@ -1,7 +1,7 @@
 use std::{
     borrow::BorrowMut,
     cell::{Cell, RefCell, RefMut},
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap},
     fmt::{self, Display},
     hash::Hash,
     iter,
@@ -136,7 +136,7 @@ pub trait Dataflow<'cx>: Sized {
                 .value_manager
                 .expecting_value
                 .borrow_mut()
-                .push_back((callee_def, all_values_to_be_pushed));
+                .insert(callee_def, all_values_to_be_pushed);
         }
         initial_state
     }
@@ -204,7 +204,6 @@ pub trait Dataflow<'cx>: Sized {
         bb: BasicBlockId,
         block: &'cx BasicBlock,
         initial_state: Self::State,
-        _arguments: Option<Vec<Value>>,
     ) -> Self::State {
         let mut state = initial_state;
         for (stmt, inst) in block.iter().enumerate() {
@@ -220,10 +219,9 @@ pub trait Dataflow<'cx>: Sized {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
-        args: Option<Vec<Value>>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
-        self.super_join_term(interp.borrow_mut(), def, block, state, worklist, args);
+        self.super_join_term(interp.borrow_mut(), def, block, state, worklist);
     }
 
     fn super_join_term<C: Runner<'cx, State = Self::State>>(
@@ -232,8 +230,7 @@ pub trait Dataflow<'cx>: Sized {
         def: DefId,
         block: &'cx BasicBlock,
         state: Self::State,
-        worklist: &mut WorkList<(DefId, Option<Vec<Value>>), BasicBlockId>,
-        args: Option<Vec<Value>>,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
         match block.successors() {
             Successors::Return => {
@@ -245,9 +242,9 @@ pub trait Dataflow<'cx>: Sized {
                     let calls = interp.called_from(def);
                     let name = interp.env().def_name(def);
                     debug!("{name} {def:?} is called from {calls:?}");
-                    for &(def, loc) in calls {
-                        if worklist.visited(&(def, args.clone())) {
-                            worklist.push_back_force((def, args.clone()), loc.block);
+                    for &(caller_def, loc) in calls {
+                        if worklist.visited(&caller_def) {
+                            worklist.push_back_force(caller_def, loc.block);
                         }
                     }
                 }
@@ -461,7 +458,7 @@ pub struct ValueManager {
     pub varid_to_value_with_proj: DefinitionAnalysisMapProjection,
     pub varid_to_value: DefinitionAnalysisMap,
     pub defid_to_value: FxHashMap<DefId, Value>,
-    pub expecting_value: RefCell<VecDeque<(DefId, Vec<Value>)>>,
+    pub expecting_value: RefCell<FxHashMap<DefId, Vec<Value>>>,
     pub expected_return_values: HashMap<DefId, (DefId, VarId)>,
     changed: bool,
 }
@@ -647,7 +644,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 varid_to_value_with_proj: DefinitionAnalysisMapProjection::default(),
                 defid_to_value: FxHashMap::default(),
                 expected_return_values: HashMap::default(),
-                expecting_value: RefCell::new(VecDeque::default()),
+                expecting_value: RefCell::new(FxHashMap::default()),
                 changed: false,
             },
             permissions,
@@ -754,11 +751,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                         self.value_manager.insert_defid_value(*def, val);
                     } else if let Some(VarKind::LocalDef(def)) = self.body().vars.get(varid) {
                         self.value_manager.insert_defid_value(*def, val);
-                    } else if let Some(&VarKind::Temp {
-                        parent: Some(defid_parent),
-                    }) = self.body().vars.get(varid)
-                    {
-                        self.value_manager.insert_defid_value(defid_parent, val);
                     }
                 }
                 _ => {}
@@ -1078,17 +1070,17 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         }
         self.dataflow_visited.insert(func_def);
         let mut dataflow = C::Dataflow::with_interp(self);
-        let mut worklist: WorkList<(DefId, Option<Vec<Value>>), BasicBlockId> = WorkList::new();
+        let mut worklist: WorkList<DefId, BasicBlockId> = WorkList::new();
 
         // funcs then are pushed after
-        worklist.push_front_blocks(self.env, func_def, None, self.call_all);
+        worklist.push_front_blocks(self.env, func_def, self.call_all);
 
         // global should be first
         for global_def in &self.env().global {
-            worklist.push_front_blocks(self.env, *global_def, None, self.call_all);
+            worklist.push_front_blocks(self.env, *global_def, self.call_all);
         }
         let old_body = self.curr_body.get();
-        while let Some(((def, arguments), block_id)) = worklist.pop_front() {
+        while let Some((def, block_id)) = worklist.pop_front() {
             let name = self.env.def_name(def);
             debug!("Dataflow: {name} - {block_id}");
             self.dataflow_visited.insert(def);
@@ -1099,8 +1091,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             if block_id == STARTING_BLOCK {
                 let mut function_var = func.vars.clone();
                 function_var.pop();
-                if let Some(args_vec) = &arguments {
-                    let mut args_vec = args_vec.clone();
+                let args = self.value_manager.expecting_value.borrow_mut().remove(&def);
+                if let Some(mut args_vec) = args {
                     args_vec.reverse();
                     for (varid, varkind) in function_var.iter_enumerated() {
                         if (matches!(varkind, VarKind::Arg(_))
@@ -1143,7 +1135,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 block_id,
                 block,
                 before_state,
-                arguments.clone(),
             );
 
             if matches!(block.successors(), Successors::Return) {
@@ -1157,7 +1148,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     }
                 }
             }
-            dataflow.join_term(self, def, block, state, &mut worklist, arguments);
+            dataflow.join_term(self, def, block, state, &mut worklist);
         }
 
         if self.call_uncalled {
@@ -1165,9 +1156,9 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             let all_functions_set = FxHashSet::from_iter(all_functions.iter());
 
             for def in all_functions_set {
-                if !worklist.visited(&(*def, None)) {
+                if !worklist.visited(def) {
                     let body = self.env.def_ref(*def).expect_body();
-                    let blocks = body.iter_block_keys().map(|bb| ((*def, None), bb)).rev();
+                    let blocks = body.iter_block_keys().map(|bb| (*def, bb)).rev();
                     worklist.reserve(blocks.len());
                     for work in blocks {
                         debug!(?work, "push_front_blocks");
@@ -1176,7 +1167,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 }
             }
 
-            while let Some(((def, arguments), block_id)) = worklist.pop_front() {
+            while let Some((def, block_id)) = worklist.pop_front() {
                 let name = self.env.def_name(def);
                 debug!("Dataflow: {name} - {block_id}");
                 self.dataflow_visited.insert(def);
@@ -1187,8 +1178,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 if block_id == STARTING_BLOCK {
                     let mut function_var = func.vars.clone();
                     function_var.pop();
-                    if let Some(args_vec) = &arguments {
-                        let mut args_vec = args_vec.clone();
+                    let args = self.value_manager.expecting_value.borrow_mut().remove(&def);
+                    if let Some(mut args_vec) = args {
                         args_vec.reverse();
                         for (varid, varkind) in function_var.iter_enumerated() {
                             if (matches!(varkind, VarKind::Arg(_))
@@ -1231,7 +1222,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     block_id,
                     block,
                     before_state,
-                    arguments.clone(),
                 );
 
                 if matches!(block.successors(), Successors::Return) {
@@ -1245,7 +1235,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                         }
                     }
                 }
-                dataflow.join_term(self, def, block, state, &mut worklist, arguments);
+                dataflow.join_term(self, def, block, state, &mut worklist);
             }
         }
 
