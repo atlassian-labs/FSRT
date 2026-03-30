@@ -1129,13 +1129,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             for &pred in func.predecessors(block_id) {
                 before_state = before_state.join(&self.block_state(def, pred));
             }
-            let state = dataflow.transfer_block(
-                self,
-                def,
-                block_id,
-                block,
-                before_state,
-            );
+            let state = dataflow.transfer_block(self, def, block_id, block, before_state);
 
             if matches!(block.successors(), Successors::Return) {
                 for (varid, varkind) in func.vars.iter_enumerated() {
@@ -1216,13 +1210,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 for &pred in func.predecessors(block_id) {
                     before_state = before_state.join(&self.block_state(def, pred));
                 }
-                let state = dataflow.transfer_block(
-                    self,
-                    def,
-                    block_id,
-                    block,
-                    before_state,
-                );
+                let state = dataflow.transfer_block(self, def, block_id, block, before_state);
 
                 if matches!(block.successors(), Successors::Return) {
                     for (varid, varkind) in func.vars.iter_enumerated() {
