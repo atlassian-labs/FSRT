@@ -10,8 +10,8 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct WorkList<V, W> {
-    worklist: VecDeque<(V, W)>,
-    visited: FxHashSet<V>,
+    pub worklist: VecDeque<(V, W)>,
+    pub visited: FxHashSet<V>,
 }
 
 impl<V, W> WorkList<V, W>
@@ -54,6 +54,11 @@ where
     {
         self.visited.contains(key)
     }
+
+    #[inline]
+    pub fn push_back_force(&mut self, v: V, w: W) {
+        self.worklist.push_back((v, w));
+    }
 }
 
 impl<V, W> Default for WorkList<V, W>
@@ -75,11 +80,6 @@ where
             self.worklist.push_back((v, w));
         }
     }
-
-    #[inline]
-    pub fn push_back_force(&mut self, v: V, w: W) {
-        self.worklist.push_back((v, w));
-    }
 }
 
 impl WorkList<DefId, BasicBlockId> {
@@ -97,7 +97,28 @@ impl WorkList<DefId, BasicBlockId> {
             self.worklist.reserve(blocks.len());
             for work in blocks {
                 debug!(?work, "push_front_blocks");
-                self.worklist.push_front((work.0, work.1));
+                self.worklist.push_front(work);
+            }
+            return true;
+        }
+        false
+    }
+
+    #[inline]
+    pub(crate) fn push_back_blocks(
+        &mut self,
+        env: &Environment,
+        def: DefId,
+        visit_all: bool,
+    ) -> bool {
+        if self.visited.insert(def) || visit_all {
+            debug!("adding function: {}", env.def_name(def));
+            let body = env.def_ref(def).expect_body();
+            self.worklist.reserve(body.iter_block_keys().len());
+            for bb in body.iter_block_keys() {
+                let work = (def, bb);
+                debug!(?work, "push_back_blocks");
+                self.worklist.push_back(work);
             }
             return true;
         }

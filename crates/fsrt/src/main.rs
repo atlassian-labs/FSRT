@@ -38,8 +38,8 @@ use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
     checkers::{
-        AuthZChecker, AuthenticateChecker, DefinitionAnalysisRunner, PermissionChecker,
-        PermissionVuln, SecretChecker, SecretType,
+        AuthZChecker, AuthenticateChecker, PermissionChecker, PermissionVuln, SecretChecker,
+        SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -387,9 +387,11 @@ pub(crate) fn scan_directory<'a>(
         .into_iter()
         .any(|remote| remote.contains_auth());
 
+    let mut sorted_paths: Vec<PathBuf> = paths.iter().cloned().collect();
+    sorted_paths.sort();
     let mut proj = project.with_files_and_sourceroot(
         Path::new("src"),
-        paths.clone(),
+        sorted_paths,
         secret_packages,
         &mut perm_map,
     );
@@ -460,7 +462,7 @@ pub(crate) fn scan_directory<'a>(
         get_permission_resolver_bitbucket(&config);
     let compass_permission_resolver = get_permission_resolver_compass();
 
-    let mut definition_analysis_interp = Interp::<DefinitionAnalysisRunner>::new(
+    let mut interp = Interp::new(
         &proj.env,
         false,
         true,
@@ -479,30 +481,10 @@ pub(crate) fn scan_directory<'a>(
         &bitbucket_regex_map,
         &compass_permission_resolver,
     );
-
-    let mut interp = Interp::new(
-        &proj.env,
-        false,
-        false,
-        permissions.clone(),
-        &jira_any_permission_resolver,
-        &jira_any_regex_map,
-        &jira_software_permission_resolver,
-        &jira_software_regex_map,
-        &jira_service_management_permission_resolver,
-        &jira_service_management_regex_map,
-        &jira_permission_resolver,
-        &jira_regex_map,
-        &confluence_permission_resolver,
-        &confluence_regex_map,
-        &bitbucket_permission_resolver,
-        &bitbucket_regex_map,
-        &compass_permission_resolver,
-    );
     let mut authn_interp = Interp::new(
         &proj.env,
         false,
-        false,
+        true,
         permissions.clone(),
         &jira_any_permission_resolver,
         &jira_any_regex_map,
@@ -523,7 +505,7 @@ pub(crate) fn scan_directory<'a>(
     let mut secret_interp = Interp::<SecretChecker>::new(
         &proj.env,
         false,
-        false,
+        true,
         permissions.clone(),
         &jira_any_permission_resolver,
         &jira_any_regex_map,
@@ -576,29 +558,9 @@ pub(crate) fn scan_directory<'a>(
     }
 
     for func in &proj.funcs {
-        let mut def_checker = DefinitionAnalysisRunner::new();
-        if let Err(err) = definition_analysis_interp.run_checker(
-            func.def_id,
-            &mut def_checker,
-            func.path.clone(),
-            func.func_name.to_string(),
-        ) {
-            warn!(
-                "error while scanning {:?} in {:?}: {err}",
-                func.func_name, func.path,
-            );
-        }
-
         // if there is a remote backend that accepts an auth token, do not run
         if run_permission_checker && !contains_remote_auth_token {
             let mut checker = PermissionChecker::new();
-            perm_interp.value_manager.varid_to_value =
-                definition_analysis_interp.value_manager.varid_to_value;
-            perm_interp.value_manager.varid_to_value_with_proj = definition_analysis_interp
-                .value_manager
-                .varid_to_value_with_proj;
-            perm_interp.value_manager.defid_to_value =
-                definition_analysis_interp.value_manager.defid_to_value;
             if let Err(err) = perm_interp.run_checker(
                 func.def_id,
                 &mut checker,
@@ -607,22 +569,8 @@ pub(crate) fn scan_directory<'a>(
             ) {
                 warn!("error while running permission checker: {err}");
             }
-            definition_analysis_interp.value_manager.varid_to_value =
-                perm_interp.value_manager.varid_to_value;
-            definition_analysis_interp
-                .value_manager
-                .varid_to_value_with_proj = perm_interp.value_manager.varid_to_value_with_proj;
-            definition_analysis_interp.value_manager.defid_to_value =
-                perm_interp.value_manager.defid_to_value;
         }
 
-        secret_interp.value_manager.varid_to_value =
-            definition_analysis_interp.value_manager.varid_to_value;
-        secret_interp.value_manager.varid_to_value_with_proj = definition_analysis_interp
-            .value_manager
-            .varid_to_value_with_proj;
-        secret_interp.value_manager.defid_to_value =
-            definition_analysis_interp.value_manager.defid_to_value;
         if let Err(err) = secret_interp.run_checker(
             func.def_id,
             &mut secret_checker,
@@ -631,13 +579,6 @@ pub(crate) fn scan_directory<'a>(
         ) {
             warn!("error while running secret checker: {err}");
         }
-        definition_analysis_interp.value_manager.varid_to_value =
-            secret_interp.value_manager.varid_to_value;
-        definition_analysis_interp
-            .value_manager
-            .varid_to_value_with_proj = secret_interp.value_manager.varid_to_value_with_proj;
-        definition_analysis_interp.value_manager.defid_to_value =
-            secret_interp.value_manager.defid_to_value;
 
         if func.invokable {
             let mut checker = AuthZChecker::new();
@@ -740,21 +681,21 @@ pub(crate) fn scan_directory<'a>(
 
     // Lack of coverage, since no apps use raw GraphQL currently.
     if let std::result::Result::Ok(doc) = ast {
-        let mut used_graphql_perms: Vec<&str> = definition_analysis_interp
+        let mut used_graphql_perms: Vec<&str> = interp
             .value_manager
             .varid_to_value_with_proj
             .values()
             .flat_map(|val| check_graphql_and_perms(val, &doc))
             .collect();
 
-        let graphql_perms_varid: Vec<&str> = definition_analysis_interp
+        let graphql_perms_varid: Vec<&str> = interp
             .value_manager
             .varid_to_value
             .values()
             .flat_map(|val| check_graphql_and_perms(val, &doc))
             .collect();
 
-        let graphql_perms_defid: Vec<&str> = definition_analysis_interp
+        let graphql_perms_defid: Vec<&str> = interp
             .value_manager
             .defid_to_value
             .values()
