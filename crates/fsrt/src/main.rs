@@ -463,7 +463,7 @@ pub(crate) fn scan_directory<'a>(
     let mut interp = Interp::new(
         &proj.env,
         false,
-        false,
+        true,
         permissions.clone(),
         &jira_any_permission_resolver,
         &jira_any_regex_map,
@@ -482,7 +482,7 @@ pub(crate) fn scan_directory<'a>(
     let mut authn_interp = Interp::new(
         &proj.env,
         false,
-        false,
+        true,
         permissions.clone(),
         &jira_any_permission_resolver,
         &jira_any_regex_map,
@@ -503,7 +503,7 @@ pub(crate) fn scan_directory<'a>(
     let mut secret_interp = Interp::<SecretChecker>::new(
         &proj.env,
         false,
-        false,
+        true,
         permissions.clone(),
         &jira_any_permission_resolver,
         &jira_any_regex_map,
@@ -567,12 +567,6 @@ pub(crate) fn scan_directory<'a>(
             ) {
                 warn!("error while running permission checker: {err}");
             }
-            secret_interp.value_manager.varid_to_value =
-                perm_interp.value_manager.varid_to_value.clone();
-            secret_interp.value_manager.varid_to_value_with_proj =
-                perm_interp.value_manager.varid_to_value_with_proj.clone();
-            secret_interp.value_manager.defid_to_value =
-                perm_interp.value_manager.defid_to_value.clone();
         }
 
         if let Err(err) = secret_interp.run_checker(
@@ -583,17 +577,6 @@ pub(crate) fn scan_directory<'a>(
         ) {
             warn!("error while running secret checker: {err}");
         }
-        interp.value_manager.varid_to_value = secret_interp.value_manager.varid_to_value.clone();
-        interp.value_manager.varid_to_value_with_proj =
-            secret_interp.value_manager.varid_to_value_with_proj.clone();
-        interp.value_manager.defid_to_value = secret_interp.value_manager.defid_to_value.clone();
-
-        authn_interp.value_manager.varid_to_value =
-            secret_interp.value_manager.varid_to_value.clone();
-        authn_interp.value_manager.varid_to_value_with_proj =
-            secret_interp.value_manager.varid_to_value_with_proj.clone();
-        authn_interp.value_manager.defid_to_value =
-            secret_interp.value_manager.defid_to_value.clone();
 
         if func.invokable {
             let mut checker = AuthZChecker::new();

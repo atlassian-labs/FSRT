@@ -1075,8 +1075,9 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         // funcs then are pushed after
         worklist.push_front_blocks(self.env, func_def, self.call_all);
 
-        // global should be first
-        for global_def in &self.env().global {
+        // global should be first — iterate in reverse so earlier modules
+        // (which later modules may depend on) end up at the front of the deque
+        for global_def in self.env().global.iter().rev() {
             worklist.push_front_blocks(self.env, *global_def, self.call_all);
         }
         let old_body = self.curr_body.get();
