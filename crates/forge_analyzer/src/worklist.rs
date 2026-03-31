@@ -103,6 +103,27 @@ impl WorkList<DefId, BasicBlockId> {
         }
         false
     }
+
+    #[inline]
+    pub(crate) fn push_back_blocks(
+        &mut self,
+        env: &Environment,
+        def: DefId,
+        visit_all: bool,
+    ) -> bool {
+        if self.visited.insert(def) || visit_all {
+            debug!("adding function: {}", env.def_name(def));
+            let body = env.def_ref(def).expect_body();
+            self.worklist.reserve(body.iter_block_keys().len());
+            for bb in body.iter_block_keys() {
+                let work = (def, bb);
+                debug!(?work, "push_back_blocks");
+                self.worklist.push_back(work);
+            }
+            return true;
+        }
+        false
+    }
 }
 
 impl<V, W> Extend<(V, W)> for WorkList<V, W>

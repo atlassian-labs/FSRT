@@ -387,9 +387,11 @@ pub(crate) fn scan_directory<'a>(
         .into_iter()
         .any(|remote| remote.contains_auth());
 
+    let mut sorted_paths: Vec<PathBuf> = paths.iter().cloned().collect();
+    sorted_paths.sort();
     let mut proj = project.with_files_and_sourceroot(
         Path::new("src"),
-        paths.clone(),
+        sorted_paths,
         secret_packages,
         &mut perm_map,
     );

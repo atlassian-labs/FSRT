@@ -1072,14 +1072,12 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         let mut dataflow = C::Dataflow::with_interp(self);
         let mut worklist: WorkList<DefId, BasicBlockId> = WorkList::new();
 
-        // funcs then are pushed after
-        worklist.push_front_blocks(self.env, func_def, self.call_all);
-
-        // global should be first — iterate in reverse so earlier modules
-        // (which later modules may depend on) end up at the front of the deque
-        for global_def in self.env().global.iter().rev() {
-            worklist.push_front_blocks(self.env, *global_def, self.call_all);
+        // globals first (in module order so dependencies are resolved before dependents),
+        // then the entry function
+        for global_def in self.env().global.iter() {
+            worklist.push_back_blocks(self.env, *global_def, self.call_all);
         }
+        worklist.push_back_blocks(self.env, func_def, self.call_all);
         let old_body = self.curr_body.get();
         while let Some((def, block_id)) = worklist.pop_front() {
             let name = self.env.def_name(def);
