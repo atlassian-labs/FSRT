@@ -11,6 +11,8 @@ use std::{
     hash::Hash,
     mem,
     str::FromStr,
+    thread,
+    time::Duration,
 };
 use tracing::debug;
 
@@ -442,18 +444,46 @@ pub fn get_permissions_for(
         return;
     }
 
-    ureq::get(url)
-        .call()
-        .map_err(|e| panic!("Failed to retrieve the permission json: {e}")) // Handle fetch failure
-        .and_then(|response| {
-            let raw_response = response.into_body().read_to_string().unwrap();
-            let data: SwaggerResponse = serde_json::from_str(&raw_response).unwrap();
-            parse_swagger_response(data, endpoint_map_classic, endpoint_regex);
-            cache
-                .set(cache_key, &raw_response)
-                .map_err(|e| panic!("Failed to write to cache: {e}"))
-        })
-        .unwrap();
+    const FETCH_ATTEMPTS: u32 = 4;
+    let mut raw_response = String::new();
+    for attempt in 0..FETCH_ATTEMPTS {
+        match ureq::get(url).call() {
+            Ok(response) => match response.into_body().read_to_string() {
+                Ok(s) => {
+                    raw_response = s;
+                    break;
+                }
+                Err(e) if attempt + 1 < FETCH_ATTEMPTS => {
+                    debug!(
+                        "permission json read {} failed (attempt {}): {}",
+                        url,
+                        attempt + 1,
+                        e
+                    );
+                    thread::sleep(Duration::from_millis(250));
+                }
+                Err(e) => panic!("Failed to read permission json body from {url}: {e}"),
+            },
+            Err(e) if attempt + 1 < FETCH_ATTEMPTS => {
+                debug!(
+                    "permission json fetch {} failed (attempt {}): {}",
+                    url,
+                    attempt + 1,
+                    e
+                );
+                thread::sleep(Duration::from_millis(250));
+            }
+            Err(e) => panic!("Failed to retrieve the permission json from {url}: {e}"),
+        }
+    }
+
+    let data: SwaggerResponse = serde_json::from_str(&raw_response).unwrap();
+    parse_swagger_response(data, endpoint_map_classic, endpoint_regex);
+    if config.use_cache() {
+        cache
+            .set(cache_key, &raw_response)
+            .unwrap_or_else(|e| panic!("Failed to write to cache: {e}"));
+    }
 }
 
 fn parse_swagger_response(

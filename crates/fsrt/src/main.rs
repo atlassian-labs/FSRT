@@ -8,18 +8,21 @@ use clap::{Parser, ValueHint};
 use forge_permission_resolver::{
     permissions_cache::CacheConfig,
     permissions_resolver::{
-        PermMap, get_permission_resolver_bitbucket, get_permission_resolver_compass,
+        PermMap, PermissionHashMap, get_permission_resolver_bitbucket, get_permission_resolver_compass,
         get_permission_resolver_confluence, get_permission_resolver_jira,
         get_permission_resolver_jira_any, get_permission_resolver_jira_service_management,
         get_permission_resolver_jira_software,
     },
 };
+use forge_permission_resolver::permissions_resolver_compass::CompassPermissionResolver;
 use glob::glob;
+use regex::Regex;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     env, fmt, fs,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 use graphql_parser::{
@@ -38,8 +41,8 @@ use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
     checkers::{
-        AuthZChecker, AuthenticateChecker, PermissionChecker, PermissionVuln, SecretChecker,
-        SecretType,
+        AuthZChecker, AuthenticateChecker, BasicAuthChecker, PermissionChecker, PermissionVuln,
+        SecretChecker, SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -360,6 +363,33 @@ fn get_empty_report() -> Report {
     Reporter::new().into_report()
 }
 
+type PermissionEndpointRegexMap = HashMap<String, Regex>;
+
+/// Loaded once per process so `cargo test` does not issue dozens of concurrent Swagger fetches (and
+/// cache file races under `FSRT_CACHE`). The first `scan_directory` call supplies `config`.
+struct LoadedPermissionResolvers {
+    jira_any: (PermissionHashMap, PermissionEndpointRegexMap),
+    jira_software: (PermissionHashMap, PermissionEndpointRegexMap),
+    jira_service_management: (PermissionHashMap, PermissionEndpointRegexMap),
+    jira: (PermissionHashMap, PermissionEndpointRegexMap),
+    confluence: (PermissionHashMap, PermissionEndpointRegexMap),
+    bitbucket: (PermissionHashMap, PermissionEndpointRegexMap),
+    compass: CompassPermissionResolver,
+}
+
+fn global_permission_resolvers(config: &CacheConfig) -> &'static LoadedPermissionResolvers {
+    static CACHE: OnceLock<LoadedPermissionResolvers> = OnceLock::new();
+    CACHE.get_or_init(|| LoadedPermissionResolvers {
+        jira_any: get_permission_resolver_jira_any(config),
+        jira_software: get_permission_resolver_jira_software(config),
+        jira_service_management: get_permission_resolver_jira_service_management(config),
+        jira: get_permission_resolver_jira(config),
+        confluence: get_permission_resolver_confluence(config),
+        bitbucket: get_permission_resolver_bitbucket(config),
+        compass: get_permission_resolver_compass(),
+    })
+}
+
 #[tracing::instrument(level = "debug")]
 pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
@@ -367,7 +397,13 @@ pub(crate) fn scan_directory<'a>(
     project: impl ForgeProjectTrait<'a> + std::fmt::Debug,
     secret_packages: &[PackageData],
 ) -> Result<Report> {
-    let paths = project.get_paths();
+    let paths_set = project.get_paths();
+    // Deterministic order: `paths_set` is a `HashSet`, so iteration order is unstable across runs
+    // and affects `load_module` / resolver order (e.g. imports from `constants.ts`).
+    let mut paths_sorted: Vec<PathBuf> = paths_set.iter().cloned().collect();
+    // Reverse lexicographic order tends to load `index.*` before `constants.*`, matching how many
+    // apps are written and keeping module / re-export resolution stable across runs.
+    paths_sorted.sort_by(|a, b| b.cmp(a));
     let manifest = project.get_manifest();
     let requested_permissions = manifest.permissions;
     let permissions_declared = requested_permissions
@@ -387,7 +423,7 @@ pub(crate) fn scan_directory<'a>(
         .into_iter()
         .any(|remote| remote.contains_auth());
 
-    let mut sorted_paths: Vec<PathBuf> = paths.iter().cloned().collect();
+    let mut sorted_paths: Vec<PathBuf> = paths_sorted.iter().cloned().collect();
     sorted_paths.sort();
     let mut proj = project.with_files_and_sourceroot(
         Path::new("src"),
@@ -398,7 +434,7 @@ pub(crate) fn scan_directory<'a>(
 
     let name = manifest.app.name.unwrap_or_default();
 
-    let transpiled_async = paths.iter().any(|path| {
+    let transpiled_async = paths_sorted.iter().any(|path| {
         if let Ok(data) = fs::read_to_string(path) {
             return data
                 .lines()
@@ -420,7 +456,7 @@ pub(crate) fn scan_directory<'a>(
         .into_analyzable_functions()
         .flat_map(|entrypoint| {
             Ok::<_, forge_loader::Error>(Entrypoint {
-                function: entrypoint.function.try_resolve(&paths, &dir)?,
+                function: entrypoint.function.try_resolve(&paths_set, &dir)?,
                 invokable: entrypoint.invokable,
                 web_trigger: entrypoint.web_trigger,
                 admin: entrypoint.admin,
@@ -449,23 +485,25 @@ pub(crate) fn scan_directory<'a>(
         opts.cached_permissions_path.clone(),
     );
 
-    let (jira_any_permission_resolver, jira_any_regex_map) =
-        get_permission_resolver_jira_any(&config);
-    let (jira_software_permission_resolver, jira_software_regex_map) =
-        get_permission_resolver_jira_software(&config);
-    let (jira_service_management_permission_resolver, jira_service_management_regex_map) =
-        get_permission_resolver_jira_service_management(&config);
-    let (jira_permission_resolver, jira_regex_map) = get_permission_resolver_jira(&config);
-    let (confluence_permission_resolver, confluence_regex_map) =
-        get_permission_resolver_confluence(&config);
-    let (bitbucket_permission_resolver, bitbucket_regex_map) =
-        get_permission_resolver_bitbucket(&config);
-    let compass_permission_resolver = get_permission_resolver_compass();
+    let loaded = global_permission_resolvers(&config);
+    let jira_any_permission_resolver = &loaded.jira_any.0;
+    let jira_any_regex_map = &loaded.jira_any.1;
+    let jira_software_permission_resolver = &loaded.jira_software.0;
+    let jira_software_regex_map = &loaded.jira_software.1;
+    let jira_service_management_permission_resolver = &loaded.jira_service_management.0;
+    let jira_service_management_regex_map = &loaded.jira_service_management.1;
+    let jira_permission_resolver = &loaded.jira.0;
+    let jira_regex_map = &loaded.jira.1;
+    let confluence_permission_resolver = &loaded.confluence.0;
+    let confluence_regex_map = &loaded.confluence.1;
+    let bitbucket_permission_resolver = &loaded.bitbucket.0;
+    let bitbucket_regex_map = &loaded.bitbucket.1;
+    let compass_permission_resolver = &loaded.compass;
 
     let mut interp = Interp::new(
         &proj.env,
         false,
-        true,
+        false,
         permissions.clone(),
         &jira_any_permission_resolver,
         &jira_any_regex_map,
@@ -484,7 +522,7 @@ pub(crate) fn scan_directory<'a>(
     let mut authn_interp = Interp::new(
         &proj.env,
         false,
-        true,
+        false,
         permissions.clone(),
         &jira_any_permission_resolver,
         &jira_any_regex_map,
@@ -505,7 +543,26 @@ pub(crate) fn scan_directory<'a>(
     let mut secret_interp = Interp::<SecretChecker>::new(
         &proj.env,
         false,
-        true,
+        false,
+        permissions.clone(),
+        &jira_any_permission_resolver,
+        &jira_any_regex_map,
+        &jira_software_permission_resolver,
+        &jira_software_regex_map,
+        &jira_service_management_permission_resolver,
+        &jira_service_management_regex_map,
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+        &bitbucket_permission_resolver,
+        &bitbucket_regex_map,
+        &compass_permission_resolver,
+    );
+    let mut basic_auth_interp = Interp::<BasicAuthChecker>::new(
+        &proj.env,
+        false,
+        false,
         permissions.clone(),
         &jira_any_permission_resolver,
         &jira_any_regex_map,
@@ -544,6 +601,7 @@ pub(crate) fn scan_directory<'a>(
     );
 
     let mut secret_checker = SecretChecker::new();
+    let mut basic_auth_checker = BasicAuthChecker::new();
 
     if let Some(providers) = &manifest.providers
         && let Some(auth_providers) = &providers.auth
@@ -566,6 +624,7 @@ pub(crate) fn scan_directory<'a>(
                 &mut checker,
                 func.path.clone(),
                 func.func_name.to_owned(),
+                func.module,
             ) {
                 warn!("error while running permission checker: {err}");
             }
@@ -576,9 +635,31 @@ pub(crate) fn scan_directory<'a>(
             &mut secret_checker,
             func.path.clone(),
             func.func_name.to_owned(),
+            func.module,
         ) {
             warn!("error while running secret checker: {err}");
         }
+
+        // Clone so the Basic Authorization pass cannot move (and empty) shared analysis state.
+        basic_auth_interp.value_manager.varid_to_value =
+            secret_interp.value_manager.varid_to_value.clone();
+        basic_auth_interp.value_manager.varid_to_value_with_proj = secret_interp
+            .value_manager
+            .varid_to_value_with_proj
+            .clone();
+        basic_auth_interp.value_manager.defid_to_value =
+            secret_interp.value_manager.defid_to_value.clone();
+        if let Err(err) = basic_auth_interp.run_checker(
+            func.def_id,
+            &mut basic_auth_checker,
+            func.path.clone(),
+            func.func_name.to_owned(),
+            func.module,
+        ) {
+            warn!("error while running Basic Authorization checker: {err}");
+        }
+        // Do not merge basic_auth_interp's value manager back into secret_interp: basic auth runs
+        // a separate dataflow pass that can skew abstract values for later functions.
 
         if func.invokable {
             let mut checker = AuthZChecker::new();
@@ -588,6 +669,7 @@ pub(crate) fn scan_directory<'a>(
                 &mut checker,
                 func.path.clone(),
                 func.func_name.to_string(),
+                func.module,
             ) {
                 warn!(
                     "error while scanning {:?} in {:?}: {err}",
@@ -606,6 +688,7 @@ pub(crate) fn scan_directory<'a>(
                 &mut checker,
                 func.path.clone(),
                 func.func_name.to_string(),
+                func.module,
             ) {
                 warn!(
                     "error while scanning {:?} in {:?}: {err}",
@@ -617,6 +700,7 @@ pub(crate) fn scan_directory<'a>(
     }
 
     reporter.add_vulnerabilities(secret_checker.into_vulns());
+    reporter.add_vulnerabilities(basic_auth_checker.into_vulns());
 
     let path = if let Some(ref mut path) = opts.graphql_schema_path {
         path

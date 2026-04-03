@@ -19,11 +19,12 @@ use smallvec::SmallVec;
 use swc_core::ecma::atoms::Atom;
 use tracing::{debug, instrument, warn};
 
+use crate::ctx::ModId;
 use crate::definitions::DefKind;
 use crate::ir::{BinOp, Literal, VarKind};
 use crate::utils::{
     convert_lit_to_raw, convert_operand_to_raw, get_defid_from_varkind, projvec_from_projvec,
-    return_combinations_phi,
+    return_combinations_phi, literal_is_http_basic_authorization_value, is_basic_auth_concat_prefix,
 };
 use crate::{
     checkers::IntrinsicArguments,
@@ -763,6 +764,19 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             {
                 // if there is an existing value...
                 match (existing_lval, rval_value) {
+                    (Value::HttpBasicAuth, Value::HttpBasicAuth) => self.add_value_with_projection(
+                        defid_block,
+                        varid,
+                        Value::HttpBasicAuth,
+                        projections,
+                    ),
+                    (Value::HttpBasicAuth, _) | (_, Value::HttpBasicAuth) => self
+                        .add_value_with_projection(
+                            defid_block,
+                            varid,
+                            Value::Unknown,
+                            projections,
+                        ),
                     // return unknown if either values are unknown
                     (Value::Unknown, _)
                     | (_, Value::Unknown)
@@ -860,12 +874,35 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         }
     }
 
+    #[inline]
+    fn lift_value_if_http_basic_authorization(v: Value) -> Value {
+        match &v {
+            Value::Const(Const::Literal(s)) if literal_is_http_basic_authorization_value(s) => {
+                Value::HttpBasicAuth
+            }
+            Value::Phi(phi)
+                if phi.iter().any(|c| {
+                    matches!(c, Const::Literal(s) if literal_is_http_basic_authorization_value(s))
+                }) =>
+            {
+                Value::HttpBasicAuth
+            }
+            _ => v,
+        }
+    }
+
     // this function takes in any operands and returns a value optional
     #[inline]
     fn value_from_rval(&self, defid_block: DefId, rvalue: Rvalue) -> Value {
         match rvalue {
             Rvalue::Read(operand) => self.value_from_operand(defid_block, operand),
             Rvalue::Template(template) => {
+                if !template.quasis.is_empty()
+                    && is_basic_auth_concat_prefix(&template.quasis[0].to_string())
+                    && !template.exprs.is_empty()
+                {
+                    return Value::HttpBasicAuth;
+                }
                 let all_values = template
                     .exprs
                     .iter()
@@ -895,9 +932,20 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 let value_op1 = self.value_from_operand(defid_block, op1);
                 let value_op2 = self.value_from_operand(defid_block, op2);
                 if value_op1 == Value::Unknown || value_op2 == Value::Unknown {
+                    if let Value::Const(Const::Literal(ref s)) = value_op1 {
+                        if is_basic_auth_concat_prefix(s) {
+                            return Value::HttpBasicAuth;
+                        }
+                    }
+                    if let Value::Const(Const::Literal(ref s)) = value_op2 {
+                        if is_basic_auth_concat_prefix(s) {
+                            return Value::HttpBasicAuth;
+                        }
+                    }
                     return Value::Unknown;
                 }
-                return_combinations_phi(vec![value_op1, value_op2])
+                let combined = return_combinations_phi(vec![value_op1, value_op2]);
+                Self::lift_value_if_http_basic_authorization(combined)
             }
             _ => Value::Unknown,
         }
@@ -1251,32 +1299,30 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         checker: &mut C,
         entry_file: PathBuf,
         function: String,
+        module: ModId,
     ) -> Result<(), Error> {
+        let fname = function.clone();
         self.entry = EntryPoint {
             file: entry_file,
             kind: EntryKind::Function(function),
         };
-        let Err(error) = self.try_check_function(def, checker) else {
-            return Ok(());
-        };
-        debug!("failed to check function, trying resolver");
-        let resolver = self.env.resolver_defs(def);
-        if resolver.is_empty() {
-            warn!("no resolver found");
-            return Err(error);
-        }
-        debug!("found potential resolver");
-        for (name, prop) in resolver {
+        let primary_result = self.try_check_function(def, checker);
+
+        let callbacks = self.env.resolver_define_callbacks_in_module(module);
+        let resolver_callback_count = callbacks.len();
+        debug!(n = resolver_callback_count, "resolver.define callbacks in module");
+        for (name, prop_def) in callbacks {
             debug!("checking resolver prop: {name}");
-            self.entry.kind = match std::mem::take(&mut self.entry.kind) {
-                EntryKind::Function(fname) => EntryKind::Resolver(fname, name.clone()),
-                EntryKind::Resolver(res, _) => EntryKind::Resolver(res, name.clone()),
-                EntryKind::Empty => unreachable!(),
-            };
-            if let Err(error) = self.try_check_function(prop, checker) {
+            self.entry.kind = EntryKind::Resolver(fname.clone(), name.clone());
+            if let Err(error) = self.try_check_function(prop_def, checker) {
                 warn!("Resolver prop {name} failed: {error}");
             }
         }
-        Ok(())
+
+        if primary_result.is_ok() || resolver_callback_count > 0 {
+            Ok(())
+        } else {
+            primary_result
+        }
     }
 }

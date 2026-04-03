@@ -48,6 +48,16 @@ pub fn projvec_from_projvec(projs: &[Projection]) -> ProjectionVec {
     ProjectionVec::from(projs)
 }
 
+/// `true` if a string is the usual left operand in `"Basic " + <credentials>` (scheme name + space, case-insensitive).
+pub fn is_basic_auth_concat_prefix(s: &str) -> bool {
+    s.len() >= 6 && s[..6].eq_ignore_ascii_case("basic ")
+}
+
+/// `true` if a full header value uses HTTP Basic authentication (starts with `Basic `).
+pub fn literal_is_http_basic_authorization_value(s: &str) -> bool {
+    is_basic_auth_concat_prefix(s)
+}
+
 pub fn convert_lit_to_raw(lit: &Literal) -> Option<String> {
     match lit {
         Literal::BigInt(bigint) => Some(bigint.to_string()),

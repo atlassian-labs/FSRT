@@ -11,7 +11,7 @@ use crate::{
         VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    utils::{add_elements_to_intrinsic_struct, translate_request_type},
+    utils::{add_elements_to_intrinsic_struct, literal_is_http_basic_authorization_value, translate_request_type},
     worklist::WorkList,
 };
 use core::fmt;
@@ -1075,6 +1075,220 @@ impl<'cx> Runner<'cx> for SecretChecker {
 
 impl Checker<'_> for SecretChecker {
     type Vuln = SecretVuln;
+}
+
+#[derive(Debug)]
+pub struct BasicAuthVuln {
+    stack: String,
+    entry_func: String,
+    file: PathBuf,
+}
+
+impl BasicAuthVuln {
+    fn new(callstack: Vec<Frame>, env: &Environment, entry: &EntryPoint) -> Self {
+        let entry_func = match &entry.kind {
+            EntryKind::Function(func) => func.clone(),
+            EntryKind::Resolver(res, prop) => format!("{res}.{prop}"),
+            EntryKind::Empty => {
+                warn!("empty function");
+                String::new()
+            }
+        };
+        let file = entry.file.clone();
+        let stack = Itertools::intersperse(
+            iter::once(&*entry_func).chain(
+                callstack
+                    .into_iter()
+                    .rev()
+                    .map(|frame| env.def_name(frame.calling_function)),
+            ),
+            " -> ",
+        )
+        .collect();
+        Self {
+            stack,
+            entry_func,
+            file,
+        }
+    }
+}
+
+impl fmt::Display for BasicAuthVuln {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "HTTP Basic Authorization header on fetch")
+    }
+}
+
+impl IntoVuln for BasicAuthVuln {
+    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.file
+            .iter()
+            .skip_while(|comp| *comp != "src")
+            .for_each(|comp| comp.hash(&mut hasher));
+        self.entry_func.hash(&mut hasher);
+        self.stack.hash(&mut hasher);
+
+        Vulnerability {
+            check_name: format!("Custom-Check-Basic-Authorization-{}", hasher.finish()),
+            description: format!(
+                "HTTP Basic authentication used in fetch request from {} in {:?}.",
+                self.entry_func, self.file
+            ),
+            recommendation: "Prefer OAuth or API tokens scoped to least privilege. If Basic auth is required, load credentials from Forge secrets or environment variables and avoid logging or exposing the Authorization header.",
+            proof: format!("Basic Authorization header on fetch found via {}", self.stack),
+            severity: Severity::Medium,
+            app_key: reporter.app_key().to_owned(),
+            app_name: reporter.app_name().to_owned(),
+            marketplace_security_requirement: "Requirement 5",
+            date: reporter.current_date(),
+        }
+    }
+}
+
+impl WithCallStack for BasicAuthVuln {
+    fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
+}
+
+pub struct BasicAuthDataflow {
+    needs_call: Vec<DefId>,
+}
+
+impl<'cx> Dataflow<'cx> for BasicAuthDataflow {
+    type State = SecretState;
+
+    fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
+        _interp: &Interp<'cx, C>,
+    ) -> Self {
+        Self { needs_call: vec![] }
+    }
+
+    fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &mut Interp<'cx, C>,
+        _def: DefId,
+        _loc: Location,
+        _block: &'cx BasicBlock,
+        _intrinsic: &'cx Intrinsic,
+        initial_state: Self::State,
+        _operands: SmallVec<[crate::ir::Operand; 4]>,
+    ) -> Self::State {
+        initial_state
+    }
+
+    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &Interp<'cx, C>,
+        _def: DefId,
+        _loc: Location,
+        _block: &'cx BasicBlock,
+        callee: &'cx crate::ir::Operand,
+        initial_state: Self::State,
+        _operands: SmallVec<[crate::ir::Operand; 4]>,
+    ) -> Self::State {
+        let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
+            return initial_state;
+        };
+        self.needs_call.push(callee_def);
+        SecretState::ALL
+    }
+
+    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &mut Interp<'cx, C>,
+        def: DefId,
+        block: &'cx BasicBlock,
+        state: Self::State,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
+    ) {
+        self.super_join_term(interp, def, block, state, worklist);
+        for def in self.needs_call.drain(..) {
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
+        }
+    }
+}
+
+pub struct BasicAuthChecker {
+    vulns: Vec<BasicAuthVuln>,
+}
+
+impl BasicAuthChecker {
+    pub fn new() -> Self {
+        Self { vulns: vec![] }
+    }
+
+    pub fn into_vulns(self) -> impl IntoIterator<Item = BasicAuthVuln> {
+        self.vulns.into_iter()
+    }
+}
+
+impl Default for BasicAuthChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'cx> Runner<'cx> for BasicAuthChecker {
+    type State = SecretState;
+    type Dataflow = BasicAuthDataflow;
+
+    const NAME: &'static str = "BasicAuthorization";
+
+    fn visit_intrinsic(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        intrinsic: &'cx Intrinsic,
+        def: DefId,
+        state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
+    ) -> ControlFlow<(), Self::State> {
+        if let Intrinsic::Fetch = intrinsic {
+            if let Some(Operand::Var(Variable {
+                base: Base::Var(varid),
+                ..
+            })) = operands.unwrap_or_default().get(1)
+            {
+                let varid_argument =
+                    if let Some(Value::Object(varid)) = interp.get_value(def, *varid, None) {
+                        varid
+                    } else {
+                        varid
+                    };
+                let headers_proj = projvec_from_str("headers");
+                if let Some(Value::Object(varid)) =
+                    interp.get_value(def, *varid_argument, Some(headers_proj))
+                {
+                    let auth_proj = projvec_from_str("Authorization");
+                    let aut_proj_lower = projvec_from_str("authorization");
+                    let auth_val = interp
+                        .get_value(def, *varid, Some(auth_proj.clone()))
+                        .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower.clone())));
+                    let is_basic = match auth_val {
+                        Some(Value::HttpBasicAuth) => true,
+                        Some(Value::Const(Const::Literal(s))) => {
+                            literal_is_http_basic_authorization_value(s)
+                        }
+                        Some(Value::Phi(phi)) => phi.iter().any(|c| {
+                            matches!(c, Const::Literal(s) if literal_is_http_basic_authorization_value(s))
+                        }),
+                        _ => false,
+                    };
+                    if is_basic {
+                        self.vulns
+                            .push(BasicAuthVuln::new(interp.callstack(), interp.env(), interp.entry()));
+                    }
+                }
+            }
+        }
+        ControlFlow::Continue(*state)
+    }
+}
+
+impl Checker<'_> for BasicAuthChecker {
+    type Vuln = BasicAuthVuln;
 }
 
 pub struct PermissionDataflow {

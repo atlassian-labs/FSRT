@@ -81,6 +81,9 @@ pub enum Value {
     Object(VarId),
     Const(Const),
     Phi(Vec<Const>),
+    /// `Authorization` value uses the HTTP Basic scheme (`Basic` + space + credentials), including
+    /// when credentials are non-constant (e.g. `"Basic " + base64(...)`).
+    HttpBasicAuth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4064,6 +4067,26 @@ impl Environment {
         }
     }
 
+    /// Every `resolver.define('name', fn)` callback for [`DefKind::Resolver`] objects in `module`.
+    ///
+    /// Used so checkers run on resolver handlers even when the manifest entry is another export
+    /// in the same file (e.g. UI `run` plus `resolver.define` in `src/index.jsx`).
+    pub fn resolver_define_callbacks_in_module(&self, module: crate::ctx::ModId) -> Vec<(Atom, DefId)> {
+        let mut out = Vec::new();
+        for (def_id, def_key) in self.defs.defs.iter_enumerated() {
+            if self.resolver.owning_module.get(def_id).copied() != Some(module) {
+                continue;
+            }
+            if let DefKind::Resolver(obj_id) = def_key {
+                let class = &self.defs.classes[*obj_id];
+                for (name, member_def) in &class.pub_members {
+                    out.push((name.clone(), self.resolve_alias(*member_def)));
+                }
+            }
+        }
+        out
+    }
+
     fn resolve_local_export(&self, module: ModId, name: &Atom) -> Option<DefId> {
         match &**name {
             "default" => self.default_exports.get(&module).copied(),
@@ -4272,7 +4295,9 @@ impl PartialEq<str> for Value {
         match self {
             Self::Const(Const::Literal(s)) => **s == *other,
             Self::Phi(v) if !v.is_empty() => v.iter().all(|x| *x == *other),
-            Self::Uninit | Self::Unknown | Self::Object(_) | Self::Phi(_) => false,
+            Self::Uninit | Self::Unknown | Self::Object(_) | Self::Phi(_) | Self::HttpBasicAuth => {
+                false
+            }
         }
     }
 }

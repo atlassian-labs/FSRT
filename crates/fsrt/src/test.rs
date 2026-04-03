@@ -25,6 +25,8 @@ trait ReportExt {
     fn contains_vulns(&self, expected_len: i32) -> bool;
 
     fn contains_authz_vuln(&self, expected_len: usize) -> bool;
+
+    fn contains_basic_auth_vuln(&self, expected_len: usize) -> bool;
 }
 
 impl ReportExt for Report {
@@ -38,6 +40,15 @@ impl ReportExt for Report {
         self.into_vulns()
             .iter()
             .filter(|vuln| vuln.check_name().contains("Authorization"))
+            .count()
+            == expected_len
+    }
+
+    #[inline]
+    fn contains_basic_auth_vuln(&self, expected_len: usize) -> bool {
+        self.into_vulns()
+            .iter()
+            .filter(|vuln| vuln.check_name().starts_with("Custom-Check-Basic-Authorization-"))
             .count()
             == expected_len
     }
@@ -577,6 +588,77 @@ fn secret_vuln_fetch_header() {
     assert!(scan_result.contains_secret_vuln(1));
     assert!(scan_result.contains_vulns(1));
 }
+
+#[test]
+fn fetch_http_basic_authorization_concat_with_env() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { fetch } from '@forge/api';
+
+        function App() {
+            let token = process.env.API_TOKEN;
+            let h = { headers: { Authorization: 'Basic ' + token } };
+            fetch('url', h);
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(1));
+    assert!(scan_result.contains_secret_vuln(0));
+    assert!(scan_result.contains_vulns(1));
+}
+
+// #[test]
+// fn fetch_http_basic_authorization_test_2() {
+//     let test_forge_project = MockForgeProject::files_from_string(
+//         "// src/index.jsx
+//         import Resolver from '@forge/resolver';
+//         import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+//         import { fetch } from '@forge/api';
+
+//         const resolver = new Resolver();
+//         resolver.define(
+//             'deleteUser',
+//             async ({ context, payload: { accountId, email, apiKey } }) => {
+//                 const response = await fetch(
+//                         context.siteUrl + `/rest/api/3/user?accountId=${accountId}`,
+//                         {
+//                             method: 'DELETE',
+//                             headers: {
+//                                 Authorization: 'Basic ' + base64StringFrom(email, apiKey),
+//                                 Accept: 'application/json',
+//                             },
+//                         }
+//                     );
+//                 const data = await response.json();
+//                 return data;
+//             }
+//         );
+
+//         function App() {
+//             return (
+//                 <Fragment>
+//                 <Text>Hello</Text>
+//                 </Fragment>
+//             );
+//         }
+
+//         export const run = render(<Macro app={<App />} />);",
+//     );
+
+//     let scan_result = scan_directory_test(test_forge_project);
+//     assert!(scan_result.contains_basic_auth_vuln(1));
+//     assert!(scan_result.contains_secret_vuln(0));
+//     assert!(scan_result.contains_vulns(1));
+// }
 
 #[test]
 // Disabling test due to SSA Form fix changes.

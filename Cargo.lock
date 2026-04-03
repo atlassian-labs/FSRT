@@ -756,6 +756,7 @@ dependencies = [
  "forge_permission_resolver",
  "glob",
  "graphql-parser",
+ "regex",
  "rustc-hash",
  "serde",
  "serde_json",
