@@ -53,8 +53,22 @@ use walkdir::WalkDir;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+/// Disable a checker by setting an environment variable to `0` or `false` (case-insensitive), e.g. `AuthZChecker=0`.
+/// Unset or any other value keeps the checker enabled.
+fn checker_env_enabled(name: &str) -> bool {
+    match std::env::var(name) {
+        Err(_) => true,
+        Ok(s) => {
+            let t = s.trim();
+            !matches!(t, "0") && !t.eq_ignore_ascii_case("false")
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
+/// Disable individual scanners by setting an environment variable to `0` or `false` (case-insensitive), e.g. `AuthZChecker=0`.
+/// Recognized names: `DefinitionAnalysisRunner`, `PermissionChecker`, `SecretChecker`, `AuthZChecker`, `AuthenticateChecker`, `PermissionVuln` (unused Forge scopes report).
 pub struct Args {
     #[arg(short, long)]
     debug: bool,
@@ -576,7 +590,15 @@ pub(crate) fn scan_directory<'a>(
 
     let mut secret_checker = SecretChecker::new();
 
-    if let Some(providers) = &manifest.providers
+    let run_definition_analysis = checker_env_enabled("DefinitionAnalysisRunner");
+    let run_permission_scan = checker_env_enabled("PermissionChecker");
+    let run_secret_scan = checker_env_enabled("SecretChecker");
+    let run_authz_scan = checker_env_enabled("AuthZChecker");
+    let run_authenticate_scan = checker_env_enabled("AuthenticateChecker");
+    let run_unused_scope_vuln = checker_env_enabled("PermissionVuln");
+
+    if run_secret_scan
+        && let Some(providers) = &manifest.providers
         && let Some(auth_providers) = &providers.auth
     {
         for provider in auth_providers {
@@ -590,20 +612,25 @@ pub(crate) fn scan_directory<'a>(
 
     for func in &proj.funcs {
         let mut def_checker = DefinitionAnalysisRunner::new();
-        if let Err(err) = definition_analysis_interp.run_checker(
-            func.def_id,
-            &mut def_checker,
-            func.path.clone(),
-            func.func_name.to_string(),
-        ) {
-            warn!(
-                "error while scanning {:?} in {:?}: {err}",
-                func.func_name, func.path,
-            );
+        if run_definition_analysis {
+            if let Err(err) = definition_analysis_interp.run_checker(
+                func.def_id,
+                &mut def_checker,
+                func.path.clone(),
+                func.func_name.to_string(),
+            ) {
+                warn!(
+                    "error while scanning {:?} in {:?}: {err}",
+                    func.func_name, func.path,
+                );
+            }
         }
 
         // if there is a remote backend that accepts an auth token, do not run
-        if run_permission_checker && !contains_remote_auth_token {
+        if run_permission_checker
+            && run_permission_scan
+            && !contains_remote_auth_token
+        {
             let mut checker = PermissionChecker::new();
             perm_interp.value_manager.varid_to_value =
                 definition_analysis_interp.value_manager.varid_to_value;
@@ -636,13 +663,15 @@ pub(crate) fn scan_directory<'a>(
             .varid_to_value_with_proj;
         secret_interp.value_manager.defid_to_value =
             definition_analysis_interp.value_manager.defid_to_value;
-        if let Err(err) = secret_interp.run_checker(
-            func.def_id,
-            &mut secret_checker,
-            func.path.clone(),
-            func.func_name.to_owned(),
-        ) {
-            warn!("error while running secret checker: {err}");
+        if run_secret_scan {
+            if let Err(err) = secret_interp.run_checker(
+                func.def_id,
+                &mut secret_checker,
+                func.path.clone(),
+                func.func_name.to_owned(),
+            ) {
+                warn!("error while running secret checker: {err}");
+            }
         }
         definition_analysis_interp.value_manager.varid_to_value =
             secret_interp.value_manager.varid_to_value;
@@ -652,7 +681,7 @@ pub(crate) fn scan_directory<'a>(
         definition_analysis_interp.value_manager.defid_to_value =
             secret_interp.value_manager.defid_to_value;
 
-        if func.invokable {
+        if func.invokable && run_authz_scan {
             let mut checker = AuthZChecker::new();
             debug!("checking {:?} at {:?}", func.func_name, &func.path);
             if let Err(err) = interp.run_checker(
@@ -667,7 +696,7 @@ pub(crate) fn scan_directory<'a>(
                 );
             }
             reporter.add_vulnerabilities(checker.into_vulns());
-        } else if func.webtrigger {
+        } else if func.webtrigger && run_authenticate_scan {
             let mut checker = AuthenticateChecker::new();
             debug!(
                 "checking webtrigger {:?} at {:?}",
@@ -796,7 +825,8 @@ pub(crate) fn scan_directory<'a>(
     //     .into_iter()
     //     .filter(|&s| perm_map.unused_scopes().iter().any(|unused| unused == s)).collect::<Vec<_>>();
     //
-    if run_permission_checker
+    if run_unused_scope_vuln
+        && run_permission_checker
         // && !final_perms.is_empty()
         && !perm_map.unused_scopes().is_empty()
         && perm_map.unused_scopes() != perm_map.declared_scopes()
