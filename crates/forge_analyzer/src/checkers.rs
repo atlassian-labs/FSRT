@@ -11,7 +11,10 @@ use crate::{
         VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    utils::{add_elements_to_intrinsic_struct, literal_is_http_basic_authorization_value, translate_request_type},
+    utils::{
+        add_elements_to_intrinsic_struct, literal_is_http_basic_authorization_value,
+        translate_request_type,
+    },
     worklist::WorkList,
 };
 use core::fmt;
@@ -1139,7 +1142,10 @@ impl IntoVuln for BasicAuthVuln {
                 self.entry_func, self.file
             ),
             recommendation: "Prefer OAuth or API tokens scoped to least privilege. If Basic auth is required, load credentials from Forge secrets or environment variables and avoid logging or exposing the Authorization header.",
-            proof: format!("Basic Authorization header on fetch found via {}", self.stack),
+            proof: format!(
+                "Basic Authorization header on fetch found via {}",
+                self.stack
+            ),
             severity: Severity::Medium,
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
@@ -1245,41 +1251,43 @@ impl<'cx> Runner<'cx> for BasicAuthChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        if let Intrinsic::Fetch = intrinsic {
-            if let Some(Operand::Var(Variable {
+        if let Intrinsic::Fetch = intrinsic
+            && let Some(Operand::Var(Variable {
                 base: Base::Var(varid),
                 ..
             })) = operands.unwrap_or_default().get(1)
+        {
+            let varid_argument =
+                if let Some(Value::Object(varid)) = interp.get_value(def, *varid, None) {
+                    varid
+                } else {
+                    varid
+                };
+            let headers_proj = projvec_from_str("headers");
+            if let Some(Value::Object(varid)) =
+                interp.get_value(def, *varid_argument, Some(headers_proj))
             {
-                let varid_argument =
-                    if let Some(Value::Object(varid)) = interp.get_value(def, *varid, None) {
-                        varid
-                    } else {
-                        varid
-                    };
-                let headers_proj = projvec_from_str("headers");
-                if let Some(Value::Object(varid)) =
-                    interp.get_value(def, *varid_argument, Some(headers_proj))
-                {
-                    let auth_proj = projvec_from_str("Authorization");
-                    let aut_proj_lower = projvec_from_str("authorization");
-                    let auth_val = interp
-                        .get_value(def, *varid, Some(auth_proj.clone()))
-                        .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower.clone())));
-                    let is_basic = match auth_val {
-                        Some(Value::HttpBasicAuth) => true,
-                        Some(Value::Const(Const::Literal(s))) => {
-                            literal_is_http_basic_authorization_value(s)
-                        }
-                        Some(Value::Phi(phi)) => phi.iter().any(|c| {
-                            matches!(c, Const::Literal(s) if literal_is_http_basic_authorization_value(s))
-                        }),
-                        _ => false,
-                    };
-                    if is_basic {
-                        self.vulns
-                            .push(BasicAuthVuln::new(interp.callstack(), interp.env(), interp.entry()));
+                let auth_proj = projvec_from_str("Authorization");
+                let aut_proj_lower = projvec_from_str("authorization");
+                let auth_val = interp
+                    .get_value(def, *varid, Some(auth_proj.clone()))
+                    .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower.clone())));
+                let is_basic = match auth_val {
+                    Some(Value::HttpBasicAuth) => true,
+                    Some(Value::Const(Const::Literal(s))) => {
+                        literal_is_http_basic_authorization_value(s)
                     }
+                    Some(Value::Phi(phi)) => phi.iter().any(|c| {
+                        matches!(c, Const::Literal(s) if literal_is_http_basic_authorization_value(s))
+                    }),
+                    _ => false,
+                };
+                if is_basic {
+                    self.vulns.push(BasicAuthVuln::new(
+                        interp.callstack(),
+                        interp.env(),
+                        interp.entry(),
+                    ));
                 }
             }
         }

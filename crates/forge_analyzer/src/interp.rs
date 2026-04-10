@@ -23,8 +23,9 @@ use crate::ctx::ModId;
 use crate::definitions::DefKind;
 use crate::ir::{BinOp, Literal, VarKind};
 use crate::utils::{
-    convert_lit_to_raw, convert_operand_to_raw, get_defid_from_varkind, projvec_from_projvec,
-    return_combinations_phi, literal_is_http_basic_authorization_value, is_basic_auth_concat_prefix,
+    convert_lit_to_raw, convert_operand_to_raw, get_defid_from_varkind,
+    is_basic_auth_concat_prefix, literal_is_http_basic_authorization_value, projvec_from_projvec,
+    return_combinations_phi,
 };
 use crate::{
     checkers::IntrinsicArguments,
@@ -771,12 +772,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                         projections,
                     ),
                     (Value::HttpBasicAuth, _) | (_, Value::HttpBasicAuth) => self
-                        .add_value_with_projection(
-                            defid_block,
-                            varid,
-                            Value::Unknown,
-                            projections,
-                        ),
+                        .add_value_with_projection(defid_block, varid, Value::Unknown, projections),
                     // return unknown if either values are unknown
                     (Value::Unknown, _)
                     | (_, Value::Unknown)
@@ -898,7 +894,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             Rvalue::Read(operand) => self.value_from_operand(defid_block, operand),
             Rvalue::Template(template) => {
                 if !template.quasis.is_empty()
-                    && is_basic_auth_concat_prefix(&template.quasis[0].to_string())
+                    && is_basic_auth_concat_prefix(template.quasis[0].as_ref())
                     && !template.exprs.is_empty()
                 {
                     return Value::HttpBasicAuth;
@@ -932,15 +928,15 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 let value_op1 = self.value_from_operand(defid_block, op1);
                 let value_op2 = self.value_from_operand(defid_block, op2);
                 if value_op1 == Value::Unknown || value_op2 == Value::Unknown {
-                    if let Value::Const(Const::Literal(ref s)) = value_op1 {
-                        if is_basic_auth_concat_prefix(s) {
-                            return Value::HttpBasicAuth;
-                        }
+                    if let Value::Const(Const::Literal(ref s)) = value_op1
+                        && is_basic_auth_concat_prefix(s)
+                    {
+                        return Value::HttpBasicAuth;
                     }
-                    if let Value::Const(Const::Literal(ref s)) = value_op2 {
-                        if is_basic_auth_concat_prefix(s) {
-                            return Value::HttpBasicAuth;
-                        }
+                    if let Value::Const(Const::Literal(ref s)) = value_op2
+                        && is_basic_auth_concat_prefix(s)
+                    {
+                        return Value::HttpBasicAuth;
                     }
                     return Value::Unknown;
                 }
@@ -1310,7 +1306,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
 
         let callbacks = self.env.resolver_define_callbacks_in_module(module);
         let resolver_callback_count = callbacks.len();
-        debug!(n = resolver_callback_count, "resolver.define callbacks in module");
+        debug!(
+            n = resolver_callback_count,
+            "resolver.define callbacks in module"
+        );
         for (name, prop_def) in callbacks {
             debug!("checking resolver prop: {name}");
             self.entry.kind = EntryKind::Resolver(fname.clone(), name.clone());

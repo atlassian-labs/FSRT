@@ -605,10 +605,8 @@ pub(crate) fn scan_directory<'a>(
         // Clone so the Basic Authorization pass cannot move (and empty) shared analysis state.
         basic_auth_interp.value_manager.varid_to_value =
             secret_interp.value_manager.varid_to_value.clone();
-        basic_auth_interp.value_manager.varid_to_value_with_proj = secret_interp
-            .value_manager
-            .varid_to_value_with_proj
-            .clone();
+        basic_auth_interp.value_manager.varid_to_value_with_proj =
+            secret_interp.value_manager.varid_to_value_with_proj.clone();
         basic_auth_interp.value_manager.defid_to_value =
             secret_interp.value_manager.defid_to_value.clone();
         if let Err(err) = basic_auth_interp.run_checker(

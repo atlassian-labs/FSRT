@@ -48,7 +48,10 @@ impl ReportExt for Report {
     fn contains_basic_auth_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
             .iter()
-            .filter(|vuln| vuln.check_name().starts_with("Custom-Check-Basic-Authorization-"))
+            .filter(|vuln| {
+                vuln.check_name()
+                    .starts_with("Custom-Check-Basic-Authorization-")
+            })
             .count()
             == expected_len
     }

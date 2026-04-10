@@ -4071,7 +4071,10 @@ impl Environment {
     ///
     /// Used so checkers run on resolver handlers even when the manifest entry is another export
     /// in the same file (e.g. UI `run` plus `resolver.define` in `src/index.jsx`).
-    pub fn resolver_define_callbacks_in_module(&self, module: crate::ctx::ModId) -> Vec<(Atom, DefId)> {
+    pub fn resolver_define_callbacks_in_module(
+        &self,
+        module: crate::ctx::ModId,
+    ) -> Vec<(Atom, DefId)> {
         let mut out = Vec::new();
         for (def_id, def_key) in self.defs.defs.iter_enumerated() {
             if self.resolver.owning_module.get(def_id).copied() != Some(module) {
