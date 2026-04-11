@@ -81,9 +81,6 @@ pub enum Value {
     Object(VarId),
     Const(Const),
     Phi(Vec<Const>),
-    /// `Authorization` value uses the HTTP Basic scheme (`Basic` + space + credentials), including
-    /// when credentials are non-constant (e.g. `"Basic " + base64(...)`).
-    HttpBasicAuth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4298,9 +4295,7 @@ impl PartialEq<str> for Value {
         match self {
             Self::Const(Const::Literal(s)) => **s == *other,
             Self::Phi(v) if !v.is_empty() => v.iter().all(|x| *x == *other),
-            Self::Uninit | Self::Unknown | Self::Object(_) | Self::Phi(_) | Self::HttpBasicAuth => {
-                false
-            }
+            Self::Uninit | Self::Unknown | Self::Object(_) | Self::Phi(_) => false,
         }
     }
 }

@@ -24,8 +24,7 @@ use crate::definitions::DefKind;
 use crate::ir::{BinOp, Literal, VarKind};
 use crate::utils::{
     convert_lit_to_raw, convert_operand_to_raw, get_defid_from_varkind,
-    is_basic_auth_concat_prefix, literal_is_http_basic_authorization_value, projvec_from_projvec,
-    return_combinations_phi,
+    is_basic_auth_concat_prefix, projvec_from_projvec, return_combinations_phi,
 };
 use crate::{
     checkers::IntrinsicArguments,
@@ -765,15 +764,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             {
                 // if there is an existing value...
                 match (existing_lval, rval_value) {
-                    (Value::HttpBasicAuth, Value::HttpBasicAuth) => self.add_value_with_projection(
-                        defid_block,
-                        varid,
-                        Value::HttpBasicAuth,
-                        projections,
-                    ),
-                    (Value::HttpBasicAuth, _) | (_, Value::HttpBasicAuth) => self
-                        .add_value_with_projection(defid_block, varid, Value::Unknown, projections),
-                    // return unknown if either values are unknown
                     (Value::Unknown, _)
                     | (_, Value::Unknown)
                     | (Value::Const(_), Value::Object(_))
@@ -870,23 +860,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         }
     }
 
-    #[inline]
-    fn lift_value_if_http_basic_authorization(v: Value) -> Value {
-        match &v {
-            Value::Const(Const::Literal(s)) if literal_is_http_basic_authorization_value(s) => {
-                Value::HttpBasicAuth
-            }
-            Value::Phi(phi)
-                if phi.iter().any(|c| {
-                    matches!(c, Const::Literal(s) if literal_is_http_basic_authorization_value(s))
-                }) =>
-            {
-                Value::HttpBasicAuth
-            }
-            _ => v,
-        }
-    }
-
     // this function takes in any operands and returns a value optional
     #[inline]
     fn value_from_rval(&self, defid_block: DefId, rvalue: Rvalue) -> Value {
@@ -897,8 +870,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     && is_basic_auth_concat_prefix(template.quasis[0].as_ref())
                     && !template.exprs.is_empty()
                 {
-                    return Value::HttpBasicAuth;
+                    return Value::Const(Const::Literal(template.quasis[0].to_string()));
                 }
+
+
                 let all_values = template
                     .exprs
                     .iter()
@@ -931,17 +906,16 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     if let Value::Const(Const::Literal(ref s)) = value_op1
                         && is_basic_auth_concat_prefix(s)
                     {
-                        return Value::HttpBasicAuth;
+                        return value_op1;
                     }
                     if let Value::Const(Const::Literal(ref s)) = value_op2
                         && is_basic_auth_concat_prefix(s)
                     {
-                        return Value::HttpBasicAuth;
+                        return value_op2;
                     }
                     return Value::Unknown;
                 }
-                let combined = return_combinations_phi(vec![value_op1, value_op2]);
-                Self::lift_value_if_http_basic_authorization(combined)
+                return_combinations_phi(vec![value_op1, value_op2])
             }
             _ => Value::Unknown,
         }

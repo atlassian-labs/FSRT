@@ -1044,9 +1044,22 @@ impl<'cx> Runner<'cx> for SecretChecker {
                     {
                         let auth_proj = projvec_from_str("Authorization");
                         let aut_proj_lower = projvec_from_str("authorization");
-                        if let Some(Value::Const(_) | Value::Phi(_)) = interp
+                        let auth_val = interp
                             .get_value(def, *varid, Some(auth_proj.clone()))
-                            .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower.clone())))
+                            .or_else(|| {
+                                interp.get_value(def, *varid, Some(aut_proj_lower.clone()))
+                            });
+                        let is_basic_auth = match auth_val {
+                            Some(Value::Const(Const::Literal(s))) => {
+                                literal_is_http_basic_authorization_value(s)
+                            }
+                            Some(Value::Phi(phi)) => phi.iter().any(|c| {
+                                matches!(c, Const::Literal(s) if literal_is_http_basic_authorization_value(s))
+                            }),
+                            _ => false,
+                        };
+                        if matches!(auth_val, Some(Value::Const(_) | Value::Phi(_)))
+                            && !is_basic_auth
                         {
                             let vuln =
                                 SecretVuln::new(interp.callstack(), interp.env(), interp.entry());
@@ -1273,7 +1286,6 @@ impl<'cx> Runner<'cx> for BasicAuthChecker {
                     .get_value(def, *varid, Some(auth_proj.clone()))
                     .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower.clone())));
                 let is_basic = match auth_val {
-                    Some(Value::HttpBasicAuth) => true,
                     Some(Value::Const(Const::Literal(s))) => {
                         literal_is_http_basic_authorization_value(s)
                     }
