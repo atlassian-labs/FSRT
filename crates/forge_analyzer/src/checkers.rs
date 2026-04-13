@@ -12,8 +12,7 @@ use crate::{
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     utils::{
-        add_elements_to_intrinsic_struct, literal_is_http_basic_authorization_value,
-        translate_request_type,
+        add_elements_to_intrinsic_struct, is_basic_auth_concat_prefix, translate_request_type,
     },
     worklist::WorkList,
 };
@@ -1051,10 +1050,10 @@ impl<'cx> Runner<'cx> for SecretChecker {
                             });
                         let is_basic_auth = match auth_val {
                             Some(Value::Const(Const::Literal(s))) => {
-                                literal_is_http_basic_authorization_value(s)
+                                is_basic_auth_concat_prefix(s)
                             }
                             Some(Value::Phi(phi)) => phi.iter().any(|c| {
-                                matches!(c, Const::Literal(s) if literal_is_http_basic_authorization_value(s))
+                                matches!(c, Const::Literal(s) if is_basic_auth_concat_prefix(s))
                             }),
                             _ => false,
                         };
@@ -1286,12 +1285,10 @@ impl<'cx> Runner<'cx> for BasicAuthChecker {
                     .get_value(def, *varid, Some(auth_proj.clone()))
                     .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower.clone())));
                 let is_basic = match auth_val {
-                    Some(Value::Const(Const::Literal(s))) => {
-                        literal_is_http_basic_authorization_value(s)
-                    }
-                    Some(Value::Phi(phi)) => phi.iter().any(|c| {
-                        matches!(c, Const::Literal(s) if literal_is_http_basic_authorization_value(s))
-                    }),
+                    Some(Value::Const(Const::Literal(s))) => is_basic_auth_concat_prefix(s),
+                    Some(Value::Phi(phi)) => phi
+                        .iter()
+                        .any(|c| matches!(c, Const::Literal(s) if is_basic_auth_concat_prefix(s))),
                     _ => false,
                 };
                 if is_basic {

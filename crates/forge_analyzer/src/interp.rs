@@ -873,7 +873,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     return Value::Const(Const::Literal(template.quasis[0].to_string()));
                 }
 
-
                 let all_values = template
                     .exprs
                     .iter()
