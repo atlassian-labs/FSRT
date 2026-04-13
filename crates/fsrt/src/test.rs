@@ -619,6 +619,132 @@ fn fetch_http_basic_authorization_concat_with_env() {
     assert!(scan_result.contains_vulns(1));
 }
 
+#[test]
+fn fetch_http_basic_authorization_default_import_api_fetch() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api from '@forge/api';
+
+        function App() {
+            let token = process.env.API_TOKEN;
+            let h = { headers: { Authorization: 'Basic ' + token } };
+            api.fetch('url', h);
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(1));
+    assert!(scan_result.contains_secret_vuln(0));
+    assert!(scan_result.contains_vulns(1));
+}
+
+#[test]
+fn fetch_http_basic_authorization_chained_api_fetch() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api from '@forge/api';
+
+        function App() {
+            let token = process.env.API_TOKEN;
+            let h = { headers: { Authorization: 'Basic ' + token } };
+            api.fetch('url', h).then((res) => res.json());
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(1));
+    assert!(scan_result.contains_secret_vuln(0));
+    assert!(scan_result.contains_vulns(1));
+}
+
+#[test]
+fn fetch_http_basic_authorization_separate_basic_auth_header_template() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { fetch } from '@forge/api';
+
+        async function App() {
+            let credentials = process.env.API_TOKEN;
+            const basicAuthHeader = `Basic ${credentials}`;
+            const response = await fetch('url', {
+                method: 'GET',
+                headers: {
+                    Accept: 'application/json',
+                    'Content-Type': 'application/json',
+                    Authorization: basicAuthHeader,
+                },
+            });
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(1));
+    assert!(scan_result.contains_secret_vuln(0));
+    assert!(scan_result.contains_vulns(1));
+}
+
+// Known gap: module-scope headers with Basic auth are not tracked into function-scoped fetch calls.
+// The analyzer's value tracking is scoped to function bodies (DefId + VarId), so the Authorization
+// field defined at module level is not visible when checking the fetch intrinsic's operands.
+// When this limitation is fixed, update assertions to expect 1 basic_auth_vuln and 1 total vuln.
+#[test]
+fn fetch_http_basic_authorization_module_scope_headers() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { fetch } from '@forge/api';
+
+        const token = process.env.API_TOKEN;
+        const headers = {
+            Authorization: 'Basic ' + token,
+            Accept: 'application/json',
+        };
+
+        function App() {
+            fetch('url', {
+                method: 'GET',
+                headers,
+            });
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(0));
+    assert!(scan_result.contains_secret_vuln(0));
+    assert!(scan_result.contains_vulns(0));
+}
+
 // #[test]
 // fn fetch_http_basic_authorization_test_2() {
 //     let test_forge_project = MockForgeProject::files_from_string(
