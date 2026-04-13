@@ -1128,6 +1128,18 @@ impl FunctionAnalyzer<'_> {
                     None
                 }
             }
+            [PropPath::Def(def), PropPath::Static(ref method), ..]
+            | [PropPath::Def(def), PropPath::MemberCall(ref method), ..]
+                if *method == *"fetch"
+                    && self
+                        .res
+                        .is_imported_from(def, "@forge/api")
+                        .is_some_and(|imp| {
+                            matches!(imp, ImportKind::Default | ImportKind::Star)
+                        }) =>
+            {
+                Some(Intrinsic::Fetch)
+            }
             [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/api").is_some() => {
                 if let Some(ImportKind::Named(name)) = self.res.is_imported_from(def, "@forge/api")
                 {
@@ -1414,6 +1426,13 @@ impl FunctionAnalyzer<'_> {
                 || calls_method(callee, "filter")
                 || calls_method(callee, "catch"))
                 && let [ExprOrSpread { expr, .. }] = args {
+                    if let CalleeRef::Expr(Expr::Member(mem)) = callee {
+                        if let Expr::Call(inner_call) = &*mem.obj {
+                            let inner_callee = inner_call.callee.as_expr()
+                                .map_or(CalleeRef::Import, |e| CalleeRef::Expr(e));
+                            self.lower_call(inner_callee, &inner_call.args);
+                        }
+                    }
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, .. }) => match &**body {
                             BlockStmtOrExpr::BlockStmt(stmt) => {
