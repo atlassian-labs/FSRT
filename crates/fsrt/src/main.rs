@@ -38,7 +38,7 @@ use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
     checkers::{
-        AuthZChecker, AuthenticateChecker, BasicAuthChecker, PermissionChecker, PermissionVuln,
+        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, PermissionChecker, PermissionVuln,
         SecretChecker, SecretType,
     },
     ctx::ModId,
@@ -521,7 +521,7 @@ pub(crate) fn scan_directory<'a>(
         &bitbucket_regex_map,
         &compass_permission_resolver,
     );
-    let mut basic_auth_interp = Interp::<BasicAuthChecker>::new(
+    let mut auth_header_interp = Interp::<AuthHeaderChecker>::new(
         &proj.env,
         false,
         false,
@@ -563,7 +563,7 @@ pub(crate) fn scan_directory<'a>(
     );
 
     let mut secret_checker = SecretChecker::new();
-    let mut basic_auth_checker = BasicAuthChecker::new();
+    let mut auth_header_checker = AuthHeaderChecker::new();
 
     if let Some(providers) = &manifest.providers
         && let Some(auth_providers) = &providers.auth
@@ -602,24 +602,21 @@ pub(crate) fn scan_directory<'a>(
             warn!("error while running secret checker: {err}");
         }
 
-        // Clone so the Basic Authorization pass cannot move (and empty) shared analysis state.
-        basic_auth_interp.value_manager.varid_to_value =
+        auth_header_interp.value_manager.varid_to_value =
             secret_interp.value_manager.varid_to_value.clone();
-        basic_auth_interp.value_manager.varid_to_value_with_proj =
+        auth_header_interp.value_manager.varid_to_value_with_proj =
             secret_interp.value_manager.varid_to_value_with_proj.clone();
-        basic_auth_interp.value_manager.defid_to_value =
+        auth_header_interp.value_manager.defid_to_value =
             secret_interp.value_manager.defid_to_value.clone();
-        if let Err(err) = basic_auth_interp.run_checker(
+        if let Err(err) = auth_header_interp.run_checker(
             func.def_id,
-            &mut basic_auth_checker,
+            &mut auth_header_checker,
             func.path.clone(),
             func.func_name.to_owned(),
             func.module,
         ) {
-            warn!("error while running Basic Authorization checker: {err}");
+            warn!("error while running auth header checker: {err}");
         }
-        // Do not merge basic_auth_interp's value manager back into secret_interp: basic auth runs
-        // a separate dataflow pass that can skew abstract values for later functions.
 
         if func.invokable {
             let mut checker = AuthZChecker::new();
@@ -660,7 +657,7 @@ pub(crate) fn scan_directory<'a>(
     }
 
     reporter.add_vulnerabilities(secret_checker.into_vulns());
-    reporter.add_vulnerabilities(basic_auth_checker.into_vulns());
+    reporter.add_vulnerabilities(auth_header_checker.into_vulns());
 
     let path = if let Some(ref mut path) = opts.graphql_schema_path {
         path

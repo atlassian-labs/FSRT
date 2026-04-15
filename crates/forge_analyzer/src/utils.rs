@@ -53,6 +53,11 @@ pub fn is_basic_auth_concat_prefix(s: &str) -> bool {
     s.len() >= 6 && s[..6].eq_ignore_ascii_case("basic ")
 }
 
+/// `true` if a string starts with `"Bearer "` (case-insensitive).
+pub fn is_bearer_prefix(s: &str) -> bool {
+    s.len() >= 7 && s[..7].eq_ignore_ascii_case("bearer ")
+}
+
 pub fn convert_lit_to_raw(lit: &Literal) -> Option<String> {
     match lit {
         Literal::BigInt(bigint) => Some(bigint.to_string()),

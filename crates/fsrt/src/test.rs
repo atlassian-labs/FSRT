@@ -27,6 +27,8 @@ trait ReportExt {
     fn contains_authz_vuln(&self, expected_len: usize) -> bool;
 
     fn contains_basic_auth_vuln(&self, expected_len: usize) -> bool;
+
+    fn contains_bearer_admin_vuln(&self, expected_len: usize) -> bool;
 }
 
 impl ReportExt for Report {
@@ -51,6 +53,18 @@ impl ReportExt for Report {
             .filter(|vuln| {
                 vuln.check_name()
                     .starts_with("Custom-Check-Basic-Authorization-")
+            })
+            .count()
+            == expected_len
+    }
+
+    #[inline]
+    fn contains_bearer_admin_vuln(&self, expected_len: usize) -> bool {
+        self.into_vulns()
+            .iter()
+            .filter(|vuln| {
+                vuln.check_name()
+                    .starts_with("Custom-Check-Bearer-Admin-")
             })
             .count()
             == expected_len
@@ -602,7 +616,7 @@ fn fetch_http_basic_authorization_concat_with_env() {
         function App() {
             let token = process.env.API_TOKEN;
             let h = { headers: { Authorization: 'Basic ' + token } };
-            fetch('url', h);
+            fetch('api.atlassian.com/rest/api/3/issue', h);
             return (
                 <Fragment>
                 <Text>Hello</Text>
@@ -629,7 +643,7 @@ fn fetch_http_basic_authorization_default_import_api_fetch() {
         function App() {
             let token = process.env.API_TOKEN;
             let h = { headers: { Authorization: 'Basic ' + token } };
-            api.fetch('url', h);
+            api.fetch('api.atlassian.com/rest/api/3/issue', h);
             return (
                 <Fragment>
                 <Text>Hello</Text>
@@ -656,7 +670,7 @@ fn fetch_http_basic_authorization_chained_api_fetch() {
         function App() {
             let token = process.env.API_TOKEN;
             let h = { headers: { Authorization: 'Basic ' + token } };
-            api.fetch('url', h).then((res) => res.json());
+            api.fetch('api.atlassian.com/rest/api/3/issue', h).then((res) => res.json());
             return (
                 <Fragment>
                 <Text>Hello</Text>
@@ -683,7 +697,7 @@ fn fetch_http_basic_authorization_separate_basic_auth_header_template() {
         async function App() {
             let credentials = process.env.API_TOKEN;
             const basicAuthHeader = `Basic ${credentials}`;
-            const response = await fetch('url', {
+            const response = await fetch('api.atlassian.com/rest/api/3/issue', {
                 method: 'GET',
                 headers: {
                     Accept: 'application/json',
@@ -764,7 +778,7 @@ import Resolver from '@forge/resolver';
 import { fetch } from '@forge/api';
 const resolver = new Resolver();
 resolver.define('fetchData', async () => {
-    const result = await fetch('url', {
+    const result = await fetch('api.atlassian.com/rest/api/3/issue', {
         method: 'GET',
         headers: { Authorization: 'Basic ' + process.env.TOKEN, Accept: 'application/json' }
     });
@@ -775,6 +789,72 @@ export const handler = resolver.getDefinitions();",
 
     let scan_result = scan_directory_test(test_forge_project);
     assert!(scan_result.contains_basic_auth_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
+#[test]
+fn bearer_admin_api_fetch_static_url() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { fetch } from '@forge/api';
+
+        function App() {
+            const token = process.env.ADMIN_TOKEN;
+            fetch('api.atlassian.com/admin/v1/orgs/123/users', {
+                headers: {
+                    Authorization: 'Bearer ' + token,
+                    Accept: 'application/json'
+                }
+            });
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_bearer_admin_vuln(1));
+    assert!(scan_result.contains_basic_auth_vuln(0));
+    assert!(scan_result.contains_vulns(1));
+}
+
+#[test]
+fn bearer_admin_api_fetch_template_url() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// manifest.yml
+app:
+  id: test-app
+modules:
+  function:
+    - key: main
+      handler: index.handler
+permissions:
+  scopes: []
+// src/index.js
+export { handler } from './resolvers';
+// src/resolvers.ts
+import Resolver from '@forge/resolver';
+import { fetch } from '@forge/api';
+const resolver = new Resolver();
+resolver.define('getUsers', async () => {
+    const orgId = 'some-org';
+    const response = await fetch(`api.atlassian.com/admin/v2/orgs/${orgId}/users`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${process.env.API_KEY}`, Accept: 'application/json' }
+    });
+    return response;
+});
+export const handler = resolver.getDefinitions();",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_bearer_admin_vuln(1));
+    assert!(scan_result.contains_basic_auth_vuln(0));
     assert!(scan_result.contains_vulns(1));
 }
 

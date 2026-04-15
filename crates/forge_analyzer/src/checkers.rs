@@ -12,7 +12,8 @@ use crate::{
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     utils::{
-        add_elements_to_intrinsic_struct, is_basic_auth_concat_prefix, translate_request_type,
+        add_elements_to_intrinsic_struct, convert_lit_to_raw, is_basic_auth_concat_prefix,
+        is_bearer_prefix, translate_request_type,
     },
     worklist::WorkList,
 };
@@ -1048,17 +1049,17 @@ impl<'cx> Runner<'cx> for SecretChecker {
                             .or_else(|| {
                                 interp.get_value(def, *varid, Some(aut_proj_lower.clone()))
                             });
-                        let is_basic_auth = match auth_val {
+                        let is_auth_scheme_prefix = match auth_val {
                             Some(Value::Const(Const::Literal(s))) => {
-                                is_basic_auth_concat_prefix(s)
+                                is_basic_auth_concat_prefix(s) || is_bearer_prefix(s)
                             }
                             Some(Value::Phi(phi)) => phi.iter().any(|c| {
-                                matches!(c, Const::Literal(s) if is_basic_auth_concat_prefix(s))
+                                matches!(c, Const::Literal(s) if is_basic_auth_concat_prefix(s) || is_bearer_prefix(s))
                             }),
                             _ => false,
                         };
                         if matches!(auth_val, Some(Value::Const(_) | Value::Phi(_)))
-                            && !is_basic_auth
+                            && !is_auth_scheme_prefix
                         {
                             let vuln =
                                 SecretVuln::new(interp.callstack(), interp.env(), interp.entry());
@@ -1092,15 +1093,27 @@ impl Checker<'_> for SecretChecker {
     type Vuln = SecretVuln;
 }
 
+#[derive(Debug, Clone)]
+pub enum AuthHeaderVulnKind {
+    BasicAuth,
+    BearerAdmin,
+}
+
 #[derive(Debug)]
-pub struct BasicAuthVuln {
+pub struct AuthHeaderVuln {
+    kind: AuthHeaderVulnKind,
     stack: String,
     entry_func: String,
     file: PathBuf,
 }
 
-impl BasicAuthVuln {
-    fn new(callstack: Vec<Frame>, env: &Environment, entry: &EntryPoint) -> Self {
+impl AuthHeaderVuln {
+    fn new(
+        kind: AuthHeaderVulnKind,
+        callstack: Vec<Frame>,
+        env: &Environment,
+        entry: &EntryPoint,
+    ) -> Self {
         let entry_func = match &entry.kind {
             EntryKind::Function(func) => func.clone(),
             EntryKind::Resolver(res, prop) => format!("{res}.{prop}"),
@@ -1121,6 +1134,7 @@ impl BasicAuthVuln {
         )
         .collect();
         Self {
+            kind,
             stack,
             entry_func,
             file,
@@ -1128,13 +1142,23 @@ impl BasicAuthVuln {
     }
 }
 
-impl fmt::Display for BasicAuthVuln {
+impl fmt::Display for AuthHeaderVuln {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "HTTP Basic Authorization header on fetch")
+        match self.kind {
+            AuthHeaderVulnKind::BasicAuth => {
+                write!(f, "HTTP Basic Authorization header on fetch")
+            }
+            AuthHeaderVulnKind::BearerAdmin => {
+                write!(
+                    f,
+                    "Bearer token used with Atlassian admin API endpoint on fetch"
+                )
+            }
+        }
     }
 }
 
-impl IntoVuln for BasicAuthVuln {
+impl IntoVuln for AuthHeaderVuln {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -1147,35 +1171,54 @@ impl IntoVuln for BasicAuthVuln {
         self.entry_func.hash(&mut hasher);
         self.stack.hash(&mut hasher);
 
-        Vulnerability {
-            check_name: format!("Custom-Check-Basic-Authorization-{}", hasher.finish()),
-            description: format!(
-                "HTTP Basic authentication used in fetch request from {} in {:?}.",
-                self.entry_func, self.file
-            ),
-            recommendation: "Prefer OAuth or API tokens scoped to least privilege. If Basic auth is required, load credentials from Forge secrets or environment variables and avoid logging or exposing the Authorization header.",
-            proof: format!(
-                "Basic Authorization header on fetch found via {}",
-                self.stack
-            ),
-            severity: Severity::Medium,
-            app_key: reporter.app_key().to_owned(),
-            app_name: reporter.app_name().to_owned(),
-            marketplace_security_requirement: "Requirement 5",
-            date: reporter.current_date(),
+        match self.kind {
+            AuthHeaderVulnKind::BasicAuth => Vulnerability {
+                check_name: format!("Custom-Check-Basic-Authorization-{}", hasher.finish()),
+                description: format!(
+                    "HTTP Basic authentication used in fetch request from {} in {:?}.",
+                    self.entry_func, self.file
+                ),
+                recommendation: "Prefer OAuth or API tokens scoped to least privilege. If Basic auth is required, load credentials from Forge secrets or environment variables and avoid logging or exposing the Authorization header.",
+                proof: format!(
+                    "Basic Authorization header on fetch found via {}",
+                    self.stack
+                ),
+                severity: Severity::Medium,
+                app_key: reporter.app_key().to_owned(),
+                app_name: reporter.app_name().to_owned(),
+                marketplace_security_requirement: "Requirement 5",
+                date: reporter.current_date(),
+            },
+            AuthHeaderVulnKind::BearerAdmin => Vulnerability {
+                check_name: format!("Custom-Check-Bearer-Admin-{}", hasher.finish()),
+                description: format!(
+                    "Bearer token used with Atlassian admin API endpoint in fetch from {} in {:?}.",
+                    self.entry_func, self.file
+                ),
+                recommendation: "Avoid using admin API tokens in Forge apps. Prefer scoped OAuth tokens or Forge-native APIs.",
+                proof: format!(
+                    "Bearer token on admin API fetch found via {}",
+                    self.stack
+                ),
+                severity: Severity::High,
+                app_key: reporter.app_key().to_owned(),
+                app_name: reporter.app_name().to_owned(),
+                marketplace_security_requirement: "Requirement 5",
+                date: reporter.current_date(),
+            },
         }
     }
 }
 
-impl WithCallStack for BasicAuthVuln {
+impl WithCallStack for AuthHeaderVuln {
     fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
 }
 
-pub struct BasicAuthDataflow {
+pub struct AuthHeaderDataflow {
     needs_call: Vec<DefId>,
 }
 
-impl<'cx> Dataflow<'cx> for BasicAuthDataflow {
+impl<'cx> Dataflow<'cx> for AuthHeaderDataflow {
     type State = SecretState;
 
     fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
@@ -1229,31 +1272,31 @@ impl<'cx> Dataflow<'cx> for BasicAuthDataflow {
     }
 }
 
-pub struct BasicAuthChecker {
-    vulns: Vec<BasicAuthVuln>,
+pub struct AuthHeaderChecker {
+    vulns: Vec<AuthHeaderVuln>,
 }
 
-impl BasicAuthChecker {
-    pub fn new() -> Self {
-        Self { vulns: vec![] }
-    }
-
-    pub fn into_vulns(self) -> impl IntoIterator<Item = BasicAuthVuln> {
-        self.vulns.into_iter()
-    }
-}
-
-impl Default for BasicAuthChecker {
+impl Default for AuthHeaderChecker {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'cx> Runner<'cx> for BasicAuthChecker {
-    type State = SecretState;
-    type Dataflow = BasicAuthDataflow;
+impl AuthHeaderChecker {
+    pub fn new() -> Self {
+        Self { vulns: vec![] }
+    }
 
-    const NAME: &'static str = "BasicAuthorization";
+    pub fn into_vulns(self) -> impl IntoIterator<Item = AuthHeaderVuln> {
+        self.vulns.into_iter()
+    }
+}
+
+impl<'cx> Runner<'cx> for AuthHeaderChecker {
+    type State = SecretState;
+    type Dataflow = AuthHeaderDataflow;
+
+    const NAME: &'static str = "AuthHeader";
 
     fn visit_intrinsic(
         &mut self,
@@ -1263,40 +1306,84 @@ impl<'cx> Runner<'cx> for BasicAuthChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        if let Intrinsic::Fetch = intrinsic
-            && let Some(Operand::Var(Variable {
-                base: Base::Var(varid),
-                ..
-            })) = operands.unwrap_or_default().get(1)
-        {
-            let varid_argument =
-                if let Some(Value::Object(varid)) = interp.get_value(def, *varid, None) {
-                    varid
-                } else {
-                    varid
-                };
-            let headers_proj = projvec_from_str("headers");
-            if let Some(Value::Object(varid)) =
-                interp.get_value(def, *varid_argument, Some(headers_proj))
-            {
-                let auth_proj = projvec_from_str("Authorization");
-                let aut_proj_lower = projvec_from_str("authorization");
-                let auth_val = interp
-                    .get_value(def, *varid, Some(auth_proj.clone()))
-                    .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower.clone())));
-                let is_basic = match auth_val {
-                    Some(Value::Const(Const::Literal(s))) => is_basic_auth_concat_prefix(s),
+        if let Intrinsic::Fetch = intrinsic {
+            let ops = operands.unwrap_or_default();
+
+            let url_str: Option<String> = match ops.first() {
+                Some(Operand::Var(Variable {
+                    base: Base::Var(varid),
+                    ..
+                })) => match interp.get_value(def, *varid, None) {
+                    Some(Value::Const(Const::Literal(s))) => Some(s.clone()),
                     Some(Value::Phi(phi)) => phi
                         .iter()
-                        .any(|c| matches!(c, Const::Literal(s) if is_basic_auth_concat_prefix(s))),
-                    _ => false,
-                };
-                if is_basic {
-                    self.vulns.push(BasicAuthVuln::new(
-                        interp.callstack(),
-                        interp.env(),
-                        interp.entry(),
-                    ));
+                        .map(|Const::Literal(s)| s.clone())
+                        .next(),
+                    _ => None,
+                },
+                Some(Operand::Lit(lit)) => convert_lit_to_raw(lit),
+                _ => None,
+            };
+
+            if let Some(Operand::Var(Variable {
+                base: Base::Var(varid),
+                ..
+            })) = ops.get(1)
+            {
+                let varid_argument =
+                    if let Some(Value::Object(varid)) = interp.get_value(def, *varid, None) {
+                        varid
+                    } else {
+                        varid
+                    };
+                let headers_proj = projvec_from_str("headers");
+                if let Some(Value::Object(varid)) =
+                    interp.get_value(def, *varid_argument, Some(headers_proj))
+                {
+                    let auth_proj = projvec_from_str("Authorization");
+                    let aut_proj_lower = projvec_from_str("authorization");
+                    let auth_val = interp
+                        .get_value(def, *varid, Some(auth_proj.clone()))
+                        .or_else(|| {
+                            interp.get_value(def, *varid, Some(aut_proj_lower.clone()))
+                        });
+
+                    let auth_str = match auth_val {
+                        Some(Value::Const(Const::Literal(s))) => Some(s.as_str()),
+                        Some(Value::Phi(phi)) => phi
+                            .iter()
+                            .map(|Const::Literal(s)| s.as_str())
+                            .next(),
+                        _ => None,
+                    };
+
+                    if let Some(auth) = auth_str {
+                        if is_basic_auth_concat_prefix(auth) {
+                            let is_atlassian_url = url_str
+                                .as_deref()
+                                .is_some_and(|s| s.contains("api.atlassian.com"));
+                            if is_atlassian_url {
+                                self.vulns.push(AuthHeaderVuln::new(
+                                    AuthHeaderVulnKind::BasicAuth,
+                                    interp.callstack(),
+                                    interp.env(),
+                                    interp.entry(),
+                                ));
+                            }
+                        } else if is_bearer_prefix(auth) {
+                            let is_admin_url = url_str.as_deref().is_some_and(|s| {
+                                s.contains("api.atlassian.com") && s.contains("admin")
+                            });
+                            if is_admin_url {
+                                self.vulns.push(AuthHeaderVuln::new(
+                                    AuthHeaderVulnKind::BearerAdmin,
+                                    interp.callstack(),
+                                    interp.env(),
+                                    interp.entry(),
+                                ));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1304,8 +1391,8 @@ impl<'cx> Runner<'cx> for BasicAuthChecker {
     }
 }
 
-impl Checker<'_> for BasicAuthChecker {
-    type Vuln = BasicAuthVuln;
+impl Checker<'_> for AuthHeaderChecker {
+    type Vuln = AuthHeaderVuln;
 }
 
 pub struct PermissionDataflow {

@@ -23,8 +23,8 @@ use crate::ctx::ModId;
 use crate::definitions::DefKind;
 use crate::ir::{BinOp, Literal, VarKind};
 use crate::utils::{
-    convert_lit_to_raw, convert_operand_to_raw, get_defid_from_varkind,
-    is_basic_auth_concat_prefix, projvec_from_projvec, return_combinations_phi,
+    convert_lit_to_raw, convert_operand_to_raw, get_defid_from_varkind, projvec_from_projvec,
+    return_combinations_phi,
 };
 use crate::{
     checkers::IntrinsicArguments,
@@ -866,20 +866,15 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         match rvalue {
             Rvalue::Read(operand) => self.value_from_operand(defid_block, operand),
             Rvalue::Template(template) => {
-                if !template.quasis.is_empty()
-                    && is_basic_auth_concat_prefix(template.quasis[0].as_ref())
-                    && !template.exprs.is_empty()
-                {
-                    return Value::Const(Const::Literal(template.quasis[0].to_string()));
-                }
-
                 let all_values = template
                     .exprs
                     .iter()
                     .map(|expr| self.value_from_operand(defid_block, expr.clone()))
                     .collect_vec();
+
                 if all_values.contains(&Value::Unknown) {
-                    return Value::Unknown;
+                    let joined: String = template.quasis.iter().map(|q| q.as_ref()).collect();
+                    return Value::Const(Const::Literal(joined));
                 }
 
                 let quasis_as_values: Vec<Value> = template
@@ -902,14 +897,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 let value_op1 = self.value_from_operand(defid_block, op1);
                 let value_op2 = self.value_from_operand(defid_block, op2);
                 if value_op1 == Value::Unknown || value_op2 == Value::Unknown {
-                    if let Value::Const(Const::Literal(ref s)) = value_op1
-                        && is_basic_auth_concat_prefix(s)
-                    {
+                    if let Value::Const(Const::Literal(_)) = &value_op1 {
                         return value_op1;
                     }
-                    if let Value::Const(Const::Literal(ref s)) = value_op2
-                        && is_basic_auth_concat_prefix(s)
-                    {
+                    if let Value::Const(Const::Literal(_)) = &value_op2 {
                         return value_op2;
                     }
                     return Value::Unknown;
