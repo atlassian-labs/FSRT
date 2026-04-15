@@ -1277,7 +1277,12 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         };
         let primary_result = self.try_check_function(def, checker);
 
-        let callbacks = self.env.resolver_define_callbacks_in_module(module);
+        let mut callbacks = self.env.resolver_define_callbacks_in_module(module);
+        if let Some(def_mod) = self.env.def_owning_module(def)
+            && def_mod != module
+        {
+            callbacks.extend(self.env.resolver_define_callbacks_in_module(def_mod));
+        }
         let resolver_callback_count = callbacks.len();
         debug!(
             n = resolver_callback_count,

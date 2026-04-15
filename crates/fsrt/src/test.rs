@@ -745,6 +745,39 @@ fn fetch_http_basic_authorization_module_scope_headers() {
     assert!(scan_result.contains_vulns(0));
 }
 
+#[test]
+fn fetch_http_basic_authorization_re_export_resolver() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// manifest.yml
+app:
+  id: test-app
+modules:
+  function:
+    - key: main
+      handler: index.handler
+permissions:
+  scopes: []
+// src/index.js
+export { handler } from './resolvers';
+// src/resolvers.ts
+import Resolver from '@forge/resolver';
+import { fetch } from '@forge/api';
+const resolver = new Resolver();
+resolver.define('fetchData', async () => {
+    const result = await fetch('url', {
+        method: 'GET',
+        headers: { Authorization: 'Basic ' + process.env.TOKEN, Accept: 'application/json' }
+    });
+    return result;
+});
+export const handler = resolver.getDefinitions();",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
 // #[test]
 // fn fetch_http_basic_authorization_test_2() {
 //     let test_forge_project = MockForgeProject::files_from_string(

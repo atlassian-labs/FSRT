@@ -196,6 +196,15 @@ pub fn run_resolver(
         module.visit_with(&mut import_collector);
     }
 
+    for (curr_mod, module) in modules.iter_enumerated() {
+        let mut re_export_linker = ReExportLinker {
+            env: &mut environment,
+            file_resolver,
+            curr_mod,
+        };
+        module.visit_with(&mut re_export_linker);
+    }
+
     // This loop runs through the different import modules and corresponding definitions.
     let defs = Definitions::new(
         environment
@@ -605,6 +614,12 @@ struct ExportCollector<'cx> {
     curr_mod: ModId,
     exports: Vec<(Atom, DefId)>,
     default: Option<DefId>,
+}
+
+struct ReExportLinker<'cx> {
+    env: &'cx mut Environment,
+    file_resolver: &'cx ForgeResolver,
+    curr_mod: ModId,
 }
 
 struct GlobalCollector<'cx> {
@@ -3614,13 +3629,10 @@ impl Visit for ExportCollector<'_> {
         if n.type_only {
             return;
         }
-        for export in &n.specifiers {
-            match export {
-                ExportSpecifier::Namespace(_) => {}
-                ExportSpecifier::Default(_) => {}
-                ExportSpecifier::Named(n) => {}
-            }
+        if n.src.is_some() {
+            return;
         }
+        n.visit_children_with(self);
     }
 
     fn visit_export_all(&mut self, _: &ExportAll) {}
@@ -3662,6 +3674,75 @@ impl Visit for ExportCollector<'_> {
             self.res_table
                 .exported_names
                 .insert((ident.sym.clone(), self.curr_mod), default_id);
+        }
+    }
+}
+
+impl Visit for ReExportLinker<'_> {
+    noop_visit_type!();
+
+    fn visit_module_item(&mut self, n: &ModuleItem) {
+        if let ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(n)) = n {
+            self.visit_named_export(n);
+        }
+    }
+
+    fn visit_named_export(&mut self, n: &NamedExport) {
+        if n.type_only {
+            return;
+        }
+        let Some(src) = &n.src else {
+            return;
+        };
+        let source_mod = match self
+            .file_resolver
+            .resolve_import(self.curr_mod.into(), &*src.value)
+        {
+            Ok(id) => ModId::from(id),
+            Err(_) => return,
+        };
+
+        for spec in &n.specifiers {
+            match spec {
+                ExportSpecifier::Named(named) => {
+                    let orig_name = export_name_to_jsword(&named.orig);
+                    let exported_name = named
+                        .exported
+                        .as_ref()
+                        .map_or_else(|| orig_name.clone(), |e| export_name_to_jsword(e));
+
+                    let Some(def_id) = self.env.resolve_local_export(source_mod, &orig_name)
+                    else {
+                        continue;
+                    };
+
+                    self.env.exports[self.curr_mod].push((exported_name.clone(), def_id));
+
+                    if let ModuleExportName::Ident(ident) = &named.orig {
+                        self.env.resolver.symbol_to_id.insert(
+                            Symbol {
+                                module: self.curr_mod,
+                                id: ident.to_id(),
+                            },
+                            def_id,
+                        );
+                    }
+                }
+                ExportSpecifier::Default(_) => {
+                    if let Some(def_id) = self.env.default_export(source_mod) {
+                        self.env.default_exports.insert(self.curr_mod, def_id);
+                    }
+                }
+                ExportSpecifier::Namespace(ns) => {
+                    let exported_name = export_name_to_jsword(&ns.name);
+                    let ns_def = self.env.resolver.add_sym(
+                        DefRes::ModuleNs(source_mod),
+                        ns.name.as_id(),
+                        self.curr_mod,
+                    );
+                    self.env.exports[self.curr_mod].push((exported_name, ns_def));
+                }
+            }
         }
     }
 }
@@ -4104,6 +4185,10 @@ impl Environment {
             }
         }
         out
+    }
+
+    pub fn def_owning_module(&self, def: DefId) -> Option<ModId> {
+        self.resolver.owning_module.get(def).copied()
     }
 
     fn resolve_local_export(&self, module: ModId, name: &Atom) -> Option<DefId> {
