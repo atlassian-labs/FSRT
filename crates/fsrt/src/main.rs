@@ -94,6 +94,10 @@ pub struct Args {
     #[arg(long)]
     scanners: Option<String>,
 
+    /// Scan all function/closure bodies for auth-header issues, not just entrypoint-reachable code.
+    #[arg(long)]
+    scan_functions: bool,
+
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the source code is located in `src/`
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
@@ -655,6 +659,34 @@ pub(crate) fn scan_directory<'a>(
             reporter.add_vulnerabilities(checker.into_vulns());
         }
     }
+
+    // Optional full-function auth-header scan. When enabled, scan all function and
+    // closure bodies for Authorization header misuse, not just code reachable from
+    // manifest entry points. This is primarily useful for finding issues in helper
+    // functions and class methods that are present in the codebase but not on an
+    // entry-point-reachable call chain.
+    let scan_functions = opts.scan_functions
+        || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
+    if scan_functions {
+        let mut full_scan_checker = AuthHeaderChecker::new();
+        let all_functions = proj.env.get_all_functions_and_closures();
+        for func_def in &all_functions {
+            let func_name = proj.env.def_name(*func_def).to_string();
+            // Reset dataflow_visited so that run() re-analyzes this function body
+            // with fresh dataflow. The entry-point pass may have marked it visited
+            // during broader module/class traversal without actually checking it as
+            // a standalone function body.
+            let resolved = proj.env.resolve_alias(*func_def);
+            auth_header_interp.reset_dataflow_visited(*func_def);
+            auth_header_interp.reset_dataflow_visited(resolved);
+            auth_header_interp.entry = forge_analyzer::interp::EntryPoint {
+                file: std::path::PathBuf::from("<project>"),
+                kind: forge_analyzer::interp::EntryKind::Function(func_name.clone()),
+            };
+            let _ = auth_header_interp.try_check_function(*func_def, &mut full_scan_checker);
+        }
+        auth_header_checker.extend_vulns(full_scan_checker);
+    };
 
     reporter.add_vulnerabilities(secret_checker.into_vulns());
     reporter.add_vulnerabilities(auth_header_checker.into_vulns());

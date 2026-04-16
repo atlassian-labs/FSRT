@@ -405,7 +405,7 @@ pub(crate) struct Frame {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub(crate) enum EntryKind {
+pub enum EntryKind {
     Function(String),
     Resolver(String, Atom),
     #[default]
@@ -413,9 +413,9 @@ pub(crate) enum EntryKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub(crate) struct EntryPoint {
-    pub(crate) file: PathBuf,
-    pub(crate) kind: EntryKind,
+pub struct EntryPoint {
+    pub file: PathBuf,
+    pub kind: EntryKind,
 }
 
 #[derive(Debug)]
@@ -428,7 +428,7 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     call_graph: CallGraph,
     pub return_value: Option<(Value, DefId)>,
     pub return_value_alt: HashMap<DefId, Value>,
-    pub(crate) entry: EntryPoint,
+    pub entry: EntryPoint,
     func_state: RefCell<FxHashMap<DefId, C::State>>,
     pub curr_body: Cell<Option<&'cx Body>>,
     states: RefCell<BTreeMap<(DefId, BasicBlockId), C::State>>,
@@ -1237,7 +1237,17 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.curr_body.set(old_body);
     }
 
-    fn try_check_function(&mut self, def: DefId, checker: &mut C) -> Result<(), Error> {
+    /// Returns true if the given DefId has already been visited during a dataflow pass.
+    pub fn is_dataflow_visited(&self, def: DefId) -> bool {
+        self.dataflow_visited.contains(&def)
+    }
+
+    /// Removes a DefId from the dataflow visited set so it can be re-analyzed.
+    pub fn reset_dataflow_visited(&mut self, def: DefId) {
+        self.dataflow_visited.remove(&def);
+    }
+
+    pub fn try_check_function(&mut self, def: DefId, checker: &mut C) -> Result<(), Error> {
         let resolved_def = self.env.resolve_alias(def);
         let name = self.env.def_name(resolved_def);
         debug!(%name, "found definition");

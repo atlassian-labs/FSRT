@@ -197,20 +197,26 @@ impl<'a> ForgeProjectTrait<'a> for MockForgeProject<'a> {
     }
 }
 
-pub(crate) fn scan_directory_test(
+pub(crate) fn scan_directory_test_with_args(
     forge_test_proj: MockForgeProject<'_>,
+    mut args: Args,
 ) -> forge_analyzer::reporter::Report {
     let secret_packages: Vec<PackageData> = std::fs::File::open("../../secretdata.yaml")
         .map(|f| serde_yaml::from_reader(f).expect("Failed to deserialize packages"))
         .unwrap_or_else(|_| vec![]);
 
-    // disallow parsing arguments meant for test harness (e.g., --nocapture, --exact) from std::env::args()
-    let mut args = Args::parse_from([""]);
-
     match scan_directory(PathBuf::new(), &mut args, forge_test_proj, &secret_packages) {
         Ok(report) => report,
         Err(err) => panic!("error while scanning {err:?}"),
     }
+}
+
+pub(crate) fn scan_directory_test(
+    forge_test_proj: MockForgeProject<'_>,
+) -> forge_analyzer::reporter::Report {
+    // disallow parsing arguments meant for test harness (e.g., --nocapture, --exact) from std::env::args()
+    let args = Args::parse_from([""]);
+    scan_directory_test_with_args(forge_test_proj, args)
 }
 
 #[test]
@@ -1101,6 +1107,84 @@ fn basic_auth_request_confluence_named_import_forge_api() {
     );
 
     let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(1));
+    assert!(scan_result.contains_secret_vuln(0));
+}
+
+#[test]
+fn basic_auth_request_jira_class_method_unreachable_default_off() {
+    // By default, unreachable class methods are not scanned. This issue should only
+    // be reported when SCAN_FUNCTIONS=1 is enabled.
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { requestJira, route } from '@forge/api';
+
+        export class BackupAdapter {
+            async generateBackup(authKey) {
+                const response = await requestJira(route`/rest/backup/1/export/runbackup`, {
+                    method: 'POST',
+                    headers: {
+                        Authorization: `Basic ${authKey}`,
+                        Accept: 'application/json',
+                    },
+                });
+                return response;
+            }
+        }
+
+        function App() {
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let args = Args::parse_from([""]);
+    let scan_result = scan_directory_test_with_args(test_forge_project, args);
+    assert!(scan_result.contains_basic_auth_vuln(0));
+    assert!(scan_result.contains_secret_vuln(0));
+
+    // also verify the explicit CLI flag enables the scan in tests deterministically.
+}
+
+#[test]
+fn basic_auth_request_jira_class_method_with_scan_functions() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { requestJira, route } from '@forge/api';
+
+        export class BackupAdapter {
+            async generateBackup(authKey) {
+                const response = await requestJira(route`/rest/backup/1/export/runbackup`, {
+                    method: 'POST',
+                    headers: {
+                        Authorization: `Basic ${authKey}`,
+                        Accept: 'application/json',
+                    },
+                });
+                return response;
+            }
+        }
+
+        function App() {
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let args = Args::parse_from(["", "--scan-functions"]);
+    let scan_result = scan_directory_test_with_args(test_forge_project, args);
     assert!(scan_result.contains_basic_auth_vuln(1));
     assert!(scan_result.contains_secret_vuln(0));
 }

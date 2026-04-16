@@ -253,6 +253,61 @@ pub fn run_resolver(
         });
     }
 
+    // Post-pass: register `export const/let/var` declarations in the exports table.
+    // ExportCollector runs before Lowerer and cannot create DefIds for var decls without
+    // causing conflicts. By this point, Lowerer has created all DefIds via get_or_overwrite_sym,
+    // so we can now safely look up each exported var and register it.
+    for (curr_mod, module) in modules.iter_enumerated() {
+        struct ExportVarCollector {
+            curr_mod: ModId,
+            exported_vars: Vec<Id>,
+        }
+        impl Visit for ExportVarCollector {
+            noop_visit_type!();
+            fn visit_export_decl(&mut self, n: &ExportDecl) {
+                if let Decl::Var(vardecls) = &n.decl {
+                    for decl in &vardecls.decls {
+                        if let Pat::Ident(BindingIdent { id, .. }) = &decl.name {
+                            self.exported_vars.push(id.to_id());
+                        }
+                    }
+                }
+            }
+        }
+        let mut collector = ExportVarCollector {
+            curr_mod,
+            exported_vars: vec![],
+        };
+        module.visit_with(&mut collector);
+        for id in collector.exported_vars {
+            let exported_name: Atom = id.0.clone();
+            if let Some(defid) = environment.resolver.sym_id(id, curr_mod) {
+                // Only add if not already in the exports table.
+                let already_exported = environment.exports[curr_mod]
+                    .iter()
+                    .any(|(name, _)| *name == *exported_name);
+                if !already_exported {
+                    environment.exports[curr_mod].push((exported_name, defid));
+                }
+            }
+        }
+    }
+
+    // Re-run ImportCollector after the post-pass so that imports from modules
+    // with `export const` declarations (now registered) can be resolved.
+    let mut foreign = TiVec::default();
+    for (curr_mod, module) in modules.iter_enumerated() {
+        let mut import_collector = ImportCollector {
+            resolver: &mut environment,
+            file_resolver,
+            foreign_defs: &mut foreign,
+            curr_mod,
+            current_import: Default::default(),
+            in_foreign_import: false,
+        };
+        module.visit_with(&mut import_collector);
+    }
+
     // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump.
     let mut updated_vars: HashMap<VarId, VarId> = HashMap::new();
     for body in environment.bodies_mut() {
@@ -3681,6 +3736,15 @@ impl Visit for ExportCollector<'_> {
             self.res_table
                 .exported_names
                 .insert((ident.sym.clone(), self.curr_mod), export_defid);
+            // If there's an alias (e.g. `export { foo as bar }`), also register
+            // the exported name so module_export can find it by the alias.
+            if let Some(ModuleExportName::Ident(exported_ident)) = &n.exported {
+                let alias_defid =
+                    self.add_export(DefRes::ExportAlias(export_defid), exported_ident.to_id());
+                self.res_table
+                    .exported_names
+                    .insert((exported_ident.sym.clone(), self.curr_mod), alias_defid);
+            }
         } else {
             let orig_id = n.orig.as_id();
             let orig = self.add_export(DefRes::default(), orig_id);
@@ -3879,6 +3943,11 @@ impl Environment {
     }
 
     #[inline]
+    pub fn get_all_functions_and_closures(&self) -> Vec<DefId> {
+        self.defs.get_all_functions_and_closures()
+    }
+
+    #[inline]
     fn reserve_global_scope(&mut self, module: ModId) -> DefId {
         let defid = self.add_anonymous("__GLOBAL", AnonType::Closure, module);
         self.global.insert(module, defid);
@@ -3972,9 +4041,23 @@ impl Environment {
         if *export_name == *"default" {
             self.default_export(module)
         } else {
-            self.exports[module]
+            // First check the exports table directly.
+            let from_exports = self.exports[module]
                 .iter()
-                .find_map(|(ident, defid)| (*export_name == **ident).then_some(*defid))
+                .find_map(|(ident, defid)| (*export_name == **ident).then_some(*defid));
+            if from_exports.is_some() {
+                return from_exports;
+            }
+            // Fallback: check if the export name is registered in exported_names.
+            // This handles cases like `export const handler = ...` where ExportCollector
+            // doesn't register the var decl, but the Lowerer or FunctionCollector later
+            // creates a DefId that was tracked via exported_names.
+            self.resolver
+                .exported_names
+                .iter()
+                .find_map(|((name, mod_id), defid)| {
+                    (*mod_id == module && *export_name == **name).then_some(*defid)
+                })
         }
     }
 
@@ -4219,11 +4302,23 @@ impl Environment {
     fn resolve_local_export(&self, module: ModId, name: &Atom) -> Option<DefId> {
         match &**name {
             "default" => self.default_exports.get(&module).copied(),
-            _ => self.exports.get(module).and_then(|exports| {
-                exports
-                    .iter()
-                    .find_map(|&(ref export, def_id)| (*export == *name).then_some(def_id))
-            }),
+            _ => {
+                // Check the exports table first.
+                let from_exports = self.exports.get(module).and_then(|exports| {
+                    exports
+                        .iter()
+                        .find_map(|&(ref export, def_id)| (*export == *name).then_some(def_id))
+                });
+                if from_exports.is_some() {
+                    return from_exports;
+                }
+                // Fallback: check exported_names (populated by ExportCollector
+                // for `export { X }` patterns and aliases).
+                self.resolver
+                    .exported_names
+                    .get(&(name.clone(), module))
+                    .copied()
+            }
         }
     }
 }
@@ -4280,6 +4375,18 @@ impl Definitions {
             .iter_enumerated()
             .filter(|(defid, defkind)| defkind == &&DefKind::Function(()))
             .map(|(defid, defkind)| defid)
+            .collect_vec()
+    }
+
+    /// Returns all DefIds that have function bodies, including both top-level
+    /// functions and closures (class methods, arrow functions, etc.).
+    pub fn get_all_functions_and_closures(&self) -> Vec<DefId> {
+        self.defs
+            .iter_enumerated()
+            .filter(|(_defid, defkind)| {
+                defkind == &&DefKind::Function(()) || defkind == &&DefKind::Closure(())
+            })
+            .map(|(defid, _defkind)| defid)
             .collect_vec()
     }
 }
