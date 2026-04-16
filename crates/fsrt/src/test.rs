@@ -903,6 +903,209 @@ export const handler = resolver.getDefinitions();",
 // }
 
 #[test]
+fn basic_auth_request_jira_shim() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api, { route } from '@forge/api';
+
+        function App() {
+            let token = process.env.API_TOKEN;
+            api.asApp().requestJira(route`/rest/api/3/issue`, {
+                method: 'GET',
+                headers: { Authorization: 'Basic ' + token }
+            });
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(1));
+    assert!(scan_result.contains_secret_vuln(0));
+}
+
+#[test]
+fn basic_auth_request_confluence_shim() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api, { route } from '@forge/api';
+
+        function App() {
+            let token = process.env.API_TOKEN;
+            api.asApp().requestConfluence(route`/rest/api/content`, {
+                method: 'GET',
+                headers: { Authorization: 'Basic ' + token }
+            });
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(1));
+    assert!(scan_result.contains_secret_vuln(0));
+}
+
+#[test]
+fn basic_auth_forge_fetch_shim() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { forgeFetch } from '@forge/api';
+
+        function App() {
+            let token = process.env.API_TOKEN;
+            let h = { headers: { Authorization: 'Basic ' + token } };
+            forgeFetch('api.atlassian.com/rest/api/3/issue', h);
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(1));
+    assert!(scan_result.contains_secret_vuln(0));
+}
+
+#[test]
+fn bearer_not_checked_for_request_jira_shim() {
+    // BearerAdmin is only checked for fetch / api.fetch, not platform API shims.
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api, { route } from '@forge/api';
+
+        function App() {
+            let token = process.env.ADMIN_TOKEN;
+            api.asApp().requestJira(route`/rest/api/3/issue`, {
+                method: 'GET',
+                headers: { Authorization: 'Bearer ' + token }
+            });
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_bearer_admin_vuln(0));
+    assert!(scan_result.contains_basic_auth_vuln(0));
+    assert!(scan_result.contains_secret_vuln(0));
+}
+
+#[test]
+fn basic_auth_request_bitbucket_shim() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api, { route } from '@forge/api';
+
+        function App() {
+            let token = process.env.API_TOKEN;
+            api.asApp().requestBitbucket(route`/rest/api/3/test`, {
+                method: 'GET',
+                headers: { Authorization: 'Basic ' + token }
+            });
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(1));
+    assert!(scan_result.contains_secret_vuln(0));
+}
+
+#[test]
+fn basic_auth_request_jira_template_literal() {
+    // Mirrors real-world pattern: template literal Basic auth + api.requestJira
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api, { route } from '@forge/api';
+        import { requestJira } from '@forge/bridge';
+
+        async function App() {
+            let encodedCredentials = process.env.API_TOKEN;
+            const response = await requestJira(route`/rest/api/latest/group/user`, {
+                method: 'DELETE',
+                headers: {
+                    Authorization: `Basic ${encodedCredentials}`,
+                },
+            });
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(1));
+    assert!(scan_result.contains_secret_vuln(0));
+}
+
+#[test]
+fn basic_auth_request_confluence_named_import_forge_api() {
+    // import { requestConfluence } from '@forge/api'; with template literal Basic auth
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { requestConfluence, route } from '@forge/api';
+
+        async function App() {
+            let token = process.env.API_TOKEN;
+            const response = await requestConfluence(route`/wiki/rest/api/user/current`, {
+                headers: {
+                    Accept: 'application/json',
+                    Authorization: `Basic ${token}`,
+                },
+            });
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(1));
+    assert!(scan_result.contains_secret_vuln(0));
+}
+
+#[test]
 // Disabling test due to SSA Form fix changes.
 fn secret_vuln_fetch_header_reassigned() {
     let test_forge_project = MockForgeProject::files_from_string(

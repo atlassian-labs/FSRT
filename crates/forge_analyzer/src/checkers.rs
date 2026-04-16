@@ -1026,11 +1026,19 @@ impl<'cx> Runner<'cx> for SecretChecker {
                     }
                 }
             }
-            Intrinsic::Fetch => {
+            Intrinsic::Fetch | Intrinsic::ApiCall(_) | Intrinsic::SafeCall(_) => {
+                let ops = operands.unwrap_or_default();
+                // For platform API shims with >2 operands (e.g. requestGraph),
+                // the options object is at index 2; otherwise index 1.
+                let opts_index = if !matches!(intrinsic, Intrinsic::Fetch) && ops.len() > 2 {
+                    2
+                } else {
+                    1
+                };
                 if let Some(Operand::Var(Variable {
                     base: Base::Var(varid),
                     ..
-                })) = operands.unwrap_or_default().get(1)
+                })) = ops.get(opts_index)
                 {
                     let varid_argument =
                         if let Some(Value::Object(varid)) = interp.get_value(def, *varid, None) {
@@ -1306,29 +1314,47 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        if let Intrinsic::Fetch = intrinsic {
+        // Determine if this is a fetch-like or platform API intrinsic.
+        // Platform API shims (requestJira, requestConfluence, etc.) are always
+        // Atlassian calls, so the api.atlassian.com URL check is skipped.
+        let is_platform_api = matches!(
+            intrinsic,
+            Intrinsic::ApiCall(_) | Intrinsic::SafeCall(_)
+        );
+        let is_fetch = matches!(intrinsic, Intrinsic::Fetch);
+
+        if is_fetch || is_platform_api {
             let ops = operands.unwrap_or_default();
 
-            let url_str: Option<String> = match ops.first() {
-                Some(Operand::Var(Variable {
-                    base: Base::Var(varid),
-                    ..
-                })) => match interp.get_value(def, *varid, None) {
-                    Some(Value::Const(Const::Literal(s))) => Some(s.clone()),
-                    Some(Value::Phi(phi)) => phi
-                        .iter()
-                        .map(|Const::Literal(s)| s.clone())
-                        .next(),
+            // For platform API shims, the options argument may be at a different
+            // operand index (e.g. requestGraph takes (query, variables, options)).
+            // For Fetch and most request* shims, options is at index 1.
+            let opts_index = if is_platform_api && ops.len() > 2 { 2 } else { 1 };
+
+            // Resolve URL from operand 0 (only meaningful for Fetch)
+            let url_str: Option<String> = if is_fetch {
+                match ops.first() {
+                    Some(Operand::Var(Variable {
+                        base: Base::Var(varid),
+                        ..
+                    })) => match interp.get_value(def, *varid, None) {
+                        Some(Value::Const(Const::Literal(s))) => Some(s.clone()),
+                        Some(Value::Phi(phi)) => {
+                            phi.iter().map(|Const::Literal(s)| s.clone()).next()
+                        }
+                        _ => None,
+                    },
+                    Some(Operand::Lit(lit)) => convert_lit_to_raw(lit),
                     _ => None,
-                },
-                Some(Operand::Lit(lit)) => convert_lit_to_raw(lit),
-                _ => None,
+                }
+            } else {
+                None
             };
 
             if let Some(Operand::Var(Variable {
                 base: Base::Var(varid),
                 ..
-            })) = ops.get(1)
+            })) = ops.get(opts_index)
             {
                 let varid_argument =
                     if let Some(Value::Object(varid)) = interp.get_value(def, *varid, None) {
@@ -1350,19 +1376,21 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
 
                     let auth_str = match auth_val {
                         Some(Value::Const(Const::Literal(s))) => Some(s.as_str()),
-                        Some(Value::Phi(phi)) => phi
-                            .iter()
-                            .map(|Const::Literal(s)| s.as_str())
-                            .next(),
+                        Some(Value::Phi(phi)) => {
+                            phi.iter().map(|Const::Literal(s)| s.as_str()).next()
+                        }
                         _ => None,
                     };
 
                     if let Some(auth) = auth_str {
                         if is_basic_auth_concat_prefix(auth) {
-                            let is_atlassian_url = url_str
-                                .as_deref()
-                                .is_some_and(|s| s.contains("api.atlassian.com"));
-                            if is_atlassian_url {
+                            // For platform API shims, skip the api.atlassian.com check —
+                            // they are always Atlassian API calls.
+                            let should_flag = is_platform_api
+                                || url_str
+                                    .as_deref()
+                                    .is_some_and(|s| s.contains("api.atlassian.com"));
+                            if should_flag {
                                 self.vulns.push(AuthHeaderVuln::new(
                                     AuthHeaderVulnKind::BasicAuth,
                                     interp.callstack(),
@@ -1370,11 +1398,13 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                                     interp.entry(),
                                 ));
                             }
-                        } else if is_bearer_prefix(auth) {
-                            let is_admin_url = url_str.as_deref().is_some_and(|s| {
+                        } else if is_fetch && is_bearer_prefix(auth) {
+                            // BearerAdmin is only checked for fetch / api.fetch,
+                            // not for platform API shims.
+                            let should_flag = url_str.as_deref().is_some_and(|s| {
                                 s.contains("api.atlassian.com") && s.contains("admin")
                             });
-                            if is_admin_url {
+                            if should_flag {
                                 self.vulns.push(AuthHeaderVuln::new(
                                     AuthHeaderVulnKind::BearerAdmin,
                                     interp.callstack(),

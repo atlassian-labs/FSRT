@@ -1065,6 +1065,8 @@ impl FunctionAnalyzer<'_> {
                 })
             } else if *last == "requestBitbucket" {
                 IntrinsicName::RequestBitbucket
+            } else if *last == "requestGraph" {
+                IntrinsicName::Other
             } else {
                 IntrinsicName::RequestConfluence
             };
@@ -1097,7 +1099,9 @@ impl FunctionAnalyzer<'_> {
         }
 
         match *callee {
-            [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
+            [PropPath::Unknown((ref name, ..))] if *name == *"fetch" || *name == *"forgeFetch" => {
+                Some(Intrinsic::Fetch)
+            }
             [
                 PropPath::Expr(ref n @ Some(ref expr)),
                 PropPath::Static(ref last),
@@ -1116,7 +1120,8 @@ impl FunctionAnalyzer<'_> {
                 PropPath::Static(ref last),
             ] if ((*last == *"requestJira"
                 || *last == *"requestConfluence"
-                || *last == *"requestBitbucket")
+                || *last == *"requestBitbucket"
+                || *last == *"requestGraph")
                 && Some(&ImportKind::Default) == self.res.is_imported_from(def, "@forge/api"))
                 || self.res.is_imported_from(def, "@forge/api").is_some_and(
                     |imp| matches!(imp, ImportKind::Named(s) if *s == *"asApp" || *s == *"asUser"),
@@ -1145,7 +1150,7 @@ impl FunctionAnalyzer<'_> {
             }
             [PropPath::Def(def), PropPath::Static(ref method), ..]
             | [PropPath::Def(def), PropPath::MemberCall(ref method), ..]
-                if *method == *"fetch"
+                if (*method == *"fetch" || *method == *"forgeFetch")
                     && self
                         .res
                         .is_imported_from(def, "@forge/api")
@@ -1160,8 +1165,28 @@ impl FunctionAnalyzer<'_> {
                 {
                     if *name == *"authorize" {
                         return Some(Intrinsic::Authorize(IntrinsicName::Other));
-                    } else if *name == *"fetch" {
+                    } else if *name == *"fetch" || *name == *"forgeFetch" {
                         return Some(Intrinsic::Fetch);
+                    } else if *name == *"requestJira"
+                        || *name == *"requestConfluence"
+                        || *name == *"requestBitbucket"
+                    {
+                        let method_name: Atom = name.clone();
+                        return get_intrinsic(first_arg, false, &method_name);
+                    }
+                }
+                None
+            }
+            // Direct calls to requestJira/requestConfluence/requestBitbucket imported from @forge/bridge
+            // e.g. import { requestJira } from '@forge/bridge'; requestJira(route`/rest/api/3/issue`, opts)
+            [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/bridge").is_some() => {
+                if let Some(ImportKind::Named(name)) = self.res.is_imported_from(def, "@forge/bridge") {
+                    if *name == *"requestJira"
+                        || *name == *"requestConfluence"
+                        || *name == *"requestBitbucket"
+                    {
+                        let method_name: Atom = name.clone();
+                        return get_intrinsic(first_arg, false, &method_name);
                     }
                 }
                 None
