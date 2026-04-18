@@ -1234,15 +1234,17 @@ impl FunctionAnalyzer<'_> {
             }
             // Direct calls to requestJira/requestConfluence/requestBitbucket imported from @forge/bridge
             // e.g. import { requestJira } from '@forge/bridge'; requestJira(route`/rest/api/3/issue`, opts)
-            [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/bridge").is_some() => {
-                if let Some(ImportKind::Named(name)) = self.res.is_imported_from(def, "@forge/bridge") {
-                    if *name == *"requestJira"
+            [PropPath::Def(def), ..]
+                if self.res.is_imported_from(def, "@forge/bridge").is_some() =>
+            {
+                if let Some(ImportKind::Named(name)) =
+                    self.res.is_imported_from(def, "@forge/bridge")
+                    && (*name == *"requestJira"
                         || *name == *"requestConfluence"
-                        || *name == *"requestBitbucket"
-                    {
-                        let method_name: Atom = name.clone();
-                        return get_intrinsic(first_arg, false, &method_name);
-                    }
+                        || *name == *"requestBitbucket")
+                {
+                    let method_name: Atom = name.clone();
+                    return get_intrinsic(first_arg, false, &method_name);
                 }
                 None
             }
@@ -1521,12 +1523,14 @@ impl FunctionAnalyzer<'_> {
                 || calls_method(callee, "filter")
                 || calls_method(callee, "catch"))
                 && let [ExprOrSpread { expr, .. }] = args {
-                    if let CalleeRef::Expr(Expr::Member(mem)) = callee {
-                        if let Expr::Call(inner_call) = &*mem.obj {
-                            let inner_callee = inner_call.callee.as_expr()
-                                .map_or(CalleeRef::Import, |e| CalleeRef::Expr(e));
-                            self.lower_call(inner_callee, &inner_call.args);
-                        }
+                    if let CalleeRef::Expr(Expr::Member(mem)) = callee
+                        && let Expr::Call(inner_call) = &*mem.obj
+                    {
+                        let inner_callee = inner_call
+                            .callee
+                            .as_expr()
+                            .map_or(CalleeRef::Import, |e| CalleeRef::Expr(e));
+                        self.lower_call(inner_callee, &inner_call.args);
                     }
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, .. }) => match &**body {
@@ -3798,10 +3802,9 @@ impl Visit for ReExportLinker<'_> {
                     let exported_name = named
                         .exported
                         .as_ref()
-                        .map_or_else(|| orig_name.clone(), |e| export_name_to_jsword(e));
+                        .map_or_else(|| orig_name.clone(), export_name_to_jsword);
 
-                    let Some(def_id) = self.env.resolve_local_export(source_mod, &orig_name)
-                    else {
+                    let Some(def_id) = self.env.resolve_local_export(source_mod, &orig_name) else {
                         continue;
                     };
 

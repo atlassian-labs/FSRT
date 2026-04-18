@@ -665,8 +665,8 @@ pub(crate) fn scan_directory<'a>(
     // manifest entry points. This is primarily useful for finding issues in helper
     // functions and class methods that are present in the codebase but not on an
     // entry-point-reachable call chain.
-    let scan_functions = opts.scan_functions
-        || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
+    let scan_functions =
+        opts.scan_functions || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
     if scan_functions {
         let mut full_scan_checker = AuthHeaderChecker::new();
         let all_functions = proj.env.get_all_functions_and_closures();

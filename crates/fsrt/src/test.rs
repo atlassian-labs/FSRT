@@ -62,10 +62,7 @@ impl ReportExt for Report {
     fn contains_bearer_admin_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
             .iter()
-            .filter(|vuln| {
-                vuln.check_name()
-                    .starts_with("Custom-Check-Bearer-Admin-")
-            })
+            .filter(|vuln| vuln.check_name().starts_with("Custom-Check-Bearer-Admin-"))
             .count()
             == expected_len
     }
@@ -2535,9 +2532,7 @@ mod is_atlassian_url_tests {
         // `baseUrl` substituted to empty -> bare relative path that doesn't
         // match any known Atlassian product path pattern.
         assert!(
-            !is_atlassian_url(
-                "/rest/workflowDesigner/latest/workflows?name=foo&draft=false"
-            ),
+            !is_atlassian_url("/rest/workflowDesigner/latest/workflows?name=foo&draft=false"),
             "raw /rest/workflowDesigner/... is not in our Atlassian path allowlist",
         );
 

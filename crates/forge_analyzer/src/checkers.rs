@@ -1204,10 +1204,7 @@ impl IntoVuln for AuthHeaderVuln {
                     self.entry_func, self.file
                 ),
                 recommendation: "Avoid using admin API tokens in Forge apps. Prefer scoped OAuth tokens or Forge-native APIs.",
-                proof: format!(
-                    "Bearer token on admin API fetch found via {}",
-                    self.stack
-                ),
+                proof: format!("Bearer token on admin API fetch found via {}", self.stack),
                 severity: Severity::High,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
@@ -1471,10 +1468,7 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
         // Determine if this is a fetch-like or platform API intrinsic.
         // Platform API shims (requestJira, requestConfluence, etc.) are always
         // Atlassian calls, so the api.atlassian.com URL check is skipped.
-        let is_platform_api = matches!(
-            intrinsic,
-            Intrinsic::ApiCall(_) | Intrinsic::SafeCall(_)
-        );
+        let is_platform_api = matches!(intrinsic, Intrinsic::ApiCall(_) | Intrinsic::SafeCall(_));
         let is_fetch = matches!(intrinsic, Intrinsic::Fetch);
 
         if is_fetch || is_platform_api {
@@ -1483,7 +1477,11 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
             // For platform API shims, the options argument may be at a different
             // operand index (e.g. requestGraph takes (query, variables, options)).
             // For Fetch and most request* shims, options is at index 1.
-            let opts_index = if is_platform_api && ops.len() > 2 { 2 } else { 1 };
+            let opts_index = if is_platform_api && ops.len() > 2 {
+                2
+            } else {
+                1
+            };
 
             // Resolve URL from operand 0 (only meaningful for Fetch)
             let url_str: Option<String> = if is_fetch {
@@ -1524,9 +1522,7 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                     let aut_proj_lower = projvec_from_str("authorization");
                     let auth_val = interp
                         .get_value(def, *varid, Some(auth_proj.clone()))
-                        .or_else(|| {
-                            interp.get_value(def, *varid, Some(aut_proj_lower.clone()))
-                        });
+                        .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower.clone())));
 
                     let auth_str = match auth_val {
                         Some(Value::Const(Const::Literal(s))) => Some(s.as_str()),
@@ -1544,10 +1540,8 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                             // the URL using is_atlassian_url, which handles full URLs,
                             // templated/empty-substituted relative paths, and known
                             // Atlassian product REST path patterns.
-                            let should_flag = is_platform_api
-                                || url_str
-                                    .as_deref()
-                                    .is_some_and(is_atlassian_url);
+                            let should_flag =
+                                is_platform_api || url_str.as_deref().is_some_and(is_atlassian_url);
                             if should_flag {
                                 self.vulns.push(AuthHeaderVuln::new(
                                     AuthHeaderVulnKind::BasicAuth,
