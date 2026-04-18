@@ -1311,6 +1311,149 @@ impl AuthHeaderChecker {
     }
 }
 
+/// Atlassian-owned host suffixes used by [`is_atlassian_url`].
+///
+/// Mirrors the `ATLASSIAN_HOST_SUFFIXES` list from `split_atlassian_urls.py`.
+/// A host is considered Atlassian if it equals one of these suffixes or ends
+/// with `"." + suffix` (dot-boundary match) — so "evil.atlassian.net.attacker.com"
+/// is NOT considered Atlassian, but "tenant.atlassian.net" is.
+const ATLASSIAN_HOST_SUFFIXES: &[&str] = &[
+    "atlassian.net",
+    "atlassian.com",
+    "jira-dev.com",
+    "atl-paas.net",
+    "bitbucket.org",
+    "trello.com",
+    "statuspage.io",
+    "opsgenie.com",
+    "loom.com",
+    "halp.com",
+    "mindville.com",
+];
+
+/// Returns `true` if `url_lower` starts with `://` followed by an Atlassian-owned
+/// host suffix (with optional leading dot for templated/redacted subdomains).
+/// `url_lower` is expected to be already lowercased.
+fn url_starts_with_atlassian_suffix(url_lower: &str) -> bool {
+    for suffix in ATLASSIAN_HOST_SUFFIXES {
+        // Mirrors the redacted-subdomain handling in split_atlassian_urls.py
+        // (e.g. "https://.atlassian.net/..." or "https://atlassian.net/...").
+        if url_lower.contains(&format!("://{}", suffix))
+            || url_lower.contains(&format!("://.{}", suffix))
+            || url_lower.contains(&format!(".{}/", suffix))
+            || url_lower.contains(&format!(".{}:", suffix))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns `true` iff `host` ends with a recognized Atlassian-owned domain.
+/// Suffix-anchored on a dot boundary, mirroring `_host_is_atlassian` in
+/// `split_atlassian_urls.py`.
+fn host_is_atlassian(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    for suffix in ATLASSIAN_HOST_SUFFIXES {
+        if host == *suffix || host.ends_with(&format!(".{}", suffix)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Cached compiled regex for `https?://(host)`. Mirrors `_URL_HOST_RE` in
+/// `split_atlassian_urls.py`.
+fn url_host_re() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)^\s*https?://([^/\s?#:]*)").unwrap())
+}
+
+/// Cached compiled regex matching Atlassian product REST API path patterns.
+/// Mirrors `_ATLASSIAN_PATH_RE` in `split_atlassian_urls.py`.
+fn atlassian_path_re() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        // Note: leading `/` is optional to tolerate URLs whose `${baseUrl}`
+        // template substitution resolved to an empty string, producing strings
+        // like "//rest/api/3/issue" or "rest/api/3/issue".
+        Regex::new(
+            r"(?ix)
+              (^|[^A-Za-z0-9_])
+              /?(
+                  rest/api/(2|3|latest)/
+                | rest/agile/(1\.0|latest)/
+                | rest/servicedeskapi/
+                | rest/insight/1\.0/
+                | rest/forge/1\.0/
+                | rest/api/optics/
+                | rest/backup/1/
+                | wiki/(rest/api|api/v2)/
+                | ex/(jira|confluence)/
+                | gateway/api/(graphql|jsm|public/teams|adf)
+                | jsm/(assets|csm|ops)/
+                | admin/v[12]/orgs/
+                | _edge/tenant_info
+              )",
+        )
+        .unwrap()
+    })
+}
+
+/// Returns `true` if `url` (a full URL or a relative path) targets an Atlassian
+/// product endpoint.
+///
+/// This is a port of the `is_atlassian_url` function from
+/// `split_atlassian_urls.py`. The two checks performed here are:
+///
+/// 1. **Full http(s) URL**: parse the host. If the host suffix-matches one of
+///    [`ATLASSIAN_HOST_SUFFIXES`], the URL is Atlassian. Templated/redacted
+///    subdomains (e.g. `https://.atlassian.net/...`, `https:///rest/...`) are
+///    also handled — the latter falls through to the path check below.
+/// 2. **Relative path / no host**: if the path matches a known Atlassian
+///    product REST API pattern (e.g. `/rest/api/3/...`, `/wiki/api/v2/...`,
+///    `/gateway/api/jsm/...`), it is Atlassian.
+///
+/// Forge SDK markers (the third Python check) are not handled here because the
+/// `AuthHeaderChecker` already knows the intrinsic kind directly via
+/// `is_platform_api`, which short-circuits before this function is consulted.
+pub fn is_atlassian_url(url: &str) -> bool {
+    if url.is_empty() {
+        return false;
+    }
+
+    // 1) Full http(s) URL — try to parse a host.
+    if let Some(caps) = url_host_re().captures(url) {
+        let host = caps.get(1).map_or("", |m| m.as_str());
+        if host_is_atlassian(host) {
+            return true;
+        }
+        // Handle redacted/templated subdomains where the host begins with a
+        // literal dot, e.g. "https://.atlassian.net/...". The lowered substring
+        // check is ONLY applied when the host is empty or starts with a dot —
+        // otherwise a hostile host like "atlassian.net.attacker.com" would
+        // incorrectly match "://atlassian.net".
+        if host.is_empty() || host.starts_with('.') {
+            let lowered = url.to_ascii_lowercase();
+            if url_starts_with_atlassian_suffix(&lowered) {
+                return true;
+            }
+        }
+        // Special case: the host was completely stripped/templated, e.g.
+        // "https:///rest/api/3/myself". Fall through to the path check below.
+        // For an explicit non-Atlassian host, do NOT match on path alone.
+        if !host.is_empty() {
+            return false;
+        }
+    }
+
+    // 2) Relative path (or fully templated host) — check Atlassian product paths.
+    atlassian_path_re().is_match(url)
+}
+
 impl<'cx> Runner<'cx> for AuthHeaderChecker {
     type State = SecretState;
     type Dataflow = AuthHeaderDataflow;
@@ -1395,12 +1538,16 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
 
                     if let Some(auth) = auth_str {
                         if is_basic_auth_concat_prefix(auth) {
-                            // For platform API shims, skip the api.atlassian.com check —
-                            // they are always Atlassian API calls.
+                            // Platform API shims (requestJira/Confluence/Bitbucket/Graph,
+                            // forgeFetch) always target Atlassian APIs, so the URL check
+                            // is skipped for them. For bare fetch / api.fetch, classify
+                            // the URL using is_atlassian_url, which handles full URLs,
+                            // templated/empty-substituted relative paths, and known
+                            // Atlassian product REST path patterns.
                             let should_flag = is_platform_api
                                 || url_str
                                     .as_deref()
-                                    .is_some_and(|s| s.contains("api.atlassian.com"));
+                                    .is_some_and(is_atlassian_url);
                             if should_flag {
                                 self.vulns.push(AuthHeaderVuln::new(
                                     AuthHeaderVulnKind::BasicAuth,

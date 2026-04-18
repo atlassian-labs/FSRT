@@ -2368,3 +2368,209 @@ providers:
     assert!(scan_result.contains_secret_vuln(2));
     assert!(scan_result.contains_vulns(2));
 }
+
+// -----------------------------------------------------------------------------
+// Unit tests for `forge_analyzer::checkers::is_atlassian_url`.
+//
+// `is_atlassian_url` is the URL classifier used by `AuthHeaderChecker` to decide
+// whether sending an `Authorization: Basic ...` header is suspicious. These
+// cases mirror the curated list in `basic-auth-urls-sorted.atlassian.txt` and
+// the reference Python implementation in `split_atlassian_urls.py`. Every
+// example below should agree with the Python classifier's verdict.
+// -----------------------------------------------------------------------------
+#[cfg(test)]
+mod is_atlassian_url_tests {
+    use forge_analyzer::checkers::is_atlassian_url;
+
+    /// Atlassian-classified examples from `basic-auth-urls-sorted.atlassian.txt`.
+    /// All of these MUST be classified as Atlassian.
+    #[test]
+    fn full_urls_with_atlassian_hosts() {
+        let cases = [
+            "https://api.atlassian.com",
+            "https://api.atlassian.com/admin/v1/orgs",
+            "https://api.atlassian.com/admin/v1/orgs/",
+            "https://api.atlassian.com/admin/v1/orgs//directories",
+            "https://api.atlassian.com/jsm/assets/v1/imports/info",
+            "https://api.atlassian.com/jsm/csm/cloudid//api/v1/customer/details",
+            "https://api.atlassian.com/jsm/ops/integration/v2/alerts",
+            "https://api.atlassian.com/users//manage/api-tokens",
+            "https://api.atlassian.com/ex/jira//rest/api/3/instance/license",
+            "https://auth.atlassian.com/oauth/token",
+            "https://community.atlassian.com/forums/s/api/2.0/search?q=",
+            "https://marketplace.atlassian.com",
+            "https://marketplace.atlassian.com/gateway/api/graphql",
+            "https://marketplace.atlassian.com/rest/2/addons//versions/latest",
+            "https://deviniti.atlassian.net/rest/collectors/1.0/template/custom/d61ebf39",
+            "https://osci.atlassian.net/wiki/api/v2/pages//children",
+            "https://xdevpod.atlassian.net/rest/api/3/attachment/content/10117",
+            "https://xdevpod.atlassian.net/rest/api/3/search/jql",
+            "https://api.bitbucket.org/2.0/repositories//",
+            "https://api.bitbucket.org/2.0/snippets//",
+            "https://api.statuspage.io/v1/pages",
+            "https://api.statuspage.io/v1/pages//incidents/",
+        ];
+        for url in &cases {
+            assert!(
+                is_atlassian_url(url),
+                "expected Atlassian classification for: {url}"
+            );
+        }
+    }
+
+    /// Templated/redacted-subdomain URLs from the example file. The host is
+    /// either `.atlassian.net` (subdomain placeholder collapsed to a leading
+    /// dot) or completely empty (`https:///rest/...`).
+    #[test]
+    fn redacted_or_templated_subdomain_urls() {
+        let cases = [
+            "https://.atlassian.net/rest/api/2/user",
+            "https://.atlassian.net/rest/api/3/project",
+            "https://.statuspage.io/api/v2/summary.json",
+            "https:///rest/api/3/myself",
+            "https:///rest/api/3/user/search?query=",
+            "https:///wiki/rest/api/content/",
+            "https:///wiki/rest/api/content//move//",
+            "https:///wiki/rest/api/content//pagehierarchy/copy",
+            "https:///wiki/rest/api/content/search?cql=type=page+and+space=",
+            "https:///wiki/rest/api/longtask/",
+            "https:///wiki/rest/api/space",
+            "https:///wiki/rest/api/space/",
+            "https:///wiki/rest/api/space/?expand=homepage",
+        ];
+        for url in &cases {
+            assert!(
+                is_atlassian_url(url),
+                "expected Atlassian classification for: {url}"
+            );
+        }
+    }
+
+    /// Relative paths and `${baseUrl}`-substituted-to-empty paths that show
+    /// up in real Forge apps. These have no scheme/host and rely on the
+    /// Atlassian-product-path regex.
+    #[test]
+    fn relative_atlassian_paths() {
+        let cases = [
+            "/_edge/tenant_info",
+            "/admin/v1/orgs/",
+            "/admin/v1/orgs//groups/search",
+            "/admin/v2/orgs//workspaces",
+            "/ex/confluence//wiki/api/v2/footer-comments",
+            "/ex/confluence//wiki/api/v2/pages",
+            "/gateway/api/graphql",
+            "/gateway/api/jsm/assets/workspace//v1/object/aql?maxResults=&startAt=0",
+            "/gateway/api/jsm/assets/workspace//v1/objectschema/create",
+            "/gateway/api/public/teams/v1/org//teams/",
+            "/jsm/assets/v1/imports/info",
+            "/rest/api/2/filter/favourite?expand=jql",
+            "/rest/api/2/search",
+            "/rest/api/3/applicationrole",
+            "/rest/api/3/issue",
+            "/rest/api/3/myself",
+            "/rest/api/3/myself?expand=groups",
+            "/rest/api/latest/applicationrole/jira-software",
+            "/rest/api/optics/auth?hostname=",
+            "/rest/backup/1/export/getProgress?taskId=",
+            "/rest/backup/1/export/lastTaskId",
+            "/rest/backup/1/export/runbackup",
+            "/rest/forge/1.0/license",
+            "/rest/insight/1.0/object/navlist/aql",
+            "/rest/insight/1.0/objectschema/list?maxResults=&startAt=",
+            "/rest/servicedeskapi/assets/workspace",
+            "/wiki/api/v2/pages",
+            "/wiki/api/v2/spaces",
+            "/wiki/rest/api/template/page",
+            // `${baseUrl}` substituted to "" leaves a doubled leading slash.
+            "//rest/api/3/issue",
+            "//rest/api/3/issue/",
+            "//rest/api/3/issue//assignee",
+            "//rest/api/3/issue//comment",
+            "//rest/api/3/issue//transitions",
+            "//rest/api/3/project/search?action=create",
+        ];
+        for url in &cases {
+            assert!(
+                is_atlassian_url(url),
+                "expected Atlassian classification for: {url}"
+            );
+        }
+    }
+
+    /// Non-Atlassian URLs MUST NOT be classified as Atlassian, so the
+    /// `AuthHeaderChecker` still flags `Basic` auth sent to them.
+    #[test]
+    fn non_atlassian_urls_are_not_atlassian() {
+        let cases = [
+            // Customer-controlled or 3rd-party tenants.
+            "https://example.com/rest/api/3/issue",
+            "https://attacker.com/rest/api/3/myself",
+            "https://my.internal.corp/api/v1/whatever",
+            "http://localhost:8080/foo",
+            // Spoofy host endings — must NOT match suffix-without-dot.
+            "https://atlassian.net.attacker.com/rest/api/3/issue",
+            "https://evil-atlassian.com/rest/api/3/issue",
+            "https://fakeatlassian.com/rest/api/3/issue",
+            // Plain path that doesn't match any known Atlassian product.
+            "/api/v1/some-custom-path",
+            "/foo/bar/baz",
+            // Empty string must not be Atlassian.
+            "",
+        ];
+        for url in &cases {
+            assert!(
+                !is_atlassian_url(url),
+                "expected NON-Atlassian classification for: {url}"
+            );
+        }
+    }
+
+    /// Real customer URLs from the case studies that motivated this change:
+    /// `${baseUrl}/rest/workflowDesigner/...` (a customer's own Jira tenant
+    /// via `serverInfo.baseUrl`) is NOT a known Atlassian product path
+    /// pattern, so the relative-path arm should NOT match. But a full
+    /// `*.atlassian.net` URL with the same path SHOULD match by host.
+    #[test]
+    fn customer_baseurl_paths_via_workflowdesigner() {
+        // `baseUrl` substituted to empty -> bare relative path that doesn't
+        // match any known Atlassian product path pattern.
+        assert!(
+            !is_atlassian_url(
+                "/rest/workflowDesigner/latest/workflows?name=foo&draft=false"
+            ),
+            "raw /rest/workflowDesigner/... is not in our Atlassian path allowlist",
+        );
+
+        // Same path on a real Atlassian tenant URL — host-matched.
+        assert!(is_atlassian_url(
+            "https://example.atlassian.net/rest/workflowDesigner/latest/workflows?name=foo&draft=false"
+        ));
+    }
+
+    /// Mixed-case hosts and case-insensitive scheme.
+    #[test]
+    fn case_insensitive_classification() {
+        assert!(is_atlassian_url("HTTPS://API.ATLASSIAN.COM/admin/v1/orgs"));
+        assert!(is_atlassian_url(
+            "Https://Tenant.Atlassian.Net/rest/api/3/issue"
+        ));
+    }
+
+    /// Sanity: third-party SaaS endpoints (OpenAI, Azure cloudapp, etc.)
+    /// must NEVER be classified as Atlassian. These are the exact URLs that
+    /// surfaced during real-world CSV logging — they should be filtered out
+    /// of the temporary `FSRT_AUTH_URL_CSV` output.
+    #[test]
+    fn third_party_saas_urls_are_not_atlassian() {
+        let cases = [
+            "https://api.openai.com/v1/chat/completions",
+            "https://genai-playground.uksouth.cloudapp.azure.com/api/graphrag/transcribe-file",
+        ];
+        for url in &cases {
+            assert!(
+                !is_atlassian_url(url),
+                "expected NON-Atlassian classification for: {url}"
+            );
+        }
+    }
+}
