@@ -1400,6 +1400,85 @@ fn atlassian_path_re() -> &'static Regex {
     })
 }
 
+/// Cached compiled regex matching Atlassian admin-scoped REST API path
+/// patterns. A match indicates the request targets an administrative
+/// endpoint (org admin, SCIM provisioning, or per-user/per-org credential
+/// management routes).
+fn admin_path_re() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        // Each branch matches a known admin-scoped REST path. Leading "/" is
+        // optional so URLs whose `${baseUrl}` template substitution resolved
+        // to the empty string (producing "//admin/v1/orgs/..." etc.) still
+        // match, and a wildcard segment is encoded as `[^/]+` so it must be
+        // a non-empty path segment.
+        //
+        //   admin/v[12]/orgs/           — Atlassian Org admin REST
+        //   admin/control/v[12]/orgs    — Atlassian Org admin "control" REST
+        //   admin/user-provisioning/v1/org/
+        //                                — Atlassian user provisioning admin
+        //   scim/directory/<dir>/<endpoint>
+        //                                — SCIM directory admin endpoints
+        //                                  (Users, Groups, Schemas, etc.)
+        //   users/<id>/manage(/...)?     — per-user admin endpoints
+        //                                  (e.g. /users/<id>/manage/api-tokens)
+        //   orgs/<id>/classification-levels
+        //   orgs/<id>/api-tokens
+        //   orgs/<id>/service-accounts
+        //   orgs/<id>/api-keys
+        //                                — per-org credential / classification
+        //                                  admin endpoints
+        // Each alternative ends with a non-word boundary lookalike — either a
+        // literal "/" already required by the pattern, or a final segment
+        // followed by an end-of-segment marker `(?:[^A-Za-z0-9_-]|$)` so that
+        // e.g. "/admin/control/v1/orgs" matches but "/admin/control/v1/orgsfoo"
+        // does not. (We allow `-` and digits inside, since wildcard segments
+        // commonly contain them.)
+        Regex::new(
+            r"(?ix)
+              ( ^ | [^A-Za-z0-9_] )
+              /?
+              (
+                  admin/v[12]/orgs                               (?: [^A-Za-z0-9_-] | $ )
+                | admin/control/v[12]/orgs                       (?: [^A-Za-z0-9_-] | $ )
+                | admin/user-provisioning/v1/org                 (?: [^A-Za-z0-9_-] | $ )
+                | scim/directory/[^/]+/(ResourceTypes|Schemas|ServiceProviderConfig|Groups|Users)
+                                                                  (?: [^A-Za-z0-9_-] | $ )
+                | users/[^/]+/manage                              (?: [^A-Za-z0-9_-] | $ )
+                | orgs/[^/]+/(classification-levels|api-tokens|service-accounts|api-keys)
+                                                                  (?: [^A-Za-z0-9_-] | $ )
+              )",
+        )
+        .unwrap()
+    })
+}
+
+/// Returns `true` if `url` (full URL or relative path) targets a known
+/// admin-scoped Atlassian endpoint.
+///
+/// Matches the patterns in [`admin_path_re`]:
+/// - `admin/v1/orgs/...`, `admin/v2/orgs/...`
+/// - `admin/control/v[12]/orgs`
+/// - `admin/user-provisioning/v1/org/...`
+/// - `scim/directory/<dir>/{ResourceTypes,Schemas,ServiceProviderConfig,Groups,Users}`
+/// - `users/<accountId>/manage(/...)?`
+/// - `orgs/<orgId>/{classification-levels,api-tokens,service-accounts,api-keys}`
+///
+/// Each pattern is matched with an optional leading `/` and on a non-word
+/// boundary, so `${baseUrl}/admin/...`, `//admin/...`, and bare `admin/...`
+/// all match. A wildcard `*` segment is encoded as `[^/]+` (one or more
+/// non-slash characters).
+///
+/// Used by the `BearerAdmin` arm of `AuthHeaderChecker` so that admin-token
+/// leakage is flagged on any URL that matches one of these patterns,
+/// regardless of host.
+pub fn is_admin_path(url: &str) -> bool {
+    if url.is_empty() {
+        return false;
+    }
+    admin_path_re().is_match(url)
+}
+
 /// Returns `true` if `url` (a full URL or a relative path) targets an Atlassian
 /// product endpoint.
 ///
@@ -1553,8 +1632,18 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                         } else if is_fetch && is_bearer_prefix(auth) {
                             // BearerAdmin is only checked for fetch / api.fetch,
                             // not for platform API shims.
+                            //
+                            // Flag a Bearer-token call when EITHER:
+                            //   (a) the URL points at api.atlassian.com AND mentions
+                            //       "admin" (legacy heuristic), OR
+                            //   (b) the URL/path matches a known admin endpoint
+                            //       pattern (`/admin/v[12]/orgs/...`,
+                            //       `/users/<id>/manage/...`) — these are the
+                            //       admin-scoped routes that admin Bearer tokens
+                            //       actually leak through, regardless of host.
                             let should_flag = url_str.as_deref().is_some_and(|s| {
-                                s.contains("api.atlassian.com") && s.contains("admin")
+                                (s.contains("api.atlassian.com") && s.contains("admin"))
+                                    || is_admin_path(s)
                             });
                             if should_flag {
                                 self.vulns.push(AuthHeaderVuln::new(

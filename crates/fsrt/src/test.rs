@@ -2569,3 +2569,208 @@ mod is_atlassian_url_tests {
         }
     }
 }
+
+// -----------------------------------------------------------------------------
+// Unit tests for `forge_analyzer::checkers::is_admin_path`.
+//
+// `is_admin_path` is the admin-endpoint URL classifier used by the BearerAdmin
+// arm of `AuthHeaderChecker`. Bearer auth on a URL/path that matches one of
+// these admin-scoped patterns is suspicious regardless of host — admin
+// Bearer tokens routinely leak through `/admin/v1/orgs/...`,
+// `/admin/v2/orgs/...`, and `/users/<id>/manage/...` endpoints.
+// -----------------------------------------------------------------------------
+#[cfg(test)]
+mod is_admin_path_tests {
+    use forge_analyzer::checkers::is_admin_path;
+
+    /// `admin/v[12]/orgs/...` — Org admin REST API.
+    #[test]
+    fn admin_v1_orgs_paths() {
+        let cases = [
+            "/admin/v1/orgs/",
+            "/admin/v1/orgs/abc-123",
+            "/admin/v1/orgs/abc-123/groups/search",
+            "/admin/v1/orgs//directories",
+            "https://api.atlassian.com/admin/v1/orgs",
+            "https://api.atlassian.com/admin/v1/orgs/",
+            "https://api.atlassian.com/admin/v1/orgs/123",
+            "//admin/v1/orgs/abc-123/users", // empty `${baseUrl}` => doubled slash
+            "admin/v1/orgs/abc-123/policies",
+        ];
+        for url in &cases {
+            assert!(
+                is_admin_path(url),
+                "expected admin-path classification for: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn admin_v2_orgs_paths() {
+        let cases = [
+            "/admin/v2/orgs/",
+            "/admin/v2/orgs//workspaces",
+            "/admin/v2/orgs/abc-123/workspaces",
+            "https://api.atlassian.com/admin/v2/orgs/abc-123",
+            "//admin/v2/orgs/abc-123",
+        ];
+        for url in &cases {
+            assert!(
+                is_admin_path(url),
+                "expected admin-path classification for: {url}"
+            );
+        }
+    }
+
+    /// `admin/control/v[12]/orgs(/...)?` — Org admin "control" REST API.
+    #[test]
+    fn admin_control_orgs_paths() {
+        let cases = [
+            "/admin/control/v1/orgs",
+            "/admin/control/v1/orgs/",
+            "/admin/control/v1/orgs/abc-123",
+            "/admin/control/v2/orgs",
+            "/admin/control/v2/orgs/abc-123/policies",
+            "https://api.atlassian.com/admin/control/v1/orgs",
+            "//admin/control/v2/orgs/abc-123",
+            "admin/control/v1/orgs",
+        ];
+        for url in &cases {
+            assert!(
+                is_admin_path(url),
+                "expected admin-path classification for: {url}"
+            );
+        }
+    }
+
+    /// `admin/user-provisioning/v1/org/...` — User provisioning admin.
+    #[test]
+    fn admin_user_provisioning_paths() {
+        let cases = [
+            "/admin/user-provisioning/v1/org/",
+            "/admin/user-provisioning/v1/org/abc-123",
+            "/admin/user-provisioning/v1/org/abc-123/users",
+            "https://api.atlassian.com/admin/user-provisioning/v1/org/abc-123",
+            "//admin/user-provisioning/v1/org/abc-123",
+        ];
+        for url in &cases {
+            assert!(
+                is_admin_path(url),
+                "expected admin-path classification for: {url}"
+            );
+        }
+    }
+
+    /// `scim/directory/<dir>/{ResourceTypes,Schemas,ServiceProviderConfig,
+    /// Groups,Users}` — SCIM directory admin endpoints.
+    #[test]
+    fn scim_directory_paths() {
+        let cases = [
+            "/scim/directory/abc-123/ResourceTypes",
+            "/scim/directory/abc-123/Schemas",
+            "/scim/directory/abc-123/ServiceProviderConfig",
+            "/scim/directory/abc-123/Groups",
+            "/scim/directory/abc-123/Users",
+            "/scim/directory/abc-123/Users/xyz-789",
+            "/scim/directory/abc-123/Groups/xyz-789",
+            "https://api.atlassian.com/scim/directory/abc-123/Users",
+            "//scim/directory/abc-123/Users",
+            "scim/directory/abc-123/Users",
+        ];
+        for url in &cases {
+            assert!(
+                is_admin_path(url),
+                "expected admin-path classification for: {url}"
+            );
+        }
+    }
+
+    /// `users/<accountId>/manage(/...)?` — per-user admin endpoints.
+    #[test]
+    fn users_manage_paths() {
+        let cases = [
+            "/users/abc-123/manage",
+            "/users/abc-123/manage/",
+            "/users/abc-123/manage/api-tokens",
+            "/users/abc-123/manage/profile",
+            "https://api.atlassian.com/users/abc-123/manage/api-tokens",
+            "//users/abc-123/manage/api-tokens",
+            "users/abc-123/manage/api-tokens",
+        ];
+        for url in &cases {
+            assert!(
+                is_admin_path(url),
+                "expected admin-path classification for: {url}"
+            );
+        }
+    }
+
+    /// `orgs/<orgId>/{classification-levels,api-tokens,service-accounts,
+    /// api-keys}` — per-org credential / classification admin endpoints.
+    #[test]
+    fn orgs_admin_credential_paths() {
+        let cases = [
+            "/orgs/abc-123/classification-levels",
+            "/orgs/abc-123/classification-levels/",
+            "/orgs/abc-123/classification-levels/xyz",
+            "/orgs/abc-123/api-tokens",
+            "/orgs/abc-123/api-tokens/xyz",
+            "/orgs/abc-123/service-accounts",
+            "/orgs/abc-123/service-accounts/xyz",
+            "/orgs/abc-123/api-keys",
+            "/orgs/abc-123/api-keys/xyz",
+            "https://api.atlassian.com/orgs/abc-123/api-tokens",
+            "//orgs/abc-123/api-tokens",
+            "orgs/abc-123/api-tokens",
+        ];
+        for url in &cases {
+            assert!(
+                is_admin_path(url),
+                "expected admin-path classification for: {url}"
+            );
+        }
+    }
+
+    /// Non-admin URLs MUST NOT be classified as admin paths.
+    #[test]
+    fn non_admin_urls_are_not_admin_paths() {
+        let cases = [
+            // Empty
+            "",
+            // Plain Atlassian non-admin endpoints
+            "/rest/api/3/issue",
+            "/rest/api/3/myself",
+            "/wiki/api/v2/pages",
+            "https://api.atlassian.com/jsm/assets/v1/imports/info",
+            // Lookalikes that should NOT match
+            "/admin/v3/orgs/",                  // wrong version (only v1/v2)
+            "/admin/v1/users/abc-123",          // not /admin/v[12]/orgs/
+            "/admin/control/v3/orgs",           // wrong version
+            "/admin/control/v1/orgsfoo",        // segment must end at "orgs"
+            "/admin/user-provisioning/v2/org/", // wrong version (only v1)
+            "/users/manage/api-tokens",         // missing user-id segment
+            "/users/abc-123/managefoo",         // segment must end at "manage"
+            "/orgs/abc-123/api-tokensfoo",      // segment must end exactly
+            "/orgs/abc-123/other-thing",        // not in the credential list
+            "/scim/directory/abc-123/Other",    // not a known SCIM endpoint
+            // Customer-controlled
+            "https://example.com/rest/api/3/issue",
+        ];
+        for url in &cases {
+            assert!(
+                !is_admin_path(url),
+                "expected NON-admin-path classification for: {url}"
+            );
+        }
+    }
+
+    /// Case-insensitive matching.
+    #[test]
+    fn case_insensitive_admin_path_classification() {
+        assert!(is_admin_path("/Admin/V1/Orgs/abc-123"));
+        assert!(is_admin_path("/USERS/abc-123/MANAGE/api-tokens"));
+        assert!(is_admin_path("HTTPS://API.ATLASSIAN.COM/ADMIN/V2/ORGS/"));
+        assert!(is_admin_path("/Scim/Directory/abc/Users"));
+        assert!(is_admin_path("/Orgs/abc/Api-Tokens"));
+    }
+}
