@@ -80,6 +80,7 @@ pub enum Value {
     Unknown,
     Object(VarId),
     Const(Const),
+    PartialConst(Const),
     Phi(Vec<Const>),
 }
 
@@ -4534,7 +4535,11 @@ impl PartialEq<str> for Value {
         match self {
             Self::Const(Const::Literal(s)) => **s == *other,
             Self::Phi(v) if !v.is_empty() => v.iter().all(|x| *x == *other),
-            Self::Uninit | Self::Unknown | Self::Object(_) | Self::Phi(_) => false,
+            Self::Uninit
+            | Self::Unknown
+            | Self::Object(_)
+            | Self::Phi(_)
+            | Self::PartialConst(_) => false,
         }
     }
 }

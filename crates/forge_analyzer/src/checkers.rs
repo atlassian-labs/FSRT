@@ -1057,18 +1057,7 @@ impl<'cx> Runner<'cx> for SecretChecker {
                             .or_else(|| {
                                 interp.get_value(def, *varid, Some(aut_proj_lower.clone()))
                             });
-                        let is_auth_scheme_prefix = match auth_val {
-                            Some(Value::Const(Const::Literal(s))) => {
-                                is_basic_auth_concat_prefix(s) || is_bearer_prefix(s)
-                            }
-                            Some(Value::Phi(phi)) => phi.iter().any(|c| {
-                                matches!(c, Const::Literal(s) if is_basic_auth_concat_prefix(s) || is_bearer_prefix(s))
-                            }),
-                            _ => false,
-                        };
-                        if matches!(auth_val, Some(Value::Const(_) | Value::Phi(_)))
-                            && !is_auth_scheme_prefix
-                        {
+                        if matches!(auth_val, Some(Value::Const(_) | Value::Phi(_))) {
                             let vuln =
                                 SecretVuln::new(interp.callstack(), interp.env(), interp.entry());
                             info!("Found a vuln!");
@@ -1570,6 +1559,7 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                         ..
                     })) => match interp.get_value(def, *varid, None) {
                         Some(Value::Const(Const::Literal(s))) => Some(s.clone()),
+                        Some(Value::PartialConst(Const::Literal(s))) => Some(s.clone()),
                         Some(Value::Phi(phi)) => {
                             phi.iter().map(|Const::Literal(s)| s.clone()).next()
                         }
@@ -1605,6 +1595,7 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
 
                     let auth_str = match auth_val {
                         Some(Value::Const(Const::Literal(s))) => Some(s.as_str()),
+                        Some(Value::PartialConst(Const::Literal(s))) => Some(s.as_str()),
                         Some(Value::Phi(phi)) => {
                             phi.iter().map(|Const::Literal(s)| s.as_str()).next()
                         }
