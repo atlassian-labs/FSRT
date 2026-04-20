@@ -1287,12 +1287,6 @@ impl AuthHeaderChecker {
     }
 }
 
-/// Atlassian-owned host suffixes used by [`is_atlassian_url`].
-///
-/// Mirrors the `ATLASSIAN_HOST_SUFFIXES` list from `split_atlassian_urls.py`.
-/// A host is considered Atlassian if it equals one of these suffixes or ends
-/// with `"." + suffix` (dot-boundary match) — so "evil.atlassian.net.attacker.com"
-/// is NOT considered Atlassian, but "tenant.atlassian.net" is.
 const ATLASSIAN_HOST_SUFFIXES: &[&str] = &[
     "atlassian.net",
     "atlassian.com",
@@ -1307,55 +1301,26 @@ const ATLASSIAN_HOST_SUFFIXES: &[&str] = &[
     "mindville.com",
 ];
 
-/// Returns `true` if `url_lower` starts with `://` followed by an Atlassian-owned
-/// host suffix (with optional leading dot for templated/redacted subdomains).
-/// `url_lower` is expected to be already lowercased.
-fn url_starts_with_atlassian_suffix(url_lower: &str) -> bool {
-    for suffix in ATLASSIAN_HOST_SUFFIXES {
-        // Mirrors the redacted-subdomain handling in split_atlassian_urls.py
-        // (e.g. "https://.atlassian.net/..." or "https://atlassian.net/...").
-        if url_lower.contains(&format!("://{}", suffix))
-            || url_lower.contains(&format!("://.{}", suffix))
-            || url_lower.contains(&format!(".{}/", suffix))
-            || url_lower.contains(&format!(".{}:", suffix))
-        {
-            return true;
-        }
-    }
-    false
-}
-
-/// Returns `true` iff `host` ends with a recognized Atlassian-owned domain.
-/// Suffix-anchored on a dot boundary, mirroring `_host_is_atlassian` in
-/// `split_atlassian_urls.py`.
 fn host_is_atlassian(host: &str) -> bool {
     let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if host.is_empty() {
-        return false;
-    }
-    for suffix in ATLASSIAN_HOST_SUFFIXES {
-        if host == *suffix || host.ends_with(&format!(".{}", suffix)) {
-            return true;
-        }
-    }
-    false
+    ATLASSIAN_HOST_SUFFIXES.iter().any(|&suffix| {
+        host == suffix
+            || host
+                .strip_suffix(suffix)
+                .is_some_and(|rest| rest.ends_with('.'))
+    })
 }
 
-/// Cached compiled regex for `https?://(host)`. Mirrors `_URL_HOST_RE` in
-/// `split_atlassian_urls.py`.
+/// Cached regex for extracting the host from an `http(s)://` URL.
 fn url_host_re() -> &'static Regex {
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?i)^\s*https?://([^/\s?#:]*)").unwrap())
 }
 
-/// Cached compiled regex matching Atlassian product REST API path patterns.
-/// Mirrors `_ATLASSIAN_PATH_RE` in `split_atlassian_urls.py`.
+/// Cached regex matching known Atlassian product REST API path prefixes.
 fn atlassian_path_re() -> &'static Regex {
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| {
-        // Note: leading `/` is optional to tolerate URLs whose `${baseUrl}`
-        // template substitution resolved to an empty string, producing strings
-        // like "//rest/api/3/issue" or "rest/api/3/issue".
         Regex::new(
             r"(?ix)
               (^|[^A-Za-z0-9_])
@@ -1379,40 +1344,10 @@ fn atlassian_path_re() -> &'static Regex {
     })
 }
 
-/// Cached compiled regex matching Atlassian admin-scoped REST API path
-/// patterns. A match indicates the request targets an administrative
-/// endpoint (org admin, SCIM provisioning, or per-user/per-org credential
-/// management routes).
+/// Cached regex matching Atlassian admin-scoped REST API path patterns.
 fn admin_path_re() -> &'static Regex {
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| {
-        // Each branch matches a known admin-scoped REST path. Leading "/" is
-        // optional so URLs whose `${baseUrl}` template substitution resolved
-        // to the empty string (producing "//admin/v1/orgs/..." etc.) still
-        // match, and a wildcard segment is encoded as `[^/]+` so it must be
-        // a non-empty path segment.
-        //
-        //   admin/v[12]/orgs/           — Atlassian Org admin REST
-        //   admin/control/v[12]/orgs    — Atlassian Org admin "control" REST
-        //   admin/user-provisioning/v1/org/
-        //                                — Atlassian user provisioning admin
-        //   scim/directory/<dir>/<endpoint>
-        //                                — SCIM directory admin endpoints
-        //                                  (Users, Groups, Schemas, etc.)
-        //   users/<id>/manage(/...)?     — per-user admin endpoints
-        //                                  (e.g. /users/<id>/manage/api-tokens)
-        //   orgs/<id>/classification-levels
-        //   orgs/<id>/api-tokens
-        //   orgs/<id>/service-accounts
-        //   orgs/<id>/api-keys
-        //                                — per-org credential / classification
-        //                                  admin endpoints
-        // Each alternative ends with a non-word boundary lookalike — either a
-        // literal "/" already required by the pattern, or a final segment
-        // followed by an end-of-segment marker `(?:[^A-Za-z0-9_-]|$)` so that
-        // e.g. "/admin/control/v1/orgs" matches but "/admin/control/v1/orgsfoo"
-        // does not. (We allow `-` and digits inside, since wildcard segments
-        // commonly contain them.)
         Regex::new(
             r"(?ix)
               ( ^ | [^A-Za-z0-9_] )
@@ -1432,80 +1367,32 @@ fn admin_path_re() -> &'static Regex {
     })
 }
 
-/// Returns `true` if `url` (full URL or relative path) targets a known
-/// admin-scoped Atlassian endpoint.
-///
-/// Matches the patterns in [`admin_path_re`]:
-/// - `admin/v1/orgs/...`, `admin/v2/orgs/...`
-/// - `admin/control/v[12]/orgs`
-/// - `admin/user-provisioning/v1/org/...`
-/// - `scim/directory/<dir>/{ResourceTypes,Schemas,ServiceProviderConfig,Groups,Users}`
-/// - `users/<accountId>/manage(/...)?`
-/// - `orgs/<orgId>/{classification-levels,api-tokens,service-accounts,api-keys}`
-///
-/// Each pattern is matched with an optional leading `/` and on a non-word
-/// boundary, so `${baseUrl}/admin/...`, `//admin/...`, and bare `admin/...`
-/// all match. A wildcard `*` segment is encoded as `[^/]+` (one or more
-/// non-slash characters).
-///
-/// Used by the `BearerAdmin` arm of `AuthHeaderChecker` so that admin-token
-/// leakage is flagged on any URL that matches one of these patterns,
-/// regardless of host.
 pub fn is_admin_path(url: &str) -> bool {
-    if url.is_empty() {
-        return false;
-    }
     admin_path_re().is_match(url)
 }
 
-/// Returns `true` if `url` (a full URL or a relative path) targets an Atlassian
+/// Returns `true` if `url` (full URL or relative path) targets an Atlassian
 /// product endpoint.
 ///
-/// This is a port of the `is_atlassian_url` function from
-/// `split_atlassian_urls.py`. The two checks performed here are:
-///
-/// 1. **Full http(s) URL**: parse the host. If the host suffix-matches one of
-///    [`ATLASSIAN_HOST_SUFFIXES`], the URL is Atlassian. Templated/redacted
-///    subdomains (e.g. `https://.atlassian.net/...`, `https:///rest/...`) are
-///    also handled — the latter falls through to the path check below.
-/// 2. **Relative path / no host**: if the path matches a known Atlassian
-///    product REST API pattern (e.g. `/rest/api/3/...`, `/wiki/api/v2/...`,
-///    `/gateway/api/jsm/...`), it is Atlassian.
-///
-/// Forge SDK markers (the third Python check) are not handled here because the
-/// `AuthHeaderChecker` already knows the intrinsic kind directly via
-/// `is_platform_api`, which short-circuits before this function is consulted.
+/// 1. **Full http(s) URL**: extracts the host and suffix-matches against
+///    [`ATLASSIAN_HOST_SUFFIXES`]. An empty host (e.g. `https:///rest/...`)
+///    falls through to the path check. A non-empty non-Atlassian host returns
+///    `false` immediately.
+/// 2. **Relative path / empty host**: matched against known Atlassian product
+///    REST API path patterns via [`atlassian_path_re`].
 pub fn is_atlassian_url(url: &str) -> bool {
     if url.is_empty() {
         return false;
     }
 
-    // 1) Full http(s) URL — try to parse a host.
     if let Some(caps) = url_host_re().captures(url) {
         let host = caps.get(1).map_or("", |m| m.as_str());
-        if host_is_atlassian(host) {
-            return true;
-        }
-        // Handle redacted/templated subdomains where the host begins with a
-        // literal dot, e.g. "https://.atlassian.net/...". The lowered substring
-        // check is ONLY applied when the host is empty or starts with a dot —
-        // otherwise a hostile host like "atlassian.net.attacker.com" would
-        // incorrectly match "://atlassian.net".
-        if host.is_empty() || host.starts_with('.') {
-            let lowered = url.to_ascii_lowercase();
-            if url_starts_with_atlassian_suffix(&lowered) {
-                return true;
-            }
-        }
-        // Special case: the host was completely stripped/templated, e.g.
-        // "https:///rest/api/3/myself". Fall through to the path check below.
-        // For an explicit non-Atlassian host, do NOT match on path alone.
         if !host.is_empty() {
-            return false;
+            return host_is_atlassian(host);
         }
+        // Empty host (e.g. `https:///rest/...`) — fall through to path check.
     }
 
-    // 2) Relative path (or fully templated host) — check Atlassian product paths.
     atlassian_path_re().is_match(url)
 }
 
