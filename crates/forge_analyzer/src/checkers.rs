@@ -1026,19 +1026,11 @@ impl<'cx> Runner<'cx> for SecretChecker {
                     }
                 }
             }
-            Intrinsic::Fetch | Intrinsic::ApiCall(_) | Intrinsic::SafeCall(_) => {
-                let ops = operands.unwrap_or_default();
-                // For platform API shims with >2 operands (e.g. requestGraph),
-                // the options object is at index 2; otherwise index 1.
-                let opts_index = if !matches!(intrinsic, Intrinsic::Fetch) && ops.len() > 2 {
-                    2
-                } else {
-                    1
-                };
+            Intrinsic::Fetch => {
                 if let Some(Operand::Var(Variable {
                     base: Base::Var(varid),
                     ..
-                })) = ops.get(opts_index)
+                })) = operands.unwrap_or_default().get(1)
                 {
                     let varid_argument =
                         if let Some(Value::Object(varid)) = interp.get_value(def, *varid, None) {
@@ -1052,12 +1044,10 @@ impl<'cx> Runner<'cx> for SecretChecker {
                     {
                         let auth_proj = projvec_from_str("Authorization");
                         let aut_proj_lower = projvec_from_str("authorization");
-                        let auth_val = interp
+                        if let Some(Value::Const(_) | Value::Phi(_)) = interp
                             .get_value(def, *varid, Some(auth_proj.clone()))
-                            .or_else(|| {
-                                interp.get_value(def, *varid, Some(aut_proj_lower.clone()))
-                            });
-                        if matches!(auth_val, Some(Value::Const(_) | Value::Phi(_))) {
+                            .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower.clone())))
+                        {
                             let vuln =
                                 SecretVuln::new(interp.callstack(), interp.env(), interp.entry());
                             info!("Found a vuln!");
