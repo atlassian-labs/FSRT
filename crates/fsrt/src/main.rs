@@ -606,12 +606,6 @@ pub(crate) fn scan_directory<'a>(
             warn!("error while running secret checker: {err}");
         }
 
-        auth_header_interp.value_manager.varid_to_value =
-            secret_interp.value_manager.varid_to_value.clone();
-        auth_header_interp.value_manager.varid_to_value_with_proj =
-            secret_interp.value_manager.varid_to_value_with_proj.clone();
-        auth_header_interp.value_manager.defid_to_value =
-            secret_interp.value_manager.defid_to_value.clone();
         if let Err(err) = auth_header_interp.run_checker(
             func.def_id,
             &mut auth_header_checker,
