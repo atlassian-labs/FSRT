@@ -1275,11 +1275,6 @@ impl AuthHeaderChecker {
         self.vulns.into_iter()
     }
 
-    /// Returns the current number of recorded vulnerabilities.
-    pub fn vuln_count(&self) -> usize {
-        self.vulns.len()
-    }
-
     /// Merges vulnerabilities from another checker (typically the full-scan pass)
     /// into this checker, avoiding duplicates.
     pub fn extend_vulns(&mut self, other: AuthHeaderChecker) {
