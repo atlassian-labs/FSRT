@@ -592,7 +592,6 @@ pub(crate) fn scan_directory<'a>(
                 &mut checker,
                 func.path.clone(),
                 func.func_name.to_owned(),
-                func.module,
             ) {
                 warn!("error while running permission checker: {err}");
             }
@@ -603,7 +602,6 @@ pub(crate) fn scan_directory<'a>(
             &mut secret_checker,
             func.path.clone(),
             func.func_name.to_owned(),
-            func.module,
         ) {
             warn!("error while running secret checker: {err}");
         }
@@ -613,7 +611,6 @@ pub(crate) fn scan_directory<'a>(
             &mut auth_header_checker,
             func.path.clone(),
             func.func_name.to_owned(),
-            func.module,
         ) {
             warn!("error while running auth header checker: {err}");
         }
@@ -626,7 +623,6 @@ pub(crate) fn scan_directory<'a>(
                 &mut checker,
                 func.path.clone(),
                 func.func_name.to_string(),
-                func.module,
             ) {
                 warn!(
                     "error while scanning {:?} in {:?}: {err}",
@@ -645,7 +641,6 @@ pub(crate) fn scan_directory<'a>(
                 &mut checker,
                 func.path.clone(),
                 func.func_name.to_string(),
-                func.module,
             ) {
                 warn!(
                     "error while scanning {:?} in {:?}: {err}",

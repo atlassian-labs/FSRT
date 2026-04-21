@@ -19,7 +19,6 @@ use smallvec::SmallVec;
 use swc_core::ecma::atoms::Atom;
 use tracing::{debug, instrument, warn};
 
-use crate::ctx::ModId;
 use crate::definitions::DefKind;
 use crate::ir::{BinOp, Literal, VarKind};
 use crate::utils::{
@@ -1285,35 +1284,32 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         checker: &mut C,
         entry_file: PathBuf,
         function: String,
-        module: ModId,
     ) -> Result<(), Error> {
-        let fname = function.clone();
-        self.set_entry(entry_file, function);
-        let primary_result = self.try_check_function(def, checker);
-
-        let mut callbacks = self.env.resolver_define_callbacks_in_module(module);
-        if let Some(def_mod) = self.env.def_owning_module(def)
-            && def_mod != module
-        {
-            callbacks.extend(self.env.resolver_define_callbacks_in_module(def_mod));
+        self.entry = EntryPoint {
+            file: entry_file,
+            kind: EntryKind::Function(function),
+        };
+        let Err(error) = self.try_check_function(def, checker) else {
+            return Ok(());
+        };
+        debug!("failed to check function, trying resolver");
+        let resolver = self.env.resolver_defs(def);
+        if resolver.is_empty() {
+            warn!("no resolver found");
+            return Err(error);
         }
-        let resolver_callback_count = callbacks.len();
-        debug!(
-            n = resolver_callback_count,
-            "resolver.define callbacks in module"
-        );
-        for (name, prop_def) in callbacks {
+        debug!("found potential resolver");
+        for (name, prop) in resolver {
             debug!("checking resolver prop: {name}");
-            self.entry.kind = EntryKind::Resolver(fname.clone(), name.clone());
-            if let Err(error) = self.try_check_function(prop_def, checker) {
+            self.entry.kind = match std::mem::take(&mut self.entry.kind) {
+                EntryKind::Function(fname) => EntryKind::Resolver(fname, name.clone()),
+                EntryKind::Resolver(res, _) => EntryKind::Resolver(res, name.clone()),
+                EntryKind::Empty => unreachable!(),
+            };
+            if let Err(error) = self.try_check_function(prop, checker) {
                 warn!("Resolver prop {name} failed: {error}");
             }
         }
-
-        if primary_result.is_ok() || resolver_callback_count > 0 {
-            Ok(())
-        } else {
-            primary_result
-        }
+        Ok(())
     }
 }
