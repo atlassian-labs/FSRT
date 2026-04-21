@@ -1415,18 +1415,19 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
         // Atlassian calls, so the api.atlassian.com URL check is skipped.
         let is_platform_api = matches!(intrinsic, Intrinsic::ApiCall(_) | Intrinsic::SafeCall(_));
         let is_fetch = matches!(intrinsic, Intrinsic::Fetch);
+        // requestGraph(query, variables, options) — options at index 2
+        let is_request_graph = matches!(
+            intrinsic,
+            Intrinsic::ApiCall(IntrinsicName::RequestGraph)
+                | Intrinsic::SafeCall(IntrinsicName::RequestGraph)
+        );
 
         if is_fetch || is_platform_api {
             let ops = operands.unwrap_or_default();
 
-            // For platform API shims, the options argument may be at a different
-            // operand index (e.g. requestGraph takes (query, variables, options)).
-            // For Fetch and most request* shims, options is at index 1.
-            let opts_index = if is_platform_api && ops.len() > 2 {
-                2
-            } else {
-                1
-            };
+            // requestGraph takes (query, variables, options) so options is at index 2.
+            // For fetch and all other request* shims, options is at index 1.
+            let opts_index = if is_request_graph { 2 } else { 1 };
 
             // Resolve URL from operand 0 (only meaningful for Fetch)
             let url_str: Option<String> = if is_fetch {
@@ -1674,7 +1675,9 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     interp.bitbucket_permission_resolver,
                     interp.bitbucket_regex_map,
                 ),
-                IntrinsicName::RequestCompass(_) | IntrinsicName::Other => {
+                IntrinsicName::RequestCompass(_)
+                | IntrinsicName::RequestGraph
+                | IntrinsicName::Other => {
                     (&PermissionHashMap::new(), &HashMap::<String, Regex>::new())
                 }
             };

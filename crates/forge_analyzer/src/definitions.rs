@@ -630,6 +630,7 @@ pub enum IntrinsicName {
     RequestConfluence,
     RequestJira,
     RequestBitbucket,
+    RequestGraph,
     RequestCompass(String),
     Other,
 }
@@ -1052,7 +1053,7 @@ impl FunctionAnalyzer<'_> {
             } else if *last == "requestBitbucket" {
                 IntrinsicName::RequestBitbucket
             } else if *last == "requestGraph" {
-                IntrinsicName::Other
+                IntrinsicName::RequestGraph
             } else {
                 IntrinsicName::RequestConfluence
             };
