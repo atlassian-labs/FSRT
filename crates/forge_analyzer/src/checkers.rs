@@ -1170,10 +1170,10 @@ impl IntoVuln for AuthHeaderVuln {
                     "Basic Authorization header on fetch found via {}",
                     self.stack
                 ),
-                severity: Severity::Medium,
+                severity: Severity::Critical,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
-                marketplace_security_requirement: "Requirement 5",
+                marketplace_security_requirement: "Requirement 10",
                 date: reporter.current_date(),
             },
             AuthHeaderVulnKind::BearerAdmin => Vulnerability {
@@ -1184,10 +1184,10 @@ impl IntoVuln for AuthHeaderVuln {
                 ),
                 recommendation: "Avoid using admin API tokens in Forge apps. Prefer scoped OAuth tokens or Forge-native APIs.",
                 proof: format!("Bearer token on admin API fetch found via {}", self.stack),
-                severity: Severity::High,
+                severity: Severity::Medium,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
-                marketplace_security_requirement: "Requirement 5",
+                marketplace_security_requirement: "Requirement 10",
                 date: reporter.current_date(),
             },
         }
