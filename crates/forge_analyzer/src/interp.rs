@@ -1237,11 +1237,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.curr_body.set(old_body);
     }
 
-    /// Returns true if the given DefId has already been visited during a dataflow pass.
-    pub fn is_dataflow_visited(&self, def: DefId) -> bool {
-        self.dataflow_visited.contains(&def)
-    }
-
     /// Removes a DefId from the dataflow visited set so it can be re-analyzed.
     pub fn reset_dataflow_visited(&mut self, def: DefId) {
         self.dataflow_visited.remove(&def);
