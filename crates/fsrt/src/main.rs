@@ -418,6 +418,8 @@ pub(crate) fn scan_directory<'a>(
     }
     // FIXME: Find Custom UI path instead
     let run_permission_checker = !transpiled_async && manifest.resources.is_empty();
+    let scan_functions =
+        opts.scan_functions || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
 
     let funcrefs = manifest
         .modules
@@ -659,8 +661,6 @@ pub(crate) fn scan_directory<'a>(
     // manifest entry points. This is primarily useful for finding issues in helper
     // functions and class methods that are present in the codebase but not on an
     // entry-point-reachable call chain.
-    let scan_functions =
-        opts.scan_functions || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
     if scan_functions {
         let mut full_scan_checker = AuthHeaderChecker::new();
         let all_functions = proj.env.get_all_functions_and_closures();
@@ -670,17 +670,18 @@ pub(crate) fn scan_directory<'a>(
             // with fresh dataflow. The entry-point pass may have marked it visited
             // during broader module/class traversal without actually checking it as
             // a standalone function body.
-            let resolved = proj.env.resolve_alias(*func_def);
             auth_header_interp.reset_dataflow_visited(*func_def);
-            auth_header_interp.reset_dataflow_visited(resolved);
-            auth_header_interp.entry = forge_analyzer::interp::EntryPoint {
-                file: std::path::PathBuf::from("<project>"),
-                kind: forge_analyzer::interp::EntryKind::Function(func_name.clone()),
-            };
-            let _ = auth_header_interp.try_check_function(*func_def, &mut full_scan_checker);
+            if let Err(err) = auth_header_interp.check_function(
+                *func_def,
+                &mut full_scan_checker,
+                PathBuf::from("<project>"),
+                func_name,
+            ) {
+                warn!("error while running auth header checker (scan_functions): {err}");
+            }
         }
         auth_header_checker.extend_vulns(full_scan_checker);
-    };
+    }
 
     reporter.add_vulnerabilities(secret_checker.into_vulns());
     reporter.add_vulnerabilities(auth_header_checker.into_vulns());

@@ -405,7 +405,7 @@ pub(crate) struct Frame {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub enum EntryKind {
+pub(crate) enum EntryKind {
     Function(String),
     Resolver(String, Atom),
     #[default]
@@ -413,9 +413,9 @@ pub enum EntryKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct EntryPoint {
-    pub file: PathBuf,
-    pub kind: EntryKind,
+pub(crate) struct EntryPoint {
+    pub(crate) file: PathBuf,
+    pub(crate) kind: EntryKind,
 }
 
 #[derive(Debug)]
@@ -428,7 +428,7 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     call_graph: CallGraph,
     pub return_value: Option<(Value, DefId)>,
     pub return_value_alt: HashMap<DefId, Value>,
-    pub entry: EntryPoint,
+    pub(crate) entry: EntryPoint,
     func_state: RefCell<FxHashMap<DefId, C::State>>,
     pub curr_body: Cell<Option<&'cx Body>>,
     states: RefCell<BTreeMap<(DefId, BasicBlockId), C::State>>,
@@ -1262,6 +1262,27 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         Ok(())
     }
 
+    /// Sets the current entry point for tracing/reporting purposes.
+    pub fn set_entry(&mut self, file: PathBuf, function: String) {
+        self.entry = EntryPoint {
+            file,
+            kind: EntryKind::Function(function),
+        };
+    }
+
+    /// Checks a single function body without resolver-callback discovery.
+    /// Use this for full-function scans where entry points are iterated directly.
+    pub fn check_function(
+        &mut self,
+        def: DefId,
+        checker: &mut C,
+        file: PathBuf,
+        function: String,
+    ) -> Result<(), Error> {
+        self.set_entry(file, function);
+        self.try_check_function(def, checker)
+    }
+
     #[instrument(level = "info", skip(self, checker, entry_file), fields(checker = %C::NAME, file = %entry_file.display()))]
     pub fn run_checker(
         &mut self,
@@ -1272,10 +1293,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         module: ModId,
     ) -> Result<(), Error> {
         let fname = function.clone();
-        self.entry = EntryPoint {
-            file: entry_file,
-            kind: EntryKind::Function(function),
-        };
+        self.set_entry(entry_file, function);
         let primary_result = self.try_check_function(def, checker);
 
         let mut callbacks = self.env.resolver_define_callbacks_in_module(module);
