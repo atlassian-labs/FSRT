@@ -1429,8 +1429,8 @@ fn extract_auth_scheme_from_body(body: &crate::ir::Body, target: VarId) -> Optio
                 Inst::Expr(_) => continue,
             };
 
-            let is_direct_target = assigned_var.base == Base::Var(target)
-                && assigned_var.projections.is_empty();
+            let is_direct_target =
+                assigned_var.base == Base::Var(target) && assigned_var.projections.is_empty();
 
             // Only match Authorization projections on the specific headers
             // VarId we're inspecting — not on any VarId in the body — to
@@ -1495,8 +1495,7 @@ fn follow_var_to_auth_scheme(
             {
                 match rval {
                     Rvalue::Bin(BinOp::Add, op1, op2) => {
-                        return operand_auth_scheme(op1)
-                            .or_else(|| operand_auth_scheme(op2));
+                        return operand_auth_scheme(op1).or_else(|| operand_auth_scheme(op2));
                     }
                     Rvalue::Template(template) => {
                         return template
@@ -1612,9 +1611,7 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                     ..
                 })) => match interp.get_value(def, *varid, None) {
                     Some(Value::Const(Const::Literal(s))) => Some(s.clone()),
-                    Some(Value::Phi(phi)) => {
-                        phi.iter().map(|Const::Literal(s)| s.clone()).next()
-                    }
+                    Some(Value::Phi(phi)) => phi.iter().map(|Const::Literal(s)| s.clone()).next(),
                     _ => extract_url_prefix_from_body(interp.body(), *varid),
                 },
                 Some(Operand::Lit(lit)) => convert_lit_to_raw(lit),

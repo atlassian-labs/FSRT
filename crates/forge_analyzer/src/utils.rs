@@ -48,7 +48,6 @@ pub fn projvec_from_projvec(projs: &[Projection]) -> ProjectionVec {
     ProjectionVec::from(projs)
 }
 
-
 pub fn convert_lit_to_raw(lit: &Literal) -> Option<String> {
     match lit {
         Literal::BigInt(bigint) => Some(bigint.to_string()),
