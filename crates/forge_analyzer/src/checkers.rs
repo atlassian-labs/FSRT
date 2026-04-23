@@ -7,14 +7,11 @@ use crate::{
         WithCallStack,
     },
     ir::{
-        Base, BasicBlock, BasicBlockId, Inst, Intrinsic, Literal, Location, Operand, Projection,
-        VarId, VarKind, Variable,
+        Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
+        Projection, Rvalue, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    utils::{
-        add_elements_to_intrinsic_struct, convert_lit_to_raw, is_basic_auth_concat_prefix,
-        is_bearer_prefix, translate_request_type,
-    },
+    utils::{add_elements_to_intrinsic_struct, convert_lit_to_raw, translate_request_type},
     worklist::WorkList,
 };
 use core::fmt;
@@ -1391,6 +1388,188 @@ pub fn is_atlassian_url(url: &str) -> bool {
     atlassian_path_re().is_match(url)
 }
 
+/// Detected authorization scheme from IR-level inspection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthScheme {
+    Basic,
+    Bearer,
+}
+
+/// Inspects a literal string to determine if it starts with an auth scheme prefix.
+fn classify_auth_literal(s: &str) -> Option<AuthScheme> {
+    if s.len() >= 6 && s[..6].eq_ignore_ascii_case("basic ") {
+        Some(AuthScheme::Basic)
+    } else if s.len() >= 7 && s[..7].eq_ignore_ascii_case("bearer ") {
+        Some(AuthScheme::Bearer)
+    } else {
+        None
+    }
+}
+
+/// Extracts an auth scheme prefix from the IR instructions that define the
+/// Authorization header value. This handles cases where the value resolves to
+/// `Unknown` because it was built via concatenation (e.g. `"Basic " + token`)
+/// or a template literal (e.g. `` `Basic ${token}` ``).
+///
+/// The function searches two patterns:
+/// 1. Direct assignment to `target_varid` with no projection (the value was
+///    assigned to a temp var that the value manager later resolved).
+/// 2. Assignment with a projection ending in `Authorization`/`authorization`
+///    on the headers object VarId (inline object literal case).
+///
+/// For each match, it inspects the rvalue for `BinOp(Add, ...)` or `Template`
+/// with a recognizable auth scheme literal prefix.
+///
+/// Returns `Some(AuthScheme)` if a recognizable prefix is found, `None` otherwise.
+fn extract_auth_scheme_from_body(body: &crate::ir::Body, target: VarId) -> Option<AuthScheme> {
+    for (_, block) in body.iter_blocks_enumerated() {
+        for inst in &block.insts {
+            let (assigned_var, rvalue) = match inst {
+                Inst::Assign(var, rval) => (var, rval),
+                Inst::Expr(_) => continue,
+            };
+
+            let is_direct_target = assigned_var.base == Base::Var(target)
+                && assigned_var.projections.is_empty();
+
+            // Only match Authorization projections on the specific headers
+            // VarId we're inspecting — not on any VarId in the body — to
+            // avoid cross-contaminating auth headers from different call sites
+            // within the same function body.
+            let is_auth_projection = assigned_var.base == Base::Var(target)
+                && assigned_var.projections.iter().any(|p| {
+                    matches!(p, Projection::Known(name) if name.eq_ignore_ascii_case("authorization"))
+                });
+
+            if !is_direct_target && !is_auth_projection {
+                continue;
+            }
+
+            if let Some(scheme) = classify_rvalue_auth_scheme(rvalue, body) {
+                return Some(scheme);
+            }
+        }
+    }
+    None
+}
+
+/// Inspects an Rvalue for auth scheme prefixes in concatenations and templates.
+/// Also follows `Rvalue::Read(Var(v))` chains (up to a bounded depth) to handle
+/// cases where the Authorization property reads from a separate variable that
+/// holds the concat result, possibly through intermediate copies.
+fn classify_rvalue_auth_scheme(rvalue: &Rvalue, body: &crate::ir::Body) -> Option<AuthScheme> {
+    match rvalue {
+        // "Basic " + token  or  token + "Basic ..."
+        Rvalue::Bin(BinOp::Add, op1, op2) => {
+            operand_auth_scheme(op1).or_else(|| operand_auth_scheme(op2))
+        }
+        // `Basic ${token}` — check the first quasi
+        Rvalue::Template(template) => template
+            .quasis
+            .first()
+            .and_then(|q| classify_auth_literal(q)),
+        // Authorization: basicAuthHeader — follow read chain to find the defining instruction
+        Rvalue::Read(Operand::Var(Variable {
+            base: Base::Var(source_var),
+            projections,
+        })) if projections.is_empty() => follow_var_to_auth_scheme(body, *source_var, 4),
+        _ => None,
+    }
+}
+
+/// Follows a VarId through `Read(Var)` assignments up to `depth` levels to find
+/// a `BinOp(Add, ...)` or `Template(...)` that reveals the auth scheme prefix.
+fn follow_var_to_auth_scheme(
+    body: &crate::ir::Body,
+    target: VarId,
+    depth: u8,
+) -> Option<AuthScheme> {
+    if depth == 0 {
+        return None;
+    }
+    for (_, blk) in body.iter_blocks_enumerated() {
+        for inst in &blk.insts {
+            if let Inst::Assign(var, rval) = inst
+                && var.base == Base::Var(target)
+                && var.projections.is_empty()
+            {
+                match rval {
+                    Rvalue::Bin(BinOp::Add, op1, op2) => {
+                        return operand_auth_scheme(op1)
+                            .or_else(|| operand_auth_scheme(op2));
+                    }
+                    Rvalue::Template(template) => {
+                        return template
+                            .quasis
+                            .first()
+                            .and_then(|q| classify_auth_literal(q));
+                    }
+                    Rvalue::Read(Operand::Var(Variable {
+                        base: Base::Var(next_var),
+                        projections,
+                    })) if projections.is_empty() => {
+                        return follow_var_to_auth_scheme(body, *next_var, depth - 1);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Checks whether an operand is a literal string with an auth scheme prefix.
+fn operand_auth_scheme(op: &Operand) -> Option<AuthScheme> {
+    match op {
+        Operand::Lit(Literal::Str(s)) => classify_auth_literal(s),
+        _ => None,
+    }
+}
+
+/// Tries to extract the URL string from a VarId by walking the IR when the
+/// value lattice resolves to `Unknown` (e.g. template literals with unknown
+/// substitutions where the static quasis still contain the host). Follows
+/// `Read(Var)` chains up to a bounded depth to handle intermediate copies.
+fn extract_url_prefix_from_body(body: &crate::ir::Body, target: VarId) -> Option<String> {
+    extract_url_prefix_from_var(body, target, 4)
+}
+
+fn extract_url_prefix_from_var(body: &crate::ir::Body, target: VarId, depth: u8) -> Option<String> {
+    if depth == 0 {
+        return None;
+    }
+    for (_, block) in body.iter_blocks_enumerated() {
+        for inst in &block.insts {
+            let (assigned_var, rvalue) = match inst {
+                Inst::Assign(var, rval) => (var, rval),
+                Inst::Expr(_) => continue,
+            };
+            if assigned_var.base != Base::Var(target) || !assigned_var.projections.is_empty() {
+                continue;
+            }
+            match rvalue {
+                Rvalue::Bin(BinOp::Add, Operand::Lit(Literal::Str(s)), _) => {
+                    return Some(s.to_string());
+                }
+                Rvalue::Template(template) => {
+                    let joined: String = template.quasis.iter().map(|q| q.as_ref()).collect();
+                    if !joined.is_empty() {
+                        return Some(joined);
+                    }
+                }
+                Rvalue::Read(Operand::Var(Variable {
+                    base: Base::Var(source_var),
+                    projections,
+                })) if projections.is_empty() => {
+                    return extract_url_prefix_from_var(body, *source_var, depth - 1);
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 impl<'cx> Runner<'cx> for AuthHeaderChecker {
     type State = SecretState;
     type Dataflow = AuthHeaderDataflow;
@@ -1424,25 +1603,22 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
             // For fetch and all other request* shims, options is at index 1.
             let opts_index = if is_request_graph { 2 } else { 1 };
 
-            // Resolve URL from operand 0 (only meaningful for Fetch)
-            let url_str: Option<String> = if is_fetch {
-                match ops.first() {
-                    Some(Operand::Var(Variable {
-                        base: Base::Var(varid),
-                        ..
-                    })) => match interp.get_value(def, *varid, None) {
-                        Some(Value::Const(Const::Literal(s))) => Some(s.clone()),
-                        Some(Value::PartialConst(Const::Literal(s))) => Some(s.clone()),
-                        Some(Value::Phi(phi)) => {
-                            phi.iter().map(|Const::Literal(s)| s.clone()).next()
-                        }
-                        _ => None,
-                    },
-                    Some(Operand::Lit(lit)) => convert_lit_to_raw(lit),
-                    _ => None,
-                }
-            } else {
-                None
+            // Resolve URL from operand 0.
+            // Try the value lattice first; fall back to IR inspection for
+            // template literals / concatenations with unknown parts.
+            let url_str: Option<String> = match ops.first() {
+                Some(Operand::Var(Variable {
+                    base: Base::Var(varid),
+                    ..
+                })) => match interp.get_value(def, *varid, None) {
+                    Some(Value::Const(Const::Literal(s))) => Some(s.clone()),
+                    Some(Value::Phi(phi)) => {
+                        phi.iter().map(|Const::Literal(s)| s.clone()).next()
+                    }
+                    _ => extract_url_prefix_from_body(interp.body(), *varid),
+                },
+                Some(Operand::Lit(lit)) => convert_lit_to_raw(lit),
+                _ => None,
             };
 
             if let Some(Operand::Var(Variable {
@@ -1466,57 +1642,60 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                         .get_value(def, *varid, Some(auth_proj.clone()))
                         .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower.clone())));
 
-                    let auth_str = match auth_val {
-                        Some(Value::Const(Const::Literal(s))) => Some(s.as_str()),
-                        Some(Value::PartialConst(Const::Literal(s))) => Some(s.as_str()),
-                        Some(Value::Phi(phi)) => {
-                            phi.iter().map(|Const::Literal(s)| s.as_str()).next()
+                    // Try to determine the auth scheme from the resolved value.
+                    // If the value is fully known, classify directly. If unknown
+                    // (e.g. "Basic " + variable), walk the IR to inspect the
+                    // operands of the concatenation/template that produced it.
+                    let auth_scheme: Option<AuthScheme> = match auth_val {
+                        Some(Value::Const(Const::Literal(s))) => classify_auth_literal(s),
+                        Some(Value::Phi(phi)) => phi
+                            .iter()
+                            .find_map(|Const::Literal(s)| classify_auth_literal(s)),
+                        Some(Value::Unknown) | None => {
+                            // Value collapsed to Unknown — inspect the IR directly.
+                            // The auth header VarId is `*varid` from the headers object.
+                            extract_auth_scheme_from_body(interp.body(), *varid)
                         }
                         _ => None,
                     };
 
-                    if let Some(auth) = auth_str {
-                        if is_basic_auth_concat_prefix(auth) {
-                            // Platform API shims (requestJira/Confluence/Bitbucket/Graph,
-                            // forgeFetch) always target Atlassian APIs, so the URL check
-                            // is skipped for them. For bare fetch / api.fetch, classify
-                            // the URL using is_atlassian_url, which handles full URLs,
-                            // templated/empty-substituted relative paths, and known
-                            // Atlassian product REST path patterns.
-                            let should_flag =
-                                is_platform_api || url_str.as_deref().is_some_and(is_atlassian_url);
-                            if should_flag {
-                                self.vulns.push(AuthHeaderVuln::new(
-                                    AuthHeaderVulnKind::BasicAuth,
-                                    interp.callstack(),
-                                    interp.env(),
-                                    interp.entry(),
-                                ));
+                    if let Some(scheme) = auth_scheme {
+                        match scheme {
+                            AuthScheme::Basic => {
+                                // Platform API shims (requestJira, requestConfluence,
+                                // requestBitbucket, requestGraph) always target
+                                // Atlassian APIs — their route operand is opaque
+                                // (tagged template) so URL resolution won't help.
+                                // For fetch / api.fetch / node-fetch the full URL
+                                // must target an Atlassian endpoint.
+                                let should_flag = is_platform_api
+                                    || url_str.as_deref().is_some_and(is_atlassian_url);
+                                if should_flag {
+                                    self.vulns.push(AuthHeaderVuln::new(
+                                        AuthHeaderVulnKind::BasicAuth,
+                                        interp.callstack(),
+                                        interp.env(),
+                                        interp.entry(),
+                                    ));
+                                }
                             }
-                        } else if is_fetch && is_bearer_prefix(auth) {
-                            // BearerAdmin is only checked for fetch / api.fetch,
-                            // not for platform API shims.
-                            //
-                            // Flag a Bearer-token call when EITHER:
-                            //   (a) the URL points at api.atlassian.com AND mentions
-                            //       "admin" (legacy heuristic), OR
-                            //   (b) the URL/path matches a known admin endpoint
-                            //       pattern (`/admin/v[12]/orgs/...`,
-                            //       `/users/<id>/manage/...`) — these are the
-                            //       admin-scoped routes that admin Bearer tokens
-                            //       actually leak through, regardless of host.
-                            let should_flag = url_str.as_deref().is_some_and(|s| {
-                                (s.contains("api.atlassian.com") && s.contains("admin"))
-                                    || is_admin_path(s)
-                            });
-                            if should_flag {
-                                self.vulns.push(AuthHeaderVuln::new(
-                                    AuthHeaderVulnKind::BearerAdmin,
-                                    interp.callstack(),
-                                    interp.env(),
-                                    interp.entry(),
-                                ));
+                            AuthScheme::Bearer if is_fetch => {
+                                // BearerAdmin is only checked for fetch, not
+                                // platform API shims.
+                                let should_flag = url_str.as_deref().is_some_and(|s| {
+                                    (s.contains("api.atlassian.com") && s.contains("admin"))
+                                        || is_admin_path(s)
+                                });
+                                if should_flag {
+                                    self.vulns.push(AuthHeaderVuln::new(
+                                        AuthHeaderVulnKind::BearerAdmin,
+                                        interp.callstack(),
+                                        interp.env(),
+                                        interp.entry(),
+                                    ));
+                                }
                             }
+                            _ => {}
                         }
                     }
                 }

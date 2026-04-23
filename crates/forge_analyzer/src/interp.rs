@@ -872,8 +872,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     .collect_vec();
 
                 if all_values.contains(&Value::Unknown) {
-                    let joined: String = template.quasis.iter().map(|q| q.as_ref()).collect();
-                    return Value::PartialConst(Const::Literal(joined));
+                    return Value::Unknown;
                 }
 
                 let quasis_as_values: Vec<Value> = template
@@ -896,12 +895,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 let value_op1 = self.value_from_operand(defid_block, op1);
                 let value_op2 = self.value_from_operand(defid_block, op2);
                 if value_op1 == Value::Unknown || value_op2 == Value::Unknown {
-                    if let Value::Const(Const::Literal(s)) = value_op1 {
-                        return Value::PartialConst(Const::Literal(s));
-                    }
-                    if let Value::Const(Const::Literal(s)) = value_op2 {
-                        return Value::PartialConst(Const::Literal(s));
-                    }
                     return Value::Unknown;
                 }
                 return_combinations_phi(vec![value_op1, value_op2])

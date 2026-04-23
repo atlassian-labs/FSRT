@@ -80,7 +80,6 @@ pub enum Value {
     Unknown,
     Object(VarId),
     Const(Const),
-    PartialConst(Const),
     Phi(Vec<Const>),
 }
 
@@ -1086,7 +1085,7 @@ impl FunctionAnalyzer<'_> {
         }
 
         match *callee {
-            [PropPath::Unknown((ref name, ..))] if *name == *"fetch" || *name == *"forgeFetch" => {
+           [PropPath::Unknown((ref name, ..))] if *name == *"fetch" || *name == *"forgeFetch" => {
                 Some(Intrinsic::Fetch)
             }
             [
@@ -1137,13 +1136,13 @@ impl FunctionAnalyzer<'_> {
             }
             [PropPath::Def(def), PropPath::Static(ref method), ..]
             | [PropPath::Def(def), PropPath::MemberCall(ref method), ..]
-                if (*method == *"fetch" || *method == *"forgeFetch")
-                    && self
-                        .res
-                        .is_imported_from(def, "@forge/api")
-                        .is_some_and(|imp| {
-                            matches!(imp, ImportKind::Default | ImportKind::Star)
-                        }) =>
+            if (*method == *"fetch" || *method == *"forgeFetch")
+            && self
+                .res
+                .is_imported_from(def, "@forge/api")
+                .is_some_and(|imp| {
+                    matches!(imp, ImportKind::Default | ImportKind::Star)
+                }) =>
             {
                 Some(Intrinsic::Fetch)
             }
@@ -4338,11 +4337,7 @@ impl PartialEq<str> for Value {
         match self {
             Self::Const(Const::Literal(s)) => **s == *other,
             Self::Phi(v) if !v.is_empty() => v.iter().all(|x| *x == *other),
-            Self::Uninit
-            | Self::Unknown
-            | Self::Object(_)
-            | Self::Phi(_)
-            | Self::PartialConst(_) => false,
+            Self::Uninit | Self::Unknown | Self::Object(_) | Self::Phi(_) => false,
         }
     }
 }

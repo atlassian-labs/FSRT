@@ -48,15 +48,6 @@ pub fn projvec_from_projvec(projs: &[Projection]) -> ProjectionVec {
     ProjectionVec::from(projs)
 }
 
-/// `true` if a string is the usual left operand in `"Basic " + <credentials>` (scheme name + space, case-insensitive).
-pub fn is_basic_auth_concat_prefix(s: &str) -> bool {
-    s.len() >= 6 && s[..6].eq_ignore_ascii_case("basic ")
-}
-
-/// `true` if a string starts with `"Bearer "` (case-insensitive).
-pub fn is_bearer_prefix(s: &str) -> bool {
-    s.len() >= 7 && s[..7].eq_ignore_ascii_case("bearer ")
-}
 
 pub fn convert_lit_to_raw(lit: &Literal) -> Option<String> {
     match lit {
