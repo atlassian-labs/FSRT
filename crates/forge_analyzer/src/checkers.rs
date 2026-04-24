@@ -20,7 +20,7 @@ use forge_permission_resolver::permissions_resolver::{
 };
 use forge_utils::FxHashMap;
 use itertools::Itertools;
-use regex::Regex;
+use regex::{Regex, RegexSet};
 use smallvec::SmallVec;
 use std::{
     cmp::max,
@@ -1309,31 +1309,62 @@ fn url_host_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"(?i)^\s*https?://([^/\s?#:]*)").unwrap())
 }
 
-/// Cached regex matching known Atlassian product REST API path prefixes.
-fn atlassian_path_re() -> &'static Regex {
-    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?ix)
-              (^|[^A-Za-z0-9_])
-              /?(
-                  rest/api/(2|3|latest)/
-                | rest/agile/(1\.0|latest)/
-                | rest/servicedeskapi/
-                | rest/insight/1\.0/
-                | rest/forge/1\.0/
-                | rest/api/optics/
-                | rest/backup/1/
-                | wiki/(rest/api|api/v2)/
-                | ex/(jira|confluence)/
-                | gateway/api/(graphql|jsm|public/teams|adf)
-                | jsm/(assets|csm|ops)/
-                | admin/v[12]/orgs/
-                | _edge/tenant_info
-              )",
-        )
-        .unwrap()
+/// Cached `RegexSet` built from the comprehensive Atlassian endpoint list
+/// (`atlassian_rest_endpoinst.txt`). Each line in the file is a regex pattern
+/// matching a known Atlassian REST API path. The set is compiled once into a
+/// single DFA for O(n) matching regardless of pattern count.
+fn atlassian_path_set() -> &'static RegexSet {
+    static SET: std::sync::OnceLock<RegexSet> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        let raw = include_str!("../../../atlassian_rest_api_endpoints.txt");
+        // Replace [^/]+ with [^/]* so that dynamic path segments match
+        // empty strings — which arise when template quasis are joined without
+        // their substitution values (e.g. `${orgId}` collapses to "").
+        let patterns: Vec<String> = raw
+            .lines()
+            .map(|l: &str| l.trim())
+            .filter(|l: &&str| !l.is_empty() && !l.starts_with('#'))
+            .map(|l: &str| l.trim_end_matches('$').replace("[^/]+", "[^/]*"))
+            .collect();
+        RegexSet::new(&patterns).expect("failed to compile atlassian endpoint RegexSet")
     })
+}
+
+/// Extracts the path portion from a URL string for endpoint matching.
+/// - Full URL `https://host/path...` → `/path...`
+/// - Relative path `/rest/api/3/...` → `/rest/api/3/...`
+/// - Query strings are stripped: `/rest/api/3/issue?foo=bar` → `/rest/api/3/issue`
+fn extract_path_for_matching(url: &str) -> &str {
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"));
+    let path = match after_scheme {
+        Some(rest) => {
+            // Full URL — strip host portion
+            rest.find('/').map(|i| &rest[i..]).unwrap_or(rest)
+        }
+        None => {
+            // No scheme. If the first segment contains a dot it's likely a
+            // bare host (e.g. `api.atlassian.com/rest/...` from test fixtures
+            // that can't use `//`). Extract the path from the first `/`.
+            if let Some(slash) = url.find('/') {
+                let maybe_host = &url[..slash];
+                if maybe_host.contains('.') {
+                    &url[slash..]
+                } else {
+                    url
+                }
+            } else {
+                url
+            }
+        }
+    };
+    // Normalize leading double-slash from template substitution
+    // (e.g. `${baseUrl}/rest/...` where baseUrl is empty → `//rest/...`)
+    let path = path.strip_prefix('/').unwrap_or(path);
+    // Strip query string and fragment
+    let path = path.split_once('?').map_or(path, |(p, _)| p);
+    path.split_once('#').map_or(path, |(p, _)| p)
 }
 
 /// Cached regex matching Atlassian admin-scoped REST API path patterns.
@@ -1385,7 +1416,7 @@ pub fn is_atlassian_url(url: &str) -> bool {
         // Empty host (e.g. `https:///rest/...`) — fall through to path check.
     }
 
-    atlassian_path_re().is_match(url)
+    atlassian_path_set().is_match(extract_path_for_matching(url))
 }
 
 /// Detected authorization scheme from IR-level inspection.
