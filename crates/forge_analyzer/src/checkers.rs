@@ -1086,6 +1086,13 @@ pub enum AuthHeaderVulnKind {
 #[derive(Debug)]
 pub struct AuthHeaderVuln {
     kind: AuthHeaderVulnKind,
+    /// The API call that triggered the finding
+    /// (e.g. "fetch", "requestJira"). Surfaced in the proof.
+    api_call: &'static str,
+    /// The validated URL/route string that was matched as Atlassian-bound.
+    /// `None` for platform API shims whose route operand is opaque (tagged
+    /// template) and could not be resolved. Surfaced in the proof.
+    url: Option<String>,
     stack: String,
     entry_func: String,
     file: PathBuf,
@@ -1094,6 +1101,8 @@ pub struct AuthHeaderVuln {
 impl AuthHeaderVuln {
     fn new(
         kind: AuthHeaderVulnKind,
+        api_call: &'static str,
+        url: Option<String>,
         callstack: Vec<Frame>,
         env: &Environment,
         entry: &EntryPoint,
@@ -1119,10 +1128,33 @@ impl AuthHeaderVuln {
         .collect();
         Self {
             kind,
+            api_call,
+            url,
             stack,
             entry_func,
             file,
         }
+    }
+}
+
+/// Returns a short, stable display name for the API call associated with a
+/// recognized intrinsic. Used in `AuthHeaderVuln` proofs to surface which
+/// call triggered the finding (e.g. `fetch`, `requestJira`, `requestGraph`).
+fn api_call_name(intrinsic: &Intrinsic) -> &'static str {
+    match intrinsic {
+        Intrinsic::Fetch => "fetch",
+        Intrinsic::ApiCall(name) | Intrinsic::SafeCall(name) => match name {
+            IntrinsicName::RequestJira => "requestJira",
+            IntrinsicName::RequestJiraAny => "requestJiraAny",
+            IntrinsicName::RequestJiraSoftware => "requestJiraSoftware",
+            IntrinsicName::RequestJiraServiceManagement => "requestJiraServiceManagement",
+            IntrinsicName::RequestConfluence => "requestConfluence",
+            IntrinsicName::RequestBitbucket => "requestBitbucket",
+            IntrinsicName::RequestGraph => "requestGraph",
+            IntrinsicName::RequestCompass(_) => "requestCompass",
+            IntrinsicName::Other => "request",
+        },
+        _ => "request",
     }
 }
 
@@ -1159,12 +1191,14 @@ impl IntoVuln for AuthHeaderVuln {
             AuthHeaderVulnKind::BasicAuth => Vulnerability {
                 check_name: format!("Basic-Authorization-{}", hasher.finish()),
                 description: format!(
-                    "HTTP Basic authentication used in fetch request from {} in {:?}.",
-                    self.entry_func, self.file
+                    "HTTP Basic authentication used in {} request from {} in {:?}.",
+                    self.api_call, self.entry_func, self.file
                 ),
                 recommendation: "Prefer OAuth or API tokens scoped to least privilege. If Basic auth is required, load credentials from Forge secrets or environment variables and avoid logging or exposing the Authorization header.",
                 proof: format!(
-                    "Basic Authorization header on fetch found via {}",
+                    "Basic Authorization header on {} call to {} found via {}",
+                    self.api_call,
+                    self.url.as_deref().unwrap_or("<unresolved url>"),
                     self.stack
                 ),
                 severity: Severity::Critical,
@@ -1176,11 +1210,16 @@ impl IntoVuln for AuthHeaderVuln {
             AuthHeaderVulnKind::BearerAdmin => Vulnerability {
                 check_name: format!("Bearer-Admin-{}", hasher.finish()),
                 description: format!(
-                    "Bearer token used with Atlassian admin API endpoint in fetch from {} in {:?}.",
-                    self.entry_func, self.file
+                    "Bearer token used with Atlassian admin API endpoint in {} from {} in {:?}.",
+                    self.api_call, self.entry_func, self.file
                 ),
                 recommendation: "Avoid using admin API tokens in Forge apps. Prefer scoped OAuth tokens or Forge-native APIs.",
-                proof: format!("Bearer token on admin API fetch found via {}", self.stack),
+                proof: format!(
+                    "Bearer token on admin API {} call to {} found via {}",
+                    self.api_call,
+                    self.url.as_deref().unwrap_or("<unresolved url>"),
+                    self.stack
+                ),
                 severity: Severity::Medium,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
@@ -1701,6 +1740,8 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                                 if should_flag {
                                     self.vulns.push(AuthHeaderVuln::new(
                                         AuthHeaderVulnKind::BasicAuth,
+                                        api_call_name(intrinsic),
+                                        url_str.clone(),
                                         interp.callstack(),
                                         interp.env(),
                                         interp.entry(),
@@ -1717,6 +1758,8 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                                 if should_flag {
                                     self.vulns.push(AuthHeaderVuln::new(
                                         AuthHeaderVulnKind::BearerAdmin,
+                                        api_call_name(intrinsic),
+                                        url_str.clone(),
                                         interp.callstack(),
                                         interp.env(),
                                         interp.entry(),
