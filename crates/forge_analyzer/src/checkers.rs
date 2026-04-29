@@ -1310,7 +1310,7 @@ fn url_host_re() -> &'static Regex {
 }
 
 /// Cached `RegexSet` built from the comprehensive Atlassian endpoint list
-/// (`atlassian_rest_endpoinst.txt`). Each line in the file is a regex pattern
+/// (`atlassian_rest_endpoints.txt`). Each line in the file is a regex pattern
 /// matching a known Atlassian REST API path. The set is compiled once into a
 /// single DFA for O(n) matching regardless of pattern count.
 fn atlassian_path_set() -> &'static RegexSet {
