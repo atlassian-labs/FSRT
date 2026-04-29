@@ -1157,7 +1157,7 @@ impl IntoVuln for AuthHeaderVuln {
 
         match self.kind {
             AuthHeaderVulnKind::BasicAuth => Vulnerability {
-                check_name: format!("Custom-Check-Basic-Authorization-{}", hasher.finish()),
+                check_name: format!("Basic-Authorization-{}", hasher.finish()),
                 description: format!(
                     "HTTP Basic authentication used in fetch request from {} in {:?}.",
                     self.entry_func, self.file
@@ -1174,7 +1174,7 @@ impl IntoVuln for AuthHeaderVuln {
                 date: reporter.current_date(),
             },
             AuthHeaderVulnKind::BearerAdmin => Vulnerability {
-                check_name: format!("Custom-Check-Bearer-Admin-{}", hasher.finish()),
+                check_name: format!("Bearer-Admin-{}", hasher.finish()),
                 description: format!(
                     "Bearer token used with Atlassian admin API endpoint in fetch from {} in {:?}.",
                     self.entry_func, self.file
