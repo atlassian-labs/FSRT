@@ -1363,20 +1363,45 @@ fn atlassian_path_set() -> &'static RegexSet {
             .lines()
             .map(|l: &str| l.trim())
             .filter(|l: &&str| !l.is_empty() && !l.starts_with('#'))
-            .map(|l: &str| l.trim_end_matches('$').replace("[^/]+", "[^/]*"))
+            .map(|l: &str| {
+                // Transformations:
+                // 1. Strip trailing `$` so patterns match as prefixes — extra
+                //    path segments after the matched endpoint are accepted.
+                // 2. Replace `[^/]+` with `[^/]*` so dynamic segments match
+                //    empty strings produced by template substitutions
+                //    (e.g. `${orgId}` collapses to "" when joining quasis).
+                // 3. Normalize REST API version segments so `latest` is
+                //    interchangeable with the numeric versions (`2`/`3`).
+                let l = l.trim_end_matches('$').replace("[^/]+", "[^/]*");
+                l.replace("rest/api/2/", "rest/api/(2|3|latest)/")
+                    .replace("rest/api/3/", "rest/api/(2|3|latest)/")
+                    .replace("rest/agile/1.0/", "rest/agile/(1\\.0|latest)/")
+            })
             .collect();
         RegexSet::new(&patterns).expect("failed to compile atlassian endpoint RegexSet")
     })
+}
+
+/// Case-insensitively strips an `https://` or `http://` scheme prefix.
+/// Returns the substring after the scheme, or `None` if no scheme is present.
+fn strip_scheme_ci(url: &str) -> Option<&str> {
+    if url.len() >= 8 && url.is_char_boundary(8) && url[..8].eq_ignore_ascii_case("https://") {
+        Some(&url[8..])
+    } else if url.len() >= 7 && url.is_char_boundary(7) && url[..7].eq_ignore_ascii_case("http://")
+    {
+        Some(&url[7..])
+    } else {
+        None
+    }
 }
 
 /// Extracts the path portion from a URL string for endpoint matching.
 /// - Full URL `https://host/path...` → `/path...`
 /// - Relative path `/rest/api/3/...` → `/rest/api/3/...`
 /// - Query strings are stripped: `/rest/api/3/issue?foo=bar` → `/rest/api/3/issue`
+/// - Scheme stripping is case-insensitive: `Https://...` is handled.
 fn extract_path_for_matching(url: &str) -> &str {
-    let after_scheme = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"));
+    let after_scheme = strip_scheme_ci(url);
     let path = match after_scheme {
         Some(rest) => {
             // Full URL — strip host portion
@@ -1617,8 +1642,15 @@ fn extract_url_prefix_from_var(body: &crate::ir::Body, target: VarId, depth: u8)
                 continue;
             }
             match rvalue {
-                Rvalue::Bin(BinOp::Add, Operand::Lit(Literal::Str(s)), _) => {
-                    return Some(s.to_string());
+                // String concatenation: take whichever operand is a literal.
+                // Handles both `"prefix" + var` and `var + "/suffix/path"`.
+                Rvalue::Bin(BinOp::Add, op1, op2) => {
+                    if let Operand::Lit(Literal::Str(s)) = op1 {
+                        return Some(s.to_string());
+                    }
+                    if let Operand::Lit(Literal::Str(s)) = op2 {
+                        return Some(s.to_string());
+                    }
                 }
                 Rvalue::Template(template) => {
                     let joined: String = template.quasis.iter().map(|q| q.as_ref()).collect();
