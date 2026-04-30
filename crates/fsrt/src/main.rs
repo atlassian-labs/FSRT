@@ -38,8 +38,8 @@ use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
     checkers::{
-        AuthZChecker, AuthenticateChecker, PermissionChecker, PermissionVuln, SecretChecker,
-        SecretType,
+        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, PermissionChecker, PermissionVuln,
+        SecretChecker, SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -93,6 +93,10 @@ pub struct Args {
     /// List of scanners to enable. Defaults to all of them.
     #[arg(long)]
     scanners: Option<String>,
+
+    /// Scan all function/closure bodies for auth-header issues, not just entrypoint-reachable code.
+    #[arg(long)]
+    scan_functions: bool,
 
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the source code is located in `src/`
@@ -414,6 +418,8 @@ pub(crate) fn scan_directory<'a>(
     }
     // FIXME: Find Custom UI path instead
     let run_permission_checker = !transpiled_async && manifest.resources.is_empty();
+    let scan_functions =
+        opts.scan_functions || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
 
     let funcrefs = manifest
         .modules
@@ -521,6 +527,25 @@ pub(crate) fn scan_directory<'a>(
         &bitbucket_regex_map,
         &compass_permission_resolver,
     );
+    let mut auth_header_interp = Interp::<AuthHeaderChecker>::new(
+        &proj.env,
+        false,
+        false,
+        permissions.clone(),
+        &jira_any_permission_resolver,
+        &jira_any_regex_map,
+        &jira_software_permission_resolver,
+        &jira_software_regex_map,
+        &jira_service_management_permission_resolver,
+        &jira_service_management_regex_map,
+        &jira_permission_resolver,
+        &jira_regex_map,
+        &confluence_permission_resolver,
+        &confluence_regex_map,
+        &bitbucket_permission_resolver,
+        &bitbucket_regex_map,
+        &compass_permission_resolver,
+    );
     reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
 
     let mut perm_interp = Interp::<PermissionChecker<'_>>::new(
@@ -544,6 +569,7 @@ pub(crate) fn scan_directory<'a>(
     );
 
     let mut secret_checker = SecretChecker::new();
+    let mut auth_header_checker = AuthHeaderChecker::new();
 
     if let Some(providers) = &manifest.providers
         && let Some(auth_providers) = &providers.auth
@@ -578,6 +604,15 @@ pub(crate) fn scan_directory<'a>(
             func.func_name.to_owned(),
         ) {
             warn!("error while running secret checker: {err}");
+        }
+
+        if let Err(err) = auth_header_interp.run_checker(
+            func.def_id,
+            &mut auth_header_checker,
+            func.path.clone(),
+            func.func_name.to_owned(),
+        ) {
+            warn!("error while running auth header checker: {err}");
         }
 
         if func.invokable {
@@ -616,7 +651,35 @@ pub(crate) fn scan_directory<'a>(
         }
     }
 
+    // Optional full-function auth-header scan. When enabled, scan all function and
+    // closure bodies for Authorization header misuse, not just code reachable from
+    // manifest entry points. This is primarily useful for finding issues in helper
+    // functions and class methods that are present in the codebase but not on an
+    // entry-point-reachable call chain.
+    if scan_functions {
+        let mut full_scan_checker = AuthHeaderChecker::new();
+        let all_functions = proj.env.get_all_functions_and_closures();
+        for func_def in &all_functions {
+            let func_name = proj.env.def_name(*func_def).to_string();
+            // Reset dataflow_visited so that run() re-analyzes this function body
+            // with fresh dataflow. The entry-point pass may have marked it visited
+            // during broader module/class traversal without actually checking it as
+            // a standalone function body.
+            auth_header_interp.reset_dataflow_visited(*func_def);
+            if let Err(err) = auth_header_interp.check_function(
+                *func_def,
+                &mut full_scan_checker,
+                PathBuf::from("<project>"),
+                func_name,
+            ) {
+                warn!("error while running auth header checker (scan_functions): {err}");
+            }
+        }
+        auth_header_checker.extend_vulns(full_scan_checker);
+    }
+
     reporter.add_vulnerabilities(secret_checker.into_vulns());
+    reporter.add_vulnerabilities(auth_header_checker.into_vulns());
 
     let path = if let Some(ref mut path) = opts.graphql_schema_path {
         path

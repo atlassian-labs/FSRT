@@ -629,6 +629,7 @@ pub enum IntrinsicName {
     RequestConfluence,
     RequestJira,
     RequestBitbucket,
+    RequestGraph,
     RequestCompass(String),
     Other,
 }
@@ -1050,6 +1051,8 @@ impl FunctionAnalyzer<'_> {
                 })
             } else if *last == "requestBitbucket" {
                 IntrinsicName::RequestBitbucket
+            } else if *last == "requestGraph" {
+                IntrinsicName::RequestGraph
             } else {
                 IntrinsicName::RequestConfluence
             };
@@ -1082,7 +1085,9 @@ impl FunctionAnalyzer<'_> {
         }
 
         match *callee {
-            [PropPath::Unknown((ref name, ..))] if *name == *"fetch" => Some(Intrinsic::Fetch),
+            [PropPath::Unknown((ref name, ..))] if *name == *"fetch" || *name == *"forgeFetch" => {
+                Some(Intrinsic::Fetch)
+            }
             [
                 PropPath::Expr(ref n @ Some(ref expr)),
                 PropPath::Static(ref last),
@@ -1101,7 +1106,8 @@ impl FunctionAnalyzer<'_> {
                 PropPath::Static(ref last),
             ] if ((*last == *"requestJira"
                 || *last == *"requestConfluence"
-                || *last == *"requestBitbucket")
+                || *last == *"requestBitbucket"
+                || *last == *"requestGraph")
                 && Some(&ImportKind::Default) == self.res.is_imported_from(def, "@forge/api"))
                 || self.res.is_imported_from(def, "@forge/api").is_some_and(
                     |imp| matches!(imp, ImportKind::Named(s) if *s == *"asApp" || *s == *"asUser"),
@@ -1128,14 +1134,48 @@ impl FunctionAnalyzer<'_> {
                     None
                 }
             }
+            [PropPath::Def(def), PropPath::Static(ref method), ..]
+            | [PropPath::Def(def), PropPath::MemberCall(ref method), ..]
+                if (*method == *"fetch" || *method == *"forgeFetch")
+                    && self
+                        .res
+                        .is_imported_from(def, "@forge/api")
+                        .is_some_and(|imp| {
+                            matches!(imp, ImportKind::Default | ImportKind::Star)
+                        }) =>
+            {
+                Some(Intrinsic::Fetch)
+            }
             [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/api").is_some() => {
                 if let Some(ImportKind::Named(name)) = self.res.is_imported_from(def, "@forge/api")
                 {
                     if *name == *"authorize" {
                         return Some(Intrinsic::Authorize(IntrinsicName::Other));
-                    } else if *name == *"fetch" {
+                    } else if *name == *"fetch" || *name == *"forgeFetch" {
                         return Some(Intrinsic::Fetch);
+                    } else if *name == *"requestJira"
+                        || *name == *"requestConfluence"
+                        || *name == *"requestBitbucket"
+                    {
+                        let method_name: Atom = name.clone();
+                        return get_intrinsic(first_arg, false, &method_name);
                     }
+                }
+                None
+            }
+            // Direct calls to requestJira/requestConfluence/requestBitbucket imported from @forge/bridge
+            // e.g. import { requestJira } from '@forge/bridge'; requestJira(route`/rest/api/3/issue`, opts)
+            [PropPath::Def(def), ..]
+                if self.res.is_imported_from(def, "@forge/bridge").is_some() =>
+            {
+                if let Some(ImportKind::Named(name)) =
+                    self.res.is_imported_from(def, "@forge/bridge")
+                    && (*name == *"requestJira"
+                        || *name == *"requestConfluence"
+                        || *name == *"requestBitbucket")
+                {
+                    let method_name: Atom = name.clone();
+                    return get_intrinsic(first_arg, false, &method_name);
                 }
                 None
             }
@@ -1414,6 +1454,15 @@ impl FunctionAnalyzer<'_> {
                 || calls_method(callee, "filter")
                 || calls_method(callee, "catch"))
                 && let [ExprOrSpread { expr, .. }] = args {
+                    if let CalleeRef::Expr(Expr::Member(mem)) = callee
+                        && let Expr::Call(inner_call) = &*mem.obj
+                    {
+                        let inner_callee = inner_call
+                            .callee
+                            .as_expr()
+                            .map_or(CalleeRef::Import, |e| CalleeRef::Expr(e));
+                        self.lower_call(inner_callee, &inner_call.args);
+                    }
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, .. }) => match &**body {
                             BlockStmtOrExpr::BlockStmt(stmt) => {
@@ -3754,6 +3803,11 @@ impl Environment {
     }
 
     #[inline]
+    pub fn get_all_functions_and_closures(&self) -> Vec<DefId> {
+        self.defs.get_all_functions_and_closures()
+    }
+
+    #[inline]
     fn reserve_global_scope(&mut self, module: ModId) -> DefId {
         let defid = self.add_anonymous("__GLOBAL", AnonType::Closure, module);
         self.global.insert(module, defid);
@@ -4128,6 +4182,17 @@ impl Definitions {
             .iter_enumerated()
             .filter(|(defid, defkind)| defkind == &&DefKind::Function(()))
             .map(|(defid, defkind)| defid)
+            .collect_vec()
+    }
+
+    /// Returns all `DefId`s with function bodies, including closures (class methods, arrow fns).
+    pub fn get_all_functions_and_closures(&self) -> Vec<DefId> {
+        self.defs
+            .iter_enumerated()
+            .filter(|(_defid, defkind)| {
+                defkind == &&DefKind::Function(()) || defkind == &&DefKind::Closure(())
+            })
+            .map(|(defid, _defkind)| defid)
             .collect_vec()
     }
 }

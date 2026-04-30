@@ -7,11 +7,11 @@ use crate::{
         WithCallStack,
     },
     ir::{
-        Base, BasicBlock, BasicBlockId, Inst, Intrinsic, Literal, Location, Operand, Projection,
-        VarId, VarKind, Variable,
+        Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
+        Projection, Rvalue, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    utils::{add_elements_to_intrinsic_struct, translate_request_type},
+    utils::{add_elements_to_intrinsic_struct, convert_lit_to_raw, translate_request_type},
     worklist::WorkList,
 };
 use core::fmt;
@@ -20,7 +20,7 @@ use forge_permission_resolver::permissions_resolver::{
 };
 use forge_utils::FxHashMap;
 use itertools::Itertools;
-use regex::Regex;
+use regex::{Regex, RegexSet};
 use smallvec::SmallVec;
 use std::{
     cmp::max,
@@ -1077,6 +1077,741 @@ impl Checker<'_> for SecretChecker {
     type Vuln = SecretVuln;
 }
 
+#[derive(Debug, Clone)]
+pub enum AuthHeaderVulnKind {
+    BasicAuth,
+    BearerAdmin,
+}
+
+#[derive(Debug)]
+pub struct AuthHeaderVuln {
+    kind: AuthHeaderVulnKind,
+    /// The API call that triggered the finding
+    /// (e.g. "fetch", "requestJira"). Surfaced in the proof.
+    api_call: &'static str,
+    /// The validated URL/route string that was matched as Atlassian-bound.
+    /// `None` for platform API shims whose route operand is opaque (tagged
+    /// template) and could not be resolved. Surfaced in the proof.
+    url: Option<String>,
+    stack: String,
+    entry_func: String,
+    file: PathBuf,
+}
+
+impl AuthHeaderVuln {
+    fn new(
+        kind: AuthHeaderVulnKind,
+        api_call: &'static str,
+        url: Option<String>,
+        callstack: Vec<Frame>,
+        env: &Environment,
+        entry: &EntryPoint,
+    ) -> Self {
+        let entry_func = match &entry.kind {
+            EntryKind::Function(func) => func.clone(),
+            EntryKind::Resolver(res, prop) => format!("{res}.{prop}"),
+            EntryKind::Empty => {
+                warn!("empty function");
+                String::new()
+            }
+        };
+        let file = entry.file.clone();
+        let stack = Itertools::intersperse(
+            iter::once(&*entry_func).chain(
+                callstack
+                    .into_iter()
+                    .rev()
+                    .map(|frame| env.def_name(frame.calling_function)),
+            ),
+            " -> ",
+        )
+        .collect();
+        Self {
+            kind,
+            api_call,
+            url,
+            stack,
+            entry_func,
+            file,
+        }
+    }
+}
+
+/// Returns a short, stable display name for the API call associated with a
+/// recognized intrinsic. Used in `AuthHeaderVuln` proofs to surface which
+/// call triggered the finding (e.g. `fetch`, `requestJira`, `requestGraph`).
+fn api_call_name(intrinsic: &Intrinsic) -> &'static str {
+    match intrinsic {
+        Intrinsic::Fetch => "fetch",
+        Intrinsic::ApiCall(name) | Intrinsic::SafeCall(name) => match name {
+            IntrinsicName::RequestJira => "requestJira",
+            IntrinsicName::RequestJiraAny => "requestJiraAny",
+            IntrinsicName::RequestJiraSoftware => "requestJiraSoftware",
+            IntrinsicName::RequestJiraServiceManagement => "requestJiraServiceManagement",
+            IntrinsicName::RequestConfluence => "requestConfluence",
+            IntrinsicName::RequestBitbucket => "requestBitbucket",
+            IntrinsicName::RequestGraph => "requestGraph",
+            IntrinsicName::RequestCompass(_) => "requestCompass",
+            IntrinsicName::Other => "request",
+        },
+        _ => "request",
+    }
+}
+
+impl fmt::Display for AuthHeaderVuln {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            AuthHeaderVulnKind::BasicAuth => {
+                write!(f, "HTTP Basic Authorization header on fetch")
+            }
+            AuthHeaderVulnKind::BearerAdmin => {
+                write!(
+                    f,
+                    "Bearer token used with Atlassian admin API endpoint on fetch"
+                )
+            }
+        }
+    }
+}
+
+impl IntoVuln for AuthHeaderVuln {
+    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.file
+            .iter()
+            .skip_while(|comp| *comp != "src")
+            .for_each(|comp| comp.hash(&mut hasher));
+        self.entry_func.hash(&mut hasher);
+        self.stack.hash(&mut hasher);
+
+        match self.kind {
+            AuthHeaderVulnKind::BasicAuth => Vulnerability {
+                check_name: format!("Basic-Authorization-{}", hasher.finish()),
+                description: format!(
+                    "HTTP Basic authentication used in {} request from {} in {:?}.",
+                    self.api_call, self.entry_func, self.file
+                ),
+                recommendation: "Prefer OAuth or API tokens scoped to least privilege. If Basic auth is required, load credentials from Forge secrets or environment variables and avoid logging or exposing the Authorization header.",
+                proof: format!(
+                    "Basic Authorization header on {} call to {} found via {}",
+                    self.api_call,
+                    self.url.as_deref().unwrap_or("<unresolved url>"),
+                    self.stack
+                ),
+                severity: Severity::Critical,
+                app_key: reporter.app_key().to_owned(),
+                app_name: reporter.app_name().to_owned(),
+                marketplace_security_requirement: "Requirement 10",
+                date: reporter.current_date(),
+            },
+            AuthHeaderVulnKind::BearerAdmin => Vulnerability {
+                check_name: format!("Bearer-Admin-{}", hasher.finish()),
+                description: format!(
+                    "Bearer token used with Atlassian admin API endpoint in {} from {} in {:?}.",
+                    self.api_call, self.entry_func, self.file
+                ),
+                recommendation: "Avoid using admin API tokens in Forge apps. Prefer scoped OAuth tokens or Forge-native APIs.",
+                proof: format!(
+                    "Bearer token on admin API {} call to {} found via {}",
+                    self.api_call,
+                    self.url.as_deref().unwrap_or("<unresolved url>"),
+                    self.stack
+                ),
+                severity: Severity::Medium,
+                app_key: reporter.app_key().to_owned(),
+                app_name: reporter.app_name().to_owned(),
+                marketplace_security_requirement: "Requirement 10",
+                date: reporter.current_date(),
+            },
+        }
+    }
+}
+
+impl WithCallStack for AuthHeaderVuln {
+    fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
+}
+
+pub struct AuthHeaderDataflow {
+    needs_call: Vec<DefId>,
+}
+
+impl<'cx> Dataflow<'cx> for AuthHeaderDataflow {
+    type State = SecretState;
+
+    fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
+        _interp: &Interp<'cx, C>,
+    ) -> Self {
+        Self { needs_call: vec![] }
+    }
+
+    fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &mut Interp<'cx, C>,
+        _def: DefId,
+        _loc: Location,
+        _block: &'cx BasicBlock,
+        _intrinsic: &'cx Intrinsic,
+        initial_state: Self::State,
+        _operands: SmallVec<[crate::ir::Operand; 4]>,
+    ) -> Self::State {
+        initial_state
+    }
+
+    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &Interp<'cx, C>,
+        _def: DefId,
+        _loc: Location,
+        _block: &'cx BasicBlock,
+        callee: &'cx crate::ir::Operand,
+        initial_state: Self::State,
+        _operands: SmallVec<[crate::ir::Operand; 4]>,
+    ) -> Self::State {
+        let Some((callee_def, _body)) = self.resolve_call(interp, callee) else {
+            return initial_state;
+        };
+        self.needs_call.push(callee_def);
+        SecretState::ALL
+    }
+
+    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &mut Interp<'cx, C>,
+        def: DefId,
+        block: &'cx BasicBlock,
+        state: Self::State,
+        worklist: &mut WorkList<DefId, BasicBlockId>,
+    ) {
+        self.super_join_term(interp, def, block, state, worklist);
+        for def in self.needs_call.drain(..) {
+            worklist.push_front_blocks(interp.env(), def, interp.call_all);
+        }
+    }
+}
+
+pub struct AuthHeaderChecker {
+    vulns: Vec<AuthHeaderVuln>,
+}
+
+impl Default for AuthHeaderChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AuthHeaderChecker {
+    pub fn new() -> Self {
+        Self { vulns: vec![] }
+    }
+
+    pub fn into_vulns(self) -> impl IntoIterator<Item = AuthHeaderVuln> {
+        self.vulns.into_iter()
+    }
+
+    /// Merges vulnerabilities from another checker (typically the full-scan pass)
+    /// into this checker, avoiding duplicates.
+    pub fn extend_vulns(&mut self, other: AuthHeaderChecker) {
+        self.vulns.extend(other.vulns);
+    }
+}
+
+const ATLASSIAN_HOST_SUFFIXES: &[&str] = &[
+    "atlassian.net",
+    "atlassian.com",
+    "jira-dev.com",
+    "atl-paas.net",
+    "bitbucket.org",
+    "trello.com",
+    "statuspage.io",
+    "opsgenie.com",
+    "loom.com",
+    "halp.com",
+    "mindville.com",
+];
+
+fn host_is_atlassian(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    ATLASSIAN_HOST_SUFFIXES.iter().any(|&suffix| {
+        host == suffix
+            || host
+                .strip_suffix(suffix)
+                .is_some_and(|rest| rest.ends_with('.'))
+    })
+}
+
+/// Cached regex for extracting the host from an `http(s)://` URL.
+fn url_host_re() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)^\s*https?://([^/\s?#:]*)").unwrap())
+}
+
+/// Cached `RegexSet` built from the comprehensive Atlassian endpoint list
+/// (`atlassian_rest_endpoints.txt`). Each line in the file is a regex pattern
+/// matching a known Atlassian REST API path. The set is compiled once into a
+/// single DFA for O(n) matching regardless of pattern count.
+fn atlassian_path_set() -> &'static RegexSet {
+    static SET: std::sync::OnceLock<RegexSet> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        let raw = include_str!("../../../atlassian_rest_api_endpoints.txt");
+        // Replace [^/]+ with [^/]* so that dynamic path segments match
+        // empty strings — which arise when template quasis are joined without
+        // their substitution values (e.g. `${orgId}` collapses to "").
+        let patterns: Vec<String> = raw
+            .lines()
+            .map(|l: &str| l.trim())
+            .filter(|l: &&str| !l.is_empty() && !l.starts_with('#'))
+            .map(|l: &str| {
+                // Transformations:
+                // 1. Strip trailing `$` so patterns match as prefixes — extra
+                //    path segments after the matched endpoint are accepted.
+                // 2. Replace `[^/]+` with `[^/]*` so dynamic segments match
+                //    empty strings produced by template substitutions
+                //    (e.g. `${orgId}` collapses to "" when joining quasis).
+                // 3. Normalize REST API version segments so `latest` is
+                //    interchangeable with the numeric versions (`2`/`3`).
+                let l = l.trim_end_matches('$').replace("[^/]+", "[^/]*");
+                l.replace("rest/api/2/", "rest/api/(2|3|latest)/")
+                    .replace("rest/api/3/", "rest/api/(2|3|latest)/")
+                    .replace("rest/agile/1.0/", "rest/agile/(1\\.0|latest)/")
+            })
+            .collect();
+        RegexSet::new(&patterns).expect("failed to compile atlassian endpoint RegexSet")
+    })
+}
+
+/// Case-insensitively strips an `https://` or `http://` scheme prefix.
+/// Returns the substring after the scheme, or `None` if no scheme is present.
+fn strip_scheme_ci(url: &str) -> Option<&str> {
+    if url.len() >= 8 && url.is_char_boundary(8) && url[..8].eq_ignore_ascii_case("https://") {
+        Some(&url[8..])
+    } else if url.len() >= 7 && url.is_char_boundary(7) && url[..7].eq_ignore_ascii_case("http://")
+    {
+        Some(&url[7..])
+    } else {
+        None
+    }
+}
+
+/// Extracts the path portion from a URL string for endpoint matching.
+/// - Full URL `https://host/path...` → `/path...`
+/// - Relative path `/rest/api/3/...` → `/rest/api/3/...`
+/// - Query strings are stripped: `/rest/api/3/issue?foo=bar` → `/rest/api/3/issue`
+/// - Scheme stripping is case-insensitive: `Https://...` is handled.
+fn extract_path_for_matching(url: &str) -> &str {
+    let after_scheme = strip_scheme_ci(url);
+    let path = match after_scheme {
+        Some(rest) => {
+            // Full URL — strip host portion
+            rest.find('/').map(|i| &rest[i..]).unwrap_or(rest)
+        }
+        None => {
+            // No scheme. If the first segment contains a dot it's likely a
+            // bare host (e.g. `api.atlassian.com/rest/...` from test fixtures
+            // that can't use `//`). Extract the path from the first `/`.
+            if let Some(slash) = url.find('/') {
+                let maybe_host = &url[..slash];
+                if maybe_host.contains('.') {
+                    &url[slash..]
+                } else {
+                    url
+                }
+            } else {
+                url
+            }
+        }
+    };
+    // Normalize leading double-slash from template substitution
+    // (e.g. `${baseUrl}/rest/...` where baseUrl is empty → `//rest/...`)
+    let path = path.strip_prefix('/').unwrap_or(path);
+    // Strip query string and fragment
+    let path = path.split_once('?').map_or(path, |(p, _)| p);
+    path.split_once('#').map_or(path, |(p, _)| p)
+}
+
+/// Cached regex matching Atlassian admin-scoped REST API path patterns.
+fn admin_path_re() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?ix)
+              ( ^ | [^A-Za-z0-9_] )
+              /?
+              (
+                  admin/v[12]/orgs                               (?: [^A-Za-z0-9_-] | $ )
+                | admin/control/v[12]/orgs                       (?: [^A-Za-z0-9_-] | $ )
+                | admin/user-provisioning/v1/org                 (?: [^A-Za-z0-9_-] | $ )
+                | scim/directory/[^/]+/(ResourceTypes|Schemas|ServiceProviderConfig|Groups|Users)
+                                                                  (?: [^A-Za-z0-9_-] | $ )
+                | users/[^/]+/manage                              (?: [^A-Za-z0-9_-] | $ )
+                | orgs/[^/]+/(classification-levels|api-tokens|service-accounts|api-keys)
+                                                                  (?: [^A-Za-z0-9_-] | $ )
+              )",
+        )
+        .unwrap()
+    })
+}
+
+pub fn is_admin_path(url: &str) -> bool {
+    admin_path_re().is_match(url)
+}
+
+/// Returns `true` if `url` (full URL or relative path) targets an Atlassian
+/// product endpoint.
+///
+/// 1. **Full http(s) URL**: extracts the host and suffix-matches against
+///    [`ATLASSIAN_HOST_SUFFIXES`]. An empty host (e.g. `https:///rest/...`)
+///    falls through to the path check. A non-empty non-Atlassian host returns
+///    `false` immediately.
+/// 2. **Relative path / empty host**: matched against known Atlassian product
+///    REST API path patterns via [`atlassian_path_re`].
+pub fn is_atlassian_url(url: &str) -> bool {
+    if url.is_empty() {
+        return false;
+    }
+
+    if let Some(caps) = url_host_re().captures(url) {
+        let host = caps.get(1).map_or("", |m| m.as_str());
+        if !host.is_empty() {
+            return host_is_atlassian(host);
+        }
+        // Empty host (e.g. `https:///rest/...`) — fall through to path check.
+    }
+
+    atlassian_path_set().is_match(extract_path_for_matching(url))
+}
+
+/// Detected authorization scheme from IR-level inspection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthScheme {
+    Basic,
+    Bearer,
+}
+
+/// Inspects a literal string to determine if it starts with an auth scheme prefix.
+fn classify_auth_literal(s: &str) -> Option<AuthScheme> {
+    if s.len() >= 6 && s[..6].eq_ignore_ascii_case("basic ") {
+        Some(AuthScheme::Basic)
+    } else if s.len() >= 7 && s[..7].eq_ignore_ascii_case("bearer ") {
+        Some(AuthScheme::Bearer)
+    } else {
+        None
+    }
+}
+
+/// Extracts an auth scheme prefix from the IR instructions that define the
+/// Authorization header value. This handles cases where the value resolves to
+/// `Unknown` because it was built via concatenation (e.g. `"Basic " + token`)
+/// or a template literal (e.g. `` `Basic ${token}` ``).
+///
+/// The function searches two patterns:
+/// 1. Direct assignment to `target_varid` with no projection (the value was
+///    assigned to a temp var that the value manager later resolved).
+/// 2. Assignment with a projection ending in `Authorization`/`authorization`
+///    on the headers object VarId (inline object literal case).
+///
+/// For each match, it inspects the rvalue for `BinOp(Add, ...)` or `Template`
+/// with a recognizable auth scheme literal prefix.
+///
+/// Returns `Some(AuthScheme)` if a recognizable prefix is found, `None` otherwise.
+fn extract_auth_scheme_from_body(body: &crate::ir::Body, target: VarId) -> Option<AuthScheme> {
+    for (_, block) in body.iter_blocks_enumerated() {
+        for inst in &block.insts {
+            let (assigned_var, rvalue) = match inst {
+                Inst::Assign(var, rval) => (var, rval),
+                Inst::Expr(_) => continue,
+            };
+
+            let is_direct_target =
+                assigned_var.base == Base::Var(target) && assigned_var.projections.is_empty();
+
+            // Only match Authorization projections on the specific headers
+            // VarId we're inspecting — not on any VarId in the body — to
+            // avoid cross-contaminating auth headers from different call sites
+            // within the same function body.
+            let is_auth_projection = assigned_var.base == Base::Var(target)
+                && assigned_var.projections.iter().any(|p| {
+                    matches!(p, Projection::Known(name) if name.eq_ignore_ascii_case("authorization"))
+                });
+
+            if !is_direct_target && !is_auth_projection {
+                continue;
+            }
+
+            if let Some(scheme) = classify_rvalue_auth_scheme(rvalue, body) {
+                return Some(scheme);
+            }
+        }
+    }
+    None
+}
+
+/// Inspects an Rvalue for auth scheme prefixes in concatenations and templates.
+/// Also follows `Rvalue::Read(Var(v))` chains (up to a bounded depth) to handle
+/// cases where the Authorization property reads from a separate variable that
+/// holds the concat result, possibly through intermediate copies.
+fn classify_rvalue_auth_scheme(rvalue: &Rvalue, body: &crate::ir::Body) -> Option<AuthScheme> {
+    match rvalue {
+        // "Basic " + token  or  token + "Basic ..."
+        Rvalue::Bin(BinOp::Add, op1, op2) => {
+            operand_auth_scheme(op1).or_else(|| operand_auth_scheme(op2))
+        }
+        // `Basic ${token}` — check the first quasi
+        Rvalue::Template(template) => template
+            .quasis
+            .first()
+            .and_then(|q| classify_auth_literal(q)),
+        // Authorization: basicAuthHeader — follow read chain to find the defining instruction
+        Rvalue::Read(Operand::Var(Variable {
+            base: Base::Var(source_var),
+            projections,
+        })) if projections.is_empty() => follow_var_to_auth_scheme(body, *source_var, 4),
+        _ => None,
+    }
+}
+
+/// Follows a VarId through `Read(Var)` assignments up to `depth` levels to find
+/// a `BinOp(Add, ...)` or `Template(...)` that reveals the auth scheme prefix.
+fn follow_var_to_auth_scheme(
+    body: &crate::ir::Body,
+    target: VarId,
+    depth: u8,
+) -> Option<AuthScheme> {
+    if depth == 0 {
+        return None;
+    }
+    for (_, blk) in body.iter_blocks_enumerated() {
+        for inst in &blk.insts {
+            if let Inst::Assign(var, rval) = inst
+                && var.base == Base::Var(target)
+                && var.projections.is_empty()
+            {
+                match rval {
+                    Rvalue::Bin(BinOp::Add, op1, op2) => {
+                        return operand_auth_scheme(op1).or_else(|| operand_auth_scheme(op2));
+                    }
+                    Rvalue::Template(template) => {
+                        return template
+                            .quasis
+                            .first()
+                            .and_then(|q| classify_auth_literal(q));
+                    }
+                    Rvalue::Read(Operand::Var(Variable {
+                        base: Base::Var(next_var),
+                        projections,
+                    })) if projections.is_empty() => {
+                        return follow_var_to_auth_scheme(body, *next_var, depth - 1);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Checks whether an operand is a literal string with an auth scheme prefix.
+fn operand_auth_scheme(op: &Operand) -> Option<AuthScheme> {
+    match op {
+        Operand::Lit(Literal::Str(s)) => classify_auth_literal(s),
+        _ => None,
+    }
+}
+
+/// Tries to extract the URL string from a VarId by walking the IR when the
+/// value lattice resolves to `Unknown` (e.g. template literals with unknown
+/// substitutions where the static quasis still contain the host). Follows
+/// `Read(Var)` chains up to a bounded depth to handle intermediate copies.
+fn extract_url_prefix_from_body(body: &crate::ir::Body, target: VarId) -> Option<String> {
+    extract_url_prefix_from_var(body, target, 4)
+}
+
+fn extract_url_prefix_from_var(body: &crate::ir::Body, target: VarId, depth: u8) -> Option<String> {
+    if depth == 0 {
+        return None;
+    }
+    for (_, block) in body.iter_blocks_enumerated() {
+        for inst in &block.insts {
+            let (assigned_var, rvalue) = match inst {
+                Inst::Assign(var, rval) => (var, rval),
+                Inst::Expr(_) => continue,
+            };
+            if assigned_var.base != Base::Var(target) || !assigned_var.projections.is_empty() {
+                continue;
+            }
+            match rvalue {
+                // String concatenation: take whichever operand is a literal.
+                // Handles both `"prefix" + var` and `var + "/suffix/path"`.
+                Rvalue::Bin(BinOp::Add, op1, op2) => {
+                    if let Operand::Lit(Literal::Str(s)) = op1 {
+                        return Some(s.to_string());
+                    }
+                    if let Operand::Lit(Literal::Str(s)) = op2 {
+                        return Some(s.to_string());
+                    }
+                }
+                Rvalue::Template(template) => {
+                    let joined: String = template.quasis.iter().map(|q| q.as_ref()).collect();
+                    if !joined.is_empty() {
+                        return Some(joined);
+                    }
+                }
+                Rvalue::Read(Operand::Var(Variable {
+                    base: Base::Var(source_var),
+                    projections,
+                })) if projections.is_empty() => {
+                    return extract_url_prefix_from_var(body, *source_var, depth - 1);
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+impl<'cx> Runner<'cx> for AuthHeaderChecker {
+    type State = SecretState;
+    type Dataflow = AuthHeaderDataflow;
+
+    const NAME: &'static str = "AuthHeader";
+
+    fn visit_intrinsic(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        intrinsic: &'cx Intrinsic,
+        def: DefId,
+        state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
+    ) -> ControlFlow<(), Self::State> {
+        // Determine if this is a fetch-like or platform API intrinsic.
+        // Platform API shims (requestJira, requestConfluence, etc.) are always
+        // Atlassian calls, so the api.atlassian.com URL check is skipped.
+        let is_platform_api = matches!(intrinsic, Intrinsic::ApiCall(_) | Intrinsic::SafeCall(_));
+        let is_fetch = matches!(intrinsic, Intrinsic::Fetch);
+        // requestGraph(query, variables, options) — options at index 2
+        let is_request_graph = matches!(
+            intrinsic,
+            Intrinsic::ApiCall(IntrinsicName::RequestGraph)
+                | Intrinsic::SafeCall(IntrinsicName::RequestGraph)
+        );
+
+        if is_fetch || is_platform_api {
+            let ops = operands.unwrap_or_default();
+
+            // requestGraph takes (query, variables, options) so options is at index 2.
+            // For fetch and all other request* shims, options is at index 1.
+            let opts_index = if is_request_graph { 2 } else { 1 };
+
+            // Resolve URL from operand 0.
+            // Try the value lattice first; fall back to IR inspection for
+            // template literals / concatenations with unknown parts.
+            let url_str: Option<String> = match ops.first() {
+                Some(Operand::Var(Variable {
+                    base: Base::Var(varid),
+                    ..
+                })) => match interp.get_value(def, *varid, None) {
+                    Some(Value::Const(Const::Literal(s))) => Some(s.clone()),
+                    Some(Value::Phi(phi)) => phi.iter().map(|Const::Literal(s)| s.clone()).next(),
+                    _ => extract_url_prefix_from_body(interp.body(), *varid),
+                },
+                Some(Operand::Lit(lit)) => convert_lit_to_raw(lit),
+                _ => None,
+            };
+
+            if let Some(Operand::Var(Variable {
+                base: Base::Var(varid),
+                ..
+            })) = ops.get(opts_index)
+            {
+                let varid_argument =
+                    if let Some(Value::Object(varid)) = interp.get_value(def, *varid, None) {
+                        varid
+                    } else {
+                        varid
+                    };
+                let headers_proj = projvec_from_str("headers");
+                if let Some(Value::Object(varid)) =
+                    interp.get_value(def, *varid_argument, Some(headers_proj))
+                {
+                    let auth_proj = projvec_from_str("Authorization");
+                    let aut_proj_lower = projvec_from_str("authorization");
+                    let auth_val = interp
+                        .get_value(def, *varid, Some(auth_proj.clone()))
+                        .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower.clone())));
+
+                    // Try to determine the auth scheme from the resolved value.
+                    // If the value is fully known, classify directly. If unknown
+                    // (e.g. "Basic " + variable), walk the IR to inspect the
+                    // operands of the concatenation/template that produced it.
+                    let auth_scheme: Option<AuthScheme> = match auth_val {
+                        Some(Value::Const(Const::Literal(s))) => classify_auth_literal(s),
+                        Some(Value::Phi(phi)) => phi
+                            .iter()
+                            .find_map(|Const::Literal(s)| classify_auth_literal(s)),
+                        Some(Value::Unknown) | None => {
+                            // Value collapsed to Unknown — inspect the IR directly.
+                            // The auth header VarId is `*varid` from the headers object.
+                            extract_auth_scheme_from_body(interp.body(), *varid)
+                        }
+                        _ => None,
+                    };
+
+                    if let Some(scheme) = auth_scheme {
+                        match scheme {
+                            AuthScheme::Basic => {
+                                // Platform API shims (requestJira, requestConfluence,
+                                // requestBitbucket, requestGraph) always target
+                                // Atlassian APIs — their route operand is opaque
+                                // (tagged template) so URL resolution won't help.
+                                // For fetch / api.fetch / node-fetch the full URL
+                                // must target an Atlassian endpoint.
+                                let should_flag = is_platform_api
+                                    || url_str.as_deref().is_some_and(is_atlassian_url);
+                                if should_flag {
+                                    self.vulns.push(AuthHeaderVuln::new(
+                                        AuthHeaderVulnKind::BasicAuth,
+                                        api_call_name(intrinsic),
+                                        url_str.clone(),
+                                        interp.callstack(),
+                                        interp.env(),
+                                        interp.entry(),
+                                    ));
+                                }
+                            }
+                            AuthScheme::Bearer if is_fetch => {
+                                // BearerAdmin is only checked for fetch, not
+                                // platform API shims.
+                                let should_flag = url_str.as_deref().is_some_and(|s| {
+                                    (s.contains("api.atlassian.com") && s.contains("admin"))
+                                        || is_admin_path(s)
+                                });
+                                if should_flag {
+                                    self.vulns.push(AuthHeaderVuln::new(
+                                        AuthHeaderVulnKind::BearerAdmin,
+                                        api_call_name(intrinsic),
+                                        url_str.clone(),
+                                        interp.callstack(),
+                                        interp.env(),
+                                        interp.entry(),
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        ControlFlow::Continue(*state)
+    }
+}
+
+impl Checker<'_> for AuthHeaderChecker {
+    type Vuln = AuthHeaderVuln;
+}
+
 pub struct PermissionDataflow {
     needs_call: Vec<(DefId, Vec<Operand>)>,
     pub varid_to_value: FxHashMap<(DefId, VarId, Option<Projection>), Value>,
@@ -1217,7 +1952,9 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     interp.bitbucket_permission_resolver,
                     interp.bitbucket_regex_map,
                 ),
-                IntrinsicName::RequestCompass(_) | IntrinsicName::Other => {
+                IntrinsicName::RequestCompass(_)
+                | IntrinsicName::RequestGraph
+                | IntrinsicName::Other => {
                     (&PermissionHashMap::new(), &HashMap::<String, Regex>::new())
                 }
             };

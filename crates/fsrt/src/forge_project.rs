@@ -95,6 +95,8 @@ impl<'a> ForgeProject<'a> {
             let (func_name, path) = entrypoint.function.into_func_path();
             let module = self.ctx.modid_from_path(&path)?;
             let def_id = self.env.module_export(module, func_name)?;
+            // Resolve ExportAlias / ResolverHandler chains to the actual definition.
+            let def_id = self.env.resolve_alias(def_id);
             Some(ResolvedEntryPoint {
                 func_name,
                 path,
