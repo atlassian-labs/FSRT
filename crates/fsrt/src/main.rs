@@ -82,9 +82,9 @@ pub struct Args {
     #[arg(long)]
     graphql_schema_path: Option<PathBuf>,
 
-    /// If true, use cached permissions; otherwise, re-download and reparse Swagger files.
-    #[arg(long, default_value_t = true)]
-    cached_permissions: bool,
+    /// If true, disable cached permissions and re-download and reparse Swagger files.
+    #[arg(long, default_value_t = false)]
+    no_cache: bool,
 
     /// Path to store or load cached permissions. If not provided, defaults to `~/.cache/fsrt`.
     #[arg(long)]
@@ -445,8 +445,10 @@ pub(crate) fn scan_directory<'a>(
         .collect::<Vec<_>>();
 
     let config = CacheConfig::new(
-        opts.cached_permissions
-            && match std::env::var("FSRT_CACHE") {
+        if opts.no_cache {
+            false
+        } else {
+            match std::env::var("FSRT_CACHE") {
                 Err(_) => true,
                 Ok(s) => {
                     let t = s.trim();
@@ -458,7 +460,8 @@ pub(crate) fn scan_directory<'a>(
                         _ => true,
                     }
                 }
-            },
+            }
+        },
         opts.cached_permissions_path.clone(),
     );
 
