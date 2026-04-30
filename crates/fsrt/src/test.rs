@@ -50,10 +50,7 @@ impl ReportExt for Report {
     fn contains_basic_auth_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
             .iter()
-            .filter(|vuln| {
-                vuln.check_name()
-                    .starts_with("Custom-Check-Basic-Authorization-")
-            })
+            .filter(|vuln| vuln.check_name().starts_with("Basic-Authorization-"))
             .count()
             == expected_len
     }
@@ -62,7 +59,7 @@ impl ReportExt for Report {
     fn contains_bearer_admin_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
             .iter()
-            .filter(|vuln| vuln.check_name().starts_with("Custom-Check-Bearer-Admin-"))
+            .filter(|vuln| vuln.check_name().starts_with("Bearer-Admin-"))
             .count()
             == expected_len
     }
