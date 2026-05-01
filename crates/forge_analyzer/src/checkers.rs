@@ -1214,7 +1214,7 @@ impl IntoVuln for AuthHeaderVuln {
                     "Basic Authorization header found: {}",
                     proof_lines.join("; ")
                 ),
-                severity: Severity::High,
+                severity: Severity::Medium,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
                 marketplace_security_requirement: "Requirement 10",
@@ -1231,7 +1231,7 @@ impl IntoVuln for AuthHeaderVuln {
                     "Bearer token on Atlassian admin API found: {}",
                     proof_lines.join("; ")
                 ),
-                severity: Severity::High,
+                severity: Severity::Medium,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
                 marketplace_security_requirement: "Requirement 10",
