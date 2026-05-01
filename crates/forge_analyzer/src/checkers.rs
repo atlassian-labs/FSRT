@@ -1221,7 +1221,7 @@ impl IntoVuln for AuthHeaderVuln {
                 date: reporter.current_date(),
             },
             AuthHeaderVulnKind::BearerAdmin => Vulnerability {
-                check_name: "Custom-Check-Bearer-Admin".to_string(),
+                check_name: "Bearer-Admin".to_string(),
                 description: format!(
                     "Bearer token used with Atlassian admin API in {} {} call(s) from {:?}.",
                     count, self.api_call, self.file
