@@ -1089,12 +1089,11 @@ pub struct AuthHeaderVuln {
     /// The API call that triggered the finding
     /// (e.g. "fetch", "requestJira"). Surfaced in the proof.
     api_call: &'static str,
-    /// The validated URL/route string that was matched as Atlassian-bound.
-    /// `None` for platform API shims whose route operand is opaque (tagged
-    /// template) and could not be resolved. Surfaced in the proof.
-    url: Option<String>,
-    stack: String,
-    entry_func: String,
+    /// Validated URL/route strings matched as Atlassian-bound, one per
+    /// individual finding batched into this vuln.
+    urls: Vec<Option<String>>,
+    /// Call stacks for each individual finding, one per batched entry.
+    stacks: Vec<String>,
     file: PathBuf,
 }
 
@@ -1129,11 +1128,14 @@ impl AuthHeaderVuln {
         Self {
             kind,
             api_call,
-            url,
-            stack,
-            entry_func,
+            urls: vec![url],
+            stacks: vec![stack],
             file,
         }
+    }
+
+    fn count(&self) -> usize {
+        self.stacks.len()
     }
 }
 
@@ -1162,12 +1164,19 @@ impl fmt::Display for AuthHeaderVuln {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
             AuthHeaderVulnKind::BasicAuth => {
-                write!(f, "HTTP Basic Authorization header on fetch")
+                write!(
+                    f,
+                    "HTTP Basic auth via {} ({})",
+                    self.api_call,
+                    self.count()
+                )
             }
             AuthHeaderVulnKind::BearerAdmin => {
                 write!(
                     f,
-                    "Bearer token used with Atlassian admin API endpoint on fetch"
+                    "Bearer token on admin API via {} ({})",
+                    self.api_call,
+                    self.count()
                 )
             }
         }
@@ -1176,51 +1185,53 @@ impl fmt::Display for AuthHeaderVuln {
 
 impl IntoVuln for AuthHeaderVuln {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+        let count = self.count();
 
-        let mut hasher = DefaultHasher::new();
-        self.file
+        // Build a proof line per batched finding: "<api_call> call to <url> via <stack>"
+        let proof_lines: Vec<String> = self
+            .stacks
             .iter()
-            .skip_while(|comp| *comp != "src")
-            .for_each(|comp| comp.hash(&mut hasher));
-        self.entry_func.hash(&mut hasher);
-        self.stack.hash(&mut hasher);
+            .zip(self.urls.iter())
+            .map(|(stack, url)| {
+                format!(
+                    "{} call to {} via {}",
+                    self.api_call,
+                    url.as_deref().unwrap_or("<unresolved url>"),
+                    stack
+                )
+            })
+            .collect();
 
         match self.kind {
             AuthHeaderVulnKind::BasicAuth => Vulnerability {
-                check_name: format!("Basic-Authorization-{}", hasher.finish()),
+                check_name: format!("Custom-Check-Basic-Auth-{}", self.api_call),
                 description: format!(
-                    "HTTP Basic authentication used in {} request from {} in {:?}.",
-                    self.api_call, self.entry_func, self.file
+                    "HTTP Basic authentication detected in {} {} call(s) from {:?}.",
+                    count, self.api_call, self.file
                 ),
-                recommendation: "Prefer OAuth or API tokens scoped to least privilege. If Basic auth is required, load credentials from Forge secrets or environment variables and avoid logging or exposing the Authorization header.",
+                recommendation: "Use supported authentication mechanisms (such as OAuth 2.0 or Forge authentication). If you anticipate any blockers or require support, contact the Atlassian Ecosystem Security team.",
                 proof: format!(
-                    "Basic Authorization header on {} call to {} found via {}",
-                    self.api_call,
-                    self.url.as_deref().unwrap_or("<unresolved url>"),
-                    self.stack
+                    "Basic Authorization header found: {}",
+                    proof_lines.join("; ")
                 ),
-                severity: Severity::Critical,
+                severity: Severity::High,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
                 marketplace_security_requirement: "Requirement 10",
                 date: reporter.current_date(),
             },
             AuthHeaderVulnKind::BearerAdmin => Vulnerability {
-                check_name: format!("Bearer-Admin-{}", hasher.finish()),
+                check_name: "Custom-Check-Bearer-Admin".to_string(),
                 description: format!(
-                    "Bearer token used with Atlassian admin API endpoint in {} from {} in {:?}.",
-                    self.api_call, self.entry_func, self.file
+                    "Bearer token used with Atlassian admin API in {} {} call(s) from {:?}.",
+                    count, self.api_call, self.file
                 ),
-                recommendation: "Avoid using admin API tokens in Forge apps. Prefer scoped OAuth tokens or Forge-native APIs.",
+                recommendation: "Use supported authentication mechanisms (such as OAuth 2.0 or Forge authentication). If you anticipate any blockers or require support, contact the Atlassian Ecosystem Security team.",
                 proof: format!(
-                    "Bearer token on admin API {} call to {} found via {}",
-                    self.api_call,
-                    self.url.as_deref().unwrap_or("<unresolved url>"),
-                    self.stack
+                    "Bearer token on Atlassian admin API found: {}",
+                    proof_lines.join("; ")
                 ),
-                severity: Severity::Medium,
+                severity: Severity::High,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
                 marketplace_security_requirement: "Requirement 10",
@@ -1307,12 +1318,35 @@ impl AuthHeaderChecker {
         Self { vulns: vec![] }
     }
 
+    /// Returns batched vulnerabilities grouped by `(kind, api_call)`.
+    /// Multiple findings of the same kind and call type within the same app
+    /// are merged into a single `AuthHeaderVuln` with an aggregated proof.
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthHeaderVuln> {
-        self.vulns.into_iter()
+        let mut batched: Vec<AuthHeaderVuln> = Vec::new();
+        for vuln in self.vulns {
+            let kind_key: u8 = match vuln.kind {
+                AuthHeaderVulnKind::BasicAuth => 0,
+                AuthHeaderVulnKind::BearerAdmin => 1,
+            };
+            // Find an existing batch with the same (kind, api_call) — group per app
+            if let Some(existing) = batched.iter_mut().find(|b| {
+                let bk: u8 = match b.kind {
+                    AuthHeaderVulnKind::BasicAuth => 0,
+                    AuthHeaderVulnKind::BearerAdmin => 1,
+                };
+                bk == kind_key && b.api_call == vuln.api_call
+            }) {
+                existing.stacks.extend(vuln.stacks);
+                existing.urls.extend(vuln.urls);
+            } else {
+                batched.push(vuln);
+            }
+        }
+        batched.into_iter()
     }
 
     /// Merges vulnerabilities from another checker (typically the full-scan pass)
-    /// into this checker, avoiding duplicates.
+    /// into this checker. Deduplication happens in `into_vulns`.
     pub fn extend_vulns(&mut self, other: AuthHeaderChecker) {
         self.vulns.extend(other.vulns);
     }
@@ -1348,10 +1382,9 @@ fn url_host_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"(?i)^\s*https?://([^/\s?#:]*)").unwrap())
 }
 
-/// Cached `RegexSet` built from the comprehensive Atlassian endpoint list
-/// (`atlassian_rest_endpoints.txt`). Each line in the file is a regex pattern
-/// matching a known Atlassian REST API path. The set is compiled once into a
-/// single DFA for O(n) matching regardless of pattern count.
+/// Cached `RegexSet` built from `atlassian_rest_api_endpoints.txt`.
+/// Each line is a regex matching a known Atlassian REST API path.
+/// Compiled once into a single DFA — O(n) in URL length regardless of pattern count.
 fn atlassian_path_set() -> &'static RegexSet {
     static SET: std::sync::OnceLock<RegexSet> = std::sync::OnceLock::new();
     SET.get_or_init(|| {
@@ -1466,7 +1499,7 @@ pub fn is_admin_path(url: &str) -> bool {
 ///    falls through to the path check. A non-empty non-Atlassian host returns
 ///    `false` immediately.
 /// 2. **Relative path / empty host**: matched against known Atlassian product
-///    REST API path patterns via [`atlassian_path_re`].
+///    REST API path patterns via [`atlassian_path_set`].
 pub fn is_atlassian_url(url: &str) -> bool {
     if url.is_empty() {
         return false;
@@ -1501,21 +1534,10 @@ fn classify_auth_literal(s: &str) -> Option<AuthScheme> {
     }
 }
 
-/// Extracts an auth scheme prefix from the IR instructions that define the
-/// Authorization header value. This handles cases where the value resolves to
-/// `Unknown` because it was built via concatenation (e.g. `"Basic " + token`)
-/// or a template literal (e.g. `` `Basic ${token}` ``).
-///
-/// The function searches two patterns:
-/// 1. Direct assignment to `target_varid` with no projection (the value was
-///    assigned to a temp var that the value manager later resolved).
-/// 2. Assignment with a projection ending in `Authorization`/`authorization`
-///    on the headers object VarId (inline object literal case).
-///
-/// For each match, it inspects the rvalue for `BinOp(Add, ...)` or `Template`
-/// with a recognizable auth scheme literal prefix.
-///
-/// Returns `Some(AuthScheme)` if a recognizable prefix is found, `None` otherwise.
+/// Extracts an auth scheme from the IR body when the value lattice returns `Unknown`
+/// (e.g. `"Basic " + token` or `` `Basic ${token}` ``). Searches for assignments
+/// directly to `target` or to `target.Authorization`, scoped to that VarId to
+/// prevent cross-contamination between call sites in the same function body.
 fn extract_auth_scheme_from_body(body: &crate::ir::Body, target: VarId) -> Option<AuthScheme> {
     for (_, block) in body.iter_blocks_enumerated() {
         for inst in &block.insts {
