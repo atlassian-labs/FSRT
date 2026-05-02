@@ -1094,7 +1094,6 @@ pub struct AuthHeaderVuln {
     urls: Vec<Option<String>>,
     /// Call stacks for each individual finding, one per batched entry.
     stacks: Vec<String>,
-    file: PathBuf,
 }
 
 impl AuthHeaderVuln {
@@ -1114,7 +1113,6 @@ impl AuthHeaderVuln {
                 String::new()
             }
         };
-        let file = entry.file.clone();
         let stack = Itertools::intersperse(
             iter::once(&*entry_func).chain(
                 callstack
@@ -1130,7 +1128,6 @@ impl AuthHeaderVuln {
             api_call,
             urls: vec![url],
             stacks: vec![stack],
-            file,
         }
     }
 
@@ -1206,8 +1203,8 @@ impl IntoVuln for AuthHeaderVuln {
             AuthHeaderVulnKind::BasicAuth => Vulnerability {
                 check_name: format!("Custom-Check-Basic-Auth-{}", self.api_call),
                 description: format!(
-                    "HTTP Basic authentication detected in {} {} call(s) from {:?}.",
-                    count, self.api_call, self.file
+                    "HTTP Basic authentication detected in {} {} call(s).",
+                    count, self.api_call
                 ),
                 recommendation: "Use supported authentication mechanisms (such as OAuth 2.0 or Forge authentication). If you anticipate any blockers or require support, contact the Atlassian Ecosystem Security team.",
                 proof: format!(
@@ -1221,10 +1218,10 @@ impl IntoVuln for AuthHeaderVuln {
                 date: reporter.current_date(),
             },
             AuthHeaderVulnKind::BearerAdmin => Vulnerability {
-                check_name: "Bearer-Admin".to_string(),
+                check_name: "Custom-Check-Bearer-Admin".to_string(),
                 description: format!(
-                    "Bearer token used with Atlassian admin API in {} {} call(s) from {:?}.",
-                    count, self.api_call, self.file
+                    "Bearer token used with Atlassian admin API in {} {} call(s).",
+                    count, self.api_call
                 ),
                 recommendation: "Use supported authentication mechanisms (such as OAuth 2.0 or Forge authentication). If you anticipate any blockers or require support, contact the Atlassian Ecosystem Security team.",
                 proof: format!(
