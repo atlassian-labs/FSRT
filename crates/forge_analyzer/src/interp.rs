@@ -763,7 +763,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             {
                 // if there is an existing value...
                 match (existing_lval, rval_value) {
-                    // return unknown if either values are unknown
                     (Value::Unknown, _)
                     | (_, Value::Unknown)
                     | (Value::Const(_), Value::Object(_))
@@ -871,6 +870,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     .iter()
                     .map(|expr| self.value_from_operand(defid_block, expr.clone()))
                     .collect_vec();
+
                 if all_values.contains(&Value::Unknown) {
                     return Value::Unknown;
                 }
@@ -1229,7 +1229,12 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.curr_body.set(old_body);
     }
 
-    fn try_check_function(&mut self, def: DefId, checker: &mut C) -> Result<(), Error> {
+    /// Removes a DefId from the dataflow visited set so it can be re-analyzed.
+    pub fn reset_dataflow_visited(&mut self, def: DefId) {
+        self.dataflow_visited.remove(&def);
+    }
+
+    pub fn try_check_function(&mut self, def: DefId, checker: &mut C) -> Result<(), Error> {
         let resolved_def = self.env.resolve_alias(def);
         let name = self.env.def_name(resolved_def);
         debug!(%name, "found definition");
@@ -1242,6 +1247,27 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         _ = checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
         self.runner_visited.borrow_mut().clear();
         Ok(())
+    }
+
+    /// Sets the current entry point for tracing/reporting purposes.
+    pub fn set_entry(&mut self, file: PathBuf, function: String) {
+        self.entry = EntryPoint {
+            file,
+            kind: EntryKind::Function(function),
+        };
+    }
+
+    /// Checks a single function body without resolver-callback discovery.
+    /// Use this for full-function scans where entry points are iterated directly.
+    pub fn check_function(
+        &mut self,
+        def: DefId,
+        checker: &mut C,
+        file: PathBuf,
+        function: String,
+    ) -> Result<(), Error> {
+        self.set_entry(file, function);
+        self.try_check_function(def, checker)
     }
 
     #[instrument(level = "info", skip(self, checker, entry_file), fields(checker = %C::NAME, file = %entry_file.display()))]

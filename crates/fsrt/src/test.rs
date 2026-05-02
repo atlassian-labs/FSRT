@@ -25,6 +25,10 @@ trait ReportExt {
     fn contains_vulns(&self, expected_len: i32) -> bool;
 
     fn contains_authz_vuln(&self, expected_len: usize) -> bool;
+
+    fn contains_basic_auth_vuln(&self, expected_len: usize) -> bool;
+
+    fn contains_bearer_admin_vuln(&self, expected_len: usize) -> bool;
 }
 
 impl ReportExt for Report {
@@ -38,6 +42,24 @@ impl ReportExt for Report {
         self.into_vulns()
             .iter()
             .filter(|vuln| vuln.check_name().contains("Authorization"))
+            .count()
+            == expected_len
+    }
+
+    #[inline]
+    fn contains_basic_auth_vuln(&self, expected_len: usize) -> bool {
+        self.into_vulns()
+            .iter()
+            .filter(|vuln| vuln.check_name().starts_with("Custom-Check-Basic-Auth-"))
+            .count()
+            == expected_len
+    }
+
+    #[inline]
+    fn contains_bearer_admin_vuln(&self, expected_len: usize) -> bool {
+        self.into_vulns()
+            .iter()
+            .filter(|vuln| vuln.check_name().starts_with("Bearer-Admin"))
             .count()
             == expected_len
     }
@@ -169,20 +191,26 @@ impl<'a> ForgeProjectTrait<'a> for MockForgeProject<'a> {
     }
 }
 
-pub(crate) fn scan_directory_test(
+pub(crate) fn scan_directory_test_with_args(
     forge_test_proj: MockForgeProject<'_>,
+    mut args: Args,
 ) -> forge_analyzer::reporter::Report {
     let secret_packages: Vec<PackageData> = std::fs::File::open("../../secretdata.yaml")
         .map(|f| serde_yaml::from_reader(f).expect("Failed to deserialize packages"))
         .unwrap_or_else(|_| vec![]);
 
-    // disallow parsing arguments meant for test harness (e.g., --nocapture, --exact) from std::env::args()
-    let mut args = Args::parse_from([""]);
-
     match scan_directory(PathBuf::new(), &mut args, forge_test_proj, &secret_packages) {
         Ok(report) => report,
         Err(err) => panic!("error while scanning {err:?}"),
     }
+}
+
+pub(crate) fn scan_directory_test(
+    forge_test_proj: MockForgeProject<'_>,
+) -> forge_analyzer::reporter::Report {
+    // disallow parsing arguments meant for test harness (e.g., --nocapture, --exact) from std::env::args()
+    let args = Args::parse_from([""]);
+    scan_directory_test_with_args(forge_test_proj, args)
 }
 
 #[test]
@@ -576,6 +604,355 @@ fn secret_vuln_fetch_header() {
     let scan_result = scan_directory_test(test_forge_project);
     assert!(scan_result.contains_secret_vuln(1));
     assert!(scan_result.contains_vulns(1));
+}
+
+// Tests that Basic auth on a fetch to an Atlassian URL is detected across
+// several common import patterns: named import, default import (api.fetch),
+// chained .then(), and a pre-built template-literal header variable.
+#[test]
+fn basic_auth_fetch_detected_across_import_styles() {
+    // (source, expected_basic_auth_vulns)
+    let cases: &[(&str, usize)] = &[
+        // named import { fetch }
+        (
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { fetch } from '@forge/api';
+        function App() {
+            let token = process.env.API_TOKEN;
+            fetch('api.atlassian.com/rest/api/3/issue', { headers: { Authorization: 'Basic ' + token } });
+            return <Fragment><Text>Hello</Text></Fragment>;
+        }
+        export const run = render(<Macro app={<App />} />);",
+            1,
+        ),
+        // default import api.fetch
+        (
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api from '@forge/api';
+        function App() {
+            let token = process.env.API_TOKEN;
+            api.fetch('api.atlassian.com/rest/api/3/issue', { headers: { Authorization: 'Basic ' + token } });
+            return <Fragment><Text>Hello</Text></Fragment>;
+        }
+        export const run = render(<Macro app={<App />} />);",
+            1,
+        ),
+        // chained .then()
+        (
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api from '@forge/api';
+        function App() {
+            let token = process.env.API_TOKEN;
+            api.fetch('api.atlassian.com/rest/api/3/issue', { headers: { Authorization: 'Basic ' + token } }).then((res) => res.json());
+            return <Fragment><Text>Hello</Text></Fragment>;
+        }
+        export const run = render(<Macro app={<App />} />);",
+            1,
+        ),
+        // template-literal header built before the call
+        (
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { fetch } from '@forge/api';
+        async function App() {
+            let credentials = process.env.API_TOKEN;
+            const basicAuthHeader = `Basic ${credentials}`;
+            await fetch('api.atlassian.com/rest/api/3/issue', {
+                method: 'GET',
+                headers: { Accept: 'application/json', Authorization: basicAuthHeader },
+            });
+            return <Fragment><Text>Hello</Text></Fragment>;
+        }
+        export const run = render(<Macro app={<App />} />);",
+            1,
+        ),
+    ];
+
+    for (src, expected) in cases {
+        let result = scan_directory_test(MockForgeProject::files_from_string(src));
+        assert!(
+            result.contains_basic_auth_vuln(*expected),
+            "expected {expected} basic-auth vuln(s) for snippet:\n{src}"
+        );
+        assert!(result.contains_secret_vuln(0));
+        assert!(result.contains_vulns(*expected as i32));
+    }
+}
+
+// Known gap: module-scope headers with Basic auth are not tracked into function-scoped fetch calls.
+// The analyzer's value tracking is scoped to function bodies (DefId + VarId), so the Authorization
+// field defined at module level is not visible when checking the fetch intrinsic's operands.
+// When this limitation is fixed, update assertions to expect 1 basic_auth_vuln and 1 total vuln.
+#[test]
+fn fetch_http_basic_authorization_module_scope_headers() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { fetch } from '@forge/api';
+
+        const token = process.env.API_TOKEN;
+        const headers = {
+            Authorization: 'Basic ' + token,
+            Accept: 'application/json',
+        };
+
+        function App() {
+            fetch('url', {
+                method: 'GET',
+                headers,
+            });
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_basic_auth_vuln(0));
+    assert!(scan_result.contains_secret_vuln(0));
+    assert!(scan_result.contains_vulns(0));
+}
+
+// #[test]
+// fn fetch_http_basic_authorization_re_export_resolver() {
+//     let test_forge_project = MockForgeProject::files_from_string(
+//         "// manifest.yml
+// app:
+//   id: test-app
+// modules:
+//   function:
+//     - key: main
+//       handler: index.handler
+// permissions:
+//   scopes: []
+// // src/index.js
+// export { handler } from './resolvers';
+// // src/resolvers.ts
+// import Resolver from '@forge/resolver';
+// import { fetch } from '@forge/api';
+// const resolver = new Resolver();
+// resolver.define('fetchData', async () => {
+//     const result = await fetch('api.atlassian.com/rest/api/3/issue', {
+//         method: 'GET',
+//         headers: { Authorization: 'Basic ' + process.env.TOKEN, Accept: 'application/json' }
+//     });
+//     return result;
+// });
+// export const handler = resolver.getDefinitions();",
+//     );
+
+//     let scan_result = scan_directory_test(test_forge_project);
+//     assert!(scan_result.contains_basic_auth_vuln(1));
+//     assert!(scan_result.contains_vulns(1));
+// }
+
+#[test]
+fn bearer_admin_api_fetch_static_url() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { fetch } from '@forge/api';
+
+        function App() {
+            const token = process.env.ADMIN_TOKEN;
+            fetch('api.atlassian.com/admin/v1/orgs/123/users', {
+                headers: {
+                    Authorization: 'Bearer ' + token,
+                    Accept: 'application/json'
+                }
+            });
+            return (
+                <Fragment>
+                <Text>Hello</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_bearer_admin_vuln(1));
+    assert!(scan_result.contains_basic_auth_vuln(0));
+    assert!(scan_result.contains_vulns(1));
+}
+
+// #[test]
+// fn bearer_admin_api_fetch_template_url() {
+//     let test_forge_project = MockForgeProject::files_from_string(
+//         "// manifest.yml
+// app:
+//   id: test-app
+// modules:
+//   function:
+//     - key: main
+//       handler: index.handler
+// permissions:
+//   scopes: []
+// // src/index.js
+// export { handler } from './resolvers';
+// // src/resolvers.ts
+// import Resolver from '@forge/resolver';
+// import { fetch } from '@forge/api';
+// const resolver = new Resolver();
+// resolver.define('getUsers', async () => {
+//     const orgId = 'some-org';
+//     const response = await fetch(`api.atlassian.com/admin/v2/orgs/${orgId}/users`, {
+//         method: 'GET',
+//         headers: { Authorization: `Bearer ${process.env.API_KEY}`, Accept: 'application/json' }
+//     });
+//     return response;
+// });
+// export const handler = resolver.getDefinitions();",
+//     );
+
+//     let scan_result = scan_directory_test(test_forge_project);
+//     assert!(scan_result.contains_bearer_admin_vuln(1));
+//     assert!(scan_result.contains_basic_auth_vuln(0));
+//     assert!(scan_result.contains_vulns(1));
+// }
+
+// Platform API shims (requestJira, requestConfluence, requestBitbucket) always
+// target Atlassian endpoints, so Basic auth on any of them is flagged regardless
+// of URL. Bearer auth on a shim is NOT flagged (only fetch is checked for BearerAdmin).
+#[test]
+fn basic_auth_on_platform_api_shims() {
+    // (label, source, expected_basic_auth, expected_bearer_admin)
+    let cases: &[(&str, &str, usize, usize)] = &[
+        (
+            "requestJira concat",
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api, { route } from '@forge/api';
+        function App() {
+            let token = process.env.API_TOKEN;
+            api.asApp().requestJira(route`/rest/api/3/issue`, { method: 'GET', headers: { Authorization: 'Basic ' + token } });
+            return <Fragment><Text>Hello</Text></Fragment>;
+        }
+        export const run = render(<Macro app={<App />} />);",
+            1,
+            0,
+        ),
+        (
+            "requestConfluence concat",
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api, { route } from '@forge/api';
+        function App() {
+            let token = process.env.API_TOKEN;
+            api.asApp().requestConfluence(route`/rest/api/content`, { method: 'GET', headers: { Authorization: 'Basic ' + token } });
+            return <Fragment><Text>Hello</Text></Fragment>;
+        }
+        export const run = render(<Macro app={<App />} />);",
+            1,
+            0,
+        ),
+        (
+            "requestBitbucket concat",
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api, { route } from '@forge/api';
+        function App() {
+            let token = process.env.API_TOKEN;
+            api.asApp().requestBitbucket(route`/rest/api/3/test`, { method: 'GET', headers: { Authorization: 'Basic ' + token } });
+            return <Fragment><Text>Hello</Text></Fragment>;
+        }
+        export const run = render(<Macro app={<App />} />);",
+            1,
+            0,
+        ),
+        (
+            "requestJira template literal",
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { requestJira, route } from '@forge/api';
+        async function App() {
+            let encodedCredentials = process.env.API_TOKEN;
+            await requestJira(route`/rest/api/latest/group/user`, { method: 'DELETE', headers: { Authorization: `Basic ${encodedCredentials}` } });
+            return <Fragment><Text>Hello</Text></Fragment>;
+        }
+        export const run = render(<Macro app={<App />} />);",
+            1,
+            0,
+        ),
+        (
+            "requestConfluence named import template literal",
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { requestConfluence, route } from '@forge/api';
+        async function App() {
+            let token = process.env.API_TOKEN;
+            await requestConfluence(route`/wiki/rest/api/user/current`, { headers: { Accept: 'application/json', Authorization: `Basic ${token}` } });
+            return <Fragment><Text>Hello</Text></Fragment>;
+        }
+        export const run = render(<Macro app={<App />} />);",
+            1,
+            0,
+        ),
+        (
+            // Bearer on a platform shim must NOT be flagged as BearerAdmin
+            "bearer on requestJira not flagged",
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api, { route } from '@forge/api';
+        function App() {
+            let token = process.env.ADMIN_TOKEN;
+            api.asApp().requestJira(route`/rest/api/3/issue`, { method: 'GET', headers: { Authorization: 'Bearer ' + token } });
+            return <Fragment><Text>Hello</Text></Fragment>;
+        }
+        export const run = render(<Macro app={<App />} />);",
+            0,
+            0,
+        ),
+    ];
+
+    for (label, src, expected_basic, expected_bearer) in cases {
+        let result = scan_directory_test(MockForgeProject::files_from_string(src));
+        assert!(
+            result.contains_basic_auth_vuln(*expected_basic),
+            "[{label}] expected {expected_basic} basic-auth vuln(s)"
+        );
+        assert!(
+            result.contains_bearer_admin_vuln(*expected_bearer),
+            "[{label}] expected {expected_bearer} bearer-admin vuln(s)"
+        );
+        assert!(
+            result.contains_secret_vuln(0),
+            "[{label}] expected no secret vulns"
+        );
+    }
+}
+
+// Unreachable class methods (not on an entry-point call chain) must not be
+// flagged by default — the analyzer only follows reachable code.
+#[test]
+fn basic_auth_in_unreachable_class_method_not_flagged() {
+    let src = "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { requestJira, route } from '@forge/api';
+
+        export class BackupAdapter {
+            async generateBackup(authKey) {
+                await requestJira(route`/rest/backup/1/export/runbackup`, {
+                    method: 'POST',
+                    headers: { Authorization: `Basic ${authKey}`, Accept: 'application/json' },
+                });
+            }
+        }
+
+        function App() { return <Fragment><Text>Hello</Text></Fragment>; }
+        export const run = render(<Macro app={<App />} />);";
+
+    let result = scan_directory_test(MockForgeProject::files_from_string(src));
+    assert!(result.contains_basic_auth_vuln(0));
+    assert!(result.contains_secret_vuln(0));
 }
 
 #[test]
@@ -1756,4 +2133,205 @@ providers:
     let scan_result = scan_directory_test(test_forge_project);
     assert!(scan_result.contains_secret_vuln(2));
     assert!(scan_result.contains_vulns(2));
+}
+
+// -----------------------------------------------------------------------------
+// Unit tests for `forge_analyzer::checkers::is_atlassian_url`.
+//
+// `is_atlassian_url` decides whether a fetch URL targets an Atlassian endpoint.
+// Basic auth to an Atlassian URL is flagged; Basic auth to non-Atlassian URLs
+// is not (so we don't flag third-party API calls).
+// -----------------------------------------------------------------------------
+#[cfg(test)]
+mod is_atlassian_url_tests {
+    use forge_analyzer::checkers::is_atlassian_url;
+
+    #[test]
+    fn atlassian_urls_are_classified() {
+        let cases = [
+            // Full URLs — known Atlassian hosts
+            "https://api.atlassian.com",
+            "https://api.atlassian.com/admin/v1/orgs",
+            "https://api.atlassian.com/admin/v1/orgs/",
+            "https://api.atlassian.com/admin/v1/orgs//directories",
+            "https://api.atlassian.com/jsm/assets/v1/imports/info",
+            "https://api.atlassian.com/jsm/csm/cloudid//api/v1/customer/details",
+            "https://api.atlassian.com/jsm/ops/integration/v2/alerts",
+            "https://api.atlassian.com/users//manage/api-tokens",
+            "https://api.atlassian.com/ex/jira//rest/api/3/instance/license",
+            "https://auth.atlassian.com/oauth/token",
+            "https://community.atlassian.com/forums/s/api/2.0/search?q=",
+            "https://marketplace.atlassian.com",
+            "https://marketplace.atlassian.com/gateway/api/graphql",
+            "https://marketplace.atlassian.com/rest/2/addons//versions/latest",
+            "https://example.atlassian.net/rest/collectors/1.0/template/custom/aaaaaa",
+            "https://example.atlassian.net/wiki/api/v2/pages//children",
+            "https://example.atlassian.net/rest/api/3/attachment/content/11111",
+            "https://example.atlassian.net/rest/api/3/search/jql",
+            "https://api.bitbucket.org/2.0/repositories//",
+            "https://api.bitbucket.org/2.0/snippets//",
+            "https://api.statuspage.io/v1/pages",
+            "https://api.statuspage.io/v1/pages//incidents/",
+            // // Templated / redacted-subdomain URLs (host is empty or starts with ".")
+            "https://.atlassian.net/rest/api/2/user",
+            "https://.atlassian.net/rest/api/3/project",
+            "https://.statuspage.io/api/v2/summary.json",
+            "https:///rest/api/3/myself",
+            "https:///rest/api/3/user/search?query=",
+            "https:///wiki/rest/api/content//move//",
+            // Relative paths — matched by Atlassian product path regex
+            "/_edge/tenant_info",
+            // `${baseUrl}` substituted to "" produces a doubled leading slash
+            "//rest/api/3/issue",
+            "//rest/api/3/issue//assignee",
+            "//rest/api/3/project/search?action=create",
+            // Case-insensitive host matching
+            "HTTPS://API.ATLASSIAN.COM/admin/v1/orgs",
+            "Https://Tenant.Atlassian.Net/rest/api/3/issue",
+            // Full host-matched URL with a non-allowlisted path still matches by host
+            "https://example.atlassian.net/rest/workflowDesigner/latest/workflows?name=foo",
+        ];
+        for url in &cases {
+            assert!(
+                is_atlassian_url(url),
+                "expected Atlassian classification for: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_atlassian_urls_are_not_classified() {
+        let cases = [
+            // Third-party / customer-controlled hosts
+            "https://example.com/rest/api/3/issue",
+            "https://attacker.com/rest/api/3/myself",
+            "https://my.internal.corp/api/v1/whatever",
+            "http://localhost:8080/foo",
+            // Spoof attempts — suffix match must require a preceding dot
+            "https://atlassian.net.attacker.com/rest/api/3/issue",
+            "https://evil-atlassian.com/rest/api/3/issue",
+            "https://fakeatlassian.com/rest/api/3/issue",
+            // Third-party SaaS
+            "https://api.openai.com/v1/chat/completions",
+            "https://genai-playground.uksouth.cloudapp.azure.com/api/graphrag/transcribe-file",
+            // Relative paths not in the Atlassian product allowlist
+            "/rest/workflowDesigner/latest/workflows?name=foo&draft=false",
+            "/api/v1/some-custom-path",
+            "/foo/bar/baz",
+            // Empty string
+            "",
+        ];
+        for url in &cases {
+            assert!(
+                !is_atlassian_url(url),
+                "expected NON-Atlassian classification for: {url}"
+            );
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Unit tests for `forge_analyzer::checkers::is_admin_path`.
+//
+// `is_admin_path` classifies URLs/paths that target Atlassian admin-scoped
+// endpoints. Bearer auth on a matching path is flagged as BearerAdmin.
+// -----------------------------------------------------------------------------
+#[cfg(test)]
+mod is_admin_path_tests {
+    use forge_analyzer::checkers::is_admin_path;
+
+    #[test]
+    fn admin_paths_are_classified() {
+        let cases = [
+            // admin/v[12]/orgs/... — Org admin REST API
+            "/admin/v1/orgs/",
+            "/admin/v1/orgs/abc-123",
+            "/admin/v1/orgs/abc-123/groups/search",
+            "/admin/v1/orgs//directories",
+            "https://api.atlassian.com/admin/v1/orgs",
+            "https://api.atlassian.com/admin/v1/orgs/123",
+            "//admin/v1/orgs/abc-123/users",
+            "admin/v1/orgs/abc-123/policies",
+            "/admin/v2/orgs/",
+            "/admin/v2/orgs//workspaces",
+            "/admin/v2/orgs/abc-123/workspaces",
+            "https://api.atlassian.com/admin/v2/orgs/abc-123",
+            // admin/control/v[12]/orgs — Org admin "control" API
+            "/admin/control/v1/orgs",
+            "/admin/control/v1/orgs/abc-123",
+            "/admin/control/v2/orgs",
+            "/admin/control/v2/orgs/abc-123/policies",
+            "https://api.atlassian.com/admin/control/v1/orgs",
+            "admin/control/v1/orgs",
+            // admin/user-provisioning/v1/org — User provisioning
+            "/admin/user-provisioning/v1/org/",
+            "/admin/user-provisioning/v1/org/abc-123/users",
+            "https://api.atlassian.com/admin/user-provisioning/v1/org/abc-123",
+            // scim/directory — SCIM directory admin
+            "/scim/directory/abc-123/ResourceTypes",
+            "/scim/directory/abc-123/Schemas",
+            "/scim/directory/abc-123/Groups",
+            "/scim/directory/abc-123/Users",
+            "/scim/directory/abc-123/Users/xyz-789",
+            "https://api.atlassian.com/scim/directory/abc-123/Users",
+            "//scim/directory/abc-123/Users",
+            "scim/directory/abc-123/Users",
+            // users/<id>/manage — Per-user admin endpoints
+            "/users/abc-123/manage",
+            "/users/abc-123/manage/api-tokens",
+            "/users/abc-123/manage/profile",
+            "https://api.atlassian.com/users/abc-123/manage/api-tokens",
+            "users/abc-123/manage/api-tokens",
+            // orgs/<id>/{api-tokens,service-accounts,...} — Per-org credential endpoints
+            "/orgs/abc-123/classification-levels",
+            "/orgs/abc-123/api-tokens",
+            "/orgs/abc-123/api-tokens/xyz",
+            "/orgs/abc-123/service-accounts",
+            "/orgs/abc-123/api-keys",
+            "https://api.atlassian.com/orgs/abc-123/api-tokens",
+            "orgs/abc-123/api-tokens",
+            // Case-insensitive matching
+            "/Admin/V1/Orgs/abc-123",
+            "/USERS/abc-123/MANAGE/api-tokens",
+            "HTTPS://API.ATLASSIAN.COM/ADMIN/V2/ORGS/",
+            "/Scim/Directory/abc/Users",
+            "/Orgs/abc/Api-Tokens",
+        ];
+        for url in &cases {
+            assert!(
+                is_admin_path(url),
+                "expected admin-path classification for: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_admin_paths_are_not_classified() {
+        let cases = [
+            "",
+            // Standard Atlassian non-admin endpoints
+            "/rest/api/3/issue",
+            "/rest/api/3/myself",
+            "/wiki/api/v2/pages",
+            "https://api.atlassian.com/jsm/assets/v1/imports/info",
+            // Lookalikes — wrong version, wrong segment, or partial match
+            "/admin/v3/orgs/",                  // wrong version (only v1/v2)
+            "/admin/v1/users/abc-123",          // not /admin/v[12]/orgs/
+            "/admin/control/v3/orgs",           // wrong version
+            "/admin/control/v1/orgsfoo",        // segment must end at "orgs"
+            "/admin/user-provisioning/v2/org/", // wrong version (only v1)
+            "/users/manage/api-tokens",         // missing user-id segment
+            "/users/abc-123/managefoo",         // segment must end at "manage"
+            "/orgs/abc-123/api-tokensfoo",      // must match exactly
+            "/orgs/abc-123/other-thing",        // not in the credential list
+            "/scim/directory/abc-123/Other",    // not a known SCIM resource
+            "https://example.com/rest/api/3/issue",
+        ];
+        for url in &cases {
+            assert!(
+                !is_admin_path(url),
+                "expected NON-admin-path classification for: {url}"
+            );
+        }
+    }
 }
