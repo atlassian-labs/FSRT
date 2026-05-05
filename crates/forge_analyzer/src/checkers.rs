@@ -1203,10 +1203,10 @@ impl IntoVuln for AuthHeaderVuln {
             AuthHeaderVulnKind::BasicAuth => Vulnerability {
                 check_name: format!("Custom-Check-Basic-Auth-{}", self.api_call),
                 description: format!(
-                    "HTTP Basic authentication detected in {} {} call(s).",
+                    "Our API Token Scanner security scanner identified has identified in {} {} call(s) that your app is currently using Atlassian API tokens for authentication. Under the [updated guidance](https://www.atlassian.com/blog/developer/building-secure-and-scalable-integrations-our-guidance-for-third-party-apps) on app authentication ([FAQ](https://developer.atlassian.com/platform/marketplace/security-requirements-faq/#are-apps-prohibited-from-collecting-atlassian-user-account-api-tokens-even-after-taking-the-user-s-consent-) page) apps collecting customer API tokens are now required to migrate to [Forge authentication](https://developer.atlassian.com/platform/forge/security/#simple-and-secure-authentication) to ensure alignment with cloud app [security requirements](https://developer.atlassian.com/platform/marketplace/security-requirements/#security-requirements-for-cloud-apps). Refer to this [announcement](https://community.developer.atlassian.com/t/reminder-migrate-from-using-api-tokens-to-officially-supported-authentication-for-atlassian-apps-integrations/97221) for more details.",
                     count, self.api_call
                 ),
-                recommendation: "Use supported authentication mechanisms (such as OAuth 2.0 or Forge authentication). If you anticipate any blockers or require support, contact the Atlassian Ecosystem Security team.",
+                recommendation: "Use supported authentication mechanisms (such as OAuth 2.0 or Forge authentication). If you anticipate any blockers or require support, contact the Atlassian Ecosystem Support.",
                 proof: format!(
                     "Basic Authorization header found: {}",
                     proof_lines.join("; ")
@@ -1220,10 +1220,10 @@ impl IntoVuln for AuthHeaderVuln {
             AuthHeaderVulnKind::BearerAdmin => Vulnerability {
                 check_name: "Bearer-Admin".to_string(),
                 description: format!(
-                    "Bearer token used with Atlassian admin API in {} {} call(s).",
+                    "Our API Token Scanner security scanner identified has identified in {} {} call(s) that your app is currently using Atlassian API tokens for authentication. Under the [updated guidance](https://www.atlassian.com/blog/developer/building-secure-and-scalable-integrations-our-guidance-for-third-party-apps) on app authentication ([FAQ](https://developer.atlassian.com/platform/marketplace/security-requirements-faq/#are-apps-prohibited-from-collecting-atlassian-user-account-api-tokens-even-after-taking-the-user-s-consent-) page) apps collecting customer API tokens are now required to migrate to [Forge authentication](https://developer.atlassian.com/platform/forge/security/#simple-and-secure-authentication) to ensure alignment with cloud app [security requirements](https://developer.atlassian.com/platform/marketplace/security-requirements/#security-requirements-for-cloud-apps). Refer to this [announcement](https://community.developer.atlassian.com/t/reminder-migrate-from-using-api-tokens-to-officially-supported-authentication-for-atlassian-apps-integrations/97221) for more details.",
                     count, self.api_call
                 ),
-                recommendation: "Use supported authentication mechanisms (such as OAuth 2.0 or Forge authentication). If you anticipate any blockers or require support, contact the Atlassian Ecosystem Security team.",
+                recommendation: "Use supported authentication mechanisms (such as OAuth 2.0 or Forge authentication). If you anticipate any blockers or require support, contact the Atlassian Ecosystem Support.",
                 proof: format!(
                     "Bearer token on Atlassian admin API found: {}",
                     proof_lines.join("; ")
