@@ -95,7 +95,7 @@ pub struct Args {
     scanners: Option<String>,
 
     /// Scan all function/closure bodies for auth-header issues, not just entrypoint-reachable code.
-    #[arg(long)]
+    #[arg(long, default_value_t = true)]
     scan_functions: bool,
 
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
