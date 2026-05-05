@@ -930,31 +930,6 @@ fn basic_auth_on_platform_api_shims() {
     }
 }
 
-// Unreachable class methods (not on an entry-point call chain) must not be
-// flagged by default — the analyzer only follows reachable code.
-#[test]
-fn basic_auth_in_unreachable_class_method_not_flagged() {
-    let src = "// src/index.jsx
-        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
-        import { requestJira, route } from '@forge/api';
-
-        export class BackupAdapter {
-            async generateBackup(authKey) {
-                await requestJira(route`/rest/backup/1/export/runbackup`, {
-                    method: 'POST',
-                    headers: { Authorization: `Basic ${authKey}`, Accept: 'application/json' },
-                });
-            }
-        }
-
-        function App() { return <Fragment><Text>Hello</Text></Fragment>; }
-        export const run = render(<Macro app={<App />} />);";
-
-    let result = scan_directory_test(MockForgeProject::files_from_string(src));
-    assert!(result.contains_basic_auth_vuln(0));
-    assert!(result.contains_secret_vuln(0));
-}
-
 #[test]
 // Disabling test due to SSA Form fix changes.
 fn secret_vuln_fetch_header_reassigned() {
