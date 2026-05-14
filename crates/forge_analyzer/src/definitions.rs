@@ -934,9 +934,7 @@ enum ApiCallKind {
 }
 
 /// Specific API path prefixes that are unconditionally safe (trivial) for AuthZ purposes.
-const TRIVIAL_API_PREFIXES: &[&str] = &[
-    "/wiki/api/v2/app/properties",
-];
+const TRIVIAL_API_PREFIXES: &[&str] = &["/wiki/api/v2/app/properties"];
 
 fn classify_api_call(expr: &Expr) -> ApiCallKind {
     use regex::Regex;
