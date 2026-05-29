@@ -92,22 +92,6 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Package source code
-        env:
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
-        run: |
-          safe_ref_name="${RELEASE_TAG//\//-}"
-          git archive \
-            --format=zip \
-            --prefix="fsrt-${safe_ref_name}/" \
-            -o "artifacts/fsrt-${safe_ref_name}-source.zip" \
-            HEAD
-          git archive \
-            --format=tar.gz \
-            --prefix="fsrt-${safe_ref_name}/" \
-            -o "artifacts/fsrt-${safe_ref_name}-source.tar.gz" \
-            HEAD
-
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
