@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: Existing release tag to rebuild and publish
+        description: Existing release tag to rebuild and publish (eg. v*.*.*)
         required: true
         type: string
 
