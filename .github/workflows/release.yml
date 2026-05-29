@@ -5,6 +5,11 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing release tag to rebuild and publish (eg. v*.*.*)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
@@ -44,6 +51,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
@@ -74,6 +83,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
 
       - name: Download packaged binaries
         uses: actions/download-artifact@v8
@@ -81,25 +92,15 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Package source code
-        run: |
-          safe_ref_name="${GITHUB_REF_NAME//\//-}"
-          git archive \
-            --format=zip \
-            --prefix="fsrt-${safe_ref_name}/" \
-            -o "artifacts/fsrt-${safe_ref_name}-source.zip" \
-            HEAD
-          git archive \
-            --format=tar.gz \
-            --prefix="fsrt-${safe_ref_name}/" \
-            -o "artifacts/fsrt-${safe_ref_name}-source.tar.gz" \
-            HEAD
-
-      - name: Create release
+      - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
         run: |
-          gh release create "${{ github.ref_name }}" artifacts/* \
-            --title "FSRT ${{ github.ref_name }}" \
-            --generate-notes \
-            --verify-tag
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" \
+              --title "FSRT $RELEASE_TAG" \
+              --generate-notes \
+              --verify-tag
+
+          gh release upload "$RELEASE_TAG" artifacts/* --clobber
