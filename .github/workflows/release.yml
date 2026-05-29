@@ -34,9 +34,9 @@ jobs:
             os: ubuntu-latest                       # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
             archive: fsrt-linux-x86_64.tar.gz
 
-          - name: macos-x86_64
-            os: macos-15-intel
-            archive: fsrt-macos-x86_64.tar.gz
+          # - name: macos-x86_64
+          #   os: macos-15-intel
+          #   archive: fsrt-macos-x86_64.tar.gz
 
           - name: macos-aarch64
             os: macos-latest
@@ -48,12 +48,12 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: Build fsrt
-        run: cargo build --release --locked -p fsrt
+        run: cargo build --profile dist --locked -p fsrt
 
       - name: Package binary
         run: |
           mkdir dist
-          cp target/release/fsrt dist/
+          cp target/dist/fsrt dist/
           cp README.md LICENSE-APACHE LICENSE-MIT dist/
           tar -czf "${{ matrix.archive }}" -C dist .
 
@@ -83,15 +83,16 @@ jobs:
 
       - name: Package source code
         run: |
+          safe_ref_name="${GITHUB_REF_NAME//\//-}"
           git archive \
             --format=zip \
-            --prefix="fsrt-${{ github.ref_name }}/" \
-            -o "artifacts/fsrt-${{ github.ref_name }}-source.zip" \
+            --prefix="fsrt-${safe_ref_name}/" \
+            -o "artifacts/fsrt-${safe_ref_name}-source.zip" \
             HEAD
           git archive \
             --format=tar.gz \
-            --prefix="fsrt-${{ github.ref_name }}/" \
-            -o "artifacts/fsrt-${{ github.ref_name }}-source.tar.gz" \
+            --prefix="fsrt-${safe_ref_name}/" \
+            -o "artifacts/fsrt-${safe_ref_name}-source.tar.gz" \
             HEAD
 
       - name: Create release

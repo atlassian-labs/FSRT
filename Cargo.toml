@@ -52,3 +52,10 @@ too_many_arguments = "allow"
 # enable full optimization for dependencies
 [profile.dev.package."*"]
 opt-level = 3
+
+[profile.dist]
+inherits = "release"
+strip = true
+lto = true
+codegen-units = 1
+opt-level = 3
