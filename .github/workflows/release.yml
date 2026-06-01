@@ -67,8 +67,10 @@ jobs:
         shell: bash
         run: |
           version="${GITHUB_REF_NAME:-dev}"
-          package_name="fsrt-${version}-${{ matrix.target }}"
+          safe_version="$(printf '%s' "$version" | tr '/[:space:]' '--' | tr -cd '[:alnum:]._-')"
+          package_name="fsrt-${safe_version}-${{ matrix.target }}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "safe_version=${safe_version}" >> "$GITHUB_OUTPUT"
           echo "package_name=${package_name}" >> "$GITHUB_OUTPUT"
 
       - name: Create tar.gz package (unix)
