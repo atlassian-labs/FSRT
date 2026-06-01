@@ -5,6 +5,8 @@ on:
   push:
     tags:
       - "v*"
+    branches:
+      - tkallady/release-workflow
 
 permissions:
   contents: write
