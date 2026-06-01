@@ -23,8 +23,8 @@ Arguments:
     -V, --version                           Print version information
     --check-permissions                     Runs the permission checker
     --cached-permissions                    Uses cached swagger permissions to avoid redownloading them
-    --cached-permissions-path <LOCATION>    Uses the designated cache location, otherwise selects ~/.cache dir 
-    --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir  
+    --cached-permissions-path <LOCATION>    Uses the designated cache location, otherwise selects ~/.cache dir
+    --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir
 ```
 
 ## Installation
@@ -73,6 +73,30 @@ Testing with a GraphQl Schema:
 ```sh
 cargo test --features graphql_schema
 ```
+
+## Multi-Architecture Builds
+
+This repository includes a release workflow that builds `fsrt` for common platform and
+architecture combinations:
+
+- `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
+- `x86_64-pc-windows-msvc`
+
+### Build and publish artifacts from GitHub Actions
+
+- Run the `release` workflow manually (`workflow_dispatch`) to produce downloadable artifacts.
+- Push a tag like `v0.2.0` to build and automatically upload release assets.
+
+### Build locally for a specific target
+
+```sh
+cargo build --locked --release --target x86_64-unknown-linux-gnu -p fsrt
+```
+
+Swap the target triple for your desired platform/architecture.
 
 ## Contributions
 

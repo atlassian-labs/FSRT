@@ -1,0 +1,102 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+            bin_path: target/x86_64-unknown-linux-gnu/release/fsrt
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            archive_ext: tar.gz
+            bin_path: target/aarch64-unknown-linux-gnu/release/fsrt
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive_ext: tar.gz
+            bin_path: target/x86_64-apple-darwin/release/fsrt
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive_ext: tar.gz
+            bin_path: target/aarch64-apple-darwin/release/fsrt
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
+            bin_path: target/x86_64-pc-windows-msvc/release/fsrt.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build fsrt (native)
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        run: cargo build --locked --release --target ${{ matrix.target }} -p fsrt
+
+      - name: Build fsrt (cross)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: cross build --locked --release --target ${{ matrix.target }} -p fsrt
+
+      - name: Prepare package metadata
+        id: package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME:-dev}"
+          package_name="fsrt-${version}-${{ matrix.target }}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "package_name=${package_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Create tar.gz package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          staging="${{ steps.package.outputs.package_name }}"
+          mkdir -p "$staging"
+          cp "${{ matrix.bin_path }}" "$staging/"
+          cp README.md LICENSE-MIT LICENSE-APACHE "$staging/"
+          tar -czf "$staging.${{ matrix.archive_ext }}" "$staging"
+
+      - name: Create zip package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $staging = "${{ steps.package.outputs.package_name }}"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item "${{ matrix.bin_path }}" "$staging/"
+          Copy-Item "README.md","LICENSE-MIT","LICENSE-APACHE" "$staging/"
+          Compress-Archive -Path "$staging/*" -DestinationPath "$staging.${{ matrix.archive_ext }}" -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.package_name }}
+          path: ${{ steps.package.outputs.package_name }}.${{ matrix.archive_ext }}
+
+      - name: Publish release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.package.outputs.package_name }}.${{ matrix.archive_ext }}
