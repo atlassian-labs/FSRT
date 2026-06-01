@@ -18,7 +18,6 @@ use glob::glob;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     env, fmt, fs,
-    os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
 };
 
@@ -340,8 +339,8 @@ fn check_graphql_and_perms<'a>(
 
 fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
     matches!(
-        path.as_ref().extension().map(|s| s.as_bytes()),
-        Some(b"jsx" | b"js" | b"tsx" | b"ts")
+        path.as_ref().extension().and_then(|s| s.to_str()),
+        Some("jsx" | "js" | "tsx" | "ts")
     )
 }
 
