@@ -87,11 +87,14 @@ pub struct FunctionMod<'a> {
     pub providers: Option<AuthProviders<'a>>,
 }
 
+// https://developer.atlassian.com/platform/forge/manifest-reference/modules/consumer/
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Consumer<'a> {
     key: &'a str,
     queue: &'a str,
-    #[serde(borrow)]
+    #[serde(default, borrow)]
+    pub function: Option<&'a str>,
+    #[serde(default, borrow)]
     pub resolver: Resolver<'a>,
 }
 
@@ -681,7 +684,7 @@ impl<'a> ForgeModules<'a> {
         let Self {
             mut webtriggers,
             custom_field,
-            consumers: _,
+            consumers,
             functions,
             event_triggers: _,
             scheduled_triggers: _,
@@ -736,6 +739,11 @@ impl<'a> ForgeModules<'a> {
         // for all trigger things
 
         let mut invokable_functions = BTreeSet::new();
+
+        for consumer in consumers {
+            invokable_functions.extend(consumer.function);
+            invokable_functions.extend(consumer.resolver.function);
+        }
 
         // Compass Module Functions
         compass_admin_page.append_functions(&mut invokable_functions);
@@ -1306,6 +1314,37 @@ mod tests {
         assert_eq!(action.key, "indexing-compass");
         assert_eq!(action.function, Some("compass-fn"));
         assert_eq!(action.endpoint, None);
+    }
+
+    #[test]
+    fn test_consumer_direct_function_deserializes_and_is_invokable() {
+        let yaml = r#"
+    app:
+    id: my-app
+    modules:
+    function:
+        - key: functionHandler
+        handler: jqlFunctions/functionProcessor.handleFunction
+    consumer:
+        - key: my-queue-consumer
+        queue: my-queue
+        function: functionHandler
+    permissions:
+    scopes:
+        - read:jira-work
+    "#;
+
+        let manifest: ForgeManifest<'_> = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(manifest.modules.consumers.len(), 1);
+        assert_eq!(
+            manifest.modules.consumers[0].function,
+            Some("functionHandler")
+        );
+
+        let entrypoints: Vec<_> = manifest.modules.into_analyzable_functions().collect();
+        assert_eq!(entrypoints.len(), 1);
+        assert!(entrypoints[0].invokable);
+        assert_eq!(entrypoints[0].function.key, "functionHandler");
     }
 
     // Test to check if hardcoded secrets are detected properly in OAuth2 Provider
