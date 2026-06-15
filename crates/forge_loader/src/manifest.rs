@@ -113,8 +113,11 @@ enum Interval {
 // Maps to Scheduled Trigger under Common Modules
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ScheduledTrigger<'a> {
-    #[serde(flatten, borrow)]
-    raw: RawTrigger<'a>,
+    key: &'a str,
+    #[serde(default, borrow)]
+    function: Option<&'a str>,
+    #[serde(default, borrow)]
+    endpoint: Option<&'a str>,
     interval: Interval,
 }
 
