@@ -96,12 +96,15 @@ pub struct Consumer<'a> {
 }
 
 // Trigger Modules
+// https://developer.atlassian.com/platform/forge/manifest-reference/modules/scheduled-trigger/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Interval {
     Hour,
     Day,
     Week,
+    #[serde(rename = "fiveMinute")]
+    FiveMinute,
 }
 
 // Maps to Scheduled Trigger under Common Modules
