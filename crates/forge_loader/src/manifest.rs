@@ -9,7 +9,7 @@ use std::{
 use crate::Error;
 use forge_utils::FxHashMap;
 use itertools::Itertools;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_yaml::Value;
 use tracing::trace;
 
@@ -428,10 +428,42 @@ pub struct Content<'a> {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Perms<'a> {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_scopes")]
     pub scopes: Vec<String>,
     #[serde(default, borrow)]
     content: Content<'a>,
+}
+
+fn deserialize_scopes<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+
+    match value {
+        Value::Null => Ok(vec![]),
+        Value::Sequence(scopes) => scopes
+            .into_iter()
+            .map(|scope| match scope {
+                Value::String(scope) => Ok(scope),
+                other => Err(serde::de::Error::custom(format!(
+                    "expected scope string, got {other:?}"
+                ))),
+            })
+            .collect(),
+        Value::Mapping(scopes) => scopes
+            .into_iter()
+            .map(|(scope, _)| match scope {
+                Value::String(scope) => Ok(scope),
+                other => Err(serde::de::Error::custom(format!(
+                    "expected scope key string, got {other:?}"
+                ))),
+            })
+            .collect(),
+        other => Err(serde::de::Error::custom(format!(
+            "expected scopes sequence or mapping, got {other:?}"
+        ))),
+    }
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1320,22 +1352,45 @@ mod tests {
     }
 
     #[test]
+    fn test_permission_scopes_deserialize_from_mapping() {
+        let yaml = r#"
+app:
+  id: my-app
+modules:
+  function:
+    - key: functionHandler
+      handler: jqlFunctions/functionProcessor.handleFunction
+permissions:
+  scopes:
+    read:jira-work: &id001
+      allowImpersonation: true
+    write:jira-work: *id001
+"#;
+
+        let manifest: ForgeManifest<'_> = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            manifest.permissions.scopes,
+            vec!["read:jira-work".to_string(), "write:jira-work".to_string()]
+        );
+    }
+
+    #[test]
     fn test_consumer_direct_function_deserializes_and_is_invokable() {
         let yaml = r#"
-    app:
-    id: my-app
-    modules:
-    function:
-        - key: functionHandler
-        handler: jqlFunctions/functionProcessor.handleFunction
-    consumer:
-        - key: my-queue-consumer
-        queue: my-queue
-        function: functionHandler
-    permissions:
-    scopes:
-        - read:jira-work
-    "#;
+app:
+  id: my-app
+modules:
+  function:
+    - key: functionHandler
+      handler: jqlFunctions/functionProcessor.handleFunction
+  consumer:
+    - key: my-queue-consumer
+      queue: my-queue
+      function: functionHandler
+permissions:
+  scopes:
+    - read:jira-work
+"#;
 
         let manifest: ForgeManifest<'_> = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(manifest.modules.consumers.len(), 1);
