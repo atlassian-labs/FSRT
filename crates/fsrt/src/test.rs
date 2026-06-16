@@ -107,6 +107,7 @@ impl ReportExt for Report {
 pub(crate) struct MockForgeProject<'a> {
     pub files_name_to_source: HashMap<PathBuf, Arc<SourceFile>>,
     pub test_manifest: ForgeManifest<'a>,
+    pub manifest_file_content: Option<String>,
     pub cm: Lrc<SourceMap>,
 }
 
@@ -121,28 +122,28 @@ impl<'a> MockForgeProject<'a> {
     pub fn files_from_string(string: &'a str) -> Self {
         let different_files = string.split("//").filter(|file| !file.is_empty());
 
-        let manifest = if let Some(manifest_string) = different_files.clone().find(|string| {
-            string
-                .replace("//", "")
-                .trim_start()
-                .starts_with("manifest.yaml")
-                || string
-                    .trim_start()
+        let manifest_file_content = different_files
+            .clone()
+            .find(|string| {
+                string
                     .replace("//", "")
-                    .starts_with("manifest.yml")
-        }) {
-            serde_yaml::from_str(manifest_string.split_once('\n').unwrap().1).unwrap_or_default()
-        } else {
-            ForgeManifest::create_manifest_with_func_mod(FunctionMod {
-                key: "main",
-                handler: "index.run",
-                providers: None,
+                    .trim_start()
+                    .starts_with("manifest.yaml")
+                    || string
+                        .trim_start()
+                        .replace("//", "")
+                        .starts_with("manifest.yml")
             })
-        };
+            .map(|manifest_string| manifest_string.split_once('\n').unwrap().1.to_string());
 
         let mut mock_forge_project = MockForgeProject {
             files_name_to_source: HashMap::new(),
-            test_manifest: manifest.to_owned(),
+            test_manifest: ForgeManifest::create_manifest_with_func_mod(FunctionMod {
+                key: "main",
+                handler: "index.run",
+                providers: None,
+            }),
+            manifest_file_content,
             cm: Arc::default(),
         };
 
@@ -186,8 +187,12 @@ impl<'a> ForgeProjectTrait<'a> for MockForgeProject<'a> {
         vec![]
     }
 
-    fn get_manifest(&self) -> ForgeManifest<'_> {
-        self.test_manifest.clone()
+    fn get_manifest(&self) -> Result<ForgeManifest<'_>, serde_yaml::Error> {
+        if let Some(manifest_file_content) = &self.manifest_file_content {
+            serde_yaml::from_str(manifest_file_content)
+        } else {
+            Ok(self.test_manifest.clone())
+        }
     }
 }
 
@@ -224,6 +229,7 @@ fn test_simple() {
     let mut test_forge_project = MockForgeProject {
         test_manifest: forge_manifest,
         files_name_to_source: HashMap::new(),
+        manifest_file_content: None,
         cm: Lrc::new(SourceMap::default()),
     };
     test_forge_project.add_file(
@@ -248,6 +254,7 @@ fn test_secret_vuln() {
     let mut test_forge_project = MockForgeProject {
         test_manifest: forge_manifest,
         files_name_to_source: HashMap::new(),
+        manifest_file_content: None,
         cm: Lrc::new(SourceMap::default()),
     };
     test_forge_project.add_file(

@@ -2,6 +2,7 @@ use crate::{ResolvedEntryPoint, collect_sourcefiles};
 use forge_analyzer::ctx::AppCtx;
 use forge_analyzer::definitions::{Environment, PackageData, run_resolver};
 use forge_loader::manifest::{Entrypoint, ForgeManifest, Resolved};
+use serde_yaml::Error as YamlError;
 use forge_permission_resolver::permissions_resolver::PermMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -78,7 +79,7 @@ pub(crate) trait ForgeProjectTrait<'a> {
     #[allow(dead_code)]
     fn get_secret_packages(&self) -> Vec<PackageData>;
 
-    fn get_manifest(&self) -> ForgeManifest<'_>;
+    fn get_manifest(&self) -> Result<ForgeManifest<'_>, YamlError>;
 }
 pub(crate) struct ForgeProject<'a> {
     #[allow(dead_code)]
@@ -135,8 +136,7 @@ impl ForgeProjectTrait<'_> for ForgeProjectFromDir {
         }
     }
 
-    fn get_manifest(&self) -> ForgeManifest<'_> {
-        let out = serde_yaml::from_str(&self.manifest_file_content);
-        out.unwrap_or_default()
+    fn get_manifest(&self) -> Result<ForgeManifest<'_>, YamlError> {
+        serde_yaml::from_str(&self.manifest_file_content)
     }
 }

@@ -372,7 +372,14 @@ pub(crate) fn scan_directory<'a>(
     secret_packages: &[PackageData],
 ) -> Result<Report> {
     let paths = project.get_paths();
-    let manifest = project.get_manifest();
+    let manifest = match project.get_manifest() {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            let error_message = format!("Could not process manifest, failed on {err}, submit an issue if you believe this is a bug --> https://github.com/atlassian-labs/FSRT/issues");
+            warn!("{error_message}");
+            return Ok(Report::error(error_message, vec![opts.appkey.clone().unwrap_or_default()]));
+        }
+    };
     let requested_permissions = manifest.permissions;
     let permissions_declared = requested_permissions
         .scopes

@@ -47,6 +47,7 @@ pub struct Report {
     ended_at: OffsetDateTime,
     scanned: Vec<String>,
     errors: bool,
+    error_message: String,
 }
 
 pub struct Reporter {
@@ -106,6 +107,7 @@ impl Reporter {
             ended_at: OffsetDateTime::now_utc(),
             scanned: self.apps.into_iter().map(|(key, _)| key).collect(),
             errors: false,
+            error_message: String::new(),
         }
     }
 
@@ -116,8 +118,32 @@ impl Reporter {
 
 impl Report {
     #[inline]
+    pub fn error(error_message: String, scanned: Vec<String>) -> Self {
+        let now = OffsetDateTime::now_utc();
+        Self {
+            vulns: Vec::new(),
+            scanner: "FSRT",
+            started_at: now,
+            ended_at: now,
+            scanned,
+            errors: true,
+            error_message,
+        }
+    }
+
+    #[inline]
     pub fn into_vulns(&self) -> &[Vulnerability] {
         &self.vulns
+    }
+
+    #[inline]
+    pub fn has_errors(&self) -> bool {
+        self.errors
+    }
+
+    #[inline]
+    pub fn error_message(&self) -> &str {
+        &self.error_message
     }
 }
 
