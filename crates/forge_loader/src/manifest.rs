@@ -122,8 +122,11 @@ struct RawTrigger<'a> {
 // maps to Trigger under Common Modules
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct EventTrigger<'a> {
-    #[serde(flatten, borrow)]
-    raw: RawTrigger<'a>,
+    key: &'a str,
+    #[serde(default, borrow)]
+    function: Option<&'a str>,
+    #[serde(default, borrow)]
+    endpoint: Option<&'a str>,
     #[serde(borrow)]
     events: Vec<&'a str>,
 }
