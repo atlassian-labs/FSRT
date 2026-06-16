@@ -294,7 +294,7 @@ struct AssetsImportType<'a> {
 pub struct RovoAgent<'a> {
     pub key: &'a str,
     pub name: &'a str,
-    pub description: Option<&'a str>,
+    pub description: Option<String>,
     pub icon: Option<&'a str>,
     pub prompt: String, // as may be multiline
     #[serde(default, rename = "conversationStarters", borrow)]
@@ -1361,7 +1361,7 @@ mod tests {
         let agent = &manifest.modules.rovo_agent[0];
         assert_eq!(agent.key, "data-discoverability");
         assert_eq!(agent.name, "Data Discoverability");
-        assert_eq!(agent.description, Some("Test description"));
+        assert_eq!(agent.description.as_deref(), Some("Test description"));
         assert_eq!(
             agent.prompt,
             "You are a helpful assistant that helps users manage their project risks. \nYou can retrieve risks from the risk register, create new risks and update existing ones."
