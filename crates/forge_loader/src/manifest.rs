@@ -674,7 +674,7 @@ pub struct ForgeManifest<'a> {
     pub app: AppInfo<'a>,
     #[serde(borrow)]
     pub modules: ForgeModules<'a>,
-    #[serde(borrow)]
+    #[serde(default, borrow)]
     pub permissions: Perms<'a>,
     pub remotes: Option<Vec<Remotes>>,
     #[serde(default, borrow)]
