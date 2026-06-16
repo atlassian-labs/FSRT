@@ -204,8 +204,16 @@ pub struct MacroMod<'a> {
 
 // Jira Modules
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
+#[serde(untagged)]
+#[serde(bound(deserialize = "'de: 'a"))]
+enum LocalizedText<'a> {
+    Text(&'a str),
+    I18n { i18n: &'a str },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 pub struct JiraAdminPage<'a> {
-    title: &'a str,
+    title: LocalizedText<'a>,
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
 }
