@@ -187,11 +187,27 @@ struct ContentByLineItem<'a> {
     dynamic_properties: JustFunc<'a>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
+#[serde(untagged)]
+#[serde(bound(deserialize = "'de: 'a"))]
+enum MacroConfig<'a> {
+    Enabled(bool),
+    Object(JustFunc<'a>),
+}
+
+impl<'a> HasFunctions<'a> for MacroConfig<'a> {
+    fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
+        if let Self::Object(config) = self {
+            config.append_functions(funcs);
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 pub struct MacroMod<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
-    config: Option<JustFunc<'a>>,
+    config: Option<MacroConfig<'a>>,
     export: Option<JustFunc<'a>>,
 }
 
@@ -1172,9 +1188,11 @@ mod tests {
         if let Some(string) = resolver.function {
             assert_eq!(string, "Catch-me-if-you-can1");
         }
-        if let Some(justfunc) = manifest.modules.macros[0].config {
+        if let Some(MacroConfig::Object(justfunc)) = manifest.modules.macros[0].config {
             let func = justfunc.function.unwrap();
             assert_eq!(func, "Catch-me-if-you-can2");
+        } else {
+            panic!("No config function found")
         }
 
         if let Some(justfunc) = manifest.modules.macros[0].export {
