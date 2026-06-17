@@ -297,12 +297,12 @@ pub struct RovoAgent<'a> {
     pub description: Option<String>,
     pub icon: Option<&'a str>,
     pub prompt: String, // as may be multiline
-    #[serde(default, rename = "conversationStarters", borrow)]
-    pub conversation_starters: Vec<&'a str>,
+    #[serde(default, rename = "conversationStarters")]
+    pub conversation_starters: Vec<String>,
     #[serde(default, borrow)]
     pub actions: Vec<&'a str>,
     #[serde(rename = "followUpPrompt")]
-    pub follow_up_prompt: Option<&'a str>,
+    pub follow_up_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
