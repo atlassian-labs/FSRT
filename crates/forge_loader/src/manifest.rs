@@ -802,11 +802,6 @@ impl<'a> ForgeModules<'a> {
 
         let mut invokable_functions = BTreeSet::new();
 
-        for consumer in consumers {
-            invokable_functions.extend(consumer.function);
-            invokable_functions.extend(consumer.resolver.function);
-        }
-
         // Compass Module Functions
         compass_admin_page.append_functions(&mut invokable_functions);
 
