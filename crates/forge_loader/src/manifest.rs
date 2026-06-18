@@ -9,7 +9,7 @@ use std::{
 use crate::Error;
 use forge_utils::FxHashMap;
 use itertools::Itertools;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_yaml::Value;
 use tracing::trace;
 
@@ -87,28 +87,37 @@ pub struct FunctionMod<'a> {
     pub providers: Option<AuthProviders<'a>>,
 }
 
+// https://developer.atlassian.com/platform/forge/manifest-reference/modules/consumer/
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Consumer<'a> {
     key: &'a str,
     queue: &'a str,
-    #[serde(borrow)]
+    #[serde(default, borrow)]
+    pub function: Option<&'a str>,
+    #[serde(default, borrow)]
     pub resolver: Resolver<'a>,
 }
 
 // Trigger Modules
+// https://developer.atlassian.com/platform/forge/manifest-reference/modules/scheduled-trigger/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Interval {
     Hour,
     Day,
     Week,
+    #[serde(rename = "fiveMinute")]
+    FiveMinute,
 }
 
 // Maps to Scheduled Trigger under Common Modules
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ScheduledTrigger<'a> {
-    #[serde(flatten, borrow)]
-    raw: RawTrigger<'a>,
+    key: &'a str,
+    #[serde(default, borrow)]
+    function: Option<&'a str>,
+    #[serde(default, borrow)]
+    endpoint: Option<&'a str>,
     interval: Interval,
 }
 
@@ -419,10 +428,42 @@ pub struct Content<'a> {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Perms<'a> {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_scopes")]
     pub scopes: Vec<String>,
     #[serde(default, borrow)]
     content: Content<'a>,
+}
+
+fn deserialize_scopes<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+
+    match value {
+        Value::Null => Ok(vec![]),
+        Value::Sequence(scopes) => scopes
+            .into_iter()
+            .map(|scope| match scope {
+                Value::String(scope) => Ok(scope),
+                other => Err(serde::de::Error::custom(format!(
+                    "expected scope string, got {other:?}"
+                ))),
+            })
+            .collect(),
+        Value::Mapping(scopes) => scopes
+            .into_iter()
+            .map(|(scope, _)| match scope {
+                Value::String(scope) => Ok(scope),
+                other => Err(serde::de::Error::custom(format!(
+                    "expected scope key string, got {other:?}"
+                ))),
+            })
+            .collect(),
+        other => Err(serde::de::Error::custom(format!(
+            "expected scopes sequence or mapping, got {other:?}"
+        ))),
+    }
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -678,7 +719,7 @@ impl<'a> ForgeModules<'a> {
         let Self {
             mut webtriggers,
             custom_field,
-            consumers: _,
+            consumers,
             functions,
             event_triggers: _,
             scheduled_triggers: _,
@@ -1303,6 +1344,29 @@ mod tests {
         assert_eq!(action.key, "indexing-compass");
         assert_eq!(action.function, Some("compass-fn"));
         assert_eq!(action.endpoint, None);
+    }
+
+    #[test]
+    fn test_permission_scopes_deserialize_from_mapping() {
+        let yaml = r#"
+app:
+  id: my-app
+modules:
+  function:
+    - key: functionHandler
+      handler: jqlFunctions/functionProcessor.handleFunction
+permissions:
+  scopes:
+    read:jira-work: &id001
+      allowImpersonation: true
+    write:jira-work: *id001
+"#;
+
+        let manifest: ForgeManifest<'_> = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            manifest.permissions.scopes,
+            vec!["read:jira-work".to_string(), "write:jira-work".to_string()]
+        );
     }
 
     // Test to check if hardcoded secrets are detected properly in OAuth2 Provider

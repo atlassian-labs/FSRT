@@ -933,6 +933,9 @@ enum ApiCallKind {
     Authorize,
 }
 
+/// Specific API path prefixes that are unconditionally safe (trivial) for AuthZ purposes.
+const TRIVIAL_API_PREFIXES: &[&str] = &["/wiki/api/v2/app/properties"];
+
 fn classify_api_call(expr: &Expr) -> ApiCallKind {
     use regex::Regex;
     use std::cell::OnceCell;
@@ -959,7 +962,10 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
         fn check(&mut self, name: &str) {
             if name.contains("permission") {
                 self.kind = self.kind.max(ApiCallKind::Authorize);
-            } else if trivial_regex(name) || name.contains("group") {
+            } else if trivial_regex(name)
+                || name.contains("group")
+                || TRIVIAL_API_PREFIXES.iter().any(|p| name.contains(p))
+            {
                 self.kind = self.kind.max(ApiCallKind::Trivial);
             } else if name == "/rest/api/3/field" || name == "/rest/api/2/field" {
                 self.kind = ApiCallKind::Fields;

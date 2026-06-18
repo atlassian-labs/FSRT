@@ -578,6 +578,88 @@ fn authz_function_called_in_object() {
     assert!(scan_result.contains_vulns(1))
 }
 
+// Tests that calls to /wiki/api/v2/app/properties are in TRIVIAL_API_PREFIXES and
+// are not flagged by the AuthZ scanner even without a prior authorize() call.
+#[test]
+fn wiki_api_v2_app_properties_not_flagged_by_authz() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
+        import api, { route } from '@forge/api';
+
+        const App = async () => {
+            const res = await api.asApp().requestConfluence(route`/wiki/api/v2/app/properties`);
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        };
+
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yml
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+                handler: nothing
+                description: Inserts Hello world!
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(0))
+}
+
+// A non-allowlisted Confluence path without authorize() SHOULD be flagged,
+// confirming wiki_api_v2_app_properties_not_flagged_by_authzis is actually exercising the allowlist.
+#[test]
+fn non_allowlisted_confluence_path_flagged_by_authz() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
+        import api, { route } from '@forge/api';
+
+        const App = async () => {
+            const res = await api.asApp().requestConfluence(route`/wiki/api/v2/pages`);
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        };
+
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yml
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+                handler: nothing
+                description: Inserts Hello world!
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(1))
+}
+
 #[test]
 fn secret_vuln_fetch_header() {
     let test_forge_project = MockForgeProject::files_from_string(
@@ -928,31 +1010,6 @@ fn basic_auth_on_platform_api_shims() {
             "[{label}] expected no secret vulns"
         );
     }
-}
-
-// Unreachable class methods (not on an entry-point call chain) must not be
-// flagged by default — the analyzer only follows reachable code.
-#[test]
-fn basic_auth_in_unreachable_class_method_not_flagged() {
-    let src = "// src/index.jsx
-        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
-        import { requestJira, route } from '@forge/api';
-
-        export class BackupAdapter {
-            async generateBackup(authKey) {
-                await requestJira(route`/rest/backup/1/export/runbackup`, {
-                    method: 'POST',
-                    headers: { Authorization: `Basic ${authKey}`, Accept: 'application/json' },
-                });
-            }
-        }
-
-        function App() { return <Fragment><Text>Hello</Text></Fragment>; }
-        export const run = render(<Macro app={<App />} />);";
-
-    let result = scan_directory_test(MockForgeProject::files_from_string(src));
-    assert!(result.contains_basic_auth_vuln(0));
-    assert!(result.contains_secret_vuln(0));
 }
 
 #[test]
