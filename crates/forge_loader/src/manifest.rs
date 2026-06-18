@@ -665,10 +665,10 @@ pub struct Module<'a> {
     extra: FxHashMap<String, serde_yaml::Value>,
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Resource<'a> {
     pub key: &'a str,
-    pub path: &'a str,
+    pub path: String,
 }
 
 /// The representation of a Forge app's `manifest.yml`
