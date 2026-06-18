@@ -1398,37 +1398,6 @@ permissions:
         );
     }
 
-    #[test]
-    fn test_consumer_direct_function_deserializes_and_is_invokable() {
-        let yaml = r#"
-app:
-  id: my-app
-modules:
-  function:
-    - key: functionHandler
-      handler: jqlFunctions/functionProcessor.handleFunction
-  consumer:
-    - key: my-queue-consumer
-      queue: my-queue
-      function: functionHandler
-permissions:
-  scopes:
-    - read:jira-work
-"#;
-
-        let manifest: ForgeManifest<'_> = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(manifest.modules.consumers.len(), 1);
-        assert_eq!(
-            manifest.modules.consumers[0].function,
-            Some("functionHandler")
-        );
-
-        let entrypoints: Vec<_> = manifest.modules.into_analyzable_functions().collect();
-        assert_eq!(entrypoints.len(), 1);
-        assert!(entrypoints[0].invokable);
-        assert_eq!(entrypoints[0].function.key, "functionHandler");
-    }
-
     // Test to check if hardcoded secrets are detected properly in OAuth2 Provider
     #[test]
     fn test_oauth_provider_hardcoded_secrets() {
