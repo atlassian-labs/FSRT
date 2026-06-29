@@ -131,8 +131,11 @@ struct RawTrigger<'a> {
 // maps to Trigger under Common Modules
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct EventTrigger<'a> {
-    #[serde(flatten, borrow)]
-    raw: RawTrigger<'a>,
+    key: &'a str,
+    #[serde(default, borrow)]
+    function: Option<&'a str>,
+    #[serde(default, borrow)]
+    endpoint: Option<&'a str>,
     #[serde(borrow)]
     events: Vec<&'a str>,
 }
@@ -184,18 +187,42 @@ struct ContentByLineItem<'a> {
     dynamic_properties: JustFunc<'a>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
+#[serde(untagged)]
+#[serde(bound(deserialize = "'de: 'a"))]
+enum MacroConfig<'a> {
+    Enabled(bool),
+    Object(JustFunc<'a>),
+}
+
+impl<'a> HasFunctions<'a> for MacroConfig<'a> {
+    fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
+        if let Self::Object(config) = self {
+            config.append_functions(funcs);
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 pub struct MacroMod<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
-    config: Option<JustFunc<'a>>,
+    config: Option<MacroConfig<'a>>,
     export: Option<JustFunc<'a>>,
 }
 
 // Jira Modules
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
+#[serde(untagged)]
+#[serde(bound(deserialize = "'de: 'a"))]
+enum LocalizedText<'a> {
+    Text(&'a str),
+    I18n { i18n: &'a str },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 pub struct JiraAdminPage<'a> {
-    title: &'a str,
+    title: LocalizedText<'a>,
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
 }
@@ -267,15 +294,15 @@ struct AssetsImportType<'a> {
 pub struct RovoAgent<'a> {
     pub key: &'a str,
     pub name: &'a str,
-    pub description: Option<&'a str>,
+    pub description: Option<String>,
     pub icon: Option<&'a str>,
     pub prompt: String, // as may be multiline
-    #[serde(default, rename = "conversationStarters", borrow)]
-    pub conversation_starters: Vec<&'a str>,
+    #[serde(default, rename = "conversationStarters")]
+    pub conversation_starters: Vec<String>,
     #[serde(default, borrow)]
     pub actions: Vec<&'a str>,
     #[serde(rename = "followUpPrompt")]
-    pub follow_up_prompt: Option<&'a str>,
+    pub follow_up_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -638,10 +665,10 @@ pub struct Module<'a> {
     extra: FxHashMap<String, serde_yaml::Value>,
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Resource<'a> {
     pub key: &'a str,
-    pub path: &'a str,
+    pub path: String,
 }
 
 /// The representation of a Forge app's `manifest.yml`
@@ -655,7 +682,7 @@ pub struct ForgeManifest<'a> {
     pub app: AppInfo<'a>,
     #[serde(borrow)]
     pub modules: ForgeModules<'a>,
-    #[serde(borrow)]
+    #[serde(default, borrow)]
     pub permissions: Perms<'a>,
     pub remotes: Option<Vec<Remotes>>,
     #[serde(default, borrow)]
@@ -1169,9 +1196,11 @@ mod tests {
         if let Some(string) = resolver.function {
             assert_eq!(string, "Catch-me-if-you-can1");
         }
-        if let Some(justfunc) = manifest.modules.macros[0].config {
+        if let Some(MacroConfig::Object(justfunc)) = manifest.modules.macros[0].config {
             let func = justfunc.function.unwrap();
             assert_eq!(func, "Catch-me-if-you-can2");
+        } else {
+            panic!("No config function found")
         }
 
         if let Some(justfunc) = manifest.modules.macros[0].export {
@@ -1327,7 +1356,7 @@ mod tests {
         let agent = &manifest.modules.rovo_agent[0];
         assert_eq!(agent.key, "data-discoverability");
         assert_eq!(agent.name, "Data Discoverability");
-        assert_eq!(agent.description, Some("Test description"));
+        assert_eq!(agent.description.as_deref(), Some("Test description"));
         assert_eq!(
             agent.prompt,
             "You are a helpful assistant that helps users manage their project risks. \nYou can retrieve risks from the risk register, create new risks and update existing ones."
