@@ -101,6 +101,7 @@ jobs:
             gh release create "$RELEASE_TAG" \
               --title "FSRT $RELEASE_TAG" \
               --generate-notes \
-              --verify-tag
+              --verify-tag \
+              --draft
 
           gh release upload "$RELEASE_TAG" artifacts/* --clobber
