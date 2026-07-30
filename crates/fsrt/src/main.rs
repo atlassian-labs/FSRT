@@ -1,10 +1,13 @@
 #![allow(clippy::type_complexity)]
 
 mod forge_project;
+mod mint_common;
+mod mint_fct;
+mod mint_fit;
 #[cfg(test)]
 mod test;
 
-use clap::{Parser, ValueHint};
+use clap::{Parser, Subcommand, ValueHint};
 use forge_permission_resolver::{
     permissions_cache::CacheConfig,
     permissions_resolver::{
@@ -53,9 +56,28 @@ use walkdir::WalkDir;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+// The top-level subcommand enum.
+// `#[derive(Subcommand)]` tells clap this is a set of mutually exclusive commands.
+// When the user runs `fsrt mint-fct ...`, clap fills in `Command::MintFct`.
+// When no subcommand is given, `command` is None and we fall through to the
+// existing scan behaviour — so nothing breaks for current users.
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Mint a Forge Context Token (FCT).
+    MintFct(mint_fct::MintFctArgs),
+
+    /// Mint a Forge Invocation Token (FIT).
+    /// Internally mints an FCT first, then uses it for the FIT.
+    MintFit(mint_fit::MintFitArgs),
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
+    // The optional subcommand — if present, we route to it instead of scanning.
+    #[command(subcommand)]
+    command: Option<Command>,
+
     #[arg(short, long)]
     debug: bool,
 
@@ -828,12 +850,39 @@ pub(crate) fn scan_directory<'a>(
     Ok(reporter.into_report())
 }
 
+// Print a subcommand error via Display (real newlines, no Debug wrapper) and
+// exit non-zero. On success, returns Ok(()) so main can propagate it normally.
+fn exit_on_err(result: Result<()>) -> Result<()> {
+    if let Err(err) = result {
+        eprintln!("Error: {err}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let mut args = Args::parse();
     tracing_subscriber::registry()
         .with(HierarchicalLayer::new(2))
         .with(EnvFilter::from_env("FORGE_LOG"))
         .init();
+
+    // Check if a subcommand was given.
+    // If the user ran `fsrt mint-fct ...`, route to run_mint_fct() and exit.
+    // If no subcommand was given, fall through to the existing scan behaviour —
+    // so `fsrt /path/to/app` keeps working exactly as before.
+    // Route to a subcommand if one was given. On error, print the message via
+    // Display (honours real newlines) and exit non-zero — rather than returning
+    // the error to main, which would Debug-print it (escaping `\n` and wrapping
+    // it in the error variant name, e.g. CookieExpired("...\n...")).
+    if let Some(Command::MintFct(mint_fct_args)) = &args.command {
+        return exit_on_err(mint_fct::run_mint_fct(mint_fct_args));
+    }
+
+    if let Some(Command::MintFit(mint_fit_args)) = &args.command {
+        return exit_on_err(mint_fit::run_mint_fit(mint_fit_args));
+    }
+
     let dirs = std::mem::take(&mut args.dirs);
 
     let secretdata_file = include_str!("../../../secretdata.yaml");

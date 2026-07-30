@@ -27,6 +27,39 @@ Arguments:
     --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir  
 ```
 
+## Minting Forge tokens
+
+In addition to static scanning, FSRT can mint Forge tokens against a live
+Atlassian site — useful for dynamic testing of a Forge app's backend.
+
+- **`mint-fct`** — mint a **Forge Context Token (FCT)**.
+- **`mint-fit`** — mint a **Forge Invocation Token (FIT)**. Internally mints an
+  FCT first, then exchanges it for a FIT.
+
+Both commands read a shared TOML config (default: `./fsrt-remote.toml`) and the
+target app's `manifest.yml`. See [`fsrt-remote.toml`](fsrt-remote.toml) for a
+fully commented example — copy it and replace the placeholder values with your
+own. It selects the product (`confluence` or `global`), the GraphQL endpoint,
+and how to authenticate (a raw session cookie or a Basic API token).
+
+> **Warning:** these commands send and print auth material (cookies/tokens).
+> Never commit real cookies, API tokens, tenant IDs, or account emails.
+
+```sh
+# Mint a Forge Context Token for the app in the current directory.
+fsrt mint-fct --app-dir . --config ./fsrt-remote.toml
+
+# Preview the exact GraphQL request without sending it.
+fsrt mint-fct --config ./fsrt-remote.toml --dry-run
+
+# Mint a Forge Invocation Token (mints an FCT under the hood first).
+fsrt mint-fit --app-dir . --config ./fsrt-remote.toml
+```
+
+Both `--app-dir` (default `.`) and `--config` (default `./fsrt-remote.toml`)
+are optional. Use `--dry-run` to render and inspect the request without calling
+the GraphQL gateway.
+
 ## Installation
 
 You will need to install [Rust] to compile `FSRT`. You can install `Rust` through [Rustup] or through your distro's package manager. You will also

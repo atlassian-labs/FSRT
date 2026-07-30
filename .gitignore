@@ -1,1 +1,5 @@
 /target
+
+# Local secrets for the mint-fct/mint-fit remote commands — never commit these.
+session-cookie.txt
+api-token.txt
