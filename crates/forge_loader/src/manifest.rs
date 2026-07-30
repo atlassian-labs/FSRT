@@ -47,6 +47,26 @@ impl<'a> HasFunctions<'a> for CommonKey<'a> {
     }
 }
 
+impl<'a> CommonKey<'a> {
+    /// The backend resolver function this module invokes, if any.
+    ///
+    /// Prefers the top-level `function` shorthand, then falls back to
+    /// `resolver.function`. Modules wired to a `resolver.endpoint` (a Forge
+    /// Remote endpoint rather than a Forge-hosted resolver) have no function and
+    /// return `None`.
+    fn resolver_function(&self) -> Option<&'a str> {
+        self.function
+            .or_else(|| self.resolver.and_then(|r| r.function))
+    }
+}
+
+impl<'a> MacroMod<'a> {
+    /// The backend resolver function this macro invokes, if any.
+    fn resolver_function(&self) -> Option<&'a str> {
+        self.common_keys.resolver_function()
+    }
+}
+
 impl<'a> HasFunctions<'a> for JustFunc<'a> {
     fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
         funcs.extend(self.function);
@@ -495,6 +515,8 @@ where
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Remotes {
+    #[serde(default)]
+    pub key: String,
     #[serde(default)]
     pub auth: Value,
 }
@@ -972,6 +994,157 @@ impl<'a> ForgeModules<'a> {
     }
 }
 
+// Number of module types the FCT auto-detectors scan (see
+// `preferred_fct_modules_with_functions`).
+const FCT_MODULE_TYPE_COUNT: usize = 6;
+
+// One entry per FCT-targetable module type: (module type string, keys declared
+// for that type).
+type FctModuleKeys<'a> = [(&'static str, Vec<&'a str>); FCT_MODULE_TYPE_COUNT];
+
+// Like `FctModuleKeys`, but each key is paired with the resolver function that
+// module invokes (or `None` for endpoint-backed modules).
+type FctModuleKeysWithFns<'a> =
+    [(&'static str, Vec<(&'a str, Option<&'a str>)>); FCT_MODULE_TYPE_COUNT];
+
+impl<'a> ForgeModules<'a> {
+    // The module types the Forge Context Token minting flow can target, in
+    // preferred auto-detection order. Each tuple is
+    // (manifest module type string used in the FCT ARI, accessor returning the
+    // keys declared for that module type).
+    //
+    // Keeping this list here (rather than in the mint code) means module/remote
+    // knowledge lives entirely in forge_loader, and callers work off the typed
+    // manifest instead of re-walking raw YAML.
+    //
+    // This is a keys-only projection of `preferred_fct_modules_with_functions`
+    // so there is a SINGLE source of truth for the module list and its order.
+    // Adding a module type in one place can no longer desync the two
+    // auto-detectors (a mismatch there is exactly what causes the wrong
+    // `moduleKey` to be chosen).
+    fn preferred_fct_modules(&self) -> FctModuleKeys<'a> {
+        self.preferred_fct_modules_with_functions()
+            .map(|(module_type, entries)| {
+                (
+                    module_type,
+                    entries.into_iter().map(|(key, _fn)| key).collect(),
+                )
+            })
+    }
+
+    // The SINGLE source of truth for the module types the Forge Context Token
+    // minting flow can target, in preferred auto-detection order. Each entry is
+    // (manifest module type string used in the FCT ARI, list of
+    // (module key, backend resolver function the module invokes if any)).
+    //
+    // `preferred_fct_modules` is a keys-only projection of this. Used to resolve
+    // a module from a caller-supplied `--function` name so the selected module
+    // actually owns the resolver being invoked.
+    //
+    // Endpoint-backed modules (Forge Remote endpoints, not Forge-hosted
+    // resolvers) carry `None` and therefore never match a function name.
+    fn preferred_fct_modules_with_functions(&self) -> FctModuleKeysWithFns<'a> {
+        [
+            (
+                "macro",
+                self.macros
+                    .iter()
+                    .map(|m| (m.common_keys.key, m.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "globalPage",
+                self.confluence_global_page
+                    .iter()
+                    .map(|m| (m.key, m.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "spacePage",
+                self.space_page
+                    .iter()
+                    .map(|m| (m.key, m.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "globalPage",
+                self.jira_global_page
+                    .iter()
+                    .map(|m| (m.key, m.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "issuePanel",
+                self.issue_panel
+                    .iter()
+                    .map(|m| (m.key, m.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "globalPage",
+                self.project_page
+                    .iter()
+                    .map(|m| (m.key, m.resolver_function()))
+                    .collect(),
+            ),
+        ]
+    }
+
+    /// Auto-detect a module to mint a Forge Context Token for.
+    ///
+    /// Returns the first `(module_key, module_type)` found by scanning the
+    /// supported module types in preferred order, or `None` if the manifest
+    /// declares none of them.
+    pub fn detect_fct_module(&self) -> Option<(&'a str, &'static str)> {
+        for (module_type, keys) in self.preferred_fct_modules() {
+            if let Some(key) = keys.into_iter().next() {
+                return Some((key, module_type));
+            }
+        }
+        None
+    }
+
+    /// Auto-detect the module that invokes a specific backend resolver
+    /// `function`.
+    ///
+    /// Scans the supported module types in preferred order and returns the first
+    /// `(module_key, module_type)` whose `resolver.function` (or `function`
+    /// shorthand) equals `function`. Returns `None` when no supported module is
+    /// wired to that function — e.g. the function is only reachable via a
+    /// web trigger, or the manifest declares only endpoint-backed modules.
+    ///
+    /// This is preferred over `detect_fct_module` when the caller knows which
+    /// function it is invoking: for apps where several modules share one
+    /// resolver, or where the first-declared module is endpoint-backed, blindly
+    /// taking the first module yields a `moduleKey` that does not match the
+    /// invoked resolver.
+    pub fn detect_fct_module_for_function(
+        &self,
+        function: &str,
+    ) -> Option<(&'a str, &'static str)> {
+        for (module_type, entries) in self.preferred_fct_modules_with_functions() {
+            for (key, resolver_fn) in entries {
+                if resolver_fn == Some(function) {
+                    return Some((key, module_type));
+                }
+            }
+        }
+        None
+    }
+
+    /// Look up the module type for a specific, caller-supplied module key.
+    ///
+    /// Returns `None` if no supported module declares that key.
+    pub fn fct_module_type_for_key(&self, key: &str) -> Option<&'static str> {
+        for (module_type, keys) in self.preferred_fct_modules() {
+            if keys.contains(&key) {
+                return Some(module_type);
+            }
+        }
+        None
+    }
+}
+
 impl<S> FunctionRef<'_, S> {
     const VALID_EXTS: [&'static str; 4] = ["jsx", "tsx", "ts", "js"];
 }
@@ -1125,6 +1298,73 @@ mod tests {
                 path: "src/my-function-handler".into(),
                 status: Unresolved,
             }
+        );
+    }
+
+    // Fixture shape (generic, not tied to any specific app): the first-declared
+    // macro is endpoint-backed, while two later macros share one resolver
+    // function. detect_fct_module (first module) picks the endpoint macro, but
+    // detect_fct_module_for_function must pick the macro that owns the resolver.
+    #[test]
+    fn test_detect_fct_module_for_function() {
+        let json = r#"{
+            "app": { "name": "Test App", "id": "test-app" },
+            "modules": {
+                "macro": [
+                    {
+                        "key": "endpoint-macro",
+                        "resolver": { "endpoint": "some-endpoint" }
+                    },
+                    {
+                        "key": "resolver-macro-a",
+                        "resolver": { "function": "shared-resolver" }
+                    },
+                    {
+                        "key": "resolver-macro-b",
+                        "resolver": { "function": "shared-resolver" }
+                    }
+                ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+
+        // Blind first-module detection picks the endpoint-backed macro.
+        assert_eq!(
+            manifest.modules.detect_fct_module(),
+            Some(("endpoint-macro", "macro"))
+        );
+
+        // Function-aware detection picks the first macro owning the resolver.
+        assert_eq!(
+            manifest
+                .modules
+                .detect_fct_module_for_function("shared-resolver"),
+            Some(("resolver-macro-a", "macro"))
+        );
+
+        // An unknown function matches nothing.
+        assert_eq!(
+            manifest.modules.detect_fct_module_for_function("nope"),
+            None
+        );
+    }
+
+    // The `function` shorthand (no `resolver` block) is also matchable.
+    #[test]
+    fn test_detect_fct_module_for_function_shorthand() {
+        let json = r#"{
+            "app": { "name": "Shorthand App", "id": "shorthand-app" },
+            "modules": {
+                "macro": [
+                    { "key": "first-macro", "function": "other-fn" },
+                    { "key": "second-macro", "function": "target-fn" }
+                ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            manifest.modules.detect_fct_module_for_function("target-fn"),
+            Some(("second-macro", "macro"))
         );
     }
 
