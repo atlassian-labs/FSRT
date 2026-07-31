@@ -56,11 +56,6 @@ use walkdir::WalkDir;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-// The top-level subcommand enum.
-// `#[derive(Subcommand)]` tells clap this is a set of mutually exclusive commands.
-// When the user runs `fsrt mint-fct ...`, clap fills in `Command::MintFct`.
-// When no subcommand is given, `command` is None and we fall through to the
-// existing scan behaviour — so nothing breaks for current users.
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Mint a Forge Context Token (FCT).
@@ -850,8 +845,6 @@ pub(crate) fn scan_directory<'a>(
     Ok(reporter.into_report())
 }
 
-// Print a subcommand error via Display (real newlines, no Debug wrapper) and
-// exit non-zero. On success, returns Ok(()) so main can propagate it normally.
 fn exit_on_err(result: Result<()>) -> Result<()> {
     if let Err(err) = result {
         eprintln!("Error: {err}");
@@ -862,19 +855,25 @@ fn exit_on_err(result: Result<()>) -> Result<()> {
 
 fn main() -> Result<()> {
     let mut args = Args::parse();
+
+    // `--verbose` on a mint subcommand raises the default log level to `info`
+    let verbose = matches!(
+        &args.command,
+        Some(Command::MintFct(a)) if a.verbose || a.dry_run
+    ) || matches!(
+        &args.command,
+        Some(Command::MintFit(a)) if a.verbose || a.dry_run
+    );
+    let env_filter = match EnvFilter::try_from_env("FORGE_LOG") {
+        Ok(filter) => filter,
+        Err(_) if verbose => EnvFilter::new("info"),
+        Err(_) => EnvFilter::new(""),
+    };
     tracing_subscriber::registry()
         .with(HierarchicalLayer::new(2))
-        .with(EnvFilter::from_env("FORGE_LOG"))
+        .with(env_filter)
         .init();
 
-    // Check if a subcommand was given.
-    // If the user ran `fsrt mint-fct ...`, route to run_mint_fct() and exit.
-    // If no subcommand was given, fall through to the existing scan behaviour —
-    // so `fsrt /path/to/app` keeps working exactly as before.
-    // Route to a subcommand if one was given. On error, print the message via
-    // Display (honours real newlines) and exit non-zero — rather than returning
-    // the error to main, which would Debug-print it (escaping `\n` and wrapping
-    // it in the error variant name, e.g. CookieExpired("...\n...")).
     if let Some(Command::MintFct(mint_fct_args)) = &args.command {
         return exit_on_err(mint_fct::run_mint_fct(mint_fct_args));
     }

@@ -26,7 +26,7 @@ graphql_endpoint = "https://YOUR-SITE.atlassian.net/gateway/api/graphql"
 # Option 1: Raw cookie (confirmed working for both products — ~30 day lifetime).
 # Capture the Cookie header from a live browser session via Burp/DevTools.
 type = "raw_cookie"
-raw_cookie_file = "./session-cookie.txt"
+raw_cookie_file = "./session-cookie.txt" # This session cookie storage will be changed to a more secure format in the future.
 #   Format of session-cookie.txt:
 #   tenant.session.token=eyJ...
 
@@ -46,6 +46,9 @@ raw_cookie_file = "./session-cookie.txt"
 #   environment_key — which slot to resolve; defaults to "default"
 #   module_key      — auto-detected from manifest.yml. mint-fct/fit pick the
 #                     first module. Set module_key below only to override this.
+#   remote_key      — which declared remote (manifest `remotes:` key) a FIT
+#                     targets. mint-fit defaults to the first remote; set
+#                     remote_key below only to override this.
 
 # Used when product = "confluence"
 [confluence]
@@ -53,6 +56,7 @@ cloud_id       = "00000000-0000-0000-0000-000000000000"  # curl https://YOUR-SIT
 installation_id = "00000000-0000-0000-0000-000000000000" # forge install list --json → installationId (bare UUID)
 # environment_key = "default"
 # module_key = "hello-world-macro"   # override auto-detection (see note above)
+# remote_key = "my-backend"          # which remote mint-fit targets
 
 # Used when product = "global" (Jira, Compass, Rovo)
 [global]
@@ -60,3 +64,4 @@ cloud_id       = "00000000-0000-0000-0000-000000000000"  # curl https://YOUR-SIT
 installation_id = "00000000-0000-0000-0000-000000000000" # forge install list --json → installationId (bare UUID)
 # environment_key = "default"
 # module_key = "hello-jira-issue-panel"   # override auto-detection (see note above)
+# remote_key = "my-backend"               # which remote mint-fit targets
