@@ -32,6 +32,7 @@ use tracing_subscriber::{EnvFilter, prelude::*};
 use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
+    arbitrary_code_execution::ArbitraryCodeExecutionChecker,
     checkers::{
         AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
         PermissionChecker, PermissionVuln, SecretChecker, SecretType,
@@ -559,6 +560,15 @@ pub(crate) fn scan_directory<'a>(
 
     let mut secret_checker = SecretChecker::new();
     let mut auth_header_checker = AuthHeaderChecker::new();
+    let mut arbitrary_code_execution_checker = ArbitraryCodeExecutionChecker::new();
+
+    for (path, module_id) in proj.ctx.path_ids() {
+        arbitrary_code_execution_checker.scan_module(
+            &proj.ctx.modules()[*module_id],
+            path,
+            &proj.sm,
+        );
+    }
 
     if run_secret_scanner
         && let Some(providers) = &manifest.providers
@@ -672,6 +682,7 @@ pub(crate) fn scan_directory<'a>(
 
     reporter.add_vulnerabilities(secret_checker.into_vulns());
     reporter.add_vulnerabilities(auth_header_checker.into_vulns());
+    reporter.add_vulnerabilities(arbitrary_code_execution_checker.into_vulns());
 
     if !run_permission_scanner {
         return Ok(reporter.into_report());
