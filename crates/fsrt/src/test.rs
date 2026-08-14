@@ -26,9 +26,9 @@ trait ReportExt {
 
     fn contains_authz_vuln(&self, expected_len: usize) -> bool;
 
-    fn contains_basic_auth_vuln(&self, expected_len: usize) -> bool;
+    fn contains_api_token_vuln(&self, expected_len: usize) -> bool;
 
-    fn contains_bearer_admin_vuln(&self, expected_len: usize) -> bool;
+    fn contains_container_token_vuln(&self, expected_len: usize) -> bool;
 }
 
 impl ReportExt for Report {
@@ -47,19 +47,19 @@ impl ReportExt for Report {
     }
 
     #[inline]
-    fn contains_basic_auth_vuln(&self, expected_len: usize) -> bool {
+    fn contains_api_token_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
             .iter()
-            .filter(|vuln| vuln.check_name().starts_with("Custom-Check-Basic-Auth-"))
+            .filter(|vuln| vuln.check_name() == "Atlassian-API-Token")
             .count()
             == expected_len
     }
 
     #[inline]
-    fn contains_bearer_admin_vuln(&self, expected_len: usize) -> bool {
+    fn contains_container_token_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
             .iter()
-            .filter(|vuln| vuln.check_name().starts_with("Bearer-Admin"))
+            .filter(|vuln| vuln.check_name() == "Atlassian-Container-Token")
             .count()
             == expected_len
     }
@@ -695,12 +695,11 @@ fn secret_vuln_fetch_header() {
     assert!(scan_result.contains_vulns(1));
 }
 
-// Tests that Basic auth on a fetch to an Atlassian URL is detected across
-// several common import patterns: named import, default import (api.fetch),
-// chained .then(), and a pre-built template-literal header variable.
+// Tests that API tokens on a fetch to a non-admin Atlassian URL are detected
+// in both Basic and Bearer form across several common import patterns.
 #[test]
-fn basic_auth_fetch_detected_across_import_styles() {
-    // (source, expected_basic_auth_vulns)
+fn api_token_fetch_detected_across_import_styles() {
+    // (source, expected_api_token_vulns)
     let cases: &[(&str, usize)] = &[
         // named import { fetch }
         (
@@ -758,12 +757,25 @@ fn basic_auth_fetch_detected_across_import_styles() {
         export const run = render(<Macro app={<App />} />);",
             1,
         ),
+        // Bearer form on a non-admin Atlassian API is still an API token.
+        (
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { fetch } from '@forge/api';
+        function App() {
+            let token = process.env.API_TOKEN;
+            fetch('api.atlassian.com/rest/api/3/issue', { headers: { Authorization: 'Bearer ' + token } });
+            return <Fragment><Text>Hello</Text></Fragment>;
+        }
+        export const run = render(<Macro app={<App />} />);",
+            1,
+        ),
     ];
 
     for (src, expected) in cases {
         let result = scan_directory_test(MockForgeProject::files_from_string(src));
         assert!(
-            result.contains_basic_auth_vuln(*expected),
+            result.contains_api_token_vuln(*expected),
             "expected {expected} basic-auth vuln(s) for snippet:\n{src}"
         );
         assert!(result.contains_secret_vuln(0));
@@ -804,7 +816,7 @@ fn fetch_http_basic_authorization_module_scope_headers() {
     );
 
     let scan_result = scan_directory_test(test_forge_project);
-    assert!(scan_result.contains_basic_auth_vuln(0));
+    assert!(scan_result.contains_api_token_vuln(0));
     assert!(scan_result.contains_secret_vuln(0));
     assert!(scan_result.contains_vulns(0));
 }
@@ -838,12 +850,12 @@ fn fetch_http_basic_authorization_module_scope_headers() {
 //     );
 
 //     let scan_result = scan_directory_test(test_forge_project);
-//     assert!(scan_result.contains_basic_auth_vuln(1));
+//     assert!(scan_result.contains_api_token_vuln(1));
 //     assert!(scan_result.contains_vulns(1));
 // }
 
 #[test]
-fn bearer_admin_api_fetch_static_url() {
+fn container_token_fetch_detected_for_bearer_admin_request() {
     let test_forge_project = MockForgeProject::files_from_string(
         "// src/index.jsx
         import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
@@ -857,19 +869,15 @@ fn bearer_admin_api_fetch_static_url() {
                     Accept: 'application/json'
                 }
             });
-            return (
-                <Fragment>
-                <Text>Hello</Text>
-                </Fragment>
-            );
+            return <Fragment><Text>Hello</Text></Fragment>;
         }
 
         export const run = render(<Macro app={<App />} />);",
     );
 
     let scan_result = scan_directory_test(test_forge_project);
-    assert!(scan_result.contains_bearer_admin_vuln(1));
-    assert!(scan_result.contains_basic_auth_vuln(0));
+    assert!(scan_result.contains_container_token_vuln(1));
+    assert!(scan_result.contains_api_token_vuln(0));
     assert!(scan_result.contains_vulns(1));
 }
 
@@ -903,17 +911,17 @@ fn bearer_admin_api_fetch_static_url() {
 //     );
 
 //     let scan_result = scan_directory_test(test_forge_project);
-//     assert!(scan_result.contains_bearer_admin_vuln(1));
-//     assert!(scan_result.contains_basic_auth_vuln(0));
+//     assert!(scan_result.contains_container_token_vuln(1));
+//     assert!(scan_result.contains_api_token_vuln(0));
 //     assert!(scan_result.contains_vulns(1));
 // }
 
 // Platform API shims (requestJira, requestConfluence, requestBitbucket) always
-// target Atlassian endpoints, so Basic auth on any of them is flagged regardless
-// of URL. Bearer auth on a shim is NOT flagged (only fetch is checked for BearerAdmin).
+// target non-admin Atlassian endpoints, so both Basic and Bearer forms are
+// reported as API tokens.
 #[test]
-fn basic_auth_on_platform_api_shims() {
-    // (label, source, expected_basic_auth, expected_bearer_admin)
+fn api_tokens_on_platform_api_shims() {
+    // (label, source, expected_api_token, expected_container_token)
     let cases: &[(&str, &str, usize, usize)] = &[
         (
             "requestJira concat",
@@ -986,31 +994,30 @@ fn basic_auth_on_platform_api_shims() {
             0,
         ),
         (
-            // Bearer on a platform shim must NOT be flagged as BearerAdmin
-            "bearer on requestJira not flagged",
+            "bearer on requestJira",
             "// src/index.jsx
         import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
         import api, { route } from '@forge/api';
         function App() {
-            let token = process.env.ADMIN_TOKEN;
+            let token = process.env.API_TOKEN;
             api.asApp().requestJira(route`/rest/api/3/issue`, { method: 'GET', headers: { Authorization: 'Bearer ' + token } });
             return <Fragment><Text>Hello</Text></Fragment>;
         }
         export const run = render(<Macro app={<App />} />);",
-            0,
+            1,
             0,
         ),
     ];
 
-    for (label, src, expected_basic, expected_bearer) in cases {
+    for (label, src, expected_api_token, expected_container_token) in cases {
         let result = scan_directory_test(MockForgeProject::files_from_string(src));
         assert!(
-            result.contains_basic_auth_vuln(*expected_basic),
-            "[{label}] expected {expected_basic} basic-auth vuln(s)"
+            result.contains_api_token_vuln(*expected_api_token),
+            "[{label}] expected {expected_api_token} API-token vuln(s)"
         );
         assert!(
-            result.contains_bearer_admin_vuln(*expected_bearer),
-            "[{label}] expected {expected_bearer} bearer-admin vuln(s)"
+            result.contains_container_token_vuln(*expected_container_token),
+            "[{label}] expected {expected_container_token} container-token vuln(s)"
         );
         assert!(
             result.contains_secret_vuln(0),
@@ -2298,7 +2305,7 @@ mod is_atlassian_url_tests {
 // Unit tests for `forge_analyzer::checkers::is_admin_path`.
 //
 // `is_admin_path` classifies URLs/paths that target Atlassian admin-scoped
-// endpoints. Bearer auth on a matching path is flagged as BearerAdmin.
+// endpoints. Bearer auth on a matching path is reported as a container token.
 // -----------------------------------------------------------------------------
 #[cfg(test)]
 mod is_admin_path_tests {

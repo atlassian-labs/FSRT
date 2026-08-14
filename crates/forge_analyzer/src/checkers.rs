@@ -1079,8 +1079,8 @@ impl Checker<'_> for SecretChecker {
 
 #[derive(Debug, Clone)]
 pub enum AuthHeaderVulnKind {
-    BasicAuth,
-    BearerAdmin,
+    ApiToken,
+    ContainerToken,
 }
 
 #[derive(Debug)]
@@ -1160,22 +1160,20 @@ fn api_call_name(intrinsic: &Intrinsic) -> &'static str {
 impl fmt::Display for AuthHeaderVuln {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
-            AuthHeaderVulnKind::BasicAuth => {
+            AuthHeaderVulnKind::ApiToken => {
                 write!(
                     f,
-                    "HTTP Basic auth via {} ({})",
+                    "Atlassian API token via {} ({})",
                     self.api_call,
                     self.count()
                 )
             }
-            AuthHeaderVulnKind::BearerAdmin => {
-                write!(
-                    f,
-                    "Bearer token on admin API via {} ({})",
-                    self.api_call,
-                    self.count()
-                )
-            }
+            AuthHeaderVulnKind::ContainerToken => write!(
+                f,
+                "Atlassian container token via {} ({})",
+                self.api_call,
+                self.count()
+            ),
         }
     }
 }
@@ -1200,38 +1198,38 @@ impl IntoVuln for AuthHeaderVuln {
             .collect();
 
         match self.kind {
-            AuthHeaderVulnKind::BasicAuth => Vulnerability {
-                check_name: format!("Atlassian-Credential-Collection-Basic-Auth-{}", self.api_call),
+            AuthHeaderVulnKind::ApiToken => Vulnerability {
+                check_name: "Atlassian-API-Token".to_string(),
                 description: format!(
                     "Our API Token Scanner has identified in {} {} call(s) that your app is currently using Atlassian API tokens for authentication. Under the [updated guidance](https://www.atlassian.com/blog/developer/building-secure-and-scalable-integrations-our-guidance-for-third-party-apps) on app authentication ([FAQ](https://developer.atlassian.com/platform/marketplace/security-requirements-faq/#are-apps-prohibited-from-collecting-atlassian-user-account-api-tokens-even-after-taking-the-user-s-consent-) page) apps collecting customer API tokens are now required to migrate to [Forge authentication](https://developer.atlassian.com/platform/forge/security/#simple-and-secure-authentication) to ensure alignment with cloud app [security requirements](https://developer.atlassian.com/platform/marketplace/security-requirements/#security-requirements-for-cloud-apps). Refer to this [announcement](https://community.developer.atlassian.com/t/reminder-migrate-from-using-api-tokens-to-officially-supported-authentication-for-atlassian-apps-integrations/97221) for more details.",
                     count, self.api_call
                 ),
                 recommendation: "Use supported authentication mechanisms (such as OAuth 2.0 or Forge authentication). If you anticipate any blockers or require support, contact the Atlassian Ecosystem Support.",
                 proof: format!(
-                    "Basic Authorization header found: {}",
+                    "Atlassian API token Authorization header found: {}",
                     proof_lines.join("; ")
                 ),
-                severity: Severity::Medium,
+                severity: Severity::Critical,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
-                marketplace_security_requirement: "Requirement 10",
+                marketplace_security_requirement: "Requirement 10.0",
                 date: reporter.current_date(),
             },
-            AuthHeaderVulnKind::BearerAdmin => Vulnerability {
-                check_name: "Atlassian-Credential-Collection-Bearer-Admin".to_string(),
+            AuthHeaderVulnKind::ContainerToken => Vulnerability {
+                check_name: "Atlassian-Container-Token".to_string(),
                 description: format!(
-                    "Our API Token Scanner has identified in {} {} call(s) that your app is currently using Atlassian API tokens for authentication. Under the [updated guidance](https://www.atlassian.com/blog/developer/building-secure-and-scalable-integrations-our-guidance-for-third-party-apps) on app authentication ([FAQ](https://developer.atlassian.com/platform/marketplace/security-requirements-faq/#are-apps-prohibited-from-collecting-atlassian-user-account-api-tokens-even-after-taking-the-user-s-consent-) page) apps collecting customer API tokens are now required to migrate to [Forge authentication](https://developer.atlassian.com/platform/forge/security/#simple-and-secure-authentication) to ensure alignment with cloud app [security requirements](https://developer.atlassian.com/platform/marketplace/security-requirements/#security-requirements-for-cloud-apps). Refer to this [announcement](https://community.developer.atlassian.com/t/reminder-migrate-from-using-api-tokens-to-officially-supported-authentication-for-atlassian-apps-integrations/97221) for more details.",
+                    "Our API Token Scanner has identified in {} {} call(s) that your app is currently using Atlassian container tokens for authentication to admin endpoints. Under the [updated guidance](https://www.atlassian.com/blog/developer/building-secure-and-scalable-integrations-our-guidance-for-third-party-apps) on app authentication ([FAQ](https://developer.atlassian.com/platform/marketplace/security-requirements-faq/#are-apps-prohibited-from-collecting-atlassian-user-account-api-tokens-even-after-taking-the-user-s-consent-) page) apps collecting customer tokens are now required to migrate to [Forge authentication](https://developer.atlassian.com/platform/forge/security/#simple-and-secure-authentication) to ensure alignment with cloud app [security requirements](https://developer.atlassian.com/platform/marketplace/security-requirements/#security-requirements-for-cloud-apps). Refer to this [announcement](https://community.developer.atlassian.com/t/reminder-migrate-from-using-api-tokens-to-officially-supported-authentication-for-atlassian-apps-integrations/97221) for more details.",
                     count, self.api_call
                 ),
                 recommendation: "Use supported authentication mechanisms (such as OAuth 2.0 or Forge authentication). If you anticipate any blockers or require support, contact the Atlassian Ecosystem Support.",
                 proof: format!(
-                    "Bearer token on Atlassian admin API found: {}",
+                    "Atlassian container token Authorization header found: {}",
                     proof_lines.join("; ")
                 ),
-                severity: Severity::Medium,
+                severity: Severity::Critical,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
-                marketplace_security_requirement: "Requirement 10",
+                marketplace_security_requirement: "Requirement 10.0",
                 date: reporter.current_date(),
             },
         }
@@ -1322,14 +1320,14 @@ impl AuthHeaderChecker {
         let mut batched: Vec<AuthHeaderVuln> = Vec::new();
         for vuln in self.vulns {
             let kind_key: u8 = match vuln.kind {
-                AuthHeaderVulnKind::BasicAuth => 0,
-                AuthHeaderVulnKind::BearerAdmin => 1,
+                AuthHeaderVulnKind::ApiToken => 0,
+                AuthHeaderVulnKind::ContainerToken => 1,
             };
             // Find an existing batch with the same (kind, api_call) — group per app
             if let Some(existing) = batched.iter_mut().find(|b| {
                 let bk: u8 = match b.kind {
-                    AuthHeaderVulnKind::BasicAuth => 0,
-                    AuthHeaderVulnKind::BearerAdmin => 1,
+                    AuthHeaderVulnKind::ApiToken => 0,
+                    AuthHeaderVulnKind::ContainerToken => 1,
                 };
                 bk == kind_key && b.api_call == vuln.api_call
             }) {
@@ -1777,47 +1775,33 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                         _ => None,
                     };
 
-                    if let Some(scheme) = auth_scheme {
-                        match scheme {
-                            AuthScheme::Basic => {
-                                // Platform API shims (requestJira, requestConfluence,
-                                // requestBitbucket, requestGraph) always target
-                                // Atlassian APIs — their route operand is opaque
-                                // (tagged template) so URL resolution won't help.
-                                // For fetch / api.fetch / node-fetch the full URL
-                                // must target an Atlassian endpoint.
-                                let should_flag = is_platform_api
-                                    || url_str.as_deref().is_some_and(is_atlassian_url);
-                                if should_flag {
-                                    self.vulns.push(AuthHeaderVuln::new(
-                                        AuthHeaderVulnKind::BasicAuth,
-                                        api_call_name(intrinsic),
-                                        url_str.clone(),
-                                        interp.callstack(),
-                                        interp.env(),
-                                        interp.entry(),
-                                    ));
-                                }
-                            }
-                            AuthScheme::Bearer if is_fetch => {
-                                // BearerAdmin is only checked for fetch, not
-                                // platform API shims.
-                                let should_flag = url_str.as_deref().is_some_and(|s| {
-                                    (s.contains("api.atlassian.com") && s.contains("admin"))
-                                        || is_admin_path(s)
-                                });
-                                if should_flag {
-                                    self.vulns.push(AuthHeaderVuln::new(
-                                        AuthHeaderVulnKind::BearerAdmin,
-                                        api_call_name(intrinsic),
-                                        url_str.clone(),
-                                        interp.callstack(),
-                                        interp.env(),
-                                        interp.entry(),
-                                    ));
-                                }
-                            }
-                            _ => {}
+                    if let Some(scheme @ (AuthScheme::Basic | AuthScheme::Bearer)) = auth_scheme {
+                        // Platform API shims always target Atlassian APIs. For fetch /
+                        // api.fetch / node-fetch, require a recognized Atlassian URL.
+                        let should_flag = is_platform_api
+                            || (is_fetch
+                                && url_str.as_deref().is_some_and(|url| {
+                                    is_admin_path(url) || is_atlassian_url(url)
+                                }));
+
+                        if should_flag {
+                            // Container tokens are Bearer tokens used with admin endpoints.
+                            // Basic and non-admin Bearer tokens are reported as API tokens.
+                            let kind = if scheme == AuthScheme::Bearer
+                                && url_str.as_deref().is_some_and(is_admin_path)
+                            {
+                                AuthHeaderVulnKind::ContainerToken
+                            } else {
+                                AuthHeaderVulnKind::ApiToken
+                            };
+                            self.vulns.push(AuthHeaderVuln::new(
+                                kind,
+                                api_call_name(intrinsic),
+                                url_str.clone(),
+                                interp.callstack(),
+                                interp.env(),
+                                interp.entry(),
+                            ));
                         }
                     }
                 }
