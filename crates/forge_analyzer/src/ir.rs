@@ -1038,7 +1038,7 @@ impl fmt::Display for BasicBlock {
         for inst in &self.insts {
             writeln!(f, "    {inst}")?;
         }
-        write!(f, "    {}", &self.term)
+        write!(f, "    {}", self.term)
     }
 }
 
