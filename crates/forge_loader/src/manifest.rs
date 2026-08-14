@@ -496,14 +496,60 @@ where
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AuthEntry {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RemoteAuth {
+    #[serde(default, rename = "appUserToken")]
+    pub app_user_token: Option<AuthEntry>,
+
+    #[serde(default, rename = "appSystemToken")]
+    pub app_system_token: Option<AuthEntry>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Remotes {
     #[serde(default)]
-    pub auth: Value,
+    pub auth: Option<RemoteAuth>,
+    pub key: String,
+    
+    #[serde(default)]
+    pub operations: Vec<String>,
 }
 
 impl Remotes {
-    pub fn contains_auth(self) -> bool {
-        self.auth.is_mapping()
+    pub fn contains_auth(&self) -> bool {
+        match self.auth {
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    pub fn passes_user_auth(&self) -> bool {
+        let Some(auth) = &self.auth else {
+            return false
+        };
+
+        let Some(user_auth) = &auth.app_user_token else {
+            return false
+        };
+
+        user_auth.enabled
+    }
+
+    pub fn passes_system_auth(&self) -> bool {
+        let Some(auth) = &self.auth else {
+            return false
+        };
+
+        let Some(system_auth) = &auth.app_system_token else {
+            return false
+        };
+
+        system_auth.enabled
     }
 }
 
