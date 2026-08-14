@@ -33,6 +33,7 @@ use graphql_parser::{
     query::{self, Definition, Field, OperationDefinition, Selection, Type, parse_query},
     schema::{ObjectTypeExtension, TypeDefinition, TypeExtension},
 };
+
 use tracing::{debug, warn};
 use tracing_subscriber::{EnvFilter, prelude::*};
 use tracing_tree::HierarchicalLayer;
@@ -40,7 +41,7 @@ use tracing_tree::HierarchicalLayer;
 use forge_analyzer::{
     checkers::{
         AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
-        PermissionChecker, PermissionVuln, SecretChecker, SecretType,
+        PermissionChecker, PermissionVuln, SecretChecker, SecretType, UserAuthZChecker,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -48,11 +49,9 @@ use forge_analyzer::{
     reporter::{Report, Reporter},
 };
 
-use crate::{
-    commands::Command,
-    forge_project::{ForgeProjectFromDir, ForgeProjectTrait, find_manifest_path},
-};
-use forge_loader::manifest::Entrypoint;
+use crate::commands::Command;
+use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait, find_manifest_path};
+use forge_loader::manifest::{self, Entrypoint};
 use walkdir::WalkDir;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -392,6 +391,30 @@ fn get_empty_report() -> Report {
     Reporter::new().into_report()
 }
 
+fn check_remotes(remotes: &Option<Vec<manifest::Remotes>>) -> Vec<&str> {
+    let Some(content) = remotes else {
+        return Vec::new();
+    };
+
+    let result = content
+        .iter()
+        .filter(|e| e.passes_system_auth() && !e.passes_user_auth())
+        .map(|e| e.key.as_str());
+
+    Vec::from_iter(result)
+}
+
+fn has_remote_auth(remotes: &Option<Vec<manifest::Remotes>>) -> bool {
+    let Some(content) = remotes else {
+        return false;
+    };
+
+    content
+        .iter()
+        .map(|e| e.contains_auth())
+        .fold(false, |a, i| a || i)
+}
+
 #[tracing::instrument(level = "debug")]
 pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
@@ -425,6 +448,12 @@ pub(crate) fn scan_directory<'a>(
     } else {
         None
     };
+
+    let suspicious_remotes = check_remotes(&manifest.remotes);
+    if !suspicious_remotes.is_empty() {
+        eprintln!("Some remotes pass their system token without a user token");
+    }
+
     let requested_permissions = manifest.permissions;
     let permissions_declared = requested_permissions
         .scopes
@@ -437,11 +466,7 @@ pub(crate) fn scan_directory<'a>(
         .map(|s| s.as_str())
         .collect::<HashSet<_>>();
     let mut perm_map = PermMap::new(&permset);
-    let contains_remote_auth_token = manifest
-        .remotes
-        .unwrap_or_default()
-        .into_iter()
-        .any(|remote| remote.contains_auth());
+    let contains_remote_auth_token = has_remote_auth(&manifest.remotes);
 
     let mut sorted_paths: Vec<PathBuf> = paths.iter().cloned().collect();
     sorted_paths.sort();
@@ -652,6 +677,8 @@ pub(crate) fn scan_directory<'a>(
         &bitbucket_regex_map,
         &compass_permission_resolver,
     );
+
+    let mut user_authz_checker = UserAuthZChecker::new(&suspicious_remotes);
 
     let mut secret_checker = SecretChecker::new();
     let mut auth_header_checker = AuthHeaderChecker::new();
