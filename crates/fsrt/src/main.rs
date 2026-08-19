@@ -74,6 +74,9 @@ pub struct Args {
     #[arg(long)]
     dump_dt: Option<String>,
 
+    #[arg(long)]
+    dump_names: bool,
+
     /// A specific function to scan. Must be an entrypoint specified in `manifest.yml`
     #[arg(short, long)]
     function: Option<String>,
@@ -486,6 +489,11 @@ pub(crate) fn scan_directory<'a>(
     // resolve_calls(&mut proj.ctx);
     if let Some(func) = opts.dump_ir.as_ref() {
         proj.env.dump_function(&mut std::io::stdout().lock(), func);
+        std::process::exit(0);
+    }
+
+    if opts.dump_names {
+        proj.env.dump_names(&mut std::io::stdout().lock());
         std::process::exit(0);
     }
 
