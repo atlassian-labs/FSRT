@@ -1064,6 +1064,9 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             .map(move |(&(_, callee), &loc)| (callee, loc))
     }
 
+    // Need to understand how this works
+    // Write a test function that derives information from the accountId, and one that does not do so (in a potentially
+    // obfuscated way via subcalls). Make sure their SSA makes sense.
     fn run(&mut self, func_def: DefId) {
         if self.dataflow_visited.contains(&func_def) {
             return;
@@ -1234,6 +1237,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.dataflow_visited.remove(&def);
     }
 
+    // Understand how this works, write a spec / tickets for what dataflow would look like
+    // F*#$ing implement it
     pub fn try_check_function(&mut self, def: DefId, checker: &mut C) -> Result<(), Error> {
         let resolved_def = self.env.resolve_alias(def);
         let name = self.env.def_name(resolved_def);
@@ -1270,6 +1275,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.try_check_function(def, checker)
     }
 
+    // What kind of symbolic execution crazyness is this
     #[instrument(level = "info", skip(self, checker, entry_file), fields(checker = %C::NAME, file = %entry_file.display()))]
     pub fn run_checker(
         &mut self,
