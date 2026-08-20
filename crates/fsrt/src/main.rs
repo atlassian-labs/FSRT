@@ -17,6 +17,7 @@ use forge_permission_resolver::{
 };
 use glob::glob;
 use std::{
+    any::Any,
     collections::{HashMap, HashSet, VecDeque},
     env, fmt, fs,
     os::unix::prelude::OsStrExt,
@@ -428,15 +429,103 @@ fn has_remote_auth(remotes: &Option<Vec<manifest::Remotes>>) -> bool {
         .fold(false, |a, i| a || i)
 }
 
-struct AstDump {}
+struct AstDump {
+    level: u32,
+}
 
 impl AstDump {
     fn new() -> Self {
-        Self {}
+        Self { level: 0 }
+    }
+
+    fn print(&self, text: &str) {
+        for _ in 0..self.level {
+            print!("  ");
+        }
+
+        println!("{text}");
+    }
+
+    fn visit<T: VisitWith<Self>>(&mut self, node: &T) {
+        self.level += 1;
+        node.visit_children_with(self);
+        self.level -= 1;
     }
 }
 
-impl Visit for AstDump {}
+impl Visit for AstDump {
+    fn visit_seq_expr(&mut self, node: &swc_core::ecma::ast::SeqExpr) {
+        self.print("(SeqExpr");
+        self.visit(node);
+        self.print(")");
+    }
+
+    fn visit_module(&mut self, node: &swc_core::ecma::ast::Module) {
+        self.print("(Module");
+        self.visit(node);
+        self.print(")");
+    }
+
+    fn visit_module_item(&mut self, node: &swc_core::ecma::ast::ModuleItem) {
+        self.print("(ModuleItem");
+        self.visit(node);
+        self.print(")");
+    }
+
+    fn visit_stmt(&mut self, node: &swc_core::ecma::ast::Stmt) {
+        self.print("(Stmt");
+        self.visit(node);
+        self.print(")");
+    }
+
+    fn visit_module_decl(&mut self, node: &swc_core::ecma::ast::ModuleDecl) {
+        self.print("(ModuleDecl");
+        self.visit(node);
+        self.print(")");
+    }
+
+    fn visit_export_decl(&mut self, node: &swc_core::ecma::ast::ExportDecl) {
+        self.print("(ExportDecl");
+        self.visit(node);
+        self.print(")");
+    }
+
+    fn visit_decl(&mut self, node: &swc_core::ecma::ast::Decl) {
+        self.print("(Decl");
+        self.visit(node);
+        self.print(")");
+    }
+
+    fn visit_fn_decl(&mut self, node: &swc_core::ecma::ast::FnDecl) {
+        self.print("(FnDecl");
+        self.visit(node);
+        self.print(")");
+    }
+
+    fn visit_var_decl(&mut self, node: &swc_core::ecma::ast::VarDecl) {
+        self.print("(VarDecl");
+        self.visit(node);
+        self.print(")");
+    }
+
+    fn visit_var_declarator(&mut self, node: &swc_core::ecma::ast::VarDeclarator) {
+        self.print("(VarDeclarator");
+        self.visit(node);
+        self.print(")");
+    }
+
+    fn visit_expr(&mut self, node: &swc_core::ecma::ast::Expr) {
+        self.print("(Expr");
+        self.visit(node);
+        self.print(")");
+    }
+
+    fn visit_assign_expr(&mut self, node: &swc_core::ecma::ast::AssignExpr) {
+        self.print("(AssignExpr");
+        self.visit(node);
+        self.print(")");
+    }
+}
 
 #[tracing::instrument(level = "debug")]
 pub(crate) fn scan_directory<'a>(

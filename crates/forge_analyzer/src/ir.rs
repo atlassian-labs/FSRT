@@ -817,6 +817,7 @@ impl Body {
     }
 
     #[inline]
+    // Who calls you?
     pub(crate) fn push_expr(&mut self, bb: BasicBlockId, val: Rvalue) {
         self.blockbuilders[bb].insts.push(Inst::Expr(val));
     }
