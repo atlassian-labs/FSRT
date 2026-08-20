@@ -1199,7 +1199,7 @@ impl IntoVuln for AuthHeaderVuln {
 
         match self.kind {
             AuthHeaderVulnKind::ApiToken => Vulnerability {
-                check_name: "Atlassian-API-Token".to_string(),
+                check_name: "ATLASSIAN_API_TOKEN".to_string(),
                 description: format!(
                     "Our API Token Scanner has identified in {} {} call(s) that your app is currently using Atlassian API tokens for authentication. Under the [updated guidance](https://www.atlassian.com/blog/developer/building-secure-and-scalable-integrations-our-guidance-for-third-party-apps) on app authentication ([FAQ](https://developer.atlassian.com/platform/marketplace/security-requirements-faq/#are-apps-prohibited-from-collecting-atlassian-user-account-api-tokens-even-after-taking-the-user-s-consent-) page) apps collecting customer API tokens are now required to migrate to [Forge authentication](https://developer.atlassian.com/platform/forge/security/#simple-and-secure-authentication) to ensure alignment with cloud app [security requirements](https://developer.atlassian.com/platform/marketplace/security-requirements/#security-requirements-for-cloud-apps). Refer to this [announcement](https://community.developer.atlassian.com/t/reminder-migrate-from-using-api-tokens-to-officially-supported-authentication-for-atlassian-apps-integrations/97221) for more details.",
                     count, self.api_call
@@ -1216,7 +1216,7 @@ impl IntoVuln for AuthHeaderVuln {
                 date: reporter.current_date(),
             },
             AuthHeaderVulnKind::ContainerToken => Vulnerability {
-                check_name: "Atlassian-Container-Token".to_string(),
+                check_name: "ATLASSIAN_CONTAINER_TOKEN".to_string(),
                 description: format!(
                     "Our API Token Scanner has identified in {} {} call(s) that your app is currently using Atlassian container tokens for authentication to admin endpoints. Under the [updated guidance](https://www.atlassian.com/blog/developer/building-secure-and-scalable-integrations-our-guidance-for-third-party-apps) on app authentication ([FAQ](https://developer.atlassian.com/platform/marketplace/security-requirements-faq/#are-apps-prohibited-from-collecting-atlassian-user-account-api-tokens-even-after-taking-the-user-s-consent-) page) apps collecting customer tokens are now required to migrate to [Forge authentication](https://developer.atlassian.com/platform/forge/security/#simple-and-secure-authentication) to ensure alignment with cloud app [security requirements](https://developer.atlassian.com/platform/marketplace/security-requirements/#security-requirements-for-cloud-apps). Refer to this [announcement](https://community.developer.atlassian.com/t/reminder-migrate-from-using-api-tokens-to-officially-supported-authentication-for-atlassian-apps-integrations/97221) for more details.",
                     count, self.api_call
