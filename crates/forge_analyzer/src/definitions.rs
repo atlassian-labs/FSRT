@@ -1302,6 +1302,7 @@ impl FunctionAnalyzer<'_> {
     fn lower_member(&mut self, obj: &Expr, prop: &MemberProp) -> Operand {
         if obj.as_ident().is_some_and(|ident| *ident.sym == *"process") && eq_prop_name(prop, "env")
         {
+            // Who calls this?
             // FIXME: Store the exact environment variable in the IR and don't create duplicate IR instructions.
             self.push_curr_inst(Inst::Expr(Rvalue::Intrinsic(
                 Intrinsic::EnvRead,
@@ -1886,6 +1887,7 @@ impl FunctionAnalyzer<'_> {
                 let alt_phi = self.body.push_tmp(self.block, Rvalue::Read(alt), None);
                 self.set_curr_terminator(Terminator::Goto(rest));
                 self.block = rest;
+                // Possibly creates phi (ternary one?)
                 let phi = self.body.push_tmp(
                     self.block,
                     Rvalue::Phi(vec![(cons_phi, cons_block), (alt_phi, alt_block)]),

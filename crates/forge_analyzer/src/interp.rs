@@ -779,6 +779,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     | (Value::Phi(phi_value), Value::Const(const_value)) => {
                         let mut new_phi = phi_value;
                         new_phi.push(const_value);
+                        // Possibly creates phi
                         self.add_value_with_projection(
                             defid_block,
                             varid,
@@ -791,6 +792,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                         .add_value_with_projection(
                             defid_block,
                             varid,
+                            // Possibly creates phi
                             Value::Phi(vec![const_value1, const_value2]),
                             projections,
                         ),
