@@ -50,7 +50,7 @@ impl ReportExt for Report {
     fn contains_api_token_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
             .iter()
-            .filter(|vuln| vuln.check_name() == "Atlassian-API-Token")
+            .filter(|vuln| vuln.check_name() == "ATLASSIAN_API_TOKEN")
             .count()
             == expected_len
     }
@@ -59,7 +59,7 @@ impl ReportExt for Report {
     fn contains_container_token_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
             .iter()
-            .filter(|vuln| vuln.check_name() == "Atlassian-Container-Token")
+            .filter(|vuln| vuln.check_name() == "ATLASSIAN_CONTAINER_TOKEN")
             .count()
             == expected_len
     }
