@@ -22,6 +22,7 @@ use std::{
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
 };
+use swc_core::ecma::visit::{Visit, VisitWith};
 
 use graphql_parser::{
     query::{Mutation, Query, SelectionSet},
@@ -86,6 +87,15 @@ pub struct Args {
 
     #[arg(long)]
     dump_names: bool,
+
+    #[arg(long)]
+    dump_call_graph: Option<String>,
+
+    #[arg(long)]
+    dump_ast: Option<String>,
+
+    #[arg(long)]
+    dump_paths: bool,
 
     /// A specific function to scan. Must be an entrypoint specified in `manifest.yml`
     #[arg(short, long)]
@@ -418,6 +428,16 @@ fn has_remote_auth(remotes: &Option<Vec<manifest::Remotes>>) -> bool {
         .fold(false, |a, i| a || i)
 }
 
+struct AstDump {}
+
+impl AstDump {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Visit for AstDump {}
+
 #[tracing::instrument(level = "debug")]
 pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
@@ -524,6 +544,28 @@ pub(crate) fn scan_directory<'a>(
     if let Some(func) = opts.dump_ir.as_ref() {
         proj.env.dump_function(&mut std::io::stdout().lock(), func);
         std::process::exit(0);
+    }
+
+    if let Some(func) = opts.dump_call_graph.as_ref() {
+        proj.env
+            .dump_call_graph(&mut std::io::stdout().lock(), func);
+        std::process::exit(0);
+    }
+
+    if let Some(path) = opts.dump_ast.as_ref() {
+        let realpath = PathBuf::from(path);
+        if let Some(modid) = proj.ctx.modid_from_path(&realpath) {
+            let module = &proj.ctx.modules()[modid];
+            module.visit_with(&mut AstDump::new());
+        } else {
+            eprintln!("Not a known path {path}");
+        }
+    }
+
+    if opts.dump_paths {
+        for (key, value) in proj.ctx.path_ids() {
+            println!("{}", key.display());
+        }
     }
 
     if opts.dump_names {
