@@ -2332,6 +2332,7 @@ impl FunctionAnalyzer<'_> {
                 }
 
                 self.block = cont;
+
                 (self.break_target, self.continue_target) = (old_break, old_continue);
             }
             // needs break/continue
@@ -2392,6 +2393,7 @@ impl FunctionAnalyzer<'_> {
         }
     }
 
+    // god help me
     fn lower_loop(&mut self, left: &ForHead, right: &Expr, body: &Stmt) {
         // A workaround for the fact that these loops are not correctly lowered yet
         let (old_break, old_continue) = (self.break_target, self.continue_target);
