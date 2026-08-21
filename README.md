@@ -10,9 +10,13 @@ A static analysis tool for finding common [Forge][1] vulnerabilities.
 
 ```text
 Usage: fsrt [OPTIONS] [DIRS]...
+       fsrt [OPTIONS] <COMMAND>
 
 Arguments:
   [DIRS]...  The directory to scan. Assumes there is a `manifest.yaml` file in the top level directory, and that the source code is located in `src/`
+
+Commands:
+  mint-fct  Mint an FCT for a deployed module
 
   Options:
     -d, --debug
@@ -21,11 +25,14 @@ Arguments:
     -f, --function <FUNCTION>               A specific function to scan, must be an entrypoint specified in `manifest.yml`
     -h, --help                              Print help information
     -V, --version                           Print version information
+    --verbose                               Print diagnostics to stderr
     --check-permissions                     Runs the permission checker
     --cached-permissions                    Uses cached swagger permissions to avoid redownloading them
-    --cached-permissions-path <LOCATION>    Uses the designated cache location, otherwise selects ~/.cache dir 
-    --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir  
+    --cached-permissions-path <LOCATION>    Uses the designated cache location, otherwise selects ~/.cache dir
+    --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir
 ```
+
+Run `fsrt --help` or `fsrt <COMMAND> --help` for current options.
 
 ## Installation
 
@@ -52,6 +59,32 @@ or alternatively:
 ```text
 cargo install --git https://github.com/atlassian-labs/FSRT --locked
 ```
+
+## Commands
+
+```text
+fsrt mint-fct <MODULE_KEY> [OPTIONS]
+```
+
+For dynamic testing, `mint-fct` mints an FCT against a live Atlassian site.
+Invoke it before any scan directory arguments; use `--app-dir` to select the
+Forge app directory for this subcommand.
+It reads a TOML config (default `./fsrt-remote.toml`); see
+[`fsrt-remote.toml.example`](fsrt-remote.toml.example) for a commented example.
+Dry runs still authenticate and query deployment metadata, but skip token signing and
+print the exact GraphQL request that a live mint would send.
+
+### Configuration
+
+The config is documented in [`fsrt-remote.toml.example`](fsrt-remote.toml.example).
+`site` must be a full HTTPS origin without a path, such as
+`https://user.atlassian.net`, and is used to resolve `cloud_id`. GraphQL requests
+use `https://www.atlassian.net/gateway/api/graphql`.
+The installation ID, deployed environment, version, and extensions are discovered
+through GraphQL. Use `environment_key` to disambiguate when multiple environments are
+installed. `[auth].raw_cookie_file` is required. Relative cookie paths use the directory
+where FSRT is run, not the config file's directory. The cookie file contains
+authentication material and must not be committed.
 
 ## Tests
 
