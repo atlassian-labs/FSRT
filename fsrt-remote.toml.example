@@ -1,0 +1,15 @@
+# Copy to `fsrt-remote.toml` and keep the local file untracked.
+
+# Full site origin used to resolve cloud_id (HTTPS).
+site = "https://your-site.example.com"
+
+# Context ARI owner, such as "jira" or "confluence".
+product = "jira"
+
+# Override automatic production/default environment selection.
+# environment_key = "production"
+
+# Authentication material. Do not commit this file.
+# Relative paths use the directory where FSRT is run.
+[auth]
+raw_cookie_file = "./session-cookie.txt"

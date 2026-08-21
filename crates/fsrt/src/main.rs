@@ -1,5 +1,6 @@
 #![allow(clippy::type_complexity)]
 
+mod commands;
 mod forge_project;
 #[cfg(test)]
 mod test;
@@ -47,7 +48,10 @@ use forge_analyzer::{
     reporter::{Report, Reporter},
 };
 
-use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait};
+use crate::{
+    commands::Command,
+    forge_project::{ForgeProjectFromDir, ForgeProjectTrait, find_manifest_path},
+};
 use forge_loader::manifest::Entrypoint;
 use walkdir::WalkDir;
 
@@ -58,6 +62,10 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub struct Args {
     #[arg(short, long)]
     debug: bool,
+
+    /// Print diagnostics to stderr. A valid `FORGE_LOG` filter takes precedence.
+    #[arg(long, global = true, default_value_t = false)]
+    verbose: bool,
 
     /// Dump the IR for the specified function
     #[arg(long)]
@@ -102,6 +110,10 @@ pub struct Args {
     /// directory, and that the source code is located in `src/`
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
+
+    /// Run a subcommand instead of the default scan.
+    #[command(subcommand)]
+    command: Option<Command>,
 }
 
 #[allow(dead_code)]
@@ -828,12 +840,41 @@ pub(crate) fn scan_directory<'a>(
     Ok(reporter.into_report())
 }
 
+fn select_env_filter(configured: Option<EnvFilter>, diagnostics_requested: bool) -> EnvFilter {
+    configured.unwrap_or_else(|| {
+        if diagnostics_requested {
+            EnvFilter::new("info")
+        } else {
+            EnvFilter::new("")
+        }
+    })
+}
+
 fn main() -> Result<()> {
     let mut args = Args::parse();
+
+    let diagnostics_requested = args.verbose
+        || args
+            .command
+            .as_ref()
+            .is_some_and(Command::diagnostic_logging_requested);
+    let env_filter = select_env_filter(
+        EnvFilter::try_from_env("FORGE_LOG").ok(),
+        diagnostics_requested,
+    );
     tracing_subscriber::registry()
         .with(HierarchicalLayer::new(2))
-        .with(EnvFilter::from_env("FORGE_LOG"))
+        .with(env_filter)
         .init();
+
+    if let Some(command) = &args.command {
+        if let Err(err) = command.run() {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     let dirs = std::mem::take(&mut args.dirs);
 
     let secretdata_file = include_str!("../../../secretdata.yaml");
@@ -841,10 +882,7 @@ fn main() -> Result<()> {
         serde_yaml::from_str(secretdata_file).expect("Failed to deserialize packages");
 
     for dir in dirs {
-        let mut manifest_file = dir.join("manifest.yaml");
-        if !manifest_file.exists() {
-            manifest_file.set_extension("yml");
-        }
+        let manifest_file = find_manifest_path(&dir)?;
         debug!(?manifest_file);
 
         let manifest_text = fs::read_to_string(&manifest_file)?;
