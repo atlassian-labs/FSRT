@@ -652,7 +652,7 @@ pub(crate) fn scan_directory<'a>(
     }
 
     if opts.dump_paths {
-        for (key, value) in proj.ctx.path_ids() {
+        for (key, _) in proj.ctx.path_ids() {
             println!("{}", key.display());
         }
     }
