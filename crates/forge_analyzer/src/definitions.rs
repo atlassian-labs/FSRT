@@ -898,6 +898,8 @@ struct FunctionAnalyzer<'cx> {
     secret_packages: &'cx [PackageData],
     operand_stack: Vec<Operand>,
     in_lhs: bool,
+    break_target: BasicBlockId,
+    continue_target: BasicBlockId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -991,6 +993,77 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
 }
 
 impl FunctionAnalyzer<'_> {
+    fn new<'cx>(
+        env: &'cx mut Environment,
+        module: ModId,
+        current_def: DefId,
+        secret_packages: &'cx [PackageData],
+        body: Body,
+    ) -> FunctionAnalyzer<'cx> {
+        FunctionAnalyzer {
+            res: env,
+            module: module,
+            current_def: current_def,
+            assigning_to: None,
+            secret_packages: secret_packages,
+            body: body,
+            block: BasicBlockId::default(),
+            operand_stack: vec![],
+            in_lhs: false,
+            break_target: BasicBlockId::default(),
+            continue_target: BasicBlockId::default(),
+        }
+    }
+
+    fn lower_for(
+        &mut self,
+        ForStmt {
+            init,
+            test,
+            update,
+            body,
+            ..
+        }: &ForStmt,
+    ) {
+        match init {
+            Some(VarDeclOrExpr::VarDecl(decl)) => {
+                self.lower_var_decl(decl);
+            }
+            Some(VarDeclOrExpr::Expr(expr)) => {
+                self.lower_expr(expr, None);
+            }
+            None => {}
+        }
+        let [temp1, temp2, temp3] = self.body.new_blocks();
+        let [check, cont, body_id] = self.body.new_blockbuilders();
+        let (old_break, old_continue) = (self.break_target, self.continue_target);
+        self.break_target = cont;
+        self.continue_target = check;
+
+        self.goto_block(check);
+        if let Some(test) = test {
+            let cond = self.lower_expr(test, None);
+            self.set_curr_terminator(Terminator::If {
+                cond,
+                cons: body_id,
+                alt: cont,
+            });
+        } else {
+            self.set_curr_terminator(Terminator::Goto(body_id));
+        }
+
+        self.block = body_id;
+        self.lower_stmt(body);
+        if let Some(update) = update {
+            self.lower_expr(update, None);
+        }
+
+        self.set_curr_terminator(Terminator::Goto(check));
+        self.goto_block(cont);
+
+        (self.break_target, self.continue_target) = (old_break, old_continue)
+    }
+
     #[inline]
     fn set_curr_terminator(&mut self, term: Terminator) {
         self.body.set_terminator(self.block, term);
@@ -2084,6 +2157,7 @@ impl FunctionAnalyzer<'_> {
                 // This thing calls set-terminator
                 self.goto_block(cont);
             }
+            // needs break/continue
             Stmt::Switch(SwitchStmt {
                 discriminant,
                 cases,
@@ -2109,9 +2183,15 @@ impl FunctionAnalyzer<'_> {
                     self.lower_stmts(stmts);
                 }
             }
+            // needs break/continue
             Stmt::While(WhileStmt { test, body, .. }) => {
                 let [temp1, temp2, temp3] = self.body.new_blocks();
                 let [check, cont, body_id] = self.body.new_blockbuilders();
+
+                let (old_break, old_continue) = (self.break_target, self.continue_target);
+                self.break_target = cont;
+                self.continue_target = check;
+
                 self.set_curr_terminator(Terminator::Goto(check));
                 self.block = check;
                 let cond = self.lower_expr(test, None);
@@ -2124,7 +2204,10 @@ impl FunctionAnalyzer<'_> {
                 self.lower_stmt(body);
                 self.set_curr_terminator(Terminator::Goto(check));
                 self.block = cont;
+
+                (self.break_target, self.continue_target) = (old_break, old_continue);
             }
+            // needs break/continue
             Stmt::DoWhile(DoWhileStmt { test, body, .. }) => {
                 let [temp1, temp2, temp3] = self.body.new_blocks();
                 let [check, cont, body_id] = self.body.new_blockbuilders();
@@ -2141,46 +2224,15 @@ impl FunctionAnalyzer<'_> {
                 });
                 self.block = cont;
             }
-            Stmt::For(ForStmt {
-                init,
-                test,
-                update,
-                body,
-                ..
-            }) => {
-                match init {
-                    Some(VarDeclOrExpr::VarDecl(decl)) => {
-                        self.lower_var_decl(decl);
-                    }
-                    Some(VarDeclOrExpr::Expr(expr)) => {
-                        self.lower_expr(expr, None);
-                    }
-                    None => {}
-                }
-                let [temp1, temp2, temp3] = self.body.new_blocks();
-                let [check, cont, body_id] = self.body.new_blockbuilders();
-                self.goto_block(check);
-                if let Some(test) = test {
-                    let cond = self.lower_expr(test, None);
-                    self.set_curr_terminator(Terminator::If {
-                        cond,
-                        cons: body_id,
-                        alt: cont,
-                    });
-                } else {
-                    self.set_curr_terminator(Terminator::Goto(body_id));
-                }
-                self.block = body_id;
-                self.lower_stmt(body);
-                if let Some(update) = update {
-                    self.lower_expr(update, None);
-                }
-                self.set_curr_terminator(Terminator::Goto(check));
-                self.goto_block(cont);
+            // needs break/continue
+            Stmt::For(node) => {
+                self.lower_for(node);
             }
+            // needs break/continue
             Stmt::ForIn(ForInStmt {
                 left, right, body, ..
             }) => self.lower_loop(left, right, body),
+            // needs break/continue
             Stmt::ForOf(ForOfStmt {
                 left, right, body, ..
             }) => self.lower_loop(left, right, body),
@@ -2203,6 +2255,7 @@ impl FunctionAnalyzer<'_> {
         }
     }
 
+    // god help me
     fn lower_loop(&mut self, left: &ForHead, right: &Expr, body: &Stmt) {
         // FIXME: don't assume loops are infinite
         let opnd = self.lower_expr(right, None);
@@ -2589,6 +2642,8 @@ impl Visit for FunctionCollector<'_> {
                 block: BasicBlockId::default(),
                 operand_stack: vec![],
                 in_lhs: false,
+                break_target: BasicBlockId(u32::MAX),
+                continue_target: BasicBlockId(u32::MAX),
             };
             if let Some(BlockStmt { stmts, .. }) = &n.body {
                 analyzer.lower_stmts(stmts);
@@ -2636,17 +2691,9 @@ impl Visit for FunctionCollector<'_> {
             };
             n.function.body.visit_children_with(&mut localdef);
             let body = localdef.body;
-            let mut analyzer = FunctionAnalyzer {
-                res: self.res,
-                module: self.module,
-                current_def: *owner,
-                secret_packages: self.secret_packages,
-                assigning_to: None,
-                body,
-                block: BasicBlockId::default(),
-                operand_stack: vec![],
-                in_lhs: false,
-            };
+            let mut analyzer =
+                FunctionAnalyzer::new(self.res, self.module, *owner, self.secret_packages, body);
+
             if let Some(BlockStmt { stmts, .. }) = &n.function.body {
                 analyzer.lower_stmts(stmts);
                 let mut body = analyzer.body;
@@ -2697,17 +2744,9 @@ impl Visit for FunctionCollector<'_> {
         };
         func_body.visit_children_with(&mut localdef);
         let body = localdef.body;
-        let mut analyzer = FunctionAnalyzer {
-            res: self.res,
-            module: self.module,
-            current_def: owner,
-            assigning_to: None,
-            secret_packages: self.secret_packages,
-            body,
-            block: BasicBlockId::default(),
-            operand_stack: vec![],
-            in_lhs: false,
-        };
+        let mut analyzer =
+            FunctionAnalyzer::new(self.res, self.module, owner, self.secret_packages, body);
+
         match &**func_body {
             BlockStmtOrExpr::BlockStmt(BlockStmt { stmts, .. }) => {
                 analyzer.lower_stmts(stmts);
@@ -2823,17 +2862,14 @@ impl Visit for FunctionCollector<'_> {
                                 return;
                             };
                             let old_parent = self.parent.replace(owner);
-                            let mut analyzer = FunctionAnalyzer {
-                                res: self.res,
-                                module: self.module,
-                                current_def: owner,
-                                assigning_to: None,
-                                secret_packages: self.secret_packages,
-                                body: Body::with_owner(owner),
-                                block: BasicBlockId::default(),
-                                operand_stack: vec![],
-                                in_lhs: false,
-                            };
+                            let mut analyzer = FunctionAnalyzer::new(
+                                self.res,
+                                self.module,
+                                owner,
+                                self.secret_packages,
+                                Body::with_owner(owner),
+                            );
+
                             let opnd = analyzer.lower_expr(expr, None);
                             analyzer.body.push_inst(
                                 analyzer.block,
@@ -2956,17 +2992,9 @@ impl FunctionCollector<'_> {
         };
         n.body.visit_children_with(&mut localdef);
         let body = localdef.body;
-        let mut analyzer = FunctionAnalyzer {
-            res: self.res,
-            module: self.module,
-            current_def: owner,
-            assigning_to: None,
-            body,
-            secret_packages: self.secret_packages,
-            block: BasicBlockId::default(),
-            operand_stack: vec![],
-            in_lhs: false,
-        };
+        let mut analyzer =
+            FunctionAnalyzer::new(self.res, self.module, owner, self.secret_packages, body);
+
         if let Some(BlockStmt { stmts, .. }) = &n.body {
             analyzer.lower_stmts(stmts);
             let mut body = analyzer.body;
@@ -3497,17 +3525,8 @@ impl Visit for GlobalCollector<'_> {
         };
         n.visit_children_with(&mut localdef);
         let body = localdef.body;
-        let mut analyzer = FunctionAnalyzer {
-            res: self.res,
-            module: self.module,
-            current_def: owner,
-            assigning_to: None,
-            secret_packages: self.secret_packages,
-            body,
-            block: BasicBlockId::default(),
-            operand_stack: vec![],
-            in_lhs: false,
-        };
+        let mut analyzer =
+            FunctionAnalyzer::new(self.res, self.module, owner, self.secret_packages, body);
 
         let mut all_module_items = Vec::new();
 
