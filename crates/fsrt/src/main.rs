@@ -47,7 +47,7 @@ use forge_analyzer::{
     reporter::{Report, Reporter},
 };
 
-use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait};
+use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait, find_manifest_path};
 use forge_loader::manifest::Entrypoint;
 use walkdir::WalkDir;
 
@@ -102,6 +102,7 @@ pub struct Args {
     /// directory, and that the source code is located in `src/`
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
+
 }
 
 #[allow(dead_code)]
@@ -834,6 +835,7 @@ fn main() -> Result<()> {
         .with(HierarchicalLayer::new(2))
         .with(EnvFilter::from_env("FORGE_LOG"))
         .init();
+
     let dirs = std::mem::take(&mut args.dirs);
 
     let secretdata_file = include_str!("../../../secretdata.yaml");
@@ -841,10 +843,7 @@ fn main() -> Result<()> {
         serde_yaml::from_str(secretdata_file).expect("Failed to deserialize packages");
 
     for dir in dirs {
-        let mut manifest_file = dir.join("manifest.yaml");
-        if !manifest_file.exists() {
-            manifest_file.set_extension("yml");
-        }
+        let manifest_file = find_manifest_path(&dir)?;
         debug!(?manifest_file);
 
         let manifest_text = fs::read_to_string(&manifest_file)?;
