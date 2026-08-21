@@ -16,7 +16,7 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 tracing.workspace = true
 regex.workspace = true
-ureq = { version = "3.0.11", features = ["json", "charset"] }
+ureq = { workspace = true, features = ["charset"] }
 
 
 [dev-dependencies]
