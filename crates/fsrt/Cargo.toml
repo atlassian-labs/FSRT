@@ -16,6 +16,7 @@ graphql_schema = []
 [dependencies]
 clap.workspace = true
 forge_analyzer.workspace = true
+forge_pen_test.workspace = true
 forge_file_resolver.workspace = true
 forge_loader.workspace = true
 forge_permission_resolver.workspace = true
