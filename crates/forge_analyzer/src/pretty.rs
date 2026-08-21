@@ -144,7 +144,7 @@ pub fn dump_call_graph(output: &mut dyn Write, env: &Environment, body: &Body) -
         if is_function(env, var) {
             write!(output, "(FUNCTION) ")?;
         }
-        
+
         match *var {
             VarKind::LocalDef(def) => {
                 writeln!(output, "local definition of {}", env.def_name(def))?

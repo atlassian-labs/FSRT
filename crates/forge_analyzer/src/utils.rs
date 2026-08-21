@@ -121,6 +121,7 @@ pub fn return_combinations_phi(exprs: Vec<Value>) -> Value {
         combinations = new_combinations;
     }
 
+    // Possibly creates
     Value::Phi(
         combinations
             .iter()

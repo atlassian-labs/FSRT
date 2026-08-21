@@ -1674,6 +1674,7 @@ impl FunctionAnalyzer<'_> {
     }
 
     // TODO: This can probably be made into a trait
+    // We know that this is probably the one place where PHI nodes are currently being constructed
     fn lower_expr(&mut self, n: &Expr, parent: Option<DefId>) -> Operand {
         match n {
             Expr::This(_) => Operand::Var(Variable::THIS),
@@ -2046,6 +2047,9 @@ impl FunctionAnalyzer<'_> {
             Stmt::If(IfStmt {
                 test, cons, alt, ..
             }) => {
+                // Oh... I get it now. When lowering expression we build the current basic block, allocate the target
+                // blocks to complete the current one, then recurse. It's an AST recursion though.
+
                 // Adds two blocks to the body:
                 //  - cons_block: block to store insts that run if the test condition of the Stmt::If is true
                 //  - cont:       block to store insts that run after the Stmt::If
@@ -2077,6 +2081,7 @@ impl FunctionAnalyzer<'_> {
                 self.block = cons_block;
                 self.lower_stmt(cons);
 
+                // This thing calls set-terminator
                 self.goto_block(cont);
             }
             Stmt::Switch(SwitchStmt {
