@@ -15,6 +15,7 @@ graphql_schema = []
 
 [dependencies]
 clap.workspace = true
+config.workspace = true
 forge_analyzer.workspace = true
 forge_file_resolver.workspace = true
 forge_loader.workspace = true
@@ -31,3 +32,6 @@ walkdir.workspace = true
 graphql-parser = "0.4.0"
 glob = "0.3.2"
 regex.workspace = true
+ureq = { version = "2", features = ["json"] }
+thiserror.workspace = true
+base64 = "0.22"

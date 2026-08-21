@@ -1,10 +1,13 @@
 #![allow(clippy::type_complexity)]
 
 mod forge_project;
+mod mint_common;
+mod mint_fct;
+mod mint_fit;
 #[cfg(test)]
 mod test;
 
-use clap::{Parser, ValueHint};
+use clap::{Parser, Subcommand, ValueHint};
 use forge_permission_resolver::{
     permissions_cache::CacheConfig,
     permissions_resolver::{
@@ -53,9 +56,23 @@ use walkdir::WalkDir;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Mint a Forge Context Token (FCT).
+    MintFct(mint_fct::MintFctArgs),
+
+    /// Mint a Forge Invocation Token (FIT).
+    /// Internally mints an FCT first, then uses it for the FIT.
+    MintFit(mint_fit::MintFitArgs),
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
+    // The optional subcommand — if present, we route to it instead of scanning.
+    #[command(subcommand)]
+    command: Option<Command>,
+
     #[arg(short, long)]
     debug: bool,
 
@@ -828,12 +845,43 @@ pub(crate) fn scan_directory<'a>(
     Ok(reporter.into_report())
 }
 
+fn exit_on_err(result: Result<()>) -> Result<()> {
+    if let Err(err) = result {
+        eprintln!("Error: {err}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let mut args = Args::parse();
+
+    // `--verbose` on a mint subcommand raises the default log level to `info`
+    let verbose = matches!(
+        &args.command,
+        Some(Command::MintFct(a)) if a.verbose || a.dry_run
+    ) || matches!(
+        &args.command,
+        Some(Command::MintFit(a)) if a.verbose || a.dry_run
+    );
+    let env_filter = match EnvFilter::try_from_env("FORGE_LOG") {
+        Ok(filter) => filter,
+        Err(_) if verbose => EnvFilter::new("info"),
+        Err(_) => EnvFilter::new(""),
+    };
     tracing_subscriber::registry()
         .with(HierarchicalLayer::new(2))
-        .with(EnvFilter::from_env("FORGE_LOG"))
+        .with(env_filter)
         .init();
+
+    if let Some(Command::MintFct(mint_fct_args)) = &args.command {
+        return exit_on_err(mint_fct::run_mint_fct(mint_fct_args));
+    }
+
+    if let Some(Command::MintFit(mint_fit_args)) = &args.command {
+        return exit_on_err(mint_fit::run_mint_fit(mint_fit_args));
+    }
+
     let dirs = std::mem::take(&mut args.dirs);
 
     let secretdata_file = include_str!("../../../secretdata.yaml");

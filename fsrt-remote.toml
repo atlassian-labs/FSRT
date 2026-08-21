@@ -1,0 +1,67 @@
+# fsrt-remote.toml — shared config for all fsrt remote subcommands.
+#
+# --dry-run prints the rendered request without sending it
+#
+# WARNING: Output includes auth material (cookies/tokens).
+#
+# This is an EXAMPLE config. Replace every value below with your own; do not
+# commit real cookies, API tokens, tenant IDs, or account emails.
+#
+# ==============================================================================
+# Product selector — "confluence" or "global" (Jira, Compass, Rovo).
+# This decides which mutation is sent and which [section] below is read.
+# ==============================================================================
+product = "confluence"
+
+# Atlassian GraphQL gateway for the target site.
+graphql_endpoint = "https://YOUR-SITE.atlassian.net/gateway/api/graphql"
+
+# ==============================================================================
+# Auth
+# ==============================================================================
+# Switch methods by changing `type`. Secrets are read from local files (paths
+# below); change those files, not this config, so the config stays shareable.
+#
+[auth]
+# Option 1: Raw cookie (confirmed working for both products — ~30 day lifetime).
+# Capture the Cookie header from a live browser session via Burp/DevTools.
+type = "raw_cookie"
+raw_cookie_file = "./session-cookie.txt" # This session cookie storage will be changed to a more secure format in the future.
+#   Format of session-cookie.txt:
+#   tenant.session.token=eyJ...
+
+# Option 2: API token (working for Confluence only).
+# Generate at: https://id.atlassian.com/manage-profile/security/api-tokens
+# type = "basic_api_token"
+# email = "email-here@example.com"
+# api_token_file = "./api-token.txt"   # paste your API token into this file
+
+# ==============================================================================
+# IDs — fill in the section matching `product` above. The other is ignored.
+# Replace with the values for your installation.
+# ==============================================================================
+
+# Auto-resolved for whichever section is active:
+#   environment_id  — via the Forge platform (environmentByKey)
+#   environment_key — which slot to resolve; defaults to "default"
+#   module_key      — auto-detected from manifest.yml. mint-fct/fit pick the
+#                     first module. Set module_key below only to override this.
+#   remote_key      — which declared remote (manifest `remotes:` key) a FIT
+#                     targets. mint-fit defaults to the first remote; set
+#                     remote_key below only to override this.
+
+# Used when product = "confluence"
+[confluence]
+cloud_id       = "00000000-0000-0000-0000-000000000000"  # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
+installation_id = "00000000-0000-0000-0000-000000000000" # forge install list --json → installationId (bare UUID)
+# environment_key = "default"
+# module_key = "hello-world-macro"   # override auto-detection (see note above)
+# remote_key = "my-backend"          # which remote mint-fit targets
+
+# Used when product = "global" (Jira, Compass, Rovo)
+[global]
+cloud_id       = "00000000-0000-0000-0000-000000000000"  # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
+installation_id = "00000000-0000-0000-0000-000000000000" # forge install list --json → installationId (bare UUID)
+# environment_key = "default"
+# module_key = "hello-jira-issue-panel"   # override auto-detection (see note above)
+# remote_key = "my-backend"               # which remote mint-fit targets

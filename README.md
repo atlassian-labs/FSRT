@@ -27,6 +27,18 @@ Arguments:
     --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir  
 ```
 
+### Commands
+
+```text
+mint-fct    Mint a Forge Context Token (FCT)
+mint-fit    Mint a Forge Invocation Token (FIT)
+```
+
+For dynamic testing, `mint-fct` and `mint-fit` mint Forge tokens against a live
+Atlassian site. They read a TOML config (default `./fsrt-remote.toml`); see
+[`fsrt-remote.toml`](fsrt-remote.toml) for a commented example. Run with
+`--help` for options.
+
 ## Installation
 
 You will need to install [Rust] to compile `FSRT`. You can install `Rust` through [Rustup] or through your distro's package manager. You will also

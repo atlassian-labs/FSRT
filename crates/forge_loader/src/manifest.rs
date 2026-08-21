@@ -47,6 +47,19 @@ impl<'a> HasFunctions<'a> for CommonKey<'a> {
     }
 }
 
+impl<'a> CommonKey<'a> {
+    fn resolver_function(&self) -> Option<&'a str> {
+        self.function
+            .or_else(|| self.resolver.and_then(|r| r.function))
+    }
+}
+
+impl<'a> MacroMod<'a> {
+    fn resolver_function(&self) -> Option<&'a str> {
+        self.common_keys.resolver_function()
+    }
+}
+
 impl<'a> HasFunctions<'a> for JustFunc<'a> {
     fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
         funcs.extend(self.function);
@@ -495,6 +508,8 @@ where
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Remotes {
+    #[serde(default)]
+    pub key: String,
     #[serde(default)]
     pub auth: Value,
 }
@@ -972,6 +987,98 @@ impl<'a> ForgeModules<'a> {
     }
 }
 
+// Number of module types the FCT auto-detectors scan.
+const FCT_MODULE_TYPE_COUNT: usize = 6;
+
+// (module type string, keys declared for that type)
+type FctModuleKeys<'a> = [(&'static str, Vec<&'a str>); FCT_MODULE_TYPE_COUNT];
+
+// Like `FctModuleKeys`, but each key is paired with its resolver function.
+type FctModuleKeysWithFns<'a> =
+    [(&'static str, Vec<(&'a str, Option<&'a str>)>); FCT_MODULE_TYPE_COUNT];
+
+impl<'a> ForgeModules<'a> {
+    // Keys-only projection of `preferred_fct_modules_with_functions`.
+    fn preferred_fct_modules(&self) -> FctModuleKeys<'a> {
+        self.preferred_fct_modules_with_functions()
+            .map(|(module_type, entries)| {
+                (
+                    module_type,
+                    entries.into_iter().map(|(key, _fn)| key).collect(),
+                )
+            })
+    }
+
+    // Source of truth for FCT-targetable module types, in preferred order.
+    // (module type string, list of (module key, resolver function if any))
+    fn preferred_fct_modules_with_functions(&self) -> FctModuleKeysWithFns<'a> {
+        [
+            (
+                "macro",
+                self.macros
+                    .iter()
+                    .map(|m| (m.common_keys.key, m.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "globalPage",
+                self.confluence_global_page
+                    .iter()
+                    .map(|m| (m.key, m.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "spacePage",
+                self.space_page
+                    .iter()
+                    .map(|m| (m.key, m.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "globalPage",
+                self.jira_global_page
+                    .iter()
+                    .map(|m| (m.key, m.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "issuePanel",
+                self.issue_panel
+                    .iter()
+                    .map(|m| (m.key, m.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "globalPage",
+                self.project_page
+                    .iter()
+                    .map(|m| (m.key, m.resolver_function()))
+                    .collect(),
+            ),
+        ]
+    }
+
+    // First `(module_key, module_type)` in preferred order, or `None`.
+    pub fn detect_fct_module(&self) -> Option<(&'a str, &'static str)> {
+        for (module_type, keys) in self.preferred_fct_modules() {
+            if let Some(key) = keys.into_iter().next() {
+                return Some((key, module_type));
+            }
+        }
+        None
+    }
+
+    // Module type for a caller-supplied key, or `None`.
+    pub fn fct_module_type_for_key(&self, key: &str) -> Option<&'static str> {
+        for (module_type, keys) in self.preferred_fct_modules() {
+            if keys.contains(&key) {
+                return Some(module_type);
+            }
+        }
+        None
+    }
+}
+
 impl<S> FunctionRef<'_, S> {
     const VALID_EXTS: [&'static str; 4] = ["jsx", "tsx", "ts", "js"];
 }
@@ -1126,6 +1233,39 @@ mod tests {
                 status: Unresolved,
             }
         );
+    }
+
+    #[test]
+    fn test_detect_fct_module() {
+        let json = r#"{
+            "app": { "name": "Test App", "id": "test-app" },
+            "modules": {
+                "macro": [
+                    {
+                        "key": "endpoint-macro",
+                        "resolver": { "endpoint": "some-endpoint" }
+                    },
+                    {
+                        "key": "resolver-macro-a",
+                        "resolver": { "function": "shared-resolver" }
+                    }
+                ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+
+        // First-module detection picks the first declared macro.
+        assert_eq!(
+            manifest.modules.detect_fct_module(),
+            Some(("endpoint-macro", "macro"))
+        );
+
+        // Module type can be looked up by key.
+        assert_eq!(
+            manifest.modules.fct_module_type_for_key("resolver-macro-a"),
+            Some("macro")
+        );
+        assert_eq!(manifest.modules.fct_module_type_for_key("nope"), None);
     }
 
     // Modified specific deserialization schemes for modules. Checking that new schemes can deserialize function values.
