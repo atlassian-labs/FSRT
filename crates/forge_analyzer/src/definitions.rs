@@ -10,6 +10,7 @@ use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_permission_resolver::permissions_resolver::{PermMap, RequestType};
 use forge_utils::{FxHashMap, create_newtype};
 use std::collections::{HashMap, HashSet};
+use swc_core::ecma::parser::token::Keyword::If;
 use swc_core::ecma::utils::var;
 
 use itertools::Itertools;
@@ -2164,34 +2165,57 @@ impl FunctionAnalyzer<'_> {
                 ..
             }) => {
                 let opnd = self.lower_expr(discriminant, None);
-                let after_switch = self.body.new_block();
-                let _ = self.body.new_blockbuilder();
-                // This loop is incorrect. The correct recursion order is back-to-front
+                if cases.is_empty() {
+                    // TODO: does this preserve side effects?
+                    return;
+                }
+
+                let (mut cblock, mut tblock) = (self.block, self.block);
+                let mut new_tblock = self.body.new_block();
+                self.body.new_blockbuilder();
                 for case in cases {
-                    let [cblock] = self.body.new_blockbuilders();
-                    let _: [_; 1] = self.body.new_blocks();
-                    let Some(test) = &case.test else {
-                        // TODO: handle default case
-                        continue;
+                    let Some(test_expr) = &case.test else {
+                        // TODO:
+                        panic!("switch default not supported")
                     };
 
-                    let test_opnd = self.lower_expr(&test, None);
-                    let cond = self.body.push_tmp(
-                        self.block,
-                        Rvalue::Bin(crate::ir::BinOp::EqEqEq, opnd.clone(), test_opnd),
-                        None,
-                    );
+                    self.block = tblock;
+
+                    // TODO: is `parent: None` correct here?
+                    let test_opnd = self.lower_expr(&test_expr, None);
+
+                    // Cloning the operand seems a bit expensive here
+                    let test_rvalue =
+                        Rvalue::Bin(crate::ir::BinOp::EqEqEq, opnd.clone(), test_opnd);
+
+                    // TODO: is `parent: None` correct here?
+                    let test_result = self.body.push_tmp(self.block, test_rvalue, None);
+
+                    let new_cblock = self.body.new_block();
+                    self.body.new_blockbuilder();
 
                     self.set_curr_terminator(Terminator::If {
-                        cond: Operand::with_var(cond),
-                        cons: cblock,
-                        alt: after_switch,
+                        cond: Operand::with_var(test_result),
+                        cons: new_cblock,
+                        alt: new_tblock,
                     });
 
+                    if cblock != tblock {
+                        self.block = cblock;
+                        self.set_curr_terminator(Terminator::Goto(new_cblock));
+                    }
+
+                    tblock = new_tblock;
+                    cblock = new_cblock;
+
                     self.block = cblock;
+
                     self.lower_stmts(&case.cons);
-                    self.goto_block(after_switch);
                 }
+
+                self.block = cblock;
+                self.set_curr_terminator(Terminator::Goto(tblock));
+                self.block = tblock;
             }
             Stmt::Throw(ThrowStmt { arg, .. }) => {
                 let opnd = self.lower_expr(arg, None);
