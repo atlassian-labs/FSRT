@@ -72,7 +72,7 @@ Forge app directory for this subcommand.
 It reads a TOML config (default `./fsrt-remote.toml`); see
 [`fsrt-remote.toml.example`](fsrt-remote.toml.example) for a commented example.
 Dry runs still authenticate and query deployment metadata, but skip token signing and
-print the exact GraphQL request that a live mint would send.
+print the exact GraphQL request that a live mint would send. Pass `--ctx '<JSON>'` to populate the selected extension's `context` object.
 
 ### Configuration
 
