@@ -2116,7 +2116,8 @@ impl FunctionAnalyzer<'_> {
             }
             Stmt::Break(BreakStmt { label, .. }) => {
                 let None = label else {
-                    panic!("Labeled breaks are still unsupported");
+                    eprintln!("Labeled breaks are still unsupported");
+                    return;
                 };
 
                 self.body
@@ -2124,7 +2125,8 @@ impl FunctionAnalyzer<'_> {
             }
             Stmt::Continue(ContinueStmt { label, .. }) => {
                 let None = label else {
-                    panic!("Labeled continues are still unsupported");
+                    eprintln!("Labeled continues are still unsupported");
+                    return;
                 };
 
                 self.body
