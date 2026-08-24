@@ -1940,8 +1940,8 @@ impl FunctionAnalyzer<'_> {
                 test, cons, alt, ..
             }) => {
                 let cond = self.lower_expr(test, None);
-                let curr = self.block;
-                let [temp1, temp2, temp3] = self.body.new_blocks();
+                let curr = self.block; // Is this the condition? Maybe?
+                let _: [_; 3] = self.body.new_blocks();
                 let rest = self.body.new_blockbuilder();
                 let cons_block = self.body.new_blockbuilder();
                 let alt_block = self.body.new_blockbuilder();
@@ -2164,7 +2164,34 @@ impl FunctionAnalyzer<'_> {
                 ..
             }) => {
                 let opnd = self.lower_expr(discriminant, None);
-                // TODO: lower switch
+                let mut matches: BasicBlockId;
+                let mut next_cond: BasicBlockId;
+                // This loop is incorrect. The correct recursion order is back-to-front
+                for case in cases {
+                    [matches, next_cond] = self.body.new_blockbuilders();
+                    let _: [_; 2] = self.body.new_blocks();
+                    let Some(test) = &case.test else {
+                        // TODO: handle default case
+                        continue;
+                    };
+
+                    let test_opnd = self.lower_expr(&test, None);
+                    let cond = self.body.push_tmp(
+                        self.block,
+                        Rvalue::Bin(crate::ir::BinOp::EqEqEq, opnd.clone(), test_opnd),
+                        None,
+                    );
+
+                    self.set_curr_terminator(Terminator::If {
+                        cond: Operand::with_var(cond),
+                        cons: matches,
+                        alt: next_cond,
+                    });
+
+                    self.block = matches;
+                    self.lower_stmts(&case.cons);
+                    self.goto_block(block);
+                }
             }
             Stmt::Throw(ThrowStmt { arg, .. }) => {
                 let opnd = self.lower_expr(arg, None);
