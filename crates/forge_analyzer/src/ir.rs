@@ -1116,7 +1116,6 @@ impl fmt::Display for Template {
 impl fmt::Display for Inst {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            // Why tf is this getting generated?
             Inst::Expr(rval) => write!(f, "_ = {rval}"),
             Inst::Assign(lval, rval) => write!(f, "{lval} = {rval}"),
         }

@@ -93,9 +93,6 @@ pub struct Args {
     dump_call_graph: Option<String>,
 
     #[arg(long)]
-    dump_ast: Option<String>,
-
-    #[arg(long)]
     dump_paths: bool,
 
     /// A specific function to scan. Must be an entrypoint specified in `manifest.yml`
@@ -429,104 +426,6 @@ fn has_remote_auth(remotes: &Option<Vec<manifest::Remotes>>) -> bool {
         .fold(false, |a, i| a || i)
 }
 
-struct AstDump {
-    level: u32,
-}
-
-impl AstDump {
-    fn new() -> Self {
-        Self { level: 0 }
-    }
-
-    fn print(&self, text: &str) {
-        for _ in 0..self.level {
-            print!("  ");
-        }
-
-        println!("{text}");
-    }
-
-    fn visit<T: VisitWith<Self>>(&mut self, node: &T) {
-        self.level += 1;
-        node.visit_children_with(self);
-        self.level -= 1;
-    }
-}
-
-impl Visit for AstDump {
-    fn visit_seq_expr(&mut self, node: &swc_core::ecma::ast::SeqExpr) {
-        self.print("(SeqExpr");
-        self.visit(node);
-        self.print(")");
-    }
-
-    fn visit_module(&mut self, node: &swc_core::ecma::ast::Module) {
-        self.print("(Module");
-        self.visit(node);
-        self.print(")");
-    }
-
-    fn visit_module_item(&mut self, node: &swc_core::ecma::ast::ModuleItem) {
-        self.print("(ModuleItem");
-        self.visit(node);
-        self.print(")");
-    }
-
-    fn visit_stmt(&mut self, node: &swc_core::ecma::ast::Stmt) {
-        self.print("(Stmt");
-        self.visit(node);
-        self.print(")");
-    }
-
-    fn visit_module_decl(&mut self, node: &swc_core::ecma::ast::ModuleDecl) {
-        self.print("(ModuleDecl");
-        self.visit(node);
-        self.print(")");
-    }
-
-    fn visit_export_decl(&mut self, node: &swc_core::ecma::ast::ExportDecl) {
-        self.print("(ExportDecl");
-        self.visit(node);
-        self.print(")");
-    }
-
-    fn visit_decl(&mut self, node: &swc_core::ecma::ast::Decl) {
-        self.print("(Decl");
-        self.visit(node);
-        self.print(")");
-    }
-
-    fn visit_fn_decl(&mut self, node: &swc_core::ecma::ast::FnDecl) {
-        self.print("(FnDecl");
-        self.visit(node);
-        self.print(")");
-    }
-
-    fn visit_var_decl(&mut self, node: &swc_core::ecma::ast::VarDecl) {
-        self.print("(VarDecl");
-        self.visit(node);
-        self.print(")");
-    }
-
-    fn visit_var_declarator(&mut self, node: &swc_core::ecma::ast::VarDeclarator) {
-        self.print("(VarDeclarator");
-        self.visit(node);
-        self.print(")");
-    }
-
-    fn visit_expr(&mut self, node: &swc_core::ecma::ast::Expr) {
-        self.print("(Expr");
-        self.visit(node);
-        self.print(")");
-    }
-
-    fn visit_assign_expr(&mut self, node: &swc_core::ecma::ast::AssignExpr) {
-        self.print("(AssignExpr");
-        self.visit(node);
-        self.print(")");
-    }
-}
-
 #[tracing::instrument(level = "debug")]
 pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
@@ -640,17 +539,7 @@ pub(crate) fn scan_directory<'a>(
             .dump_call_graph(&mut std::io::stdout().lock(), func);
         std::process::exit(0);
     }
-
-    if let Some(path) = opts.dump_ast.as_ref() {
-        let realpath = PathBuf::from(path);
-        if let Some(modid) = proj.ctx.modid_from_path(&realpath) {
-            let module = &proj.ctx.modules()[modid];
-            module.visit_with(&mut AstDump::new());
-        } else {
-            eprintln!("Not a known path {path}");
-        }
-    }
-
+    
     if opts.dump_paths {
         for (key, _) in proj.ctx.path_ids() {
             println!("{}", key.display());
