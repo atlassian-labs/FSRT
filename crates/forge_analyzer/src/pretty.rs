@@ -6,10 +6,6 @@ use crate::{
 };
 
 impl Environment {
-    pub fn dump_names(&self, output: &mut dyn Write) {
-        self.resolver.names.iter().for_each(|x| writeln!(output, "{}", *x).unwrap_or_default());
-    }
-
     pub fn dump_function(&self, output: &mut dyn Write, func_name: &str) {
         let Some(body) = self
             .resolver

@@ -1378,7 +1378,6 @@ impl FunctionAnalyzer<'_> {
     fn lower_member(&mut self, obj: &Expr, prop: &MemberProp) -> Operand {
         if obj.as_ident().is_some_and(|ident| *ident.sym == *"process") && eq_prop_name(prop, "env")
         {
-            // Who calls this?
             // FIXME: Store the exact environment variable in the IR and don't create duplicate IR instructions.
             self.push_curr_inst(Inst::Expr(Rvalue::Intrinsic(
                 Intrinsic::EnvRead,
@@ -1750,7 +1749,6 @@ impl FunctionAnalyzer<'_> {
     }
 
     // TODO: This can probably be made into a trait
-    // We know that this is probably the one place where PHI nodes are currently being constructed
     fn lower_expr(&mut self, n: &Expr, parent: Option<DefId>) -> Operand {
         match n {
             Expr::This(_) => Operand::Var(Variable::THIS),
@@ -1943,7 +1941,7 @@ impl FunctionAnalyzer<'_> {
                 test, cons, alt, ..
             }) => {
                 let cond = self.lower_expr(test, None);
-                let curr = self.block; // Is this the condition? Maybe?
+                let curr = self.block;
                 let _: [_; 3] = self.body.new_blocks();
                 let rest = self.body.new_blockbuilder();
                 let cons_block = self.body.new_blockbuilder();
@@ -1964,7 +1962,6 @@ impl FunctionAnalyzer<'_> {
                 let alt_phi = self.body.push_tmp(self.block, Rvalue::Read(alt), None);
                 self.set_curr_terminator(Terminator::Goto(rest));
                 self.block = rest;
-                // Possibly creates phi (ternary one?)
                 let phi = self.body.push_tmp(
                     self.block,
                     Rvalue::Phi(vec![(cons_phi, cons_block), (alt_phi, alt_block)]),
@@ -2136,9 +2133,6 @@ impl FunctionAnalyzer<'_> {
             Stmt::If(IfStmt {
                 test, cons, alt, ..
             }) => {
-                // Oh... I get it now. When lowering expression we build the current basic block, allocate the target
-                // blocks to complete the current one, then recurse. It's an AST recursion though.
-
                 // Adds two blocks to the body:
                 //  - cons_block: block to store insts that run if the test condition of the Stmt::If is true
                 //  - cont:       block to store insts that run after the Stmt::If
@@ -2169,8 +2163,6 @@ impl FunctionAnalyzer<'_> {
                 });
                 self.block = cons_block;
                 self.lower_stmt(cons);
-
-                // This thing calls set-terminator
                 self.goto_block(cont);
             }
             // needs break/continue
@@ -2186,6 +2178,8 @@ impl FunctionAnalyzer<'_> {
 
                 let opnd_tmp = self.body.push_tmp(self.block, Rvalue::Read(opnd), None);
 
+                // cblock -> "Case block", tblock -> "Test block" (i.e. the block that evaluates the case value
+                // comparison)
                 let (mut cblock, mut tblock) = (self.block, self.block);
                 let mut new_tblock;
                 let mut cblocks: Vec<BasicBlockId> = Vec::new();
@@ -2243,21 +2237,18 @@ impl FunctionAnalyzer<'_> {
                 for (n, curr_cblock) in cblocks.iter().enumerate() {
                     let case = &cases[n];
                     if !is_first_cblock && let None = self.get_curr_terminator() {
-                        self.set_curr_terminator(Terminator::Goto(curr_cblock.clone()));
+                        self.goto_block(*curr_cblock);
                     }
 
                     is_first_cblock = false;
-                    self.block = curr_cblock.clone();
                     self.lower_stmts(&case.cons);
                 }
 
                 end_block = self.break_target;
                 self.break_target = old_break;
                 if let None = self.get_curr_terminator() {
-                    self.set_curr_terminator(Terminator::Goto(end_block));
+                    self.goto_block(end_block);
                 }
-
-                self.block = end_block;
             }
             Stmt::Throw(ThrowStmt { arg, .. }) => {
                 let opnd = self.lower_expr(arg, None);
@@ -2348,7 +2339,6 @@ impl FunctionAnalyzer<'_> {
         }
     }
 
-    // god help me
     fn lower_loop(&mut self, left: &ForHead, right: &Expr, body: &Stmt) {
         // FIXME: don't assume loops are infinite
         let opnd = self.lower_expr(right, None);
