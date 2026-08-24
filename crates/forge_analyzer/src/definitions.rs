@@ -2,6 +2,7 @@
 
 use std::borrow::BorrowMut;
 use std::hash::Hash;
+use std::iter::Zip;
 use std::{borrow::Borrow, fmt, mem};
 use std::{env, string};
 
@@ -2116,8 +2117,22 @@ impl FunctionAnalyzer<'_> {
                 self.lower_stmt(body);
             }
             // TODO: Lower Break and Continue
-            Stmt::Break(BreakStmt { label, .. }) => {}
-            Stmt::Continue(ContinueStmt { label, .. }) => {}
+            Stmt::Break(BreakStmt { label, .. }) => {
+                let None = label else {
+                    panic!("Labeled breaks are still unsupported");
+                };
+
+                self.body
+                    .set_terminator(self.block, Terminator::Goto(self.break_target));
+            }
+            Stmt::Continue(ContinueStmt { label, .. }) => {
+                let None = label else {
+                    panic!("Labeled continues are still unsupported");
+                };
+
+                self.body
+                    .set_terminator(self.block, Terminator::Goto(self.continue_target));
+            }
             Stmt::If(IfStmt {
                 test, cons, alt, ..
             }) => {
@@ -2171,9 +2186,12 @@ impl FunctionAnalyzer<'_> {
                 }
 
                 let (mut cblock, mut tblock) = (self.block, self.block);
-                let mut new_tblock = self.body.new_block();
-                self.body.new_blockbuilder();
+                let mut new_tblock;
+                let mut cblocks: Vec<BasicBlockId> = Vec::new();
                 for case in cases {
+                    new_tblock = self.body.new_block();
+                    self.body.new_blockbuilder();
+
                     let Some(test_expr) = &case.test else {
                         // TODO:
                         panic!("switch default not supported")
@@ -2200,22 +2218,32 @@ impl FunctionAnalyzer<'_> {
                         alt: new_tblock,
                     });
 
-                    if cblock != tblock {
-                        self.block = cblock;
-                        self.set_curr_terminator(Terminator::Goto(new_cblock));
-                    }
-
                     tblock = new_tblock;
                     cblock = new_cblock;
 
-                    self.block = cblock;
+                    cblocks.push(cblock);
+                }
 
+                let end_block = tblock;
+                let old_break = self.break_target;
+                self.break_target = end_block;
+                let mut is_first_cblock = true;
+                for (case, cblock) in cases.iter().zip(cblocks) {
+                    if !is_first_cblock && let None = self.get_curr_terminator() {
+                        self.set_curr_terminator(Terminator::Goto(cblock));
+                    }
+
+                    is_first_cblock = false;
+                    self.block = cblock;
                     self.lower_stmts(&case.cons);
                 }
 
-                self.block = cblock;
-                self.set_curr_terminator(Terminator::Goto(tblock));
-                self.block = tblock;
+                self.break_target = old_break;
+                if let None = self.get_curr_terminator() {
+                    self.set_curr_terminator(Terminator::Goto(cblock));
+                }
+
+                self.block = end_block;
             }
             Stmt::Throw(ThrowStmt { arg, .. }) => {
                 let opnd = self.lower_expr(arg, None);
