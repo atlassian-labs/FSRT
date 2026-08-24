@@ -2190,11 +2190,11 @@ impl FunctionAnalyzer<'_> {
                 let mut new_tblock;
                 let mut cblocks: Vec<BasicBlockId> = Vec::new();
                 let mut has_default: Option<usize> = None;
-                cblocks.reserve(cases.len());
+                cblocks.resize(cases.len(), BasicBlockId(u32::MAX));
                 for (n, case) in cases.iter().enumerate() {
                     let Some(test_expr) = &case.test else {
                         has_default = Some(n);
-                        break;
+                        continue;
                     };
 
                     new_tblock = self.body.new_block();
@@ -2223,34 +2223,35 @@ impl FunctionAnalyzer<'_> {
                     tblock = new_tblock;
                     cblock = new_cblock;
 
-                    cblocks.push(cblock);
+                    cblocks[n] = cblock;
                 }
+
+                let mut end_block = tblock;
 
                 if let Some(n) = has_default {
-                    let mut new_cblock = tblock;
-                    for case in &cases[n..] {
-                        cblocks.push(new_cblock);
-                        new_cblock = self.body.new_block();
-                        self.body.new_blockbuilder();
-                    }
-
-                    tblock = new_cblock;
+                    // Intended semantics is that default block ought to prepend the end block
+                    // It will only ever point to the end block, or to the following case block
+                    cblocks[n] = end_block;
+                    let def_block = self.body.new_block();
+                    self.body.new_blockbuilder();
+                    end_block = def_block;
                 }
 
-                let end_block = tblock;
                 let old_break = self.break_target;
                 self.break_target = end_block;
                 let mut is_first_cblock = true;
-                for (case, curr_cblock) in cases.iter().zip(cblocks) {
+                for (n, curr_cblock) in cblocks.iter().enumerate() {
+                    let case = &cases[n];
                     if !is_first_cblock && let None = self.get_curr_terminator() {
-                        self.set_curr_terminator(Terminator::Goto(curr_cblock));
+                        self.set_curr_terminator(Terminator::Goto(curr_cblock.clone()));
                     }
 
                     is_first_cblock = false;
-                    self.block = curr_cblock;
+                    self.block = curr_cblock.clone();
                     self.lower_stmts(&case.cons);
                 }
 
+                end_block = self.break_target;
                 self.break_target = old_break;
                 if let None = self.get_curr_terminator() {
                     self.set_curr_terminator(Terminator::Goto(end_block));
