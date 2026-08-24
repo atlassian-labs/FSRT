@@ -2164,12 +2164,12 @@ impl FunctionAnalyzer<'_> {
                 ..
             }) => {
                 let opnd = self.lower_expr(discriminant, None);
-                let mut matches: BasicBlockId;
-                let mut next_cond: BasicBlockId;
+                let after_switch = self.body.new_block();
+                let _ = self.body.new_blockbuilder();
                 // This loop is incorrect. The correct recursion order is back-to-front
                 for case in cases {
-                    [matches, next_cond] = self.body.new_blockbuilders();
-                    let _: [_; 2] = self.body.new_blocks();
+                    let [cblock] = self.body.new_blockbuilders();
+                    let _: [_; 1] = self.body.new_blocks();
                     let Some(test) = &case.test else {
                         // TODO: handle default case
                         continue;
@@ -2184,13 +2184,13 @@ impl FunctionAnalyzer<'_> {
 
                     self.set_curr_terminator(Terminator::If {
                         cond: Operand::with_var(cond),
-                        cons: matches,
-                        alt: next_cond,
+                        cons: cblock,
+                        alt: after_switch,
                     });
 
-                    self.block = matches;
+                    self.block = cblock;
                     self.lower_stmts(&case.cons);
-                    self.goto_block(block);
+                    self.goto_block(after_switch);
                 }
             }
             Stmt::Throw(ThrowStmt { arg, .. }) => {
