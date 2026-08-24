@@ -5,6 +5,8 @@ use tracing::info;
 
 use crate::{Result, forge_project::find_manifest_path};
 
+use super::parse_ctx;
+
 /// `mint-fct` arguments.
 #[derive(Args, Debug)]
 pub(crate) struct MintFctArgs {
@@ -27,17 +29,6 @@ pub(crate) struct MintFctArgs {
     /// Query metadata and print the GraphQL request without minting.
     #[arg(long, default_value_t = false)]
     dry_run: bool,
-}
-
-fn parse_ctx(value: &str) -> std::result::Result<serde_json::Value, String> {
-    let ctx: serde_json::Value =
-        serde_json::from_str(value).map_err(|error| format!("invalid JSON: {error}"))?;
-
-    if !ctx.is_object() {
-        return Err("ctx must be a JSON object".to_string());
-    }
-
-    Ok(ctx)
 }
 
 impl MintFctArgs {
