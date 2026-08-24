@@ -35,28 +35,6 @@ impl Environment {
         }
     }
 
-    pub fn dump_call_graph(&self, output: &mut dyn Write, func_name: &str) {
-        let Some(body) = self
-            .resolver
-            .names
-            .iter_enumerated()
-            .find_map(|(id, name)| {
-                if *func_name == *name {
-                    self.def_ref(id).to_body()
-                } else {
-                    None
-                }
-            })
-        else {
-            eprintln!("No function named {func_name}");
-            return;
-        };
-
-        if let Err(e) = dump_call_graph(output, self, body) {
-            tracing::error!("Error dumping IR: {e}");
-        }
-    }
-
     pub fn dump_tree(&self, output: &mut dyn Write, func_name: &str) {
         let Some(body_map) = self
             .resolver
