@@ -6,7 +6,9 @@ site = "https://your-site.example.com"
 # Context ARI owner, such as "jira" or "confluence".
 product = "jira"
 
-# Override automatic production/default environment selection.
+# Used only to disambiguate when multiple app installations are returned.
+# Without an override, FSRT prefers "production", then "default", then the first result.
+# If multiple installations match, FSRT uses the first result.
 # environment_key = "production"
 
 # Authentication material. Do not commit this file.
