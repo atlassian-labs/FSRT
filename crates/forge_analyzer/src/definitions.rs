@@ -2183,17 +2183,16 @@ impl FunctionAnalyzer<'_> {
                 // cblock -> "Case block", tblock -> "Test block" (i.e. the block that evaluates the case value
                 // comparison)
                 let (mut cblock, mut tblock) = (self.block, self.block);
-                let mut new_tblock;
                 let mut cblocks: Vec<BasicBlockId> = Vec::new();
-                let mut has_default: Option<usize> = None;
+                let mut default_case: Option<usize> = None;
                 cblocks.resize(cases.len(), BasicBlockId(u32::MAX));
                 for (n, case) in cases.iter().enumerate() {
                     let Some(test_expr) = &case.test else {
-                        has_default = Some(n);
+                        default_case = Some(n);
                         continue;
                     };
 
-                    new_tblock = self.body.new_block();
+                    let new_tblock = self.body.new_block();
                     self.body.new_blockbuilder();
 
                     self.block = tblock;
@@ -2224,13 +2223,14 @@ impl FunctionAnalyzer<'_> {
 
                 let mut end_block = tblock;
 
-                if let Some(n) = has_default {
-                    // Intended semantics is that default block ought to prepend the end block
-                    // It will only ever point to the end block, or to the following case block
+                if let Some(n) = default_case {
+                    // The correct CFG edges to the default case (at the end of the tblock chain)
+                    // have already been created pointing to `end_block`, so we reuse end_block as the default
+                    // cblock, and create an additional block to link the end of the case chain / any breaks to
                     cblocks[n] = end_block;
-                    let def_block = self.body.new_block();
+                    let new_end_block = self.body.new_block();
                     self.body.new_blockbuilder();
-                    end_block = def_block;
+                    end_block = new_end_block;
                 }
 
                 let old_break = self.break_target;
