@@ -35,7 +35,7 @@ pub struct GraphqlErrorObject {
     pub message: Option<String>,
 }
 
-/// Errors produced while constructing or minting an FCT.
+/// Errors produced while constructing or minting Forge tokens.
 #[derive(Debug, thiserror::Error)]
 pub enum MintError {
     #[error("could not read {kind} file '{path}'")]
@@ -149,6 +149,18 @@ pub enum MintError {
         available: Vec<String>,
     },
 
+    #[error("remote '{remote_key}' not found; available: {available:?}")]
+    RemoteKeyNotFound {
+        remote_key: String,
+        available: Vec<String>,
+    },
+
+    #[error("FCT context must be a JSON object")]
+    InvalidFctContext,
+
+    #[error("supplied FCT must not be empty")]
+    EmptySuppliedFct,
+
     #[error("FCT mutation was rejected (success: {success}): {errors:?}")]
     MintRejected {
         success: bool,
@@ -157,6 +169,9 @@ pub enum MintError {
 
     #[error("FCT response has no token")]
     MissingFctToken,
+
+    #[error("FIT response has no token")]
+    MissingFitToken,
 }
 
 /// Structural and expiry status of a JWT.
