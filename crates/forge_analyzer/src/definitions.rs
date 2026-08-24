@@ -1481,7 +1481,6 @@ impl FunctionAnalyzer<'_> {
     fn lower_member(&mut self, obj: &Expr, prop: &MemberProp) -> Operand {
         if obj.as_ident().is_some_and(|ident| *ident.sym == *"process") && eq_prop_name(prop, "env")
         {
-            // Who calls this?
             // FIXME: Store the exact environment variable in the IR and don't create duplicate IR instructions.
             self.push_curr_inst(Inst::Expr(Rvalue::Intrinsic(
                 Intrinsic::EnvRead,
@@ -1853,7 +1852,6 @@ impl FunctionAnalyzer<'_> {
     }
 
     // TODO: This can probably be made into a trait
-    // We know that this is probably the one place where PHI nodes are currently being constructed
     fn lower_expr(&mut self, n: &Expr, parent: Option<DefId>) -> Operand {
         match n {
             Expr::This(_) => Operand::Var(Variable::THIS),
@@ -2067,7 +2065,6 @@ impl FunctionAnalyzer<'_> {
                 let alt_phi = self.body.push_tmp(self.block, Rvalue::Read(alt), None);
                 self.set_curr_terminator(Terminator::Goto(rest));
                 self.block = rest;
-                // Possibly creates phi (ternary one?)
                 let phi = self.body.push_tmp(
                     self.block,
                     Rvalue::Phi(vec![(cons_phi, cons_block), (alt_phi, alt_block)]),
@@ -2251,9 +2248,6 @@ impl FunctionAnalyzer<'_> {
             Stmt::If(IfStmt {
                 test, cons, alt, ..
             }) => {
-                // Oh... I get it now. When lowering expression we build the current basic block, allocate the target
-                // blocks to complete the current one, then recurse. It's an AST recursion though.
-
                 // Adds two blocks to the body:
                 //  - cons_block: block to store insts that run if the test condition of the Stmt::If is true
                 //  - cont:       block to store insts that run after the Stmt::If
@@ -2284,8 +2278,6 @@ impl FunctionAnalyzer<'_> {
                 });
                 self.block = cons_block;
                 self.lower_stmt(cons);
-
-                // This thing calls set-terminator
                 self.goto_block(cont);
             }
             Stmt::Switch(stmt) => {
@@ -2393,7 +2385,6 @@ impl FunctionAnalyzer<'_> {
         }
     }
 
-    // god help me
     fn lower_loop(&mut self, left: &ForHead, right: &Expr, body: &Stmt) {
         // A workaround for the fact that these loops are not correctly lowered yet
         let (old_break, old_continue) = (self.break_target, self.continue_target);

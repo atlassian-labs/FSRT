@@ -361,7 +361,6 @@ impl Body {
     }
 
     #[inline]
-    // Ueeful!
     pub(crate) fn iter_cfg_enumerated(
         &self,
     ) -> impl IntoIterator<Item = (u32, u32)> + 'static + use<> {
@@ -818,7 +817,6 @@ impl Body {
     }
 
     #[inline]
-    // Who calls you?
     pub(crate) fn push_expr(&mut self, bb: BasicBlockId, val: Rvalue) {
         self.blockbuilders[bb].insts.push(Inst::Expr(val));
     }

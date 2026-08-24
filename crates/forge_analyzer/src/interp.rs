@@ -779,7 +779,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     | (Value::Phi(phi_value), Value::Const(const_value)) => {
                         let mut new_phi = phi_value;
                         new_phi.push(const_value);
-                        // Possibly creates phi
                         self.add_value_with_projection(
                             defid_block,
                             varid,
@@ -792,7 +791,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                         .add_value_with_projection(
                             defid_block,
                             varid,
-                            // Possibly creates phi
                             Value::Phi(vec![const_value1, const_value2]),
                             projections,
                         ),
@@ -1066,9 +1064,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             .map(move |(&(_, callee), &loc)| (callee, loc))
     }
 
-    // Need to understand how this works
-    // Write a test function that derives information from the accountId, and one that does not do so (in a potentially
-    // obfuscated way via subcalls). Make sure their SSA makes sense.
     fn run(&mut self, func_def: DefId) {
         if self.dataflow_visited.contains(&func_def) {
             return;
@@ -1276,7 +1271,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.try_check_function(def, checker)
     }
 
-    // What kind of symbolic execution crazyness is this
     #[instrument(level = "info", skip(self, checker, entry_file), fields(checker = %C::NAME, file = %entry_file.display()))]
     pub fn run_checker(
         &mut self,
