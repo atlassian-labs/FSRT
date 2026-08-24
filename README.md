@@ -17,6 +17,7 @@ Arguments:
 
 Commands:
   mint-fct  Mint an FCT for a deployed module
+  mint-fit  Mint an FIT for a deployed module and Forge remote
 
   Options:
     -d, --debug
@@ -64,30 +65,21 @@ cargo install --git https://github.com/atlassian-labs/FSRT --locked
 
 ```text
 fsrt mint-fct <MODULE_KEY> [OPTIONS]
+fsrt mint-fit <MODULE_KEY> <REMOTE_KEY> [OPTIONS]
 ```
 
-For dynamic testing, `mint-fct` mints an FCT against a live Atlassian site.
-Invoke it before any scan directory arguments; use `--app-dir` to select the
-Forge app directory for this subcommand.
-It reads a TOML config (default `./fsrt-remote.toml`); see
-[`fsrt-remote.toml.example`](fsrt-remote.toml.example) for a commented example.
-Dry runs still authenticate and query deployment metadata, but skip token signing and
-print the exact GraphQL request that a live mint would send. Pass `--ctx '<JSON>'` to populate the selected extension's `context` object.
+Both commands use `--app-dir` and a TOML configuration file; see
+[`fsrt-remote.toml.example`](fsrt-remote.toml.example). Keep that configuration and its
+cookie file untracked.
 
-### Configuration
+`mint-fct` mints an FCT for a deployed module. `mint-fit` mints an FIT for a module and
+remote. For `mint-fct`, pass `--ctx '<JSON>'` to populate the selected extension's
+`context` object. For `mint-fit`, passing `--ctx` forces a new FCT with that context;
+otherwise `--fct`, a valid in-process cached FCT, or a newly minted FCT is used in that
+order.
 
-The config is documented in [`fsrt-remote.toml.example`](fsrt-remote.toml.example).
-`site` must be a full HTTPS origin without a path, such as
-`https://user.atlassian.net`, and is used to resolve `cloud_id`. GraphQL requests
-use `https://www.atlassian.net/gateway/api/graphql`.
-The installation ID, deployed environment, version, and extensions are discovered
-through GraphQL. When multiple installations are returned, `environment_key` selects
-one; without an override, FSRT prefers `production`, then `default`, then the first
-installation returned. If multiple installations match the selected environment, the
-first is used. The key is ignored when only one installation exists.
-`[auth].raw_cookie_file` is required. Relative cookie paths use the directory where FSRT
-is run, not the config file's directory. The cookie file contains authentication material
-and must not be committed.
+By default, live mint commands print only the token. `--dry-run` queries metadata without
+signing tokens. `--verbose` prints actual live diagnostics to stderr while keeping the minted token on stdout. Run `fsrt <COMMAND> --help` for all options.
 
 ## Tests
 
