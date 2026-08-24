@@ -1,17 +1,13 @@
 use std::io::{self, Write};
 
 use crate::{
-    definitions::{
-        self, DefId,
-        DefKind::{self, ResolverDef},
-        Environment,
-    },
+    definitions::{DefId, DefKind, Environment},
     ir::{BasicBlockId, Body, VarKind},
 };
 
 impl Environment {
     pub fn dump_names(&self, output: &mut dyn Write) {
-        self.resolver.names.iter().for_each(|x| println!("{}", *x));
+        self.resolver.names.iter().for_each(|x| writeln!(output, "{}", *x).unwrap_or_default());
     }
 
     pub fn dump_function(&self, output: &mut dyn Write, func_name: &str) {

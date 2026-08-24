@@ -17,13 +17,11 @@ use forge_permission_resolver::{
 };
 use glob::glob;
 use std::{
-    any::Any,
     collections::{HashMap, HashSet, VecDeque},
     env, fmt, fs,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
 };
-use swc_core::ecma::visit::{Visit, VisitWith};
 
 use graphql_parser::{
     query::{Mutation, Query, SelectionSet},
@@ -409,6 +407,17 @@ fn check_remotes(remotes: &Option<Vec<manifest::Remotes>>) -> Vec<&str> {
     Vec::from_iter(result)
 }
 
+fn has_remote_auth(remotes: &Option<Vec<manifest::Remotes>>) -> bool {
+    let Some(content) = remotes else {
+        return false;
+    };
+
+    content
+        .iter()
+        .map(|e| e.contains_auth())
+        .fold(false, |a, i| a || i)
+}
+
 #[tracing::instrument(level = "debug")]
 pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
@@ -460,6 +469,7 @@ pub(crate) fn scan_directory<'a>(
         .map(|s| s.as_str())
         .collect::<HashSet<_>>();
     let mut perm_map = PermMap::new(&permset);
+    let contains_remote_auth_token = has_remote_auth(&manifest.remotes);
 
     let mut sorted_paths: Vec<PathBuf> = paths.iter().cloned().collect();
     sorted_paths.sort();
@@ -676,7 +686,8 @@ pub(crate) fn scan_directory<'a>(
         &compass_permission_resolver,
     );
 
-    let mut user_authz_checker = UserAuthZChecker::new(&suspicious_remotes);
+    let suspicious_remotes = check_remotes(&manifest.remotes);
+    let mut _user_authz_checker = UserAuthZChecker::new(&suspicious_remotes);
 
     let mut secret_checker = SecretChecker::new();
     let mut auth_header_checker = AuthHeaderChecker::new();
