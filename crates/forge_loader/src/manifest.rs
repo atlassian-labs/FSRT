@@ -331,6 +331,8 @@ pub struct ForgeModules<'a> {
     event_triggers: Vec<EventTrigger<'a>>,
     #[serde(rename = "scheduledTrigger", default, borrow)]
     scheduled_triggers: Vec<ScheduledTrigger<'a>>,
+    #[serde(rename = "apiRoute", default, borrow)]
+    api_routes: Vec<JustFunc<'a>>,
 
     // Compass Modules
     #[serde(rename = "compass:adminPage", default, borrow)]
@@ -750,6 +752,7 @@ impl<'a> ForgeModules<'a> {
             functions,
             event_triggers: _,
             scheduled_triggers: _,
+            api_routes,
             compass_admin_page,
             component_page,
             compass_global_page,
@@ -801,6 +804,8 @@ impl<'a> ForgeModules<'a> {
         // for all trigger things
 
         let mut invokable_functions = BTreeSet::new();
+
+        api_routes.append_functions(&mut invokable_functions);
 
         // Compass Module Functions
         compass_admin_page.append_functions(&mut invokable_functions);
@@ -1288,6 +1293,42 @@ mod tests {
                 admin: false
             })
         );
+    }
+
+    #[test]
+    fn test_api_route_functions_are_invokable() {
+        let json = r#"{
+            "app": {
+                "id": "my-app"
+            },
+            "modules": {
+                "apiRoute": [
+                    {
+                        "key": "get-employee",
+                        "path": "/employee",
+                        "operation": "GET",
+                        "function": "route-handler",
+                        "accept": ["application/json"],
+                        "scopes": ["read:employee:custom"]
+                    }
+                ],
+                "function": [
+                    {
+                        "key": "route-handler",
+                        "handler": "index.routeHandler"
+                    },
+                    {
+                        "key": "unused-handler",
+                        "handler": "index.unusedHandler"
+                    }
+                ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        let mut functions = manifest.modules.into_analyzable_functions();
+
+        assert!(functions.next().unwrap().invokable);
+        assert!(!functions.next().unwrap().invokable);
     }
 
     // Test to check if Rovo modules can be deserialized properly from a sample manifest file.

@@ -1105,6 +1105,42 @@ fn basic_authz_vuln() {
 }
 
 #[test]
+fn api_route_authz_vuln() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import api, { route } from '@forge/api';
+
+        export async function routeHandler() {
+            await api.asApp().requestJira(route`/rest/api/3/issue`);
+            return { statusCode: 200, body: '{}' };
+        }
+
+        // manifest.yml
+        modules:
+            apiRoute:
+              - key: get-employee
+                path: /employee
+                operation: GET
+                function: route-handler
+                accept:
+                  - application/json
+                scopes:
+                  - read:employee:custom
+            function:
+              - key: route-handler
+                handler: index.routeHandler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_authz_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
+#[test]
 fn basic_authz_vuln_non_default() {
     let test_forge_project = MockForgeProject::files_from_string(
         "// src/index.jsx
