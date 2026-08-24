@@ -21,7 +21,7 @@ pub struct FsrtRemoteConfig {
     /// Context ARI owner.
     pub product: String,
 
-    /// Optional Forge environment override.
+    /// Optional Forge environment preference used when multiple installations are found.
     pub environment_key: Option<String>,
 }
 

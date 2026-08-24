@@ -81,10 +81,13 @@ The config is documented in [`fsrt-remote.toml.example`](fsrt-remote.toml.exampl
 `https://user.atlassian.net`, and is used to resolve `cloud_id`. GraphQL requests
 use `https://www.atlassian.net/gateway/api/graphql`.
 The installation ID, deployed environment, version, and extensions are discovered
-through GraphQL. Use `environment_key` to disambiguate when multiple environments are
-installed. `[auth].raw_cookie_file` is required. Relative cookie paths use the directory
-where FSRT is run, not the config file's directory. The cookie file contains
-authentication material and must not be committed.
+through GraphQL. When multiple installations are returned, `environment_key` selects
+one; without an override, FSRT prefers `production`, then `default`, then the first
+installation returned. If multiple installations match the selected environment, the
+first is used. The key is ignored when only one installation exists.
+`[auth].raw_cookie_file` is required. Relative cookie paths use the directory where FSRT
+is run, not the config file's directory. The cookie file contains authentication material
+and must not be committed.
 
 ## Tests
 

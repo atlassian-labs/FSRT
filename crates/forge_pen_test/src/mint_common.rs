@@ -143,12 +143,6 @@ pub enum MintError {
         app_id: String,
     },
 
-    #[error("multiple installations matched environment {environment_key:?}: {installations:?}")]
-    AmbiguousInstallations {
-        environment_key: Option<String>,
-        installations: Vec<String>,
-    },
-
     #[error("module '{module_key}' not found; available: {available:?}")]
     ModuleKeyNotFound {
         module_key: String,
