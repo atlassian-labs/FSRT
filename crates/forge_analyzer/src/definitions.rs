@@ -13,6 +13,7 @@ use forge_utils::{FxHashMap, create_newtype};
 use std::collections::{HashMap, HashSet};
 use swc_core::ecma::parser::token::Keyword::If;
 use swc_core::ecma::utils::var;
+use swc_core::ecma::visit::AstParentNodeRef::Null;
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -2116,7 +2117,6 @@ impl FunctionAnalyzer<'_> {
             Stmt::Labeled(LabeledStmt { label, body, .. }) => {
                 self.lower_stmt(body);
             }
-            // TODO: Lower Break and Continue
             Stmt::Break(BreakStmt { label, .. }) => {
                 let None = label else {
                     panic!("Labeled breaks are still unsupported");
@@ -2181,32 +2181,34 @@ impl FunctionAnalyzer<'_> {
             }) => {
                 let opnd = self.lower_expr(discriminant, None);
                 if cases.is_empty() {
-                    // TODO: does this preserve side effects?
                     return;
                 }
+
+                let opnd_tmp = self.body.push_tmp(self.block, Rvalue::Read(opnd), None);
 
                 let (mut cblock, mut tblock) = (self.block, self.block);
                 let mut new_tblock;
                 let mut cblocks: Vec<BasicBlockId> = Vec::new();
-                for case in cases {
+                let mut has_default: Option<usize> = None;
+                cblocks.reserve(cases.len());
+                for (n, case) in cases.iter().enumerate() {
+                    let Some(test_expr) = &case.test else {
+                        has_default = Some(n);
+                        break;
+                    };
+
                     new_tblock = self.body.new_block();
                     self.body.new_blockbuilder();
 
-                    let Some(test_expr) = &case.test else {
-                        // TODO:
-                        panic!("switch default not supported")
-                    };
-
                     self.block = tblock;
-
-                    // TODO: is `parent: None` correct here?
                     let test_opnd = self.lower_expr(&test_expr, None);
 
-                    // Cloning the operand seems a bit expensive here
-                    let test_rvalue =
-                        Rvalue::Bin(crate::ir::BinOp::EqEqEq, opnd.clone(), test_opnd);
+                    let test_rvalue = Rvalue::Bin(
+                        crate::ir::BinOp::EqEqEq,
+                        Operand::with_var(opnd_tmp),
+                        test_opnd,
+                    );
 
-                    // TODO: is `parent: None` correct here?
                     let test_result = self.body.push_tmp(self.block, test_rvalue, None);
 
                     let new_cblock = self.body.new_block();
@@ -2224,23 +2226,34 @@ impl FunctionAnalyzer<'_> {
                     cblocks.push(cblock);
                 }
 
+                if let Some(n) = has_default {
+                    let mut new_cblock = tblock;
+                    for case in &cases[n..] {
+                        cblocks.push(new_cblock);
+                        new_cblock = self.body.new_block();
+                        self.body.new_blockbuilder();
+                    }
+
+                    tblock = new_cblock;
+                }
+
                 let end_block = tblock;
                 let old_break = self.break_target;
                 self.break_target = end_block;
                 let mut is_first_cblock = true;
-                for (case, cblock) in cases.iter().zip(cblocks) {
+                for (case, curr_cblock) in cases.iter().zip(cblocks) {
                     if !is_first_cblock && let None = self.get_curr_terminator() {
-                        self.set_curr_terminator(Terminator::Goto(cblock));
+                        self.set_curr_terminator(Terminator::Goto(curr_cblock));
                     }
 
                     is_first_cblock = false;
-                    self.block = cblock;
+                    self.block = curr_cblock;
                     self.lower_stmts(&case.cons);
                 }
 
                 self.break_target = old_break;
                 if let None = self.get_curr_terminator() {
-                    self.set_curr_terminator(Terminator::Goto(cblock));
+                    self.set_curr_terminator(Terminator::Goto(end_block));
                 }
 
                 self.block = end_block;
