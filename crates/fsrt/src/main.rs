@@ -79,12 +79,6 @@ pub struct Args {
     #[arg(long)]
     dump_names: bool,
 
-    #[arg(long)]
-    dump_call_graph: Option<String>,
-
-    #[arg(long)]
-    dump_paths: bool,
-
     /// A specific function to scan. Must be an entrypoint specified in `manifest.yml`
     #[arg(short, long)]
     function: Option<String>,
@@ -399,17 +393,6 @@ fn check_remotes(remotes: &Option<Vec<manifest::Remotes>>) -> Vec<&str> {
     Vec::from_iter(result)
 }
 
-fn has_remote_auth(remotes: &Option<Vec<manifest::Remotes>>) -> bool {
-    let Some(content) = remotes else {
-        return false;
-    };
-
-    content
-        .iter()
-        .map(|e| e.contains_auth())
-        .fold(false, |a, i| a || i)
-}
-
 #[tracing::instrument(level = "debug")]
 pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
@@ -449,7 +432,6 @@ pub(crate) fn scan_directory<'a>(
         .map(|s| s.as_str())
         .collect::<HashSet<_>>();
     let mut perm_map = PermMap::new(&permset);
-    let contains_remote_auth_token = has_remote_auth(&manifest.remotes);
 
     let mut sorted_paths: Vec<PathBuf> = paths.iter().cloned().collect();
     sorted_paths.sort();
@@ -498,18 +480,6 @@ pub(crate) fn scan_directory<'a>(
     if let Some(func) = opts.dump_ir.as_ref() {
         proj.env.dump_function(&mut std::io::stdout().lock(), func);
         std::process::exit(0);
-    }
-
-    if let Some(func) = opts.dump_call_graph.as_ref() {
-        proj.env
-            .dump_call_graph(&mut std::io::stdout().lock(), func);
-        std::process::exit(0);
-    }
-    
-    if opts.dump_paths {
-        for (key, _) in proj.ctx.path_ids() {
-            println!("{}", key.display());
-        }
     }
 
     if opts.dump_names {
