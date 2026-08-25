@@ -149,9 +149,10 @@ pub enum MintError {
         available: Vec<String>,
     },
 
-    #[error("remote '{remote_key}' not found; available: {available:?}")]
-    RemoteKeyNotFound {
-        remote_key: String,
+    #[error("FIT minting failed: {source}; possible remotes: {available:?}")]
+    FitMintFailed {
+        #[source]
+        source: Box<MintError>,
         available: Vec<String>,
     },
 
