@@ -2228,7 +2228,7 @@ impl FunctionAnalyzer<'_> {
                     return;
                 };
 
-                if self.break_target == BasicBlockId(u32::MAX) {
+                if self.continue_target == BasicBlockId(u32::MAX) {
                     eprintln!("Continue target not set for this scope");
                     return;
                 }
