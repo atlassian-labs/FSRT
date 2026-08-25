@@ -2,6 +2,7 @@ use clap::Subcommand;
 
 use crate::Result;
 
+pub(crate) mod invoke_extension;
 pub(crate) mod mint_fct;
 pub(crate) mod mint_fit;
 
@@ -19,6 +20,9 @@ fn parse_ctx(value: &str) -> std::result::Result<serde_json::Value, String> {
 /// CLI subcommands.
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
+    /// Invoke a resolver-backed extension with a tester-controlled payload.
+    InvokeExtension(invoke_extension::InvokeExtensionArgs),
+
     /// Mint an FCT for a deployed module.
     MintFct(mint_fct::MintFctArgs),
 
@@ -29,6 +33,7 @@ pub(crate) enum Command {
 impl Command {
     pub(crate) fn diagnostic_logging_requested(&self) -> bool {
         match self {
+            Self::InvokeExtension(args) => args.diagnostic_logging_requested(),
             Self::MintFct(args) => args.diagnostic_logging_requested(),
             Self::MintFit(args) => args.diagnostic_logging_requested(),
         }
@@ -36,6 +41,7 @@ impl Command {
 
     pub(crate) fn run(&self) -> Result<()> {
         match self {
+            Self::InvokeExtension(args) => invoke_extension::run(args),
             Self::MintFct(args) => mint_fct::run(args),
             Self::MintFit(args) => mint_fit::run(args),
         }
