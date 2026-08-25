@@ -55,16 +55,6 @@ modules:
       handler: auth.issuePanel
 app:
   id: ari:cloud:ecosystem::app/22948e9c-8414-4d24-bd45-f0dc7428608f
-remotes:
-  - key: remote-ssot-micros
-    baseUrl: ${REMOTE_URL}
-    auth:
-      appSystemToken:
-        enabled: true
-      appUserToken:
-        enabled: false
-    operations:
-      - compute
 permissions:
   scopes:
     - 'read:user:jira'
