@@ -778,6 +778,7 @@ fn api_token_fetch_detected_across_import_styles() {
             result.contains_api_token_vuln(*expected),
             "expected {expected} basic-auth vuln(s) for snippet:\n{src}"
         );
+        assert!(result.vuln_description_contains("ATLASSIAN_API_TOKEN", "vuln_type:{api_token}"));
         assert!(result.contains_secret_vuln(0));
         assert!(result.contains_vulns(*expected as i32));
     }
@@ -877,6 +878,10 @@ fn container_token_fetch_detected_for_bearer_admin_request() {
 
     let scan_result = scan_directory_test(test_forge_project);
     assert!(scan_result.contains_container_token_vuln(1));
+    assert!(
+        scan_result
+            .vuln_description_contains("ATLASSIAN_CONTAINER_TOKEN", "vuln_type:{container_token}")
+    );
     assert!(scan_result.contains_api_token_vuln(0));
     assert!(scan_result.contains_vulns(1));
 }
