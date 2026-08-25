@@ -2213,7 +2213,7 @@ impl FunctionAnalyzer<'_> {
                     eprintln!("Labeled breaks are still unsupported");
                     return;
                 };
-                
+
                 if self.break_target == BasicBlockId(u32::MAX) {
                     eprintln!("Break target not set for this scope");
                     return;
@@ -2376,6 +2376,11 @@ impl FunctionAnalyzer<'_> {
     }
 
     fn lower_loop(&mut self, left: &ForHead, right: &Expr, body: &Stmt) {
+        // A workaround for the fact that these loops are not correctly lowered yet
+        let (old_break, old_continue) = (self.break_target, self.continue_target);
+        self.break_target = BasicBlockId(u32::MAX);
+        self.continue_target = BasicBlockId(u32::MAX);
+
         // FIXME: don't assume loops are infinite
         let opnd = self.lower_expr(right, None);
         match left {
@@ -2385,7 +2390,10 @@ impl FunctionAnalyzer<'_> {
                 //FIXME: investigate this case
             }
         }
+
         self.lower_stmt(body);
+
+        (self.break_target, self.continue_target) = (old_break, old_continue);
     }
 
     fn lower_var_decl(&mut self, var: &VarDecl) {
