@@ -6,6 +6,6 @@ mod fsrt_remote_config;
 mod mint_common;
 
 pub use app_config::{AppConfig, ExtensionConfig};
-pub use forge_pentester::{ForgeInvocationToken, ForgePenTester};
+pub use forge_pentester::ForgePenTester;
 pub use fsrt_remote_config::{AuthConfig, FsrtRemoteConfig};
 pub use mint_common::{GraphqlErrorObject, GraphqlRequest, JwtValidity, MintError};

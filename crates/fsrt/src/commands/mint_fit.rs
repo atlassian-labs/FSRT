@@ -66,7 +66,7 @@ pub(super) fn run(args: &MintFitArgs) -> Result<()> {
         args.ctx.as_ref(),
         args.fct.as_deref(),
     )?;
-    println!("{}", token.jwt());
+    println!("{token}");
 
     Ok(())
 }
