@@ -1037,7 +1037,7 @@ impl FunctionAnalyzer<'_> {
             }
             None => {}
         }
-        let _:[_; 3] = self.body.new_blocks();
+        let _: [_; 3] = self.body.new_blocks();
         let [check, cont, body_id] = self.body.new_blockbuilders();
 
         let mut ublock = check;
@@ -1050,7 +1050,7 @@ impl FunctionAnalyzer<'_> {
             self.set_curr_terminator(Terminator::Goto(check));
             self.block = current;
         }
-        
+
         let (old_break, old_continue) = (self.break_target, self.continue_target);
         self.break_target = cont;
         self.continue_target = ublock;
@@ -2328,7 +2328,7 @@ impl FunctionAnalyzer<'_> {
             }
             // needs break/continue
             Stmt::DoWhile(DoWhileStmt { test, body, .. }) => {
-                let [temp1, temp2, temp3] = self.body.new_blocks();
+                let _: [_; 3] = self.body.new_blocks();
                 let [check, cont, body_id] = self.body.new_blockbuilders();
                 self.set_curr_terminator(Terminator::Goto(body_id));
 
@@ -2350,7 +2350,7 @@ impl FunctionAnalyzer<'_> {
                     alt: cont,
                 });
 
-                (self.break_target, self.continue_target) == (old_break, old_continue);
+                (self.break_target, self.continue_target) = (old_break, old_continue);
                 self.block = cont;
             }
             // needs break/continue
