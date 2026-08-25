@@ -173,6 +173,9 @@ pub enum MintError {
 
     #[error("FIT response has no token")]
     MissingFitToken,
+
+    #[error("extension invocation failed: {0}")]
+    InvocationFailed(String),
 }
 
 /// Structural and expiry status of a JWT.
