@@ -1037,11 +1037,23 @@ impl FunctionAnalyzer<'_> {
             }
             None => {}
         }
-        let [temp1, temp2, temp3] = self.body.new_blocks();
+        let _:[_; 3] = self.body.new_blocks();
         let [check, cont, body_id] = self.body.new_blockbuilders();
+
+        let mut ublock = check;
+        if let Some(update) = update {
+            ublock = self.body.new_block();
+            self.body.new_blockbuilder();
+            let current = mem::replace(&mut self.block, ublock);
+            self.lower_expr(update, None);
+            // This is only correct if javascript does not allow break/continue/return inside the update expression
+            self.set_curr_terminator(Terminator::Goto(check));
+            self.block = current;
+        }
+        
         let (old_break, old_continue) = (self.break_target, self.continue_target);
         self.break_target = cont;
-        self.continue_target = check;
+        self.continue_target = ublock;
 
         self.goto_block(check);
         if let Some(test) = test {
@@ -1057,12 +1069,9 @@ impl FunctionAnalyzer<'_> {
 
         self.block = body_id;
         self.lower_stmt(body);
-        if let Some(update) = update {
-            self.lower_expr(update, None);
-        }
 
         if self.get_curr_terminator().is_none() {
-            self.set_curr_terminator(Terminator::Goto(check));
+            self.set_curr_terminator(Terminator::Goto(ublock));
         }
 
         self.goto_block(cont);
