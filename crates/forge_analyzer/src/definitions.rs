@@ -2278,6 +2278,8 @@ impl FunctionAnalyzer<'_> {
                 });
                 self.block = cons_block;
                 self.lower_stmt(cons);
+
+                // This thing calls set-terminator
                 self.goto_block(cont);
             }
             Stmt::Switch(stmt) => {
