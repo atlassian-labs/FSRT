@@ -65,7 +65,7 @@ cargo install --git https://github.com/atlassian-labs/FSRT --locked
 
 ```text
 fsrt mint-fct <MODULE_KEY> [OPTIONS]
-fsrt mint-fit <MODULE_KEY> <REMOTE_KEY> [OPTIONS]
+fsrt mint-fit [MODULE_KEY] <REMOTE_KEY> [OPTIONS]
 ```
 
 Both commands use `--app-dir` and a TOML configuration file; see
@@ -76,7 +76,7 @@ cookie file untracked.
 remote. For `mint-fct`, pass `--ctx '<JSON>'` to populate the selected extension's
 `context` object. For `mint-fit`, passing `--ctx` forces a new FCT with that context;
 otherwise `--fct`, a valid in-process cached FCT, or a newly minted FCT is used in that
-order.
+order. `MODULE_KEY` may be omitted when `--fct` supplies the FCT directly.
 
 By default, live mint commands print only the token. `--dry-run` queries metadata without
 signing tokens. `--verbose` prints actual live diagnostics to stderr while keeping the minted token on stdout. Run `fsrt <COMMAND> --help` for all options.

@@ -38,6 +38,9 @@ pub struct GraphqlErrorObject {
 /// Errors produced while constructing or minting Forge tokens.
 #[derive(Debug, thiserror::Error)]
 pub enum MintError {
+    #[error("a module key is required when an FCT must be minted")]
+    MissingModuleKey,
+
     #[error("could not read {kind} file '{path}'")]
     FileRead {
         kind: &'static str,

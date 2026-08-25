@@ -11,17 +11,18 @@ const REDACTED_FCT: &str = "<FCT selected at runtime>";
 
 /// `mint-fit` arguments.
 #[derive(Args, Debug)]
+#[command(allow_missing_positional = true)]
 pub(crate) struct MintFitArgs {
     /// Deployed module key used when an FCT must be minted.
-    #[arg(name = "MODULE_KEY")]
-    module_key: String,
+    #[arg(name = "MODULE_KEY", required_unless_present = "fct")]
+    module_key: Option<String>,
 
     /// Forge remote key to sign the invocation for.
     #[arg(name = "REMOTE_KEY")]
     remote_key: String,
 
     /// Force a new FCT with this inline JSON object as its context.
-    #[arg(long = "ctx", value_parser = parse_ctx)]
+    #[arg(long = "ctx", value_parser = parse_ctx, requires = "MODULE_KEY")]
     ctx: Option<Value>,
 
     /// Existing FCT to pass in.
@@ -55,13 +56,13 @@ pub(super) fn run(args: &MintFitArgs) -> Result<()> {
     let config = forge_pen_test::FsrtRemoteConfig::from_path(&args.config)?;
     let tester = forge_pen_test::ForgePenTester::new(&manifest, config)?;
     if args.dry_run {
-        let request = tester.mint_fit_request(&args.module_key, REDACTED_FCT, &args.remote_key)?;
+        let request = tester.mint_fit_request(REDACTED_FCT, &args.remote_key)?;
         println!("variables={:#}", request.variables);
         return Ok(());
     }
 
     let token = tester.mint_fit(
-        &args.module_key,
+        args.module_key.as_deref(),
         &args.remote_key,
         args.ctx.as_ref(),
         args.fct.as_deref(),
@@ -97,7 +98,7 @@ mod tests {
         .unwrap()
         .fit;
 
-        assert_eq!(args.module_key, "module-key");
+        assert_eq!(args.module_key.as_deref(), Some("module-key"));
         assert_eq!(args.remote_key, "remote-key");
         assert_eq!(args.ctx, Some(serde_json::json!({ "issueKey": "TEST-1" })));
         assert_eq!(args.fct.as_deref(), Some("provided-fct"));
@@ -117,8 +118,30 @@ mod tests {
     }
 
     #[test]
+    fn module_key_is_optional_with_a_supplied_fct() {
+        let args = TestArgs::try_parse_from(["fsrt", "remote-key", "--fct", "provided-fct"])
+            .unwrap()
+            .fit;
+
+        assert_eq!(args.module_key, None);
+        assert_eq!(args.remote_key, "remote-key");
+        assert_eq!(args.fct.as_deref(), Some("provided-fct"));
+    }
+
+    #[test]
     fn rejects_missing_keys_and_invalid_context_before_execution() {
-        assert!(TestArgs::try_parse_from(["fsrt", "module-key"]).is_err());
+        assert!(TestArgs::try_parse_from(["fsrt", "remote-key"]).is_err());
+        assert!(
+            TestArgs::try_parse_from([
+                "fsrt",
+                "remote-key",
+                "--ctx",
+                r#"{"issueKey":"TEST-1"}"#,
+                "--fct",
+                "provided-fct",
+            ])
+            .is_err()
+        );
         for context in ["not-json", "[]", "null", r#""string""#] {
             assert!(
                 TestArgs::try_parse_from(["fsrt", "module-key", "remote-key", "--ctx", context,])
