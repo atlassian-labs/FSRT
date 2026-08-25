@@ -1005,11 +1005,11 @@ impl FunctionAnalyzer<'_> {
     ) -> FunctionAnalyzer<'cx> {
         FunctionAnalyzer {
             res: env,
-            module: module,
-            current_def: current_def,
+            module,
+            current_def,
             assigning_to: None,
-            secret_packages: secret_packages,
-            body: body,
+            secret_packages,
+            body,
             block: BasicBlockId::default(),
             operand_stack: vec![],
             in_lhs: false,
@@ -2198,7 +2198,7 @@ impl FunctionAnalyzer<'_> {
                     self.body.new_blockbuilder();
 
                     self.block = tblock;
-                    let test_opnd = self.lower_expr(&test_expr, None);
+                    let test_opnd = self.lower_expr(test_expr, None);
 
                     let test_rvalue = Rvalue::Bin(
                         crate::ir::BinOp::EqEqEq,
@@ -2240,18 +2240,18 @@ impl FunctionAnalyzer<'_> {
                 let mut is_first_cblock = true;
                 for (n, curr_cblock) in cblocks.iter().enumerate() {
                     let case = &cases[n];
-                    if !is_first_cblock && let None = self.get_curr_terminator() {
-                        self.set_curr_terminator(Terminator::Goto(curr_cblock.clone()));
+                    if !is_first_cblock && self.get_curr_terminator().is_none() {
+                        self.set_curr_terminator(Terminator::Goto(*curr_cblock));
                     }
 
                     is_first_cblock = false;
-                    self.block = curr_cblock.clone();
+                    self.block = *curr_cblock;
                     self.lower_stmts(&case.cons);
                 }
 
                 end_block = self.break_target;
                 self.break_target = old_break;
-                if let None = self.get_curr_terminator() {
+                if self.get_curr_terminator().is_none() {
                     self.set_curr_terminator(Terminator::Goto(end_block));
                 }
 
