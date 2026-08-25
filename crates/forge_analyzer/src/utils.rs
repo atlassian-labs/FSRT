@@ -95,7 +95,6 @@ pub fn add_elements_to_intrinsic_struct(value: &Value, args: &mut Vec<String>) {
     }
 }
 
-// What is the effect of this function?
 pub fn return_combinations_phi(exprs: Vec<Value>) -> Value {
     let exprs: Vec<Vec<String>> = exprs
         .iter()
