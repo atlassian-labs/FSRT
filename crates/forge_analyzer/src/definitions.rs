@@ -2222,6 +2222,11 @@ impl FunctionAnalyzer<'_> {
                     warn!("Labeled breaks are still unsupported");
                     return;
                 };
+                
+                if self.break_target == BasicBlockId(u32::MAX) {
+                    eprintln!("Break target not set for this scope");
+                    return;
+                }
 
                 if self.break_target == BasicBlockId(u32::MAX) {
                     warn!("Break target not set for this scope");
@@ -2324,7 +2329,6 @@ impl FunctionAnalyzer<'_> {
                 }
 
                 self.block = cont;
-
                 (self.break_target, self.continue_target) = (old_break, old_continue);
             }
             // needs break/continue
