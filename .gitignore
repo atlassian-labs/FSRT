@@ -1,1 +1,6 @@
 /target
+
+# Local Forge tooling configuration and browser-session credentials.
+/fsrt-remote.toml
+/session-cookie.txt
+/session-cookie-*.txt

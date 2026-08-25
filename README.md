@@ -16,8 +16,9 @@ Arguments:
   [DIRS]...  The directory to scan. Assumes there is a `manifest.yaml` file in the top level directory, and that the source code is located in `src/`
 
 Commands:
-  mint-fct  Mint an FCT for a deployed module
-  mint-fit  Mint an FIT for a deployed module and Forge remote
+  invoke-extension  Invoke a resolver-backed extension with a tester-controlled payload
+  mint-fct          Mint an FCT for a deployed module
+  mint-fit          Mint an FIT for a deployed module and Forge remote
 
   Options:
     -d, --debug
@@ -66,9 +67,10 @@ cargo install --git https://github.com/atlassian-labs/FSRT --locked
 ```text
 fsrt mint-fct <MODULE_KEY> [OPTIONS]
 fsrt mint-fit <REMOTE_KEY> [--module <MODULE_KEY>] [OPTIONS]
+fsrt invoke-extension <MODULE_KEY> <FUNCTION> <PAYLOAD> [OPTIONS]
 ```
 
-Both commands use `--app-dir` and a TOML configuration file; see
+All three commands use `--app-dir` and a TOML configuration file; see
 [`fsrt-remote.toml.example`](fsrt-remote.toml.example). Keep that configuration and its
 cookie file untracked.
 
@@ -82,8 +84,16 @@ selected extension's `context` object.
 | Use an existing FCT | `<REMOTE_KEY> --fct <FCT>` | Uses the supplied FCT when `--module` and `--ctx` are omitted. |
 | Mint a new FCT | `<REMOTE_KEY> --module <MODULE_KEY>` | Mints an FCT with an empty context, then uses it to mint the FIT. Add `--ctx '<JSON>'` to set its context. |
 
-By default, live mint commands print only the token. `--dry-run` queries metadata without
-signing tokens. `--verbose` prints actual live diagnostics to stderr while keeping the minted token on stdout. Run `fsrt <COMMAND> --help` for all options.
+`invoke-extension` invokes a resolver with tester-controlled JSON. Its positional arguments
+select the deployed module, resolver function, and invocation payload. By default it derives
+the invocation context from deployment metadata and mints an FCT in memory. Use
+`--ctx '<JSON>'` to replace that context or `--fct <JWT>` to reuse a captured token.
+`--async` requests an asynchronous invocation when supported.
+
+By default, live mint commands print only the token, while `invoke-extension` prints the
+backend response. `--dry-run` queries metadata without signing tokens or invoking the
+extension and prints redacted request variables. `--verbose` prints live diagnostics to
+stderr. Run `fsrt <COMMAND> --help` for all options.
 
 ## Tests
 
