@@ -2222,7 +2222,7 @@ impl FunctionAnalyzer<'_> {
                     warn!("Labeled breaks are still unsupported");
                     return;
                 };
-                
+
                 if self.break_target == BasicBlockId(u32::MAX) {
                     eprintln!("Break target not set for this scope");
                     return;
