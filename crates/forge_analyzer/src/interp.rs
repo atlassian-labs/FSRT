@@ -1234,7 +1234,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.dataflow_visited.remove(&def);
     }
 
-    // Understand how this works, write a spec / tickets for what dataflow would look like
     pub fn try_check_function(&mut self, def: DefId, checker: &mut C) -> Result<(), Error> {
         let resolved_def = self.env.resolve_alias(def);
         let name = self.env.def_name(resolved_def);
