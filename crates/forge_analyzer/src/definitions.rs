@@ -1061,7 +1061,10 @@ impl FunctionAnalyzer<'_> {
             self.lower_expr(update, None);
         }
 
-        self.set_curr_terminator(Terminator::Goto(check));
+        if self.get_curr_terminator().is_none() {
+            self.set_curr_terminator(Terminator::Goto(check));
+        }
+
         self.goto_block(cont);
 
         (self.break_target, self.continue_target) = (old_break, old_continue)
@@ -2206,19 +2209,29 @@ impl FunctionAnalyzer<'_> {
                 self.lower_stmt(body);
             }
             Stmt::Break(BreakStmt { label, .. }) => {
-                let None = label else {
+                if label.is_some() {
                     eprintln!("Labeled breaks are still unsupported");
                     return;
                 };
+                
+                if self.break_target == BasicBlockId(u32::MAX) {
+                    eprintln!("Break target not set for this scope");
+                    return;
+                }
 
                 self.body
                     .set_terminator(self.block, Terminator::Goto(self.break_target));
             }
             Stmt::Continue(ContinueStmt { label, .. }) => {
-                let None = label else {
+                if label.is_some() {
                     eprintln!("Labeled continues are still unsupported");
                     return;
                 };
+
+                if self.break_target == BasicBlockId(u32::MAX) {
+                    eprintln!("Continue target not set for this scope");
+                    return;
+                }
 
                 self.body
                     .set_terminator(self.block, Terminator::Goto(self.continue_target));
@@ -2297,9 +2310,11 @@ impl FunctionAnalyzer<'_> {
                 });
                 let check = mem::replace(&mut self.block, body_id);
                 self.lower_stmt(body);
-                self.set_curr_terminator(Terminator::Goto(check));
-                self.block = cont;
+                if self.get_curr_terminator().is_none() {
+                    self.set_curr_terminator(Terminator::Goto(check));
+                }
 
+                self.block = cont;
                 (self.break_target, self.continue_target) = (old_break, old_continue);
             }
             // needs break/continue
@@ -2307,9 +2322,17 @@ impl FunctionAnalyzer<'_> {
                 let [temp1, temp2, temp3] = self.body.new_blocks();
                 let [check, cont, body_id] = self.body.new_blockbuilders();
                 self.set_curr_terminator(Terminator::Goto(body_id));
+
+                let (old_break, old_continue) = (self.break_target, self.continue_target);
+                self.break_target = cont;
+                self.continue_target = check;
+
                 self.block = body_id;
                 self.lower_stmt(body);
-                self.set_curr_terminator(Terminator::Goto(check));
+                if self.get_curr_terminator().is_none() {
+                    self.set_curr_terminator(Terminator::Goto(check));
+                }
+
                 self.block = check;
                 let cond = self.lower_expr(test, None);
                 self.set_curr_terminator(Terminator::If {
@@ -2317,6 +2340,8 @@ impl FunctionAnalyzer<'_> {
                     cons: body_id,
                     alt: cont,
                 });
+
+                (self.break_target, self.continue_target) == (old_break, old_continue);
                 self.block = cont;
             }
             // needs break/continue
