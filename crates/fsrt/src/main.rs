@@ -5,7 +5,7 @@ mod forge_project;
 #[cfg(test)]
 mod test;
 
-use clap::{Parser, ValueHint};
+use clap::{Parser, ValueHint, builder::Str};
 use forge_permission_resolver::{
     permissions_cache::CacheConfig,
     permissions_resolver::{
@@ -21,6 +21,7 @@ use std::{
     env, fmt, fs,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 use graphql_parser::{
