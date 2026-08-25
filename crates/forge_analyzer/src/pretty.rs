@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 
 use crate::{
-    definitions::{DefId, DefKind, Environment},
+    definitions::Environment,
     ir::{BasicBlockId, Body, VarKind},
 };
 
@@ -75,64 +75,6 @@ pub fn dump_ir(output: &mut dyn Write, env: &Environment, body: &Body) -> io::Re
 
     writeln!(output)?;
     dump_dom_tree(output, env, body)?;
-
-    Ok(())
-}
-
-pub fn is_function(env: &Environment, var: &VarKind) -> bool {
-    let def: Option<&DefId> = match var {
-        VarKind::LocalDef(def) => Some(def),
-        VarKind::AnonClosure(def) => Some(def),
-        VarKind::Arg(def) => Some(def),
-        VarKind::Temp { parent } => match parent {
-            Some(def) => Some(def),
-            None => None,
-        },
-        VarKind::GlobalRef(def) => Some(def),
-        VarKind::Ret => None,
-    };
-
-    match def {
-        Some(id) => match env.def_ref(*id) {
-            DefKind::Function(_) => true,
-            DefKind::ResolverDef(_) => true,
-            _ => false,
-        },
-        None => false,
-    }
-}
-
-pub fn dump_call_graph(output: &mut dyn Write, env: &Environment, body: &Body) -> io::Result<()> {
-    let name = body
-        .owner()
-        .map_or("__ANONYMOUS", |owner| env.def_name(owner));
-
-    writeln!(output, "Call Graph for {name}")?;
-    writeln!(output, "Variables:")?;
-    for (id, var) in body.iter_vars_enumerated() {
-        write!(output, "{id}: ")?;
-        if is_function(env, var) {
-            write!(output, "(FUNCTION) ")?;
-        }
-        
-        match *var {
-            VarKind::LocalDef(def) => {
-                writeln!(output, "local definition of {}", env.def_name(def))?
-            }
-            VarKind::GlobalRef(def) => writeln!(output, "global ref to {}", env.def_name(def))?,
-            VarKind::Temp { parent: _parent } => writeln!(output, "temporary")?,
-            VarKind::AnonClosure(_) => writeln!(output, "closure")?,
-            VarKind::Arg(_) => writeln!(output, "arg")?,
-            VarKind::Ret => writeln!(output, "return value")?,
-        }
-    }
-
-    for (id, block) in body.iter_blocks_enumerated() {
-        writeln!(output, "{id}:\n{block}")?;
-    }
-
-    //writeln!(output)?;
-    //dump_dom_tree(output, env, body)?;
 
     Ok(())
 }
