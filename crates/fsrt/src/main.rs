@@ -49,8 +49,8 @@ use forge_analyzer::{
     reporter::{Report, Reporter},
 };
 
-use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait, find_manifest_path};
 use crate::commands::Command;
+use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait, find_manifest_path};
 use forge_loader::manifest::{self, Entrypoint};
 use walkdir::WalkDir;
 

@@ -2239,18 +2239,21 @@ impl FunctionAnalyzer<'_> {
                 for (n, curr_cblock) in cblocks.iter().enumerate() {
                     let case = &cases[n];
                     if !is_first_cblock && let None = self.get_curr_terminator() {
-                        self.goto_block(*curr_cblock);
+                        self.set_curr_terminator(Terminator::Goto(curr_cblock.clone()));
                     }
 
                     is_first_cblock = false;
+                    self.block = curr_cblock.clone();
                     self.lower_stmts(&case.cons);
                 }
 
                 end_block = self.break_target;
                 self.break_target = old_break;
                 if let None = self.get_curr_terminator() {
-                    self.goto_block(end_block);
+                    self.set_curr_terminator(Terminator::Goto(end_block));
                 }
+
+                self.block = end_block;
             }
             Stmt::Throw(ThrowStmt { arg, .. }) => {
                 let opnd = self.lower_expr(arg, None);

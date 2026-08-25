@@ -515,38 +515,31 @@ pub struct Remotes {
     #[serde(default)]
     pub auth: Option<RemoteAuth>,
     pub key: String,
-    
+
     #[serde(default)]
     pub operations: Vec<String>,
 }
 
 impl Remotes {
     pub fn contains_auth(&self) -> bool {
-        match self.auth {
-            Some(_) => true,
-            None => false,
-        }
+        self.auth.is_some()
     }
 
     pub fn passes_user_auth(&self) -> bool {
-        let Some(auth) = &self.auth else {
-            return false
-        };
+        let Some(auth) = &self.auth else { return false };
 
         let Some(user_auth) = &auth.app_user_token else {
-            return false
+            return false;
         };
 
         user_auth.enabled
     }
 
     pub fn passes_system_auth(&self) -> bool {
-        let Some(auth) = &self.auth else {
-            return false
-        };
+        let Some(auth) = &self.auth else { return false };
 
         let Some(system_auth) = &auth.app_system_token else {
-            return false
+            return false;
         };
 
         system_auth.enabled
