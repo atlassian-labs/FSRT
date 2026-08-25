@@ -1067,6 +1067,97 @@ impl FunctionAnalyzer<'_> {
         (self.break_target, self.continue_target) = (old_break, old_continue)
     }
 
+    fn lower_switch(
+        &mut self,
+        SwitchStmt {
+            discriminant,
+            cases,
+            ..
+        }: &SwitchStmt,
+    ) {
+        let opnd = self.lower_expr(discriminant, None);
+        if cases.is_empty() {
+            return;
+        }
+
+        let opnd_tmp = self.body.push_tmp(self.block, Rvalue::Read(opnd), None);
+
+        // cblock -> "Case block", tblock -> "Test block" (i.e. the block that evaluates the case value
+        // comparison)
+        let (mut cblock, mut tblock) = (self.block, self.block);
+        let mut cblocks: Vec<BasicBlockId> = Vec::new();
+        let mut default_case: Option<usize> = None;
+        cblocks.resize(cases.len(), BasicBlockId(u32::MAX));
+        for (n, case) in cases.iter().enumerate() {
+            let Some(test_expr) = &case.test else {
+                default_case = Some(n);
+                continue;
+            };
+
+            let new_tblock = self.body.new_block();
+            self.body.new_blockbuilder();
+
+            self.block = tblock;
+            let test_opnd = self.lower_expr(test_expr, None);
+
+            let test_rvalue = Rvalue::Bin(
+                crate::ir::BinOp::EqEqEq,
+                Operand::with_var(opnd_tmp),
+                test_opnd,
+            );
+
+            let test_result = self.body.push_tmp(self.block, test_rvalue, None);
+
+            let new_cblock = self.body.new_block();
+            self.body.new_blockbuilder();
+
+            self.set_curr_terminator(Terminator::If {
+                cond: Operand::with_var(test_result),
+                cons: new_cblock,
+                alt: new_tblock,
+            });
+
+            tblock = new_tblock;
+            cblock = new_cblock;
+
+            cblocks[n] = cblock;
+        }
+
+        let mut end_block = tblock;
+
+        if let Some(n) = default_case {
+            // The correct CFG edges to the default case (at the end of the tblock chain)
+            // have already been created pointing to `end_block`, so we reuse end_block as the default
+            // cblock, and create an additional block to link the end of the case chain / any breaks to
+            cblocks[n] = end_block;
+            let new_end_block = self.body.new_block();
+            self.body.new_blockbuilder();
+            end_block = new_end_block;
+        }
+
+        let old_break = self.break_target;
+        self.break_target = end_block;
+        let mut is_first_cblock = true;
+        for (n, curr_cblock) in cblocks.iter().enumerate() {
+            let case = &cases[n];
+            if !is_first_cblock && self.get_curr_terminator().is_none() {
+                self.set_curr_terminator(Terminator::Goto(*curr_cblock));
+            }
+
+            is_first_cblock = false;
+            self.block = *curr_cblock;
+            self.lower_stmts(&case.cons);
+        }
+
+        end_block = self.break_target;
+        self.break_target = old_break;
+        if self.get_curr_terminator().is_none() {
+            self.set_curr_terminator(Terminator::Goto(end_block));
+        }
+
+        self.block = end_block;
+    }
+
     #[inline]
     fn set_curr_terminator(&mut self, term: Terminator) {
         self.body.set_terminator(self.block, term);
@@ -2165,97 +2256,10 @@ impl FunctionAnalyzer<'_> {
                 });
                 self.block = cons_block;
                 self.lower_stmt(cons);
-
-                // This thing calls set-terminator
                 self.goto_block(cont);
             }
-            // needs break/continue
-            Stmt::Switch(SwitchStmt {
-                discriminant,
-                cases,
-                ..
-            }) => {
-                let opnd = self.lower_expr(discriminant, None);
-                if cases.is_empty() {
-                    return;
-                }
-
-                let opnd_tmp = self.body.push_tmp(self.block, Rvalue::Read(opnd), None);
-
-                // cblock -> "Case block", tblock -> "Test block" (i.e. the block that evaluates the case value
-                // comparison)
-                let (mut cblock, mut tblock) = (self.block, self.block);
-                let mut cblocks: Vec<BasicBlockId> = Vec::new();
-                let mut default_case: Option<usize> = None;
-                cblocks.resize(cases.len(), BasicBlockId(u32::MAX));
-                for (n, case) in cases.iter().enumerate() {
-                    let Some(test_expr) = &case.test else {
-                        default_case = Some(n);
-                        continue;
-                    };
-
-                    let new_tblock = self.body.new_block();
-                    self.body.new_blockbuilder();
-
-                    self.block = tblock;
-                    let test_opnd = self.lower_expr(test_expr, None);
-
-                    let test_rvalue = Rvalue::Bin(
-                        crate::ir::BinOp::EqEqEq,
-                        Operand::with_var(opnd_tmp),
-                        test_opnd,
-                    );
-
-                    let test_result = self.body.push_tmp(self.block, test_rvalue, None);
-
-                    let new_cblock = self.body.new_block();
-                    self.body.new_blockbuilder();
-
-                    self.set_curr_terminator(Terminator::If {
-                        cond: Operand::with_var(test_result),
-                        cons: new_cblock,
-                        alt: new_tblock,
-                    });
-
-                    tblock = new_tblock;
-                    cblock = new_cblock;
-
-                    cblocks[n] = cblock;
-                }
-
-                let mut end_block = tblock;
-
-                if let Some(n) = default_case {
-                    // The correct CFG edges to the default case (at the end of the tblock chain)
-                    // have already been created pointing to `end_block`, so we reuse end_block as the default
-                    // cblock, and create an additional block to link the end of the case chain / any breaks to
-                    cblocks[n] = end_block;
-                    let new_end_block = self.body.new_block();
-                    self.body.new_blockbuilder();
-                    end_block = new_end_block;
-                }
-
-                let old_break = self.break_target;
-                self.break_target = end_block;
-                let mut is_first_cblock = true;
-                for (n, curr_cblock) in cblocks.iter().enumerate() {
-                    let case = &cases[n];
-                    if !is_first_cblock && self.get_curr_terminator().is_none() {
-                        self.set_curr_terminator(Terminator::Goto(*curr_cblock));
-                    }
-
-                    is_first_cblock = false;
-                    self.block = *curr_cblock;
-                    self.lower_stmts(&case.cons);
-                }
-
-                end_block = self.break_target;
-                self.break_target = old_break;
-                if self.get_curr_terminator().is_none() {
-                    self.set_curr_terminator(Terminator::Goto(end_block));
-                }
-
-                self.block = end_block;
+            Stmt::Switch(stmt) => {
+                self.lower_switch(stmt);
             }
             Stmt::Throw(ThrowStmt { arg, .. }) => {
                 let opnd = self.lower_expr(arg, None);
