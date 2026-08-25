@@ -1037,11 +1037,8 @@ impl FunctionAnalyzer<'_> {
             }
             None => {}
         }
-<<<<<<< HEAD
+        
         let _: [_; 3] = self.body.new_blocks();
-=======
-        let _:[_; 3] = self.body.new_blocks();
->>>>>>> e5fab79 (Correct chaining of continue statements to for-loop update exprs)
         let [check, cont, body_id] = self.body.new_blockbuilders();
 
         let mut ublock = check;
@@ -1054,7 +1051,7 @@ impl FunctionAnalyzer<'_> {
             self.set_curr_terminator(Terminator::Goto(check));
             self.block = current;
         }
-        
+
         let (old_break, old_continue) = (self.break_target, self.continue_target);
         self.break_target = cont;
         self.continue_target = ublock;
