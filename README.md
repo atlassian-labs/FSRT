@@ -65,18 +65,22 @@ cargo install --git https://github.com/atlassian-labs/FSRT --locked
 
 ```text
 fsrt mint-fct <MODULE_KEY> [OPTIONS]
-fsrt mint-fit [MODULE_KEY] <REMOTE_KEY> [OPTIONS]
+fsrt mint-fit <REMOTE_KEY> [--module <MODULE_KEY>] [OPTIONS]
 ```
 
 Both commands use `--app-dir` and a TOML configuration file; see
 [`fsrt-remote.toml.example`](fsrt-remote.toml.example). Keep that configuration and its
 cookie file untracked.
 
-`mint-fct` mints an FCT for a deployed module. `mint-fit` mints an FIT for a module and
-remote. For `mint-fct`, pass `--ctx '<JSON>'` to populate the selected extension's
-`context` object. For `mint-fit`, passing `--ctx` forces a new FCT with that context;
-otherwise the FCT supplied by `--fct` is used, or a new FCT with an empty context is
-minted. `MODULE_KEY` may be omitted when `--fct` supplies the FCT directly.
+`mint-fct` mints an FCT for a deployed module. Pass `--ctx '<JSON>'` to populate the
+selected extension's `context` object.
+
+`mint-fit` supports two mutually exclusive ways to provide its FCT:
+
+| Mode | Required inputs | Behavior |
+| --- | --- | --- |
+| Use an existing FCT | `<REMOTE_KEY> --fct <FCT>` | Uses the supplied FCT when `--module` and `--ctx` are omitted. |
+| Mint a new FCT | `<REMOTE_KEY> --module <MODULE_KEY>` | Mints an FCT with an empty context, then uses it to mint the FIT. Add `--ctx '<JSON>'` to set its context. |
 
 By default, live mint commands print only the token. `--dry-run` queries metadata without
 signing tokens. `--verbose` prints actual live diagnostics to stderr while keeping the minted token on stdout. Run `fsrt <COMMAND> --help` for all options.

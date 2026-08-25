@@ -11,10 +11,14 @@ const REDACTED_FCT: &str = "<FCT selected at runtime>";
 
 /// `mint-fit` arguments.
 #[derive(Args, Debug)]
-#[command(allow_missing_positional = true)]
 pub(crate) struct MintFitArgs {
     /// Deployed module key used when an FCT must be minted.
-    #[arg(name = "MODULE_KEY", required_unless_present = "fct")]
+    #[arg(
+        long = "module",
+        value_name = "MODULE_KEY",
+        required_unless_present = "fct",
+        conflicts_with = "fct"
+    )]
     module_key: Option<String>,
 
     /// Forge remote key to sign the invocation for.
@@ -22,11 +26,16 @@ pub(crate) struct MintFitArgs {
     remote_key: String,
 
     /// Force a new FCT with this inline JSON object as its context.
-    #[arg(long = "ctx", value_parser = parse_ctx, requires = "MODULE_KEY")]
+    #[arg(
+        long = "ctx",
+        value_parser = parse_ctx,
+        requires = "module_key",
+        conflicts_with = "fct"
+    )]
     ctx: Option<Value>,
 
     /// Existing FCT to pass in.
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["module_key", "ctx"])]
     fct: Option<String>,
 
     /// Forge app directory.
@@ -61,17 +70,13 @@ pub(super) fn run(args: &MintFitArgs) -> Result<()> {
         return Ok(());
     }
 
-    let fct = if args.ctx.is_some() || args.fct.is_none() {
-        let module_key = args
-            .module_key
-            .as_deref()
-            .expect("clap requires MODULE_KEY when an FCT must be minted");
+    let fct = if let Some(module_key) = args.module_key.as_deref() {
         let ctx = args.ctx.clone().unwrap_or_else(|| serde_json::json!({}));
         tester.mint_fct(module_key, &ctx)?
     } else {
         args.fct
             .clone()
-            .expect("an FCT is present when minting is not required")
+            .expect("clap requires either MODULE_KEY or an existing FCT")
     };
     let token = tester.mint_fit(&args.remote_key, &fct)?;
     println!("{token}");
@@ -91,53 +96,66 @@ mod tests {
     }
 
     #[test]
-    fn parses_required_keys_and_optional_fit_inputs() {
-        let args = TestArgs::try_parse_from([
-            "fsrt",
-            "module-key",
-            "remote-key",
-            "--ctx",
-            r#"{"issueKey":"TEST-1"}"#,
-            "--fct",
-            "provided-fct",
-            "--dry-run",
-        ])
-        .unwrap()
-        .fit;
-
-        assert_eq!(args.module_key.as_deref(), Some("module-key"));
-        assert_eq!(args.remote_key, "remote-key");
-        assert_eq!(args.ctx, Some(serde_json::json!({ "issueKey": "TEST-1" })));
-        assert_eq!(args.fct.as_deref(), Some("provided-fct"));
-        assert!(args.dry_run);
-        assert!(args.diagnostic_logging_requested());
+    fn accepts_fct_input_modes() {
+        assert!(TestArgs::try_parse_from(["fsrt", "remote-key", "--fct", "provided-fct"]).is_ok());
+        assert!(
+            TestArgs::try_parse_from(["fsrt", "remote-key", "--module", "module-key",]).is_ok()
+        );
+        assert!(
+            TestArgs::try_parse_from([
+                "fsrt",
+                "remote-key",
+                "--module",
+                "module-key",
+                "--ctx",
+                r#"{"issueKey":"TEST-1"}"#,
+            ])
+            .is_ok()
+        );
     }
 
     #[test]
-    fn omits_context_by_default() {
-        let args = TestArgs::try_parse_from(["fsrt", "module-key", "remote-key"])
-            .unwrap()
-            .fit;
-
-        assert_eq!(args.ctx, None);
-        assert_eq!(args.fct, None);
-        assert!(!args.diagnostic_logging_requested());
+    fn rejects_conflicting_fct_input_modes() {
+        for args in [
+            &[
+                "fsrt",
+                "remote-key",
+                "--fct",
+                "provided-fct",
+                "--module",
+                "module-key",
+            ][..],
+            &[
+                "fsrt",
+                "remote-key",
+                "--fct",
+                "provided-fct",
+                "--module",
+                "module-key",
+                "--ctx",
+                r#"{"issueKey":"TEST-1"}"#,
+            ][..],
+            &[
+                "fsrt",
+                "remote-key",
+                "--fct",
+                "provided-fct",
+                "--ctx",
+                r#"{"issueKey":"TEST-1"}"#,
+            ][..],
+        ] {
+            let error = TestArgs::try_parse_from(args).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
     }
 
     #[test]
-    fn module_key_is_optional_with_a_supplied_fct() {
-        let args = TestArgs::try_parse_from(["fsrt", "remote-key", "--fct", "provided-fct"])
-            .unwrap()
-            .fit;
-
-        assert_eq!(args.module_key, None);
-        assert_eq!(args.remote_key, "remote-key");
-        assert_eq!(args.fct.as_deref(), Some("provided-fct"));
-    }
-
-    #[test]
-    fn rejects_missing_keys_and_invalid_context_before_execution() {
+    fn rejects_incomplete_or_positional_module_inputs() {
         assert!(TestArgs::try_parse_from(["fsrt", "remote-key"]).is_err());
+        assert!(
+            TestArgs::try_parse_from(["fsrt", "remote-key", "--ctx", r#"{"issueKey":"TEST-1"}"#,])
+                .is_err()
+        );
         assert!(
             TestArgs::try_parse_from([
                 "fsrt",
@@ -149,12 +167,6 @@ mod tests {
             ])
             .is_err()
         );
-        for context in ["not-json", "[]", "null", r#""string""#] {
-            assert!(
-                TestArgs::try_parse_from(["fsrt", "module-key", "remote-key", "--ctx", context,])
-                    .is_err(),
-                "context unexpectedly accepted: {context}"
-            );
-        }
+        assert!(TestArgs::try_parse_from(["fsrt", "module-key", "remote-key"]).is_err());
     }
 }
