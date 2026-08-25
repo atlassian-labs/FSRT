@@ -522,10 +522,7 @@ pub struct Remotes {
 
 impl Remotes {
     pub fn contains_auth(&self) -> bool {
-        match self.auth {
-            Some(_) => true,
-            None => false,
-        }
+        self.auth.is_some()
     }
 
     pub fn passes_user_auth(&self) -> bool {
