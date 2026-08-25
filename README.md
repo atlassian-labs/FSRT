@@ -75,8 +75,8 @@ cookie file untracked.
 `mint-fct` mints an FCT for a deployed module. `mint-fit` mints an FIT for a module and
 remote. For `mint-fct`, pass `--ctx '<JSON>'` to populate the selected extension's
 `context` object. For `mint-fit`, passing `--ctx` forces a new FCT with that context;
-otherwise `--fct`, a valid in-process cached FCT, or a newly minted FCT is used in that
-order. `MODULE_KEY` may be omitted when `--fct` supplies the FCT directly.
+otherwise the FCT supplied by `--fct` is used, or a new FCT with an empty context is
+minted. `MODULE_KEY` may be omitted when `--fct` supplies the FCT directly.
 
 By default, live mint commands print only the token. `--dry-run` queries metadata without
 signing tokens. `--verbose` prints actual live diagnostics to stderr while keeping the minted token on stdout. Run `fsrt <COMMAND> --help` for all options.

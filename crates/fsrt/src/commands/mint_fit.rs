@@ -61,12 +61,19 @@ pub(super) fn run(args: &MintFitArgs) -> Result<()> {
         return Ok(());
     }
 
-    let token = tester.mint_fit(
-        args.module_key.as_deref(),
-        &args.remote_key,
-        args.ctx.as_ref(),
-        args.fct.as_deref(),
-    )?;
+    let fct = if args.ctx.is_some() || args.fct.is_none() {
+        let module_key = args
+            .module_key
+            .as_deref()
+            .expect("clap requires MODULE_KEY when an FCT must be minted");
+        let ctx = args.ctx.clone().unwrap_or_else(|| serde_json::json!({}));
+        tester.mint_fct(module_key, &ctx)?
+    } else {
+        args.fct
+            .clone()
+            .expect("an FCT is present when minting is not required")
+    };
+    let token = tester.mint_fit(&args.remote_key, &fct)?;
     println!("{token}");
 
     Ok(())
