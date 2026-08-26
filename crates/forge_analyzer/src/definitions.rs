@@ -2225,7 +2225,7 @@ impl FunctionAnalyzer<'_> {
                 };
 
                 if self.break_target == BasicBlockId(u32::MAX) {
-                    eprintln!("Break target not set for this scope");
+                    warn!("Break target not set for this scope");
                     return;
                 }
 
