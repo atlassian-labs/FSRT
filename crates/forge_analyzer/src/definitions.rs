@@ -2219,12 +2219,12 @@ impl FunctionAnalyzer<'_> {
             }
             Stmt::Break(BreakStmt { label, .. }) => {
                 if label.is_some() {
-                    eprintln!("Labeled breaks are still unsupported");
+                    warn!("Labeled breaks are still unsupported");
                     return;
                 };
 
                 if self.break_target == BasicBlockId(u32::MAX) {
-                    eprintln!("Break target not set for this scope");
+                    warn!("Break target not set for this scope");
                     return;
                 }
 
@@ -2233,12 +2233,12 @@ impl FunctionAnalyzer<'_> {
             }
             Stmt::Continue(ContinueStmt { label, .. }) => {
                 if label.is_some() {
-                    eprintln!("Labeled continues are still unsupported");
+                    warn!("Labeled continues are still unsupported");
                     return;
                 };
 
                 if self.continue_target == BasicBlockId(u32::MAX) {
-                    eprintln!("Continue target not set for this scope");
+                    warn!("Continue target not set for this scope");
                     return;
                 }
 
