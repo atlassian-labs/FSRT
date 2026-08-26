@@ -2,6 +2,7 @@
 
 use std::borrow::BorrowMut;
 use std::hash::Hash;
+use std::iter::Zip;
 use std::{borrow::Borrow, fmt, mem};
 use std::{env, string};
 
@@ -10,7 +11,9 @@ use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_permission_resolver::permissions_resolver::{PermMap, RequestType};
 use forge_utils::{FxHashMap, create_newtype};
 use std::collections::{HashMap, HashSet};
+use swc_core::ecma::parser::token::Keyword::If;
 use swc_core::ecma::utils::var;
+use swc_core::ecma::visit::AstParentNodeRef::Null;
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -898,6 +901,8 @@ struct FunctionAnalyzer<'cx> {
     secret_packages: &'cx [PackageData],
     operand_stack: Vec<Operand>,
     in_lhs: bool,
+    break_target: BasicBlockId,
+    continue_target: BasicBlockId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -991,6 +996,180 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
 }
 
 impl FunctionAnalyzer<'_> {
+    fn new<'cx>(
+        env: &'cx mut Environment,
+        module: ModId,
+        current_def: DefId,
+        secret_packages: &'cx [PackageData],
+        body: Body,
+    ) -> FunctionAnalyzer<'cx> {
+        FunctionAnalyzer {
+            res: env,
+            module,
+            current_def,
+            assigning_to: None,
+            secret_packages,
+            body,
+            block: BasicBlockId::default(),
+            operand_stack: vec![],
+            in_lhs: false,
+            break_target: BasicBlockId::default(),
+            continue_target: BasicBlockId::default(),
+        }
+    }
+
+    fn lower_for(
+        &mut self,
+        ForStmt {
+            init,
+            test,
+            update,
+            body,
+            ..
+        }: &ForStmt,
+    ) {
+        match init {
+            Some(VarDeclOrExpr::VarDecl(decl)) => {
+                self.lower_var_decl(decl);
+            }
+            Some(VarDeclOrExpr::Expr(expr)) => {
+                self.lower_expr(expr, None);
+            }
+            None => {}
+        }
+        let _: [_; 3] = self.body.new_blocks();
+        let [check, cont, body_id] = self.body.new_blockbuilders();
+
+        let mut ublock = check;
+        if let Some(update) = update {
+            ublock = self.body.new_block();
+            self.body.new_blockbuilder();
+            let current = mem::replace(&mut self.block, ublock);
+            self.lower_expr(update, None);
+            // This is only correct if javascript does not allow break/continue/return inside the update expression
+            self.set_curr_terminator(Terminator::Goto(check));
+            self.block = current;
+        }
+
+        let (old_break, old_continue) = (self.break_target, self.continue_target);
+        self.break_target = cont;
+        self.continue_target = ublock;
+
+        self.goto_block(check);
+        if let Some(test) = test {
+            let cond = self.lower_expr(test, None);
+            self.set_curr_terminator(Terminator::If {
+                cond,
+                cons: body_id,
+                alt: cont,
+            });
+        } else {
+            self.set_curr_terminator(Terminator::Goto(body_id));
+        }
+
+        self.block = body_id;
+        self.lower_stmt(body);
+
+        if self.get_curr_terminator().is_none() {
+            self.set_curr_terminator(Terminator::Goto(ublock));
+        }
+
+        self.goto_block(cont);
+
+        (self.break_target, self.continue_target) = (old_break, old_continue)
+    }
+
+    fn lower_switch(
+        &mut self,
+        SwitchStmt {
+            discriminant,
+            cases,
+            ..
+        }: &SwitchStmt,
+    ) {
+        let opnd = self.lower_expr(discriminant, None);
+        if cases.is_empty() {
+            return;
+        }
+
+        let opnd_tmp = self.body.push_tmp(self.block, Rvalue::Read(opnd), None);
+
+        // cblock -> "Case block", tblock -> "Test block" (i.e. the block that evaluates the case value
+        // comparison)
+        let (mut cblock, mut tblock) = (self.block, self.block);
+        let mut cblocks: Vec<BasicBlockId> = Vec::new();
+        let mut default_case: Option<usize> = None;
+        cblocks.resize(cases.len(), BasicBlockId(u32::MAX));
+        for (n, case) in cases.iter().enumerate() {
+            let Some(test_expr) = &case.test else {
+                default_case = Some(n);
+                continue;
+            };
+
+            let new_tblock = self.body.new_block();
+            self.body.new_blockbuilder();
+
+            self.block = tblock;
+            let test_opnd = self.lower_expr(test_expr, None);
+
+            let test_rvalue = Rvalue::Bin(
+                crate::ir::BinOp::EqEqEq,
+                Operand::with_var(opnd_tmp),
+                test_opnd,
+            );
+
+            let test_result = self.body.push_tmp(self.block, test_rvalue, None);
+
+            let new_cblock = self.body.new_block();
+            self.body.new_blockbuilder();
+
+            self.set_curr_terminator(Terminator::If {
+                cond: Operand::with_var(test_result),
+                cons: new_cblock,
+                alt: new_tblock,
+            });
+
+            tblock = new_tblock;
+            cblock = new_cblock;
+
+            cblocks[n] = cblock;
+        }
+
+        let mut end_block = tblock;
+
+        if let Some(n) = default_case {
+            // The correct CFG edges to the default case (at the end of the tblock chain)
+            // have already been created pointing to `end_block`, so we reuse end_block as the default
+            // cblock, and create an additional block to link the end of the case chain / any breaks to
+            cblocks[n] = end_block;
+            let new_end_block = self.body.new_block();
+            self.body.new_blockbuilder();
+            end_block = new_end_block;
+        }
+
+        let old_break = self.break_target;
+        self.break_target = end_block;
+        let mut is_first_cblock = true;
+        for (n, curr_cblock) in cblocks.iter().enumerate() {
+            let case = &cases[n];
+            if !is_first_cblock && self.get_curr_terminator().is_none() {
+                self.set_curr_terminator(Terminator::Goto(*curr_cblock));
+            }
+
+            is_first_cblock = false;
+            self.block = *curr_cblock;
+            self.lower_stmts(&case.cons);
+        }
+
+        end_block = self.break_target;
+        self.break_target = old_break;
+        if self.get_curr_terminator().is_none() {
+            self.set_curr_terminator(Terminator::Goto(end_block));
+        }
+
+        self.block = end_block;
+    }
+
     #[inline]
     fn set_curr_terminator(&mut self, term: Terminator) {
         self.body.set_terminator(self.block, term);
@@ -1866,7 +2045,7 @@ impl FunctionAnalyzer<'_> {
             }) => {
                 let cond = self.lower_expr(test, None);
                 let curr = self.block;
-                let [temp1, temp2, temp3] = self.body.new_blocks();
+                let _: [_; 3] = self.body.new_blocks();
                 let rest = self.body.new_blockbuilder();
                 let cons_block = self.body.new_blockbuilder();
                 let alt_block = self.body.new_blockbuilder();
@@ -2038,9 +2217,34 @@ impl FunctionAnalyzer<'_> {
             Stmt::Labeled(LabeledStmt { label, body, .. }) => {
                 self.lower_stmt(body);
             }
-            // TODO: Lower Break and Continue
-            Stmt::Break(BreakStmt { label, .. }) => {}
-            Stmt::Continue(ContinueStmt { label, .. }) => {}
+            Stmt::Break(BreakStmt { label, .. }) => {
+                if label.is_some() {
+                    warn!("Labeled breaks are still unsupported");
+                    return;
+                };
+
+                if self.break_target == BasicBlockId(u32::MAX) {
+                    warn!("Break target not set for this scope");
+                    return;
+                }
+
+                self.body
+                    .set_terminator(self.block, Terminator::Goto(self.break_target));
+            }
+            Stmt::Continue(ContinueStmt { label, .. }) => {
+                if label.is_some() {
+                    warn!("Labeled continues are still unsupported");
+                    return;
+                };
+
+                if self.continue_target == BasicBlockId(u32::MAX) {
+                    warn!("Continue target not set for this scope");
+                    return;
+                }
+
+                self.body
+                    .set_terminator(self.block, Terminator::Goto(self.continue_target));
+            }
             Stmt::If(IfStmt {
                 test, cons, alt, ..
             }) => {
@@ -2074,16 +2278,10 @@ impl FunctionAnalyzer<'_> {
                 });
                 self.block = cons_block;
                 self.lower_stmt(cons);
-
                 self.goto_block(cont);
             }
-            Stmt::Switch(SwitchStmt {
-                discriminant,
-                cases,
-                ..
-            }) => {
-                let opnd = self.lower_expr(discriminant, None);
-                // TODO: lower switch
+            Stmt::Switch(stmt) => {
+                self.lower_switch(stmt);
             }
             Stmt::Throw(ThrowStmt { arg, .. }) => {
                 let opnd = self.lower_expr(arg, None);
@@ -2102,9 +2300,15 @@ impl FunctionAnalyzer<'_> {
                     self.lower_stmts(stmts);
                 }
             }
+            // needs break/continue
             Stmt::While(WhileStmt { test, body, .. }) => {
                 let [temp1, temp2, temp3] = self.body.new_blocks();
                 let [check, cont, body_id] = self.body.new_blockbuilders();
+
+                let (old_break, old_continue) = (self.break_target, self.continue_target);
+                self.break_target = cont;
+                self.continue_target = check;
+
                 self.set_curr_terminator(Terminator::Goto(check));
                 self.block = check;
                 let cond = self.lower_expr(test, None);
@@ -2115,16 +2319,29 @@ impl FunctionAnalyzer<'_> {
                 });
                 let check = mem::replace(&mut self.block, body_id);
                 self.lower_stmt(body);
-                self.set_curr_terminator(Terminator::Goto(check));
+                if self.get_curr_terminator().is_none() {
+                    self.set_curr_terminator(Terminator::Goto(check));
+                }
+
                 self.block = cont;
+                (self.break_target, self.continue_target) = (old_break, old_continue);
             }
+            // needs break/continue
             Stmt::DoWhile(DoWhileStmt { test, body, .. }) => {
-                let [temp1, temp2, temp3] = self.body.new_blocks();
+                let _: [_; 3] = self.body.new_blocks();
                 let [check, cont, body_id] = self.body.new_blockbuilders();
                 self.set_curr_terminator(Terminator::Goto(body_id));
+
+                let (old_break, old_continue) = (self.break_target, self.continue_target);
+                self.break_target = cont;
+                self.continue_target = check;
+
                 self.block = body_id;
                 self.lower_stmt(body);
-                self.set_curr_terminator(Terminator::Goto(check));
+                if self.get_curr_terminator().is_none() {
+                    self.set_curr_terminator(Terminator::Goto(check));
+                }
+
                 self.block = check;
                 let cond = self.lower_expr(test, None);
                 self.set_curr_terminator(Terminator::If {
@@ -2132,48 +2349,19 @@ impl FunctionAnalyzer<'_> {
                     cons: body_id,
                     alt: cont,
                 });
+
+                (self.break_target, self.continue_target) = (old_break, old_continue);
                 self.block = cont;
             }
-            Stmt::For(ForStmt {
-                init,
-                test,
-                update,
-                body,
-                ..
-            }) => {
-                match init {
-                    Some(VarDeclOrExpr::VarDecl(decl)) => {
-                        self.lower_var_decl(decl);
-                    }
-                    Some(VarDeclOrExpr::Expr(expr)) => {
-                        self.lower_expr(expr, None);
-                    }
-                    None => {}
-                }
-                let [temp1, temp2, temp3] = self.body.new_blocks();
-                let [check, cont, body_id] = self.body.new_blockbuilders();
-                self.goto_block(check);
-                if let Some(test) = test {
-                    let cond = self.lower_expr(test, None);
-                    self.set_curr_terminator(Terminator::If {
-                        cond,
-                        cons: body_id,
-                        alt: cont,
-                    });
-                } else {
-                    self.set_curr_terminator(Terminator::Goto(body_id));
-                }
-                self.block = body_id;
-                self.lower_stmt(body);
-                if let Some(update) = update {
-                    self.lower_expr(update, None);
-                }
-                self.set_curr_terminator(Terminator::Goto(check));
-                self.goto_block(cont);
+            // needs break/continue
+            Stmt::For(node) => {
+                self.lower_for(node);
             }
+            // needs break/continue
             Stmt::ForIn(ForInStmt {
                 left, right, body, ..
             }) => self.lower_loop(left, right, body),
+            // needs break/continue
             Stmt::ForOf(ForOfStmt {
                 left, right, body, ..
             }) => self.lower_loop(left, right, body),
@@ -2197,6 +2385,11 @@ impl FunctionAnalyzer<'_> {
     }
 
     fn lower_loop(&mut self, left: &ForHead, right: &Expr, body: &Stmt) {
+        // A workaround for the fact that these loops are not correctly lowered yet
+        let (old_break, old_continue) = (self.break_target, self.continue_target);
+        self.break_target = BasicBlockId(u32::MAX);
+        self.continue_target = BasicBlockId(u32::MAX);
+
         // FIXME: don't assume loops are infinite
         let opnd = self.lower_expr(right, None);
         match left {
@@ -2206,7 +2399,10 @@ impl FunctionAnalyzer<'_> {
                 //FIXME: investigate this case
             }
         }
+
         self.lower_stmt(body);
+
+        (self.break_target, self.continue_target) = (old_break, old_continue);
     }
 
     fn lower_var_decl(&mut self, var: &VarDecl) {
@@ -2582,6 +2778,8 @@ impl Visit for FunctionCollector<'_> {
                 block: BasicBlockId::default(),
                 operand_stack: vec![],
                 in_lhs: false,
+                break_target: BasicBlockId(u32::MAX),
+                continue_target: BasicBlockId(u32::MAX),
             };
             if let Some(BlockStmt { stmts, .. }) = &n.body {
                 analyzer.lower_stmts(stmts);
@@ -2629,17 +2827,9 @@ impl Visit for FunctionCollector<'_> {
             };
             n.function.body.visit_children_with(&mut localdef);
             let body = localdef.body;
-            let mut analyzer = FunctionAnalyzer {
-                res: self.res,
-                module: self.module,
-                current_def: *owner,
-                secret_packages: self.secret_packages,
-                assigning_to: None,
-                body,
-                block: BasicBlockId::default(),
-                operand_stack: vec![],
-                in_lhs: false,
-            };
+            let mut analyzer =
+                FunctionAnalyzer::new(self.res, self.module, *owner, self.secret_packages, body);
+
             if let Some(BlockStmt { stmts, .. }) = &n.function.body {
                 analyzer.lower_stmts(stmts);
                 let mut body = analyzer.body;
@@ -2690,17 +2880,9 @@ impl Visit for FunctionCollector<'_> {
         };
         func_body.visit_children_with(&mut localdef);
         let body = localdef.body;
-        let mut analyzer = FunctionAnalyzer {
-            res: self.res,
-            module: self.module,
-            current_def: owner,
-            assigning_to: None,
-            secret_packages: self.secret_packages,
-            body,
-            block: BasicBlockId::default(),
-            operand_stack: vec![],
-            in_lhs: false,
-        };
+        let mut analyzer =
+            FunctionAnalyzer::new(self.res, self.module, owner, self.secret_packages, body);
+
         match &**func_body {
             BlockStmtOrExpr::BlockStmt(BlockStmt { stmts, .. }) => {
                 analyzer.lower_stmts(stmts);
@@ -2816,17 +2998,14 @@ impl Visit for FunctionCollector<'_> {
                                 return;
                             };
                             let old_parent = self.parent.replace(owner);
-                            let mut analyzer = FunctionAnalyzer {
-                                res: self.res,
-                                module: self.module,
-                                current_def: owner,
-                                assigning_to: None,
-                                secret_packages: self.secret_packages,
-                                body: Body::with_owner(owner),
-                                block: BasicBlockId::default(),
-                                operand_stack: vec![],
-                                in_lhs: false,
-                            };
+                            let mut analyzer = FunctionAnalyzer::new(
+                                self.res,
+                                self.module,
+                                owner,
+                                self.secret_packages,
+                                Body::with_owner(owner),
+                            );
+
                             let opnd = analyzer.lower_expr(expr, None);
                             analyzer.body.push_inst(
                                 analyzer.block,
@@ -2949,17 +3128,9 @@ impl FunctionCollector<'_> {
         };
         n.body.visit_children_with(&mut localdef);
         let body = localdef.body;
-        let mut analyzer = FunctionAnalyzer {
-            res: self.res,
-            module: self.module,
-            current_def: owner,
-            assigning_to: None,
-            body,
-            secret_packages: self.secret_packages,
-            block: BasicBlockId::default(),
-            operand_stack: vec![],
-            in_lhs: false,
-        };
+        let mut analyzer =
+            FunctionAnalyzer::new(self.res, self.module, owner, self.secret_packages, body);
+
         if let Some(BlockStmt { stmts, .. }) = &n.body {
             analyzer.lower_stmts(stmts);
             let mut body = analyzer.body;
@@ -3490,17 +3661,8 @@ impl Visit for GlobalCollector<'_> {
         };
         n.visit_children_with(&mut localdef);
         let body = localdef.body;
-        let mut analyzer = FunctionAnalyzer {
-            res: self.res,
-            module: self.module,
-            current_def: owner,
-            assigning_to: None,
-            secret_packages: self.secret_packages,
-            body,
-            block: BasicBlockId::default(),
-            operand_stack: vec![],
-            in_lhs: false,
-        };
+        let mut analyzer =
+            FunctionAnalyzer::new(self.res, self.module, owner, self.secret_packages, body);
 
         let mut all_module_items = Vec::new();
 

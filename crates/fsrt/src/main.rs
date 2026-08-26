@@ -397,6 +397,7 @@ pub(crate) fn scan_directory<'a>(
             ));
         }
     };
+
     let requested_permissions = manifest.permissions;
     let permissions_declared = requested_permissions
         .scopes
