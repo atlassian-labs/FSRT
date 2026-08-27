@@ -48,7 +48,7 @@ impl InvocationOutcome {
     }
 }
 
-impl ForgePenTester<'_, '_> {
+impl ForgePenTester {
     /// Constructs the exact GraphQL request used to invoke a deployed module.
     pub fn invoke_extension_request(
         &self,

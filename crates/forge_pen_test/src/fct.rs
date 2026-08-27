@@ -37,7 +37,7 @@ struct ForgeContextToken {
     jwt: String,
 }
 
-impl ForgePenTester<'_, '_> {
+impl ForgePenTester {
     /// Constructs the exact GraphQL request that `mint_fct` will send.
     pub fn mint_fct_request(
         &self,

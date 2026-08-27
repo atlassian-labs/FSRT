@@ -70,9 +70,9 @@ fsrt mint-fit <REMOTE_KEY> (--module <MODULE_KEY> | --fct <FCT>) [OPTIONS]
 fsrt invoke-extension <FUNCTION> <MODULE_KEY> [--fct <FCT>] [OPTIONS]
 ```
 
-All three commands use `--app-dir` and a TOML configuration file; see
-[`fsrt-remote.toml.example`](fsrt-remote.toml.example). Keep that configuration and its
-cookie file untracked.
+All three commands accept either `--app-id <APP_ID>` to identify the app directly or
+`--app-dir <DIR>` to read the app ID from its manifest. They also use a TOML
+configuration file; see [`fsrt-remote.toml.example`](fsrt-remote.toml.example).
 
 `mint-fct` mints an FCT for a deployed module. Pass `--ctx '<JSON>'` to populate the
 selected extension's `context` object.

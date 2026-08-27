@@ -1,10 +1,24 @@
+use std::{fs, path::Path};
+
 use clap::Subcommand;
 
-use crate::Result;
+use crate::{Result, forge_project::find_manifest_path};
 
 pub(crate) mod invoke_extension;
 pub(crate) mod mint_fct;
 pub(crate) mod mint_fit;
+
+fn resolve_app_id(app_id: Option<&str>, app_dir: Option<&Path>) -> Result<String> {
+    if let Some(app_id) = app_id {
+        return Ok(app_id.to_string());
+    }
+
+    let app_dir = app_dir.unwrap_or_else(|| Path::new("."));
+    let manifest_path = find_manifest_path(app_dir)?;
+    let manifest_text = fs::read_to_string(manifest_path)?;
+    let manifest: forge_loader::manifest::ForgeManifest<'_> = serde_yaml::from_str(&manifest_text)?;
+    Ok(manifest.app.id.to_string())
+}
 
 fn parse_json(value: &str) -> std::result::Result<serde_json::Value, String> {
     let json: serde_json::Value =

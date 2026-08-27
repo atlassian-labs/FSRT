@@ -33,7 +33,7 @@ struct ForgeInvocationToken {
     jwt: String,
 }
 
-impl ForgePenTester<'_, '_> {
+impl ForgePenTester {
     /// Constructs the exact GraphQL request used to mint a FIT.
     pub fn mint_fit_request(
         &self,
