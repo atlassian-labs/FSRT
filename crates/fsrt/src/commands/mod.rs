@@ -34,6 +34,16 @@ fn parse_json(value: &str) -> std::result::Result<serde_json::Value, String> {
 /// CLI subcommands.
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
+    /// Run dynamic application security testing commands.
+    Dast {
+        #[command(subcommand)]
+        command: DastCommand,
+    },
+}
+
+/// Dynamic application security testing subcommands.
+#[derive(Subcommand, Debug)]
+pub(crate) enum DastCommand {
     /// Invoke a resolver-backed extension with a tester-controlled payload.
     InvokeExtension(invoke_extension::InvokeExtensionArgs),
 
@@ -47,13 +57,27 @@ pub(crate) enum Command {
 impl Command {
     pub(crate) fn diagnostic_logging_requested(&self) -> bool {
         match self {
+            Self::Dast { command } => command.diagnostic_logging_requested(),
+        }
+    }
+
+    pub(crate) fn run(&self) -> Result<()> {
+        match self {
+            Self::Dast { command } => command.run(),
+        }
+    }
+}
+
+impl DastCommand {
+    fn diagnostic_logging_requested(&self) -> bool {
+        match self {
             Self::InvokeExtension(args) => args.diagnostic_logging_requested(),
             Self::MintFct(args) => args.diagnostic_logging_requested(),
             Self::MintFit(args) => args.diagnostic_logging_requested(),
         }
     }
 
-    pub(crate) fn run(&self) -> Result<()> {
+    fn run(&self) -> Result<()> {
         match self {
             Self::InvokeExtension(args) => invoke_extension::run(args),
             Self::MintFct(args) => mint_fct::run(args),

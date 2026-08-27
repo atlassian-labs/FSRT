@@ -16,9 +16,7 @@ Arguments:
   [DIRS]...  The directory to scan. Assumes there is a `manifest.yaml` file in the top level directory, and that the source code is located in `src/`
 
 Commands:
-  invoke-extension  Invoke a resolver-backed extension with a tester-controlled payload
-  mint-fct          Mint an FCT for a deployed module
-  mint-fit          Mint an FIT for a deployed module and Forge remote
+  dast  Run pentesting commands
 
   Options:
     -d, --debug
@@ -34,7 +32,7 @@ Commands:
     --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir
 ```
 
-Run `fsrt --help` or `fsrt <COMMAND> --help` for current options.
+Run `fsrt --help`, `fsrt dast --help`, or `fsrt dast <COMMAND> --help` for current options.
 
 ## Installation
 
@@ -65,9 +63,9 @@ cargo install --git https://github.com/atlassian-labs/FSRT --locked
 ## Commands
 
 ```text
-fsrt mint-fct <MODULE_KEY> [OPTIONS]
-fsrt mint-fit <REMOTE_KEY> (--module <MODULE_KEY> | --fct <FCT>) [OPTIONS]
-fsrt invoke-extension <FUNCTION> <MODULE_KEY> [--fct <FCT>] [OPTIONS]
+fsrt dast mint-fct <MODULE_KEY> [OPTIONS]
+fsrt dast mint-fit <REMOTE_KEY> (--module <MODULE_KEY> | --fct <FCT>) [OPTIONS]
+fsrt dast invoke-extension <FUNCTION> <MODULE_KEY> [--fct <FCT>] [OPTIONS]
 ```
 
 All three commands accept either `--app-id <APP_ID>` to identify the app directly or
@@ -95,7 +93,7 @@ the request's context token.
 By default, live mint commands print only the token, while `invoke-extension` prints the
 backend response. `--dry-run` queries metadata without signing tokens or invoking the
 extension and prints redacted request variables. `--verbose` prints live diagnostics to
-stderr. Run `fsrt <COMMAND> --help` for all options.
+stderr. Run `fsrt dast <COMMAND> --help` for all options.
 
 ## Tests
 
