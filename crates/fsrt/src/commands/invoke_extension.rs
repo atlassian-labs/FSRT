@@ -2,6 +2,7 @@ use std::{fs, path::PathBuf};
 
 use clap::{Args, ValueHint};
 use serde_json::Value as JsonValue;
+use tracing::info;
 
 use crate::{Result, forge_project::find_manifest_path};
 
@@ -12,7 +13,7 @@ const REDACTED_FCT: &str = "<FCT selected at runtime>";
 /// `invoke-extension` arguments.
 #[derive(Args, Debug)]
 pub(crate) struct InvokeExtensionArgs {
-    /// Resolver function key passed to the backend unchanged.
+    /// Resolver function key, optionally prefixed with `resolver.`.
     #[arg(name = "FUNCTION")]
     function: String,
 
@@ -73,10 +74,12 @@ pub(super) fn run(args: &InvokeExtensionArgs) -> Result<()> {
         return Ok(());
     }
 
-    let context_token = match args.fct.as_deref() {
-        Some(fct) => fct.to_string(),
-        None => tester.mint_fct(module_key, &ctx)?,
+    let (context_token, fct_source) = match args.fct.as_deref() {
+        Some(fct) => (fct.to_string(), "supplied"),
+        None => (tester.mint_fct(module_key, &ctx)?, "minted"),
     };
+    info!(fct_source, "selected FCT for extension invocation");
+
     let outcome = tester.invoke_extension(
         module_key,
         &args.function,

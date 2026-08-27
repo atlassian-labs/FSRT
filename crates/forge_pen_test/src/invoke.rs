@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
+use tracing::info;
 
 use crate::{ForgePenTester, GraphqlErrorObject, GraphqlRequest, PenTestError};
 
@@ -61,6 +62,9 @@ impl ForgePenTester<'_, '_> {
             return Err(PenTestError::EmptySuppliedFct);
         }
         let extension = self.config().extension_for_module_key(module_key)?;
+        let function_key = function_key
+            .strip_prefix("resolver.")
+            .unwrap_or(function_key);
         let mut call = serde_json::json!({ "functionKey": function_key });
         if let Some(extension_payload) = extension_payload {
             call.as_object_mut()
@@ -102,6 +106,12 @@ impl ForgePenTester<'_, '_> {
             ctx,
             context_token,
         )?;
+        let variables = format!("{:#}", request.variables);
+        info!(
+            operation_name = INVOKE_OPERATION_NAME,
+            variables = %variables,
+            "InvokeExtension GraphQL variables"
+        );
         let data: InvokeData = self.post_graphql_mutation(&request)?;
         let result = data.result.ok_or_else(|| {
             PenTestError::InvocationFailed("response missing data.invokeExtension".to_string())
