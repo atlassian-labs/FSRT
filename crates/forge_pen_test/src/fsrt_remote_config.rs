@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 use serde::{Deserialize, Deserializer, de::Error as _};
 use url::Url;
 
-use crate::mint_common::MintError;
+use crate::mint_common::PenTestError;
 
 /// Untrusted configuration loaded from `fsrt-remote.toml`.
 #[derive(Debug, Deserialize)]
@@ -35,13 +35,14 @@ pub struct AuthConfig {
 
 impl FsrtRemoteConfig {
     /// Loads untrusted configuration from a TOML file.
-    pub fn from_path(config_path: &Path) -> Result<Self, MintError> {
-        let contents = fs::read_to_string(config_path).map_err(|source| MintError::FileRead {
-            kind: "config",
-            path: config_path.to_path_buf(),
-            source,
-        })?;
-        toml::from_str(&contents).map_err(|source| MintError::ConfigParse {
+    pub fn from_path(config_path: &Path) -> Result<Self, PenTestError> {
+        let contents =
+            fs::read_to_string(config_path).map_err(|source| PenTestError::FileRead {
+                kind: "config",
+                path: config_path.to_path_buf(),
+                source,
+            })?;
+        toml::from_str(&contents).map_err(|source| PenTestError::ConfigParse {
             path: config_path.to_path_buf(),
             source,
         })

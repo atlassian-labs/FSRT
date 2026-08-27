@@ -64,7 +64,7 @@ pub struct Args {
     debug: bool,
 
     /// Print diagnostics to stderr. A valid `FORGE_LOG` filter takes precedence.
-    #[arg(long, global = true, default_value_t = false)]
+    #[arg(long, global = true, default_value_t = false, display_order = 100)]
     verbose: bool,
 
     /// Dump the IR for the specified function

@@ -66,8 +66,8 @@ cargo install --git https://github.com/atlassian-labs/FSRT --locked
 
 ```text
 fsrt mint-fct <MODULE_KEY> [OPTIONS]
-fsrt mint-fit <REMOTE_KEY> [--module <MODULE_KEY>] [OPTIONS]
-fsrt invoke-extension <MODULE_KEY> <FUNCTION> <PAYLOAD> [OPTIONS]
+fsrt mint-fit <REMOTE_KEY> (--module <MODULE_KEY> | --fct <FCT>) [OPTIONS]
+fsrt invoke-extension <FUNCTION> <MODULE_KEY> [--fct <FCT>] [OPTIONS]
 ```
 
 All three commands use `--app-dir` and a TOML configuration file; see
@@ -84,11 +84,13 @@ selected extension's `context` object.
 | Use an existing FCT | `<REMOTE_KEY> --fct <FCT>` | Uses the supplied FCT when `--module` and `--ctx` are omitted. |
 | Mint a new FCT | `<REMOTE_KEY> --module <MODULE_KEY>` | Mints an FCT with an empty context, then uses it to mint the FIT. Add `--ctx '<JSON>'` to set its context. |
 
-`invoke-extension` invokes a resolver with tester-controlled JSON. Its positional arguments
-select the deployed module, resolver function, and invocation payload. By default it derives
-the invocation context from deployment metadata and mints an FCT in memory. Use
-`--ctx '<JSON>'` to replace that context or `--fct <JWT>` to reuse a captured token.
-`--async` requests an asynchronous invocation when supported.
+`invoke-extension` always resolves its request target from `<MODULE_KEY>`. The FCT only supplies
+the request's context token.
+
+| Mode | Required inputs | Behavior |
+| --- | --- | --- |
+| Use an existing FCT | `<FUNCTION> <MODULE_KEY> --fct <FCT>` | Builds the request from the selected deployed module and uses the supplied FCT only as its context token. |
+| Mint a new FCT | `<FUNCTION> <MODULE_KEY>` | Calls `mint_fct` for the selected module, then invokes it. Add `--ctx '<JSON>'` to use that context for both operations. |
 
 By default, live mint commands print only the token, while `invoke-extension` prints the
 backend response. `--dry-run` queries metadata without signing tokens or invoking the
