@@ -1,7 +1,7 @@
 # Copy to `fsrt-remote.toml` and keep the local file untracked.
 
-# Full site origin used to resolve cloud_id (HTTPS).
-site = "https://your-site.example.com"
+# Atlassian site origin used to resolve cloud_id and access the GraphQL gateway.
+site = "https://your-site.atlassian.net"
 
 # Context ARI owner, such as "jira" or "confluence".
 product = "jira"

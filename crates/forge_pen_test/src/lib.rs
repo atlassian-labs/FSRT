@@ -1,6 +1,8 @@
 //! Forge pen-testing toolkit.
 
 mod app_config;
+mod fct;
+mod fit;
 mod forge_pentester;
 mod fsrt_remote_config;
 mod invoke;
