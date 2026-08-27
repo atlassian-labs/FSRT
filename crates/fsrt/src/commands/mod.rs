@@ -6,15 +6,15 @@ pub(crate) mod invoke_extension;
 pub(crate) mod mint_fct;
 pub(crate) mod mint_fit;
 
-fn parse_ctx(value: &str) -> std::result::Result<serde_json::Value, String> {
-    let ctx: serde_json::Value =
+fn parse_json(value: &str) -> std::result::Result<serde_json::Value, String> {
+    let json: serde_json::Value =
         serde_json::from_str(value).map_err(|error| format!("invalid JSON: {error}"))?;
 
-    if !ctx.is_object() {
-        return Err("ctx must be a JSON object".to_string());
+    if !json.is_object() {
+        return Err("must be a JSON object".to_string());
     }
 
-    Ok(ctx)
+    Ok(json)
 }
 
 /// CLI subcommands.

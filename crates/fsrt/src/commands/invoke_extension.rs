@@ -6,7 +6,7 @@ use tracing::info;
 
 use crate::{Result, forge_project::find_manifest_path};
 
-use super::parse_ctx;
+use super::parse_json;
 
 const REDACTED_FCT: &str = "<FCT selected at runtime>";
 
@@ -21,12 +21,12 @@ pub(crate) struct InvokeExtensionArgs {
     #[arg(name = "MODULE_KEY")]
     module_key: String,
 
-    /// Optional invocation payload as JSON.
-    #[arg(long, value_name = "JSON", value_parser = parse_payload)]
+    /// Optional invocation payload as a JSON object.
+    #[arg(long, value_name = "JSON", value_parser = parse_json)]
     payload: Option<JsonValue>,
 
-    /// Invocation context as JSON (defaults to {}).
-    #[arg(long, value_name = "JSON", value_parser = parse_ctx)]
+    /// Invocation context as a JSON object (defaults to {}).
+    #[arg(long, value_name = "JSON", value_parser = parse_json)]
     ctx: Option<JsonValue>,
 
     /// Existing FCT to use instead of minting one.
@@ -93,8 +93,4 @@ pub(super) fn run(args: &InvokeExtensionArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn parse_payload(value: &str) -> std::result::Result<JsonValue, String> {
-    serde_json::from_str(value).map_err(|error| format!("invalid JSON: {error}"))
 }

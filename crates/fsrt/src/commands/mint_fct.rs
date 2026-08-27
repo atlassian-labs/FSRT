@@ -5,7 +5,7 @@ use tracing::info;
 
 use crate::{Result, forge_project::find_manifest_path};
 
-use super::parse_ctx;
+use super::parse_json;
 
 /// `mint-fct` arguments.
 #[derive(Args, Debug)]
@@ -23,7 +23,7 @@ pub(crate) struct MintFctArgs {
     config: PathBuf,
 
     /// JSON object to include in the extension context.
-    #[arg(long, value_name = "JSON", value_parser = parse_ctx)]
+    #[arg(long, value_name = "JSON", value_parser = parse_json)]
     ctx: Option<serde_json::Value>,
 
     /// Query metadata and print the GraphQL request without minting.

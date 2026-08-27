@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::{Result, forge_project::find_manifest_path};
 
-use super::parse_ctx;
+use super::parse_json;
 
 const REDACTED_FCT: &str = "<FCT selected at runtime>";
 
@@ -28,7 +28,7 @@ pub(crate) struct MintFitArgs {
     /// Force a new FCT with this inline JSON object as its context.
     #[arg(
         long = "ctx",
-        value_parser = parse_ctx,
+        value_parser = parse_json,
         requires = "module_key",
         conflicts_with = "fct"
     )]
