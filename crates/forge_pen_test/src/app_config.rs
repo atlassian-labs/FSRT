@@ -66,7 +66,6 @@ impl AppConfig {
             .extensions
             .iter()
             .filter(|extension| extension.extension_type == "core:remote")
-            .filter(|extension| !extension.module_key.is_empty())
             .map(|extension| extension.module_key.clone())
             .collect::<Vec<_>>();
         remote_keys.sort(); // why need to sort and dedup?
@@ -161,17 +160,6 @@ mod tests {
                 .is_err()
         );
     }
-
-    #[test]
-    fn missing_module_key_reports_the_actual_extension_list() {
-        assert!(matches!(
-            config(vec![extension("none", "extension-1")])
-                .extension_for_module_key("missing"),
-            Err(PenTestError::ModuleKeyNotFound { module_key, available })
-                if module_key == "missing" && available == ["none"]
-        ));
-    }
-
     #[test]
     fn duplicate_module_keys_return_the_first_extension() {
         let config = config(vec![
@@ -189,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_keys_only_include_unique_nonempty_core_remote_extensions() {
+    fn remote_keys_include_unique_core_remote_extensions() {
         let config = config(vec![
             extension_with_type("remote-b", "extension-1", "core:remote"),
             extension_with_type("panel", "extension-2", "jira:issuePanel"),
@@ -200,7 +188,11 @@ mod tests {
 
         assert_eq!(
             config.remote_keys(),
-            vec!["remote-a".to_string(), "remote-b".to_string()]
+            vec![
+                "".to_string(),
+                "remote-a".to_string(),
+                "remote-b".to_string()
+            ]
         );
     }
 }

@@ -12,14 +12,19 @@ const REDACTED_FCT: &str = "<FCT selected at runtime>";
 
 /// `invoke-extension` arguments.
 #[derive(Args, Debug)]
+#[command(allow_missing_positional = true)]
 pub(crate) struct InvokeExtensionArgs {
-    /// Resolver function key, optionally prefixed with `resolver.`.
-    #[arg(name = "FUNCTION")]
-    function: String,
+    /// Resolver function key, optionally prefixed with `resolver.`. Required for the resolver entrypoint.
+    #[arg(name = "FUNCTION", required_if_eq("entrypoint", "resolver"))]
+    function: Option<String>,
 
-    /// Deployed resolver module key.
+    /// Deployed module key.
     #[arg(name = "MODULE_KEY")]
     module_key: String,
+
+    /// Manifest entrypoint path used to select the function or endpoint.
+    #[arg(long)]
+    entrypoint: Option<String>,
 
     /// Optional invocation payload as a JSON object.
     #[arg(long, value_name = "JSON", value_parser = parse_json)]
@@ -67,7 +72,8 @@ pub(super) fn run(args: &InvokeExtensionArgs) -> Result<()> {
     if args.dry_run {
         let request = tester.invoke_extension_request(
             module_key,
-            &args.function,
+            args.entrypoint.as_deref(),
+            args.function.as_deref(),
             args.payload.as_ref(),
             &ctx,
             REDACTED_FCT,
@@ -84,7 +90,8 @@ pub(super) fn run(args: &InvokeExtensionArgs) -> Result<()> {
 
     let outcome = tester.invoke_extension(
         module_key,
-        &args.function,
+        args.entrypoint.as_deref(),
+        args.function.as_deref(),
         args.payload.as_ref(),
         &ctx,
         &context_token,

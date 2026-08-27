@@ -1,4 +1,4 @@
-//! Direct Forge resolver invocation support.
+//! Direct Forge extension invocation support.
 
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -53,7 +53,8 @@ impl ForgePenTester {
     pub fn invoke_extension_request(
         &self,
         module_key: &str,
-        function_key: &str,
+        entry_point: Option<&str>,
+        function_key: Option<&str>,
         extension_payload: Option<&JsonValue>,
         ctx: &JsonValue,
         context_token: &str,
@@ -62,45 +63,75 @@ impl ForgePenTester {
             return Err(PenTestError::EmptySuppliedFct);
         }
         let extension = self.config().extension_for_module_key(module_key)?;
-        let function_key = function_key
-            .strip_prefix("resolver.")
-            .unwrap_or(function_key);
-        let mut call = serde_json::json!({ "functionKey": function_key });
-        if let Some(extension_payload) = extension_payload {
-            call.as_object_mut()
-                .expect("resolver call must be a JSON object")
-                .insert("payload".to_string(), extension_payload.clone());
+        let function_key = function_key.map(|key| key.strip_prefix("resolver.").unwrap_or(key));
+        if entry_point == Some(RESOLVER_ENTRY_POINT) && function_key.is_none() {
+            return Err(PenTestError::InvocationFailed(
+                "resolver function key must not be empty".to_string(),
+            ));
+        }
+
+        let mut payload = match function_key {
+            Some(function_key) => {
+                let mut call = serde_json::json!({ "functionKey": function_key });
+                if let Some(extension_payload) = extension_payload {
+                    call.as_object_mut()
+                        .expect("resolver call must be a JSON object")
+                        .insert("payload".to_string(), extension_payload.clone());
+                }
+                serde_json::json!({ "call": call })
+            }
+            None => extension_payload
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({})),
+        };
+        let payload_object = payload.as_object_mut().ok_or_else(|| {
+            PenTestError::InvocationFailed(
+                "non-resolver invocation payload must be a JSON object".to_string(),
+            )
+        })?;
+        payload_object.insert("context".to_string(), ctx.clone());
+        payload_object.insert(
+            "contextToken".to_string(),
+            JsonValue::String(context_token.to_string()),
+        );
+
+        let mut input = serde_json::json!({
+            "contextIds": [self.config().context_id()],
+            "extensionId": extension.extension_id(),
+            "payload": payload,
+        });
+        if let Some(entry_point) = entry_point {
+            input
+                .as_object_mut()
+                .expect("invocation input must be a JSON object")
+                .insert(
+                    "entryPoint".to_string(),
+                    JsonValue::String(entry_point.to_string()),
+                );
         }
 
         Ok(GraphqlRequest {
             operation_name: INVOKE_OPERATION_NAME.to_string(),
             query: INVOKE_MUTATION.to_string(),
             variables: serde_json::json!({
-                "input": {
-                    "contextIds": [self.config().context_id()],
-                    "entryPoint": RESOLVER_ENTRY_POINT,
-                    "extensionId": extension.extension_id(),
-                    "payload": {
-                        "call": call,
-                        "context": ctx,
-                        "contextToken": context_token,
-                    }
-                }
+                "input": input
             }),
         })
     }
 
-    /// Invokes a resolver-backed extension with an existing FCT.
+    /// Invokes an extension with an existing FCT.
     pub fn invoke_extension(
         &self,
         module_key: &str,
-        function_key: &str,
+        entry_point: Option<&str>,
+        function_key: Option<&str>,
         extension_payload: Option<&JsonValue>,
         ctx: &JsonValue,
         context_token: &str,
     ) -> Result<InvocationOutcome, PenTestError> {
         let request = self.invoke_extension_request(
             module_key,
+            entry_point,
             function_key,
             extension_payload,
             ctx,

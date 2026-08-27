@@ -44,7 +44,7 @@ pub(crate) enum Command {
 /// Dynamic application security testing subcommands.
 #[derive(Subcommand, Debug)]
 pub(crate) enum DastCommand {
-    /// Invoke a resolver-backed extension with a tester-controlled payload.
+    /// Invoke a deployed extension with a tester-controlled payload.
     InvokeExtension(invoke_extension::InvokeExtensionArgs),
 
     /// Mint an FCT for a deployed module.
