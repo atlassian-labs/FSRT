@@ -1037,7 +1037,7 @@ impl FunctionAnalyzer<'_> {
             }
             None => {}
         }
-        
+
         let _: [_; 3] = self.body.new_blocks();
         let [check, cont, body_id] = self.body.new_blockbuilders();
 

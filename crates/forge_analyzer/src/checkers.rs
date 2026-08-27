@@ -850,6 +850,18 @@ impl<'cx> Dataflow<'cx> for SecretDataflow {
     }
 }
 
+pub struct UserAuthZChecker<'a> {
+    _suspicious_remotes: &'a [&'a str],
+}
+
+impl<'a> UserAuthZChecker<'a> {
+    pub fn new(ids: &'a [&'a str]) -> Self {
+        Self {
+            _suspicious_remotes: ids,
+        }
+    }
+}
+
 pub struct SecretChecker {
     vulns: Vec<SecretVuln>,
 }
