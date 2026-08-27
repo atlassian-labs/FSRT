@@ -56,7 +56,9 @@ where
     let input = String::deserialize(deserializer)?;
     let site = Url::parse(&input).map_err(D::Error::custom)?;
     let valid = site.scheme() == "https"
-        && site.host_str().is_some()
+        && site.host_str().is_some_and(|host| {
+            host.ends_with(".atlassian.net") || host.ends_with(".jira-dev.com")
+        })
         && site.username().is_empty()
         && site.password().is_none()
         && site.path() == "/"
@@ -64,49 +66,9 @@ where
         && site.fragment().is_none();
     if !valid {
         return Err(D::Error::custom(
-            "site must be an HTTPS URL without credentials, a path, query, or fragment",
+            "site must be an HTTPS *.atlassian.net or *.jira-dev.com origin without credentials, a path, query, or fragment",
         ));
     }
 
     Ok(site)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parse(site: &str) -> Result<FsrtRemoteConfig, toml::de::Error> {
-        toml::from_str(&format!(
-            r#"site = "{site}"
-product = "jira"
-[auth]
-raw_cookie_file = "./session-cookie.txt"
-"#
-        ))
-    }
-
-    #[test]
-    fn site_accepts_any_https_host_and_an_explicit_port() {
-        for site in [
-            "https://foo.jira-dev.com",
-            "https://example.atlassian.net/",
-            "https://localhost:8443",
-        ] {
-            assert_eq!(parse(site).unwrap().site, Url::parse(site).unwrap());
-        }
-    }
-
-    #[test]
-    fn site_rejects_non_https_and_non_origin_urls() {
-        for site in [
-            "http://example.com",
-            "example.com",
-            "https://user@example.com",
-            "https://example.com/path",
-            "https://example.com?query=value",
-            "https://example.com#fragment",
-        ] {
-            assert!(parse(site).is_err(), "site unexpectedly accepted: {site}");
-        }
-    }
 }

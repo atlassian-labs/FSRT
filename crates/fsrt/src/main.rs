@@ -871,6 +871,11 @@ fn main() -> Result<()> {
     if let Some(command) = &args.command {
         if let Err(err) = command.run() {
             eprintln!("error: {err}");
+            let mut source = err.source();
+            while let Some(cause) = source {
+                eprintln!("  caused by: {cause}");
+                source = cause.source();
+            }
             std::process::exit(1);
         }
         return Ok(());
