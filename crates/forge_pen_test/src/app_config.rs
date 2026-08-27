@@ -2,7 +2,7 @@
 
 use tracing::warn;
 
-use crate::mint_common::MintError;
+use crate::mint_common::PenTestError;
 
 /// A deployed Forge extension available for FCT minting.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,13 +79,13 @@ impl AppConfig {
     pub fn extension_for_module_key(
         &self,
         module_key: &str,
-    ) -> Result<&ExtensionConfig, MintError> {
+    ) -> Result<&ExtensionConfig, PenTestError> {
         let mut matches = self
             .extensions
             .iter()
             .filter(|extension| extension.module_key == module_key);
         let Some(first) = matches.next() else {
-            return Err(MintError::ModuleKeyNotFound {
+            return Err(PenTestError::ModuleKeyNotFound {
                 module_key: module_key.to_string(),
                 available: self
                     .extensions
@@ -167,7 +167,7 @@ mod tests {
         assert!(matches!(
             config(vec![extension("none", "extension-1")])
                 .extension_for_module_key("missing"),
-            Err(MintError::ModuleKeyNotFound { module_key, available })
+            Err(PenTestError::ModuleKeyNotFound { module_key, available })
                 if module_key == "missing" && available == ["none"]
         ));
     }
