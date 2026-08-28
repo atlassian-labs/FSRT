@@ -108,7 +108,7 @@ pub struct Args {
     #[arg(long)]
     cached_permissions_path: Option<PathBuf>,
 
-    /// List of scanners to enable. Defaults to all of them.
+    /// Comma separated list of scanners to enable. Defaults to all of them.
     #[arg(long, value_delimiter = ',')]
     scanners: Vec<Scanner>,
 
