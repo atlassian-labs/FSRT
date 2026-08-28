@@ -5,7 +5,7 @@ mod forge_project;
 #[cfg(test)]
 mod test;
 
-use clap::{Parser, ValueHint};
+use clap::{Parser, ValueEnum, ValueHint};
 use forge_permission_resolver::{
     permissions_cache::CacheConfig,
     permissions_resolver::{
@@ -57,6 +57,16 @@ use walkdir::WalkDir;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum Scanner {
+    Authentication,
+    Authorization,
+    AuthHeader,
+    Permission,
+    Secret,
+    RuntimeVersion,
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
@@ -99,8 +109,8 @@ pub struct Args {
     cached_permissions_path: Option<PathBuf>,
 
     /// List of scanners to enable. Defaults to all of them.
-    #[arg(long)]
-    scanners: Option<String>,
+    #[arg(long, value_delimiter = ',')]
+    scanners: Vec<Scanner>,
 
     /// Scan all function/closure bodies for auth-header issues, not just entrypoint-reachable code.
     #[arg(long, default_value_t = true)]
@@ -114,6 +124,12 @@ pub struct Args {
     /// Run a subcommand instead of the default scan.
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+impl Args {
+    fn scanner_enabled(&self, scanner: Scanner) -> bool {
+        self.scanners.is_empty() || self.scanners.contains(&scanner)
+    }
 }
 
 #[allow(dead_code)]
@@ -397,13 +413,18 @@ pub(crate) fn scan_directory<'a>(
             ));
         }
     };
-    let runtime_policy_vuln = ForgeRuntimeVersionPolicyChecker::check(
-        manifest
-            .app
-            .runtime
-            .as_ref()
-            .and_then(|runtime| runtime.name),
-    );
+
+    let runtime_policy_vuln = if opts.scanner_enabled(Scanner::RuntimeVersion) {
+        ForgeRuntimeVersionPolicyChecker::check(
+            manifest
+                .app
+                .runtime
+                .as_ref()
+                .and_then(|runtime| runtime.name),
+        )
+    } else {
+        None
+    };
     let requested_permissions = manifest.permissions;
     let permissions_declared = requested_permissions
         .scopes
@@ -448,7 +469,13 @@ pub(crate) fn scan_directory<'a>(
         Err(Error::TranspiledAsyncError)?;
     }
     // FIXME: Find Custom UI path instead
-    let run_permission_checker = !transpiled_async && manifest.resources.is_empty();
+    let run_permission_scanner =
+        opts.scanner_enabled(Scanner::Permission) && manifest.resources.is_empty();
+    let run_permission_checker = run_permission_scanner && !contains_remote_auth_token;
+    let run_authentication_scanner = opts.scanner_enabled(Scanner::Authentication);
+    let run_authorization_scanner = opts.scanner_enabled(Scanner::Authorization);
+    let run_auth_header_scanner = opts.scanner_enabled(Scanner::AuthHeader);
+    let run_secret_scanner = opts.scanner_enabled(Scanner::Secret);
     let scan_functions =
         opts.scan_functions || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
 
@@ -481,39 +508,47 @@ pub(crate) fn scan_directory<'a>(
         .filter(|s| check_perm(s))
         .collect::<Vec<_>>();
 
-    let config = CacheConfig::new(
-        if opts.no_cache {
-            false
-        } else {
-            match std::env::var("FSRT_CACHE") {
-                Err(_) => true,
-                Ok(s) => {
-                    let t = s.trim();
-                    match t {
-                        "0" => false,
-                        t if t.eq_ignore_ascii_case("false") => false,
-                        "" | "1" => true,
-                        t if t.eq_ignore_ascii_case("true") => true,
-                        _ => true,
+    let (
+        (jira_any_permission_resolver, jira_any_regex_map),
+        (jira_software_permission_resolver, jira_software_regex_map),
+        (jira_service_management_permission_resolver, jira_service_management_regex_map),
+        (jira_permission_resolver, jira_regex_map),
+        (confluence_permission_resolver, confluence_regex_map),
+        (bitbucket_permission_resolver, bitbucket_regex_map),
+        compass_permission_resolver,
+    ) = if run_permission_checker {
+        let config = CacheConfig::new(
+            if opts.no_cache {
+                false
+            } else {
+                match std::env::var("FSRT_CACHE") {
+                    Err(_) => true,
+                    Ok(s) => {
+                        let t = s.trim();
+                        match t {
+                            "0" => false,
+                            t if t.eq_ignore_ascii_case("false") => false,
+                            "" | "1" => true,
+                            t if t.eq_ignore_ascii_case("true") => true,
+                            _ => true,
+                        }
                     }
                 }
-            }
-        },
-        opts.cached_permissions_path.clone(),
-    );
-
-    let (jira_any_permission_resolver, jira_any_regex_map) =
-        get_permission_resolver_jira_any(&config);
-    let (jira_software_permission_resolver, jira_software_regex_map) =
-        get_permission_resolver_jira_software(&config);
-    let (jira_service_management_permission_resolver, jira_service_management_regex_map) =
-        get_permission_resolver_jira_service_management(&config);
-    let (jira_permission_resolver, jira_regex_map) = get_permission_resolver_jira(&config);
-    let (confluence_permission_resolver, confluence_regex_map) =
-        get_permission_resolver_confluence(&config);
-    let (bitbucket_permission_resolver, bitbucket_regex_map) =
-        get_permission_resolver_bitbucket(&config);
-    let compass_permission_resolver = get_permission_resolver_compass();
+            },
+            opts.cached_permissions_path.clone(),
+        );
+        (
+            get_permission_resolver_jira_any(&config),
+            get_permission_resolver_jira_software(&config),
+            get_permission_resolver_jira_service_management(&config),
+            get_permission_resolver_jira(&config),
+            get_permission_resolver_confluence(&config),
+            get_permission_resolver_bitbucket(&config),
+            get_permission_resolver_compass(),
+        )
+    } else {
+        Default::default()
+    };
 
     let mut interp = Interp::new(
         &proj.env,
@@ -621,7 +656,8 @@ pub(crate) fn scan_directory<'a>(
     let mut secret_checker = SecretChecker::new();
     let mut auth_header_checker = AuthHeaderChecker::new();
 
-    if let Some(providers) = &manifest.providers
+    if run_secret_scanner
+        && let Some(providers) = &manifest.providers
         && let Some(auth_providers) = &providers.auth
     {
         for provider in auth_providers {
@@ -635,7 +671,7 @@ pub(crate) fn scan_directory<'a>(
 
     for func in &proj.funcs {
         // if there is a remote backend that accepts an auth token, do not run
-        if run_permission_checker && !contains_remote_auth_token {
+        if run_permission_checker {
             let mut checker = PermissionChecker::new();
             if let Err(err) = perm_interp.run_checker(
                 func.def_id,
@@ -647,40 +683,46 @@ pub(crate) fn scan_directory<'a>(
             }
         }
 
-        if let Err(err) = secret_interp.run_checker(
-            func.def_id,
-            &mut secret_checker,
-            func.path.clone(),
-            func.func_name.to_owned(),
-        ) {
+        if run_secret_scanner
+            && let Err(err) = secret_interp.run_checker(
+                func.def_id,
+                &mut secret_checker,
+                func.path.clone(),
+                func.func_name.to_owned(),
+            )
+        {
             warn!("error while running secret checker: {err}");
         }
 
-        if let Err(err) = auth_header_interp.run_checker(
-            func.def_id,
-            &mut auth_header_checker,
-            func.path.clone(),
-            func.func_name.to_owned(),
-        ) {
+        if run_auth_header_scanner
+            && let Err(err) = auth_header_interp.run_checker(
+                func.def_id,
+                &mut auth_header_checker,
+                func.path.clone(),
+                func.func_name.to_owned(),
+            )
+        {
             warn!("error while running auth header checker: {err}");
         }
 
         if func.invokable {
-            let mut checker = AuthZChecker::new();
-            debug!("checking {:?} at {:?}", func.func_name, &func.path);
-            if let Err(err) = interp.run_checker(
-                func.def_id,
-                &mut checker,
-                func.path.clone(),
-                func.func_name.to_string(),
-            ) {
-                warn!(
-                    "error while scanning {:?} in {:?}: {err}",
-                    func.func_name, func.path,
-                );
+            if run_authorization_scanner {
+                let mut checker = AuthZChecker::new();
+                debug!("checking {:?} at {:?}", func.func_name, &func.path);
+                if let Err(err) = interp.run_checker(
+                    func.def_id,
+                    &mut checker,
+                    func.path.clone(),
+                    func.func_name.to_string(),
+                ) {
+                    warn!(
+                        "error while scanning {:?} in {:?}: {err}",
+                        func.func_name, func.path,
+                    );
+                }
+                reporter.add_vulnerabilities(checker.into_vulns());
             }
-            reporter.add_vulnerabilities(checker.into_vulns());
-        } else if func.webtrigger {
+        } else if func.webtrigger && run_authentication_scanner {
             let mut checker = AuthenticateChecker::new();
             debug!(
                 "checking webtrigger {:?} at {:?}",
@@ -706,7 +748,7 @@ pub(crate) fn scan_directory<'a>(
     // manifest entry points. This is primarily useful for finding issues in helper
     // functions and class methods that are present in the codebase but not on an
     // entry-point-reachable call chain.
-    if scan_functions {
+    if run_auth_header_scanner && scan_functions {
         let mut full_scan_checker = AuthHeaderChecker::new();
         let all_functions = proj.env.get_all_functions_and_closures();
         for func_def in &all_functions {
@@ -730,6 +772,10 @@ pub(crate) fn scan_directory<'a>(
 
     reporter.add_vulnerabilities(secret_checker.into_vulns());
     reporter.add_vulnerabilities(auth_header_checker.into_vulns());
+
+    if !run_permission_scanner {
+        return Ok(reporter.into_report());
+    }
 
     let path = if let Some(ref mut path) = opts.graphql_schema_path {
         path
@@ -837,9 +883,7 @@ pub(crate) fn scan_directory<'a>(
     //     .into_iter()
     //     .filter(|&s| perm_map.unused_scopes().iter().any(|unused| unused == s)).collect::<Vec<_>>();
     //
-    if run_permission_checker
-        // && !final_perms.is_empty()
-        && !perm_map.unused_scopes().is_empty()
+    if !perm_map.unused_scopes().is_empty()
         && perm_map.unused_scopes() != perm_map.declared_scopes()
     {
         reporter.add_vulnerabilities([PermissionVuln::new(

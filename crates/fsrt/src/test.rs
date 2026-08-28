@@ -1,5 +1,8 @@
-use crate::{Args, forge_project::ForgeProjectTrait, scan_directory};
-use clap::Parser;
+use crate::{
+    Args, Scanner, forge_project::ForgeProjectTrait, load_permission_resolvers_if_enabled,
+    scan_directory,
+};
+use clap::{CommandFactory, Parser};
 use forge_analyzer::definitions::PackageData;
 use forge_analyzer::reporter::Report;
 use forge_loader::manifest::{ForgeManifest, FunctionMod};
@@ -216,6 +219,77 @@ pub(crate) fn scan_directory_test(
     // disallow parsing arguments meant for test harness (e.g., --nocapture, --exact) from std::env::args()
     let args = Args::parse_from([""]);
     scan_directory_test_with_args(forge_test_proj, args)
+}
+
+#[test]
+fn scanners_parse_as_typed_list() {
+    let args = Args::try_parse_from([
+        "fsrt",
+        "--scanners",
+        "secret,auth-header",
+        "--scanners",
+        "authentication",
+    ])
+    .unwrap();
+
+    assert_eq!(
+        args.scanners,
+        vec![
+            Scanner::Secret,
+            Scanner::AuthHeader,
+            Scanner::Authentication,
+        ]
+    );
+}
+
+#[test]
+fn scanners_help_lists_possible_values() {
+    let help = Args::command().render_long_help().to_string();
+
+    assert!(help.contains("possible values:"));
+    for scanner in [
+        "authentication",
+        "authorization",
+        "auth-header",
+        "permission",
+        "secret",
+    ] {
+        assert!(help.contains(scanner), "help omitted scanner {scanner}");
+    }
+}
+
+#[test]
+fn disabled_permission_scanner_does_not_load_resolvers() {
+    let loaded = load_permission_resolvers_if_enabled(false, || -> usize {
+        panic!("permission resolvers must not be loaded")
+    });
+
+    assert_eq!(loaded, usize::default());
+}
+
+#[test]
+fn scanners_only_run_selected_checks() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import { AES } from 'crypto-js';
+        import ForgeUI, { render, Macro } from '@forge/ui';
+
+        function App() {
+            AES.encrypt('plaintext', 'hardcoded-key');
+        }
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let secret_args = Args::parse_from(["fsrt", "--scanners", "secret"]);
+    let secret_report = scan_directory_test_with_args(test_forge_project.clone(), secret_args);
+    assert!(secret_report.contains_secret_vuln(1));
+    assert!(secret_report.contains_vulns(1));
+
+    let authorization_args = Args::parse_from(["fsrt", "--scanners", "authorization"]);
+    let authorization_report =
+        scan_directory_test_with_args(test_forge_project, authorization_args);
+    assert!(authorization_report.has_no_vulns());
 }
 
 #[test]
