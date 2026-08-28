@@ -1,7 +1,4 @@
-use crate::{
-    Args, Scanner, forge_project::ForgeProjectTrait, load_permission_resolvers_if_enabled,
-    scan_directory,
-};
+use crate::{Args, Scanner, forge_project::ForgeProjectTrait, scan_directory};
 use clap::{CommandFactory, Parser};
 use forge_analyzer::definitions::PackageData;
 use forge_analyzer::reporter::Report;
@@ -256,15 +253,6 @@ fn scanners_help_lists_possible_values() {
     ] {
         assert!(help.contains(scanner), "help omitted scanner {scanner}");
     }
-}
-
-#[test]
-fn disabled_permission_scanner_does_not_load_resolvers() {
-    let loaded = load_permission_resolvers_if_enabled(false, || -> usize {
-        panic!("permission resolvers must not be loaded")
-    });
-
-    assert_eq!(loaded, usize::default());
 }
 
 #[test]

@@ -905,7 +905,8 @@ fn select_env_filter(configured: Option<EnvFilter>, diagnostics_requested: bool)
 }
 
 fn main() -> Result<()> {
-    let mut args = Args::parse();
+    let args = argfile::expand_args(argfile::parse_fromfile, argfile::PREFIX)?;
+    let mut args = Args::parse_from(args);
 
     let diagnostics_requested = args.verbose
         || args
