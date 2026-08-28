@@ -498,6 +498,8 @@ where
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Remotes {
     #[serde(default)]
+    pub key: String,
+    #[serde(default)]
     pub auth: Value,
 }
 
@@ -1336,6 +1338,23 @@ mod tests {
 
         assert!(functions.next().unwrap().invokable);
         assert!(!functions.next().unwrap().invokable);
+    }
+
+    #[test]
+    fn test_remote_keys_are_deserialized_without_breaking_legacy_entries() {
+        let json = r#"{
+            "app": { "id": "my-app" },
+            "modules": {},
+            "remotes": [
+                { "key": "primary", "baseUrl": "https://example.com" },
+                { "baseUrl": "https://legacy.example.com" }
+            ]
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        let remotes = manifest.remotes.unwrap();
+
+        assert_eq!(remotes[0].key, "primary");
+        assert_eq!(remotes[1].key, "");
     }
 
     // Test to check if Rovo modules can be deserialized properly from a sample manifest file.

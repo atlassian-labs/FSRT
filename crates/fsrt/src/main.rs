@@ -64,7 +64,7 @@ pub struct Args {
     debug: bool,
 
     /// Print diagnostics to stderr. A valid `FORGE_LOG` filter takes precedence.
-    #[arg(long, global = true, default_value_t = false)]
+    #[arg(long, global = true, default_value_t = false, display_order = 100)]
     verbose: bool,
 
     /// Dump the IR for the specified function
@@ -880,6 +880,11 @@ fn main() -> Result<()> {
     if let Some(command) = &args.command {
         if let Err(err) = command.run() {
             eprintln!("error: {err}");
+            let mut source = err.source();
+            while let Some(cause) = source {
+                eprintln!("  caused by: {cause}");
+                source = cause.source();
+            }
             std::process::exit(1);
         }
         return Ok(());

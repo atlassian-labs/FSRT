@@ -16,7 +16,9 @@ Arguments:
   [DIRS]...  The directory to scan. Assumes there is a `manifest.yaml` file in the top level directory, and that the source code is located in `src/`
 
 Commands:
-  mint-fct  Mint an FCT for a deployed module
+  invoke-extension  Invoke a resolver-backed extension with a tester-controlled payload
+  mint-fct          Mint an FCT for a deployed module
+  mint-fit          Mint an FIT for a deployed module and Forge remote
 
   Options:
     -d, --debug
@@ -64,30 +66,36 @@ cargo install --git https://github.com/atlassian-labs/FSRT --locked
 
 ```text
 fsrt mint-fct <MODULE_KEY> [OPTIONS]
+fsrt mint-fit <REMOTE_KEY> (--module <MODULE_KEY> | --fct <FCT>) [OPTIONS]
+fsrt invoke-extension <FUNCTION> <MODULE_KEY> [--fct <FCT>] [OPTIONS]
 ```
 
-For dynamic testing, `mint-fct` mints an FCT against a live Atlassian site.
-Invoke it before any scan directory arguments; use `--app-dir` to select the
-Forge app directory for this subcommand.
-It reads a TOML config (default `./fsrt-remote.toml`); see
-[`fsrt-remote.toml.example`](fsrt-remote.toml.example) for a commented example.
-Dry runs still authenticate and query deployment metadata, but skip token signing and
-print the exact GraphQL request that a live mint would send. Pass `--ctx '<JSON>'` to populate the selected extension's `context` object.
+All three commands use `--app-dir` and a TOML configuration file; see
+[`fsrt-remote.toml.example`](fsrt-remote.toml.example). Keep that configuration and its
+cookie file untracked.
 
-### Configuration
+`mint-fct` mints an FCT for a deployed module. Pass `--ctx '<JSON>'` to populate the
+selected extension's `context` object.
 
-The config is documented in [`fsrt-remote.toml.example`](fsrt-remote.toml.example).
-`site` must be a full HTTPS origin without a path, such as
-`https://user.atlassian.net`, and is used to resolve `cloud_id`. GraphQL requests
-use `https://www.atlassian.net/gateway/api/graphql`.
-The installation ID, deployed environment, version, and extensions are discovered
-through GraphQL. When multiple installations are returned, `environment_key` selects
-one; without an override, FSRT prefers `production`, then `default`, then the first
-installation returned. If multiple installations match the selected environment, the
-first is used. The key is ignored when only one installation exists.
-`[auth].raw_cookie_file` is required. Relative cookie paths use the directory where FSRT
-is run, not the config file's directory. The cookie file contains authentication material
-and must not be committed.
+`mint-fit` supports two mutually exclusive ways to provide its FCT:
+
+| Mode | Required inputs | Behavior |
+| --- | --- | --- |
+| Use an existing FCT | `<REMOTE_KEY> --fct <FCT>` | Uses the supplied FCT when `--module` and `--ctx` are omitted. |
+| Mint a new FCT | `<REMOTE_KEY> --module <MODULE_KEY>` | Mints an FCT with an empty context, then uses it to mint the FIT. Add `--ctx '<JSON>'` to set its context. |
+
+`invoke-extension` always resolves its request target from `<MODULE_KEY>`. The FCT only supplies
+the request's context token.
+
+| Mode | Required inputs | Behavior |
+| --- | --- | --- |
+| Use an existing FCT | `<FUNCTION> <MODULE_KEY> --fct <FCT>` | Builds the request from the selected deployed module and uses the supplied FCT only as its context token. |
+| Mint a new FCT | `<FUNCTION> <MODULE_KEY>` | Calls `mint_fct` for the selected module, then invokes it. Add `--ctx '<JSON>'` to use that context for both operations. |
+
+By default, live mint commands print only the token, while `invoke-extension` prints the
+backend response. `--dry-run` queries metadata without signing tokens or invoking the
+extension and prints redacted request variables. `--verbose` prints live diagnostics to
+stderr. Run `fsrt <COMMAND> --help` for all options.
 
 ## Tests
 

@@ -16,7 +16,6 @@ use ureq::{
 use url::Url;
 
 const SESSION_COOKIE_NAME: &str = "tenant.session.token";
-const GRAPHQL_ENDPOINT: &str = "https://www.atlassian.net/gateway/api/graphql";
 const GRAPHQL_ORIGIN: &str = "https://www.atlassian.net";
 
 /// A serialized GraphQL request shared by dry-run and live operations.
@@ -35,9 +34,9 @@ pub struct GraphqlErrorObject {
     pub message: Option<String>,
 }
 
-/// Errors produced while constructing or minting an FCT.
+/// Errors produced by Forge penetration-testing operations.
 #[derive(Debug, thiserror::Error)]
-pub enum MintError {
+pub enum PenTestError {
     #[error("could not read {kind} file '{path}'")]
     FileRead {
         kind: &'static str,
@@ -149,6 +148,19 @@ pub enum MintError {
         available: Vec<String>,
     },
 
+    #[error("FIT minting failed: {source}; possible remotes: {available:?}")]
+    FitMintFailed {
+        #[source]
+        source: Box<PenTestError>,
+        available: Vec<String>,
+    },
+
+    #[error("FCT context must be a JSON object")]
+    InvalidFctContext,
+
+    #[error("supplied FCT must not be empty")]
+    EmptySuppliedFct,
+
     #[error("FCT mutation was rejected (success: {success}): {errors:?}")]
     MintRejected {
         success: bool,
@@ -157,6 +169,12 @@ pub enum MintError {
 
     #[error("FCT response has no token")]
     MissingFctToken,
+
+    #[error("FIT response has no token")]
+    MissingFitToken,
+
+    #[error("extension invocation failed: {0}")]
+    InvocationFailed(String),
 }
 
 /// Structural and expiry status of a JWT.
@@ -188,13 +206,17 @@ struct GraphqlData<T> {
 
 pub(crate) struct GraphqlHeaders {
     cookie: HeaderValue,
+    graphql_endpoint: String,
 }
 
 impl GraphqlHeaders {
-    pub(crate) fn new(cookie_header: String) -> Result<Self, MintError> {
+    pub(crate) fn new(cookie_header: String, graphql_endpoint: &Url) -> Result<Self, PenTestError> {
         let cookie = HeaderValue::from_str(&cookie_header)
-            .map_err(|source| MintError::InvalidCookieHeader { source })?;
-        Ok(Self { cookie })
+            .map_err(|source| PenTestError::InvalidCookieHeader { source })?;
+        Ok(Self {
+            cookie,
+            graphql_endpoint: graphql_endpoint.as_str().to_string(),
+        })
     }
 }
 
@@ -204,7 +226,7 @@ impl Middleware for GraphqlHeaders {
         mut request: Request<SendBody<'_>>,
         next: MiddlewareNext<'_>,
     ) -> Result<Response<Body>, ureq::Error> {
-        if request.uri() == GRAPHQL_ENDPOINT {
+        if request.uri() == self.graphql_endpoint.as_str() {
             request
                 .headers_mut()
                 .insert(ORIGIN, HeaderValue::from_static(GRAPHQL_ORIGIN));
@@ -214,8 +236,8 @@ impl Middleware for GraphqlHeaders {
     }
 }
 
-pub(crate) fn build_cookie_header(raw_cookie_file: &str) -> Result<String, MintError> {
-    let raw = fs::read_to_string(raw_cookie_file).map_err(|source| MintError::FileRead {
+pub(crate) fn build_cookie_header(raw_cookie_file: &str) -> Result<String, PenTestError> {
+    let raw = fs::read_to_string(raw_cookie_file).map_err(|source| PenTestError::FileRead {
         kind: "session cookie",
         path: PathBuf::from(raw_cookie_file),
         source,
@@ -224,7 +246,7 @@ pub(crate) fn build_cookie_header(raw_cookie_file: &str) -> Result<String, MintE
 
     match cookie_expiry(raw)? {
         CookieExpiry::Expired(seconds_ago) => {
-            return Err(MintError::CookieExpired { seconds_ago });
+            return Err(PenTestError::CookieExpired { seconds_ago });
         }
         CookieExpiry::Valid(seconds_remaining) => info!(
             expires_in = %format_duration(seconds_remaining),
@@ -280,7 +302,7 @@ fn format_duration(seconds: i64) -> String {
     }
 }
 
-fn cookie_expiry(raw_cookie: &str) -> Result<CookieExpiry, MintError> {
+fn cookie_expiry(raw_cookie: &str) -> Result<CookieExpiry, PenTestError> {
     let token = raw_cookie
         .split(';')
         .find_map(|pair| {
@@ -292,10 +314,10 @@ fn cookie_expiry(raw_cookie: &str) -> Result<CookieExpiry, MintError> {
             let token = raw_cookie.trim();
             (!token.contains('=') && token.split('.').count() == 3).then_some(token)
         })
-        .ok_or(MintError::MissingSessionCookie)?;
+        .ok_or(PenTestError::MissingSessionCookie)?;
     let exp = decode_jwt_payload(token)
         .and_then(|payload| payload.get("exp")?.as_i64())
-        .ok_or(MintError::InvalidSessionCookie)?;
+        .ok_or(PenTestError::InvalidSessionCookie)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
@@ -307,48 +329,47 @@ fn cookie_expiry(raw_cookie: &str) -> Result<CookieExpiry, MintError> {
     }
 }
 
-pub(crate) fn fetch_cloud_id(agent: &ureq::Agent, site: &Url) -> Result<String, MintError> {
+pub(crate) fn fetch_cloud_id(agent: &ureq::Agent, site: &Url) -> Result<String, PenTestError> {
     let mut url = site.clone();
     url.set_path("/_edge/tenant_info");
     let mut response =
         agent
             .get(url.as_str())
             .call()
-            .map_err(|source| MintError::TenantInfoRequest {
+            .map_err(|source| PenTestError::TenantInfoRequest {
                 url: url.clone(),
                 source: Box::new(source),
             })?;
     let status = response.status().as_u16();
-    let body =
-        response
-            .body_mut()
-            .read_to_string()
-            .map_err(|source| MintError::TenantInfoResponse {
-                url: url.clone(),
-                source: Box::new(source),
-            })?;
+    let body = response.body_mut().read_to_string().map_err(|source| {
+        PenTestError::TenantInfoResponse {
+            url: url.clone(),
+            source: Box::new(source),
+        }
+    })?;
     if status >= 400 {
-        return Err(MintError::TenantInfoStatus { url, status, body });
+        return Err(PenTestError::TenantInfoStatus { url, status, body });
     }
 
     let info: TenantInfo = serde_json::from_str(&body)
-        .map_err(|source| MintError::TenantInfoInvalidJson { url, body, source })?;
+        .map_err(|source| PenTestError::TenantInfoInvalidJson { url, body, source })?;
     Ok(info.cloud_id)
 }
 
 pub(crate) fn post_graphql<V, T>(
     agent: &ureq::Agent,
+    graphql_endpoint: &Url,
     request: &GraphqlRequest<V>,
-) -> Result<T, MintError>
+) -> Result<T, PenTestError>
 where
     V: Serialize,
     T: DeserializeOwned,
 {
     let operation_name = request.operation_name.clone();
     let mut response = agent
-        .post(GRAPHQL_ENDPOINT)
+        .post(graphql_endpoint.as_str())
         .send_json(request)
-        .map_err(|source| MintError::GraphqlRequest {
+        .map_err(|source| PenTestError::GraphqlRequest {
             operation_name: operation_name.clone(),
             source: Box::new(source),
         })?;
@@ -357,12 +378,12 @@ where
         response
             .body_mut()
             .read_to_string()
-            .map_err(|source| MintError::GraphqlResponse {
+            .map_err(|source| PenTestError::GraphqlResponse {
                 operation_name: operation_name.clone(),
                 source: Box::new(source),
             })?;
     if status >= 400 {
-        return Err(MintError::GraphqlHttpStatus {
+        return Err(PenTestError::GraphqlHttpStatus {
             operation_name,
             status,
             body,
@@ -371,7 +392,7 @@ where
 
     let response: serde_json::Value = serde_json::from_str(&body).map_err(|source| {
         warn!(%operation_name, response_body = %body, "GraphQL response was not valid JSON");
-        MintError::GraphqlInvalidJson {
+        PenTestError::GraphqlInvalidJson {
             operation_name: operation_name.clone(),
             body: body.clone(),
             source,
@@ -380,14 +401,14 @@ where
     if let Some(errors) = response.get("errors").filter(|errors| !errors.is_null()) {
         let errors: Vec<GraphqlErrorObject> =
             serde_json::from_value(errors.clone()).map_err(|source| {
-                MintError::GraphqlInvalidJson {
+                PenTestError::GraphqlInvalidJson {
                     operation_name: operation_name.clone(),
                     body: body.clone(),
                     source,
                 }
             })?;
         if !errors.is_empty() {
-            return Err(MintError::GraphqlRejected {
+            return Err(PenTestError::GraphqlRejected {
                 operation_name,
                 errors,
             });
@@ -395,7 +416,7 @@ where
     }
 
     let response: GraphqlData<T> =
-        serde_json::from_value(response).map_err(|source| MintError::GraphqlInvalidJson {
+        serde_json::from_value(response).map_err(|source| PenTestError::GraphqlInvalidJson {
             operation_name,
             body,
             source,
@@ -416,12 +437,13 @@ mod tests {
             request: Request<SendBody<'_>>,
             _next: MiddlewareNext<'_>,
         ) -> Result<Response<Body>, ureq::Error> {
-            let (response_body, has_graphql_headers) = if request.uri() == GRAPHQL_ENDPOINT {
-                (r#"{"data":{"value":1}}"#, true)
-            } else {
-                assert_eq!(request.uri(), "https://foo.jira-dev.com/_edge/tenant_info");
-                (r#"{"cloudId":"cloud-1"}"#, false)
-            };
+            let (response_body, has_graphql_headers) =
+                if request.uri() == "https://foo.jira-dev.com/gateway/api/graphql" {
+                    (r#"{"data":{"value":1}}"#, true)
+                } else {
+                    assert_eq!(request.uri(), "https://foo.jira-dev.com/_edge/tenant_info");
+                    (r#"{"cloudId":"cloud-1"}"#, false)
+                };
             let cookie = request
                 .headers()
                 .get(COOKIE)
@@ -471,20 +493,30 @@ mod tests {
         }
     }
 
+    fn test_site() -> Url {
+        Url::parse("https://foo.jira-dev.com").unwrap()
+    }
+
+    fn test_graphql_endpoint() -> Url {
+        let mut endpoint = test_site();
+        endpoint.set_path("/gateway/api/graphql");
+        endpoint
+    }
+
     #[test]
     fn graphql_headers_are_only_sent_to_the_https_graphql_endpoint() {
+        let graphql_endpoint = test_graphql_endpoint();
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
-            .middleware(GraphqlHeaders::new("tenant.session.token=test".into()).unwrap())
+            .middleware(
+                GraphqlHeaders::new("tenant.session.token=test".into(), &graphql_endpoint).unwrap(),
+            )
             .middleware(HeaderAssertions)
             .build()
             .into();
 
-        assert_eq!(
-            fetch_cloud_id(&agent, &Url::parse("https://foo.jira-dev.com").unwrap()).unwrap(),
-            "cloud-1"
-        );
-        let data: serde_json::Value = post_graphql(&agent, &request()).unwrap();
+        assert_eq!(fetch_cloud_id(&agent, &test_site()).unwrap(), "cloud-1");
+        let data: serde_json::Value = post_graphql(&agent, &graphql_endpoint, &request()).unwrap();
         assert_eq!(data, json!({ "value": 1 }));
     }
 
@@ -497,6 +529,7 @@ mod tests {
 
         let data: Data = post_graphql(
             &response_agent(200, r#"{"data":{"value":7},"errors":null}"#),
+            &test_graphql_endpoint(),
             &request(),
         )
         .unwrap();
@@ -510,11 +543,12 @@ mod tests {
                 200,
                 r#"{"errors":[{"message":"denied"},{"message":null},{}]}"#,
             ),
+            &test_graphql_endpoint(),
             &request(),
         )
         .unwrap_err();
 
-        let MintError::GraphqlRejected { errors, .. } = error else {
+        let PenTestError::GraphqlRejected { errors, .. } = error else {
             panic!("unexpected error variant")
         };
         assert_eq!(errors.len(), 3);
@@ -525,7 +559,7 @@ mod tests {
 
     #[test]
     fn graphql_error_display_uses_structured_fields() {
-        let error = MintError::GraphqlRejected {
+        let error = PenTestError::GraphqlRejected {
             operation_name: "MutationUnderTest".into(),
             errors: vec![GraphqlErrorObject {
                 message: Some("denied".into()),
@@ -547,20 +581,27 @@ mod tests {
 
         for body in [r#"{"errors":[]}"#, r#"{"data":{}}"#, r#"{"data":null}"#] {
             assert!(matches!(
-                post_graphql::<_, Data>(&response_agent(200, body), &request()),
-                Err(MintError::GraphqlInvalidJson { .. })
+                post_graphql::<_, Data>(
+                    &response_agent(200, body),
+                    &test_graphql_endpoint(),
+                    &request()
+                ),
+                Err(PenTestError::GraphqlInvalidJson { .. })
             ));
         }
     }
 
     #[test]
     fn graphql_http_errors_retain_status() {
-        let error =
-            post_graphql::<_, serde_json::Value>(&response_agent(503, "unavailable"), &request())
-                .unwrap_err();
+        let error = post_graphql::<_, serde_json::Value>(
+            &response_agent(503, "unavailable"),
+            &test_graphql_endpoint(),
+            &request(),
+        )
+        .unwrap_err();
         assert!(matches!(
             error,
-            MintError::GraphqlHttpStatus {
+            PenTestError::GraphqlHttpStatus {
                 status: 503,
                 body,
                 ..
