@@ -2175,6 +2175,79 @@ impl IntoVuln for PermissionVuln<'_> {
     }
 }
 
+const EOL_FORGE_RUNTIMES: [&str; 1] = ["nodejs20.x"];
+
+pub struct ForgeRuntimeVersionPolicyChecker;
+
+impl ForgeRuntimeVersionPolicyChecker {
+    pub fn check(runtime: Option<&str>) -> Option<ForgeRuntimeVersionPolicyVuln> {
+        runtime
+            .filter(|runtime| EOL_FORGE_RUNTIMES.contains(runtime))
+            .map(|runtime| ForgeRuntimeVersionPolicyVuln {
+                runtime: runtime.to_owned(),
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForgeRuntimeVersionPolicyVuln {
+    runtime: String,
+}
+
+impl IntoVuln for ForgeRuntimeVersionPolicyVuln {
+    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+        Vulnerability {
+            check_name: "Forge Runtime Version Policy Checker".to_owned(),
+            description: "The Forge app uses an end-of-life Node.js runtime.".to_owned(),
+            recommendation: "Update app.runtime.name in manifest.yml to a supported Node.js runtime.",
+            proof: format!(
+                "Unsupported Forge runtime found in manifest.yml: app.runtime.name = {}",
+                self.runtime
+            ),
+            severity: Severity::Low,
+            app_key: reporter.app_key().to_owned(),
+            app_name: reporter.app_name().to_owned(),
+            marketplace_security_requirement: "Requirement 10.0",
+            date: reporter.current_date(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod forge_runtime_version_policy_tests {
+    use super::*;
+
+    #[test]
+    fn flags_nodejs20() {
+        let policy_vuln = ForgeRuntimeVersionPolicyChecker::check(Some("nodejs20.x")).unwrap();
+        let mut reporter = Reporter::new();
+        reporter.add_app("app-key".to_owned(), "App name".to_owned());
+
+        let vuln = policy_vuln.into_vuln(&reporter);
+        assert_eq!(vuln.check_name, "Forge Runtime Version Policy Checker");
+        assert_eq!(
+            vuln.description,
+            "The Forge app uses an end-of-life Node.js runtime."
+        );
+        assert_eq!(vuln.severity, Severity::Low);
+        assert_eq!(
+            vuln.proof,
+            "Unsupported Forge runtime found in manifest.yml: app.runtime.name = nodejs20.x"
+        );
+        assert_eq!(
+            vuln.recommendation,
+            "Update app.runtime.name in manifest.yml to a supported Node.js runtime."
+        );
+        assert_eq!(vuln.marketplace_security_requirement, "Requirement 10.0");
+    }
+
+    #[test]
+    fn allows_other_or_missing_runtimes() {
+        assert!(ForgeRuntimeVersionPolicyChecker::check(Some("nodejs22.x")).is_none());
+        assert!(ForgeRuntimeVersionPolicyChecker::check(None).is_none());
+    }
+}
+
 impl<'cx> Runner<'cx> for DefinitionAnalysisRunner {
     type State = PermissionTest;
     type Dataflow = DefinitionAnalysisRunner;

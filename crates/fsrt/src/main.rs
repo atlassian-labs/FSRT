@@ -39,8 +39,8 @@ use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
     checkers::{
-        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, PermissionChecker, PermissionVuln,
-        SecretChecker, SecretType,
+        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
+        PermissionChecker, PermissionVuln, SecretChecker, SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -397,6 +397,13 @@ pub(crate) fn scan_directory<'a>(
             ));
         }
     };
+    let runtime_policy_vuln = ForgeRuntimeVersionPolicyChecker::check(
+        manifest
+            .app
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.name),
+    );
     let requested_permissions = manifest.permissions;
     let permissions_declared = requested_permissions
         .scopes
@@ -587,6 +594,9 @@ pub(crate) fn scan_directory<'a>(
         &compass_permission_resolver,
     );
     reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
+    if let Some(vuln) = runtime_policy_vuln {
+        reporter.add_vulnerabilities([vuln]);
+    }
 
     let mut perm_interp = Interp::<PermissionChecker<'_>>::new(
         &proj.env,
