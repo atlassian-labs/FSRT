@@ -2176,6 +2176,44 @@ impl IntoVuln for PermissionVuln<'_> {
     }
 }
 
+const EOL_FORGE_RUNTIMES: [&str; 1] = ["nodejs20.x"];
+
+pub struct ForgeRuntimeVersionPolicyChecker;
+
+impl ForgeRuntimeVersionPolicyChecker {
+    pub fn check(runtime: Option<&str>) -> Option<ForgeRuntimeVersionPolicyVuln> {
+        runtime
+            .filter(|runtime| EOL_FORGE_RUNTIMES.contains(runtime))
+            .map(|runtime| ForgeRuntimeVersionPolicyVuln {
+                runtime: runtime.to_owned(),
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForgeRuntimeVersionPolicyVuln {
+    runtime: String,
+}
+
+impl IntoVuln for ForgeRuntimeVersionPolicyVuln {
+    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+        Vulnerability {
+            check_name: "Forge Runtime Version Policy Checker".to_owned(),
+            description: "The Forge app uses an end-of-life Node.js runtime.".to_owned(),
+            recommendation: "Update app.runtime.name in manifest.yml to a supported Node.js runtime.",
+            proof: format!(
+                "Unsupported Forge runtime found in manifest.yml: app.runtime.name = {}",
+                self.runtime
+            ),
+            severity: Severity::Low,
+            app_key: reporter.app_key().to_owned(),
+            app_name: reporter.app_name().to_owned(),
+            marketplace_security_requirement: "Requirement 10.0",
+            date: reporter.current_date(),
+        }
+    }
+}
+
 impl<'cx> Runner<'cx> for DefinitionAnalysisRunner {
     type State = PermissionTest;
     type Dataflow = DefinitionAnalysisRunner;

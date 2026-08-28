@@ -657,6 +657,13 @@ impl OAuthProvider {
 pub struct AppInfo<'a> {
     pub name: Option<&'a str>,
     pub id: &'a str,
+    #[serde(default, borrow)]
+    pub runtime: Option<Runtime<'a>>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Runtime<'a> {
+    pub name: Option<&'a str>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]

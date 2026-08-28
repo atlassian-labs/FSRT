@@ -244,6 +244,58 @@ fn test_simple() {
 }
 
 #[test]
+fn forge_runtime_version_policy_flags_nodejs20() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        export function run() {}
+
+        // manifest.yml
+        modules:
+          function:
+            - key: main
+              handler: index.run
+        app:
+          id: ari:cloud:ecosystem::app/test-id
+          runtime:
+            name: nodejs20.x
+        permissions:
+          scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.vuln_description_contains(
+        "Forge Runtime Version Policy Checker",
+        "end-of-life Node.js runtime"
+    ));
+}
+
+#[test]
+fn forge_runtime_version_policy_allows_nodejs22() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        export function run() {}
+
+        // manifest.yml
+        modules:
+          function:
+            - key: main
+              handler: index.run
+        app:
+          id: ari:cloud:ecosystem::app/test-id
+          runtime:
+            name: nodejs22.x
+        permissions:
+          scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(!scan_result.vuln_description_contains(
+        "Forge Runtime Version Policy Checker",
+        "end-of-life Node.js runtime"
+    ));
+}
+
+#[test]
 fn test_secret_vuln() {
     let forge_manifest = ForgeManifest::create_manifest_with_func_mod(FunctionMod {
         key: "main",
