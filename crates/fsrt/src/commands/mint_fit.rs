@@ -1,11 +1,11 @@
-use std::{fs, path::PathBuf};
+use std::path::PathBuf;
 
 use clap::{Args, ValueHint};
 use serde_json::Value;
 
-use crate::{Result, forge_project::find_manifest_path};
+use crate::Result;
 
-use super::parse_json;
+use super::{parse_json, resolve_app_id};
 
 const REDACTED_FCT: &str = "<FCT selected at runtime>";
 
@@ -38,9 +38,13 @@ pub(crate) struct MintFitArgs {
     #[arg(long, conflicts_with_all = ["module_key", "ctx"])]
     fct: Option<String>,
 
-    /// Forge app directory.
-    #[arg(long, default_value = ".", value_hint = ValueHint::DirPath)]
-    app_dir: PathBuf,
+    /// Forge app ID. Does not require a local manifest.
+    #[arg(long, value_name = "APP_ID", conflicts_with = "app_dir")]
+    app_id: Option<String>,
+
+    /// Forge app directory. Defaults to the current directory when --app-id is omitted.
+    #[arg(long, value_hint = ValueHint::DirPath, conflicts_with = "app_id")]
+    app_dir: Option<PathBuf>,
 
     /// Path to `fsrt-remote.toml`.
     #[arg(long, default_value = "./fsrt-remote.toml", value_hint = ValueHint::FilePath)]
@@ -58,12 +62,9 @@ impl MintFitArgs {
 }
 
 pub(super) fn run(args: &MintFitArgs) -> Result<()> {
-    let manifest_path = find_manifest_path(&args.app_dir)?;
-    let manifest_text = fs::read_to_string(manifest_path)?;
-    let manifest: forge_loader::manifest::ForgeManifest<'_> = serde_yaml::from_str(&manifest_text)?;
-
+    let app_id = resolve_app_id(args.app_id.as_deref(), args.app_dir.as_deref())?;
     let config = forge_pen_test::FsrtRemoteConfig::from_path(&args.config)?;
-    let tester = forge_pen_test::ForgePenTester::new(&manifest, config)?;
+    let tester = forge_pen_test::ForgePenTester::new(&app_id, config)?;
     if args.dry_run {
         let request = tester.mint_fit_request(REDACTED_FCT, &args.remote_key)?;
         println!("variables={:#}", request.variables);

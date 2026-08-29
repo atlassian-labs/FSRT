@@ -1,25 +1,30 @@
-use std::{fs, path::PathBuf};
+use std::path::PathBuf;
 
 use clap::{Args, ValueHint};
 use serde_json::Value as JsonValue;
 use tracing::info;
 
-use crate::{Result, forge_project::find_manifest_path};
+use crate::Result;
 
-use super::parse_json;
+use super::{parse_json, resolve_app_id};
 
 const REDACTED_FCT: &str = "<FCT selected at runtime>";
 
 /// `invoke-extension` arguments.
 #[derive(Args, Debug)]
+#[command(allow_missing_positional = true)]
 pub(crate) struct InvokeExtensionArgs {
-    /// Resolver function key, optionally prefixed with `resolver.`.
-    #[arg(name = "FUNCTION")]
-    function: String,
+    /// Resolver function key, optionally prefixed with `resolver.`. Required for the resolver entrypoint.
+    #[arg(name = "FUNCTION", required_if_eq("entrypoint", "resolver"))]
+    function: Option<String>,
 
-    /// Deployed resolver module key.
+    /// Deployed module key.
     #[arg(name = "MODULE_KEY")]
     module_key: String,
+
+    /// Manifest entrypoint path used to select the function or endpoint.
+    #[arg(long)]
+    entrypoint: Option<String>,
 
     /// Optional invocation payload as a JSON object.
     #[arg(long, value_name = "JSON", value_parser = parse_json)]
@@ -33,9 +38,13 @@ pub(crate) struct InvokeExtensionArgs {
     #[arg(long)]
     fct: Option<String>,
 
-    /// Forge app directory.
-    #[arg(long, default_value = ".", value_hint = ValueHint::DirPath)]
-    app_dir: PathBuf,
+    /// Forge app ID. Does not require a local manifest.
+    #[arg(long, value_name = "APP_ID", conflicts_with = "app_dir")]
+    app_id: Option<String>,
+
+    /// Forge app directory. Defaults to the current directory when --app-id is omitted.
+    #[arg(long, value_hint = ValueHint::DirPath, conflicts_with = "app_id")]
+    app_dir: Option<PathBuf>,
 
     /// Path to `fsrt-remote.toml`.
     #[arg(long, default_value = "./fsrt-remote.toml", value_hint = ValueHint::FilePath)]
@@ -53,19 +62,18 @@ impl InvokeExtensionArgs {
 }
 
 pub(super) fn run(args: &InvokeExtensionArgs) -> Result<()> {
-    let manifest_path = find_manifest_path(&args.app_dir)?;
-    let manifest_text = fs::read_to_string(manifest_path)?;
-    let manifest: forge_loader::manifest::ForgeManifest<'_> = serde_yaml::from_str(&manifest_text)?;
+    let app_id = resolve_app_id(args.app_id.as_deref(), args.app_dir.as_deref())?;
     let module_key = args.module_key.as_str();
 
     let config = forge_pen_test::FsrtRemoteConfig::from_path(&args.config)?;
-    let tester = forge_pen_test::ForgePenTester::new(&manifest, config)?;
+    let tester = forge_pen_test::ForgePenTester::new(&app_id, config)?;
     let ctx = args.ctx.clone().unwrap_or_else(|| serde_json::json!({}));
 
     if args.dry_run {
         let request = tester.invoke_extension_request(
             module_key,
-            &args.function,
+            args.entrypoint.as_deref(),
+            args.function.as_deref(),
             args.payload.as_ref(),
             &ctx,
             REDACTED_FCT,
@@ -82,7 +90,8 @@ pub(super) fn run(args: &InvokeExtensionArgs) -> Result<()> {
 
     let outcome = tester.invoke_extension(
         module_key,
-        &args.function,
+        args.entrypoint.as_deref(),
+        args.function.as_deref(),
         args.payload.as_ref(),
         &ctx,
         &context_token,

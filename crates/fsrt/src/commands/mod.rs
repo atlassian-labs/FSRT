@@ -1,10 +1,24 @@
+use std::{fs, path::Path};
+
 use clap::Subcommand;
 
-use crate::Result;
+use crate::{Result, forge_project::find_manifest_path};
 
 pub(crate) mod invoke_extension;
 pub(crate) mod mint_fct;
 pub(crate) mod mint_fit;
+
+fn resolve_app_id(app_id: Option<&str>, app_dir: Option<&Path>) -> Result<String> {
+    if let Some(app_id) = app_id {
+        return Ok(app_id.to_string());
+    }
+
+    let app_dir = app_dir.unwrap_or_else(|| Path::new("."));
+    let manifest_path = find_manifest_path(app_dir)?;
+    let manifest_text = fs::read_to_string(manifest_path)?;
+    let manifest: forge_loader::manifest::ForgeManifest<'_> = serde_yaml::from_str(&manifest_text)?;
+    Ok(manifest.app.id.to_string())
+}
 
 fn parse_json(value: &str) -> std::result::Result<serde_json::Value, String> {
     let json: serde_json::Value =
@@ -20,7 +34,17 @@ fn parse_json(value: &str) -> std::result::Result<serde_json::Value, String> {
 /// CLI subcommands.
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
-    /// Invoke a resolver-backed extension with a tester-controlled payload.
+    /// Run dynamic application security testing commands.
+    Dast {
+        #[command(subcommand)]
+        command: DastCommand,
+    },
+}
+
+/// Dynamic application security testing subcommands.
+#[derive(Subcommand, Debug)]
+pub(crate) enum DastCommand {
+    /// Invoke a deployed extension with a tester-controlled payload.
     InvokeExtension(invoke_extension::InvokeExtensionArgs),
 
     /// Mint an FCT for a deployed module.
@@ -33,13 +57,27 @@ pub(crate) enum Command {
 impl Command {
     pub(crate) fn diagnostic_logging_requested(&self) -> bool {
         match self {
+            Self::Dast { command } => command.diagnostic_logging_requested(),
+        }
+    }
+
+    pub(crate) fn run(&self) -> Result<()> {
+        match self {
+            Self::Dast { command } => command.run(),
+        }
+    }
+}
+
+impl DastCommand {
+    fn diagnostic_logging_requested(&self) -> bool {
+        match self {
             Self::InvokeExtension(args) => args.diagnostic_logging_requested(),
             Self::MintFct(args) => args.diagnostic_logging_requested(),
             Self::MintFit(args) => args.diagnostic_logging_requested(),
         }
     }
 
-    pub(crate) fn run(&self) -> Result<()> {
+    fn run(&self) -> Result<()> {
         match self {
             Self::InvokeExtension(args) => invoke_extension::run(args),
             Self::MintFct(args) => mint_fct::run(args),

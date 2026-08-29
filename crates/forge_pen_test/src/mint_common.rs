@@ -1,4 +1,4 @@
-//! Authentication, JWT, HTTP, and GraphQL support for FCT minting.
+//! Shared authentication, JWT, HTTP, and GraphQL support.
 
 use std::{fs, path::PathBuf};
 

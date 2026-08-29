@@ -717,7 +717,6 @@ name = "forge_pen_test"
 version = "0.1.0"
 dependencies = [
  "base64",
- "forge_loader",
  "serde",
  "serde_json",
  "tempfile",

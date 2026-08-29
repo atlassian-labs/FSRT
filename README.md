@@ -16,9 +16,7 @@ Arguments:
   [DIRS]...  The directory to scan. Assumes there is a `manifest.yaml` file in the top level directory, and that the source code is located in `src/`
 
 Commands:
-  invoke-extension  Invoke a resolver-backed extension with a tester-controlled payload
-  mint-fct          Mint an FCT for a deployed module
-  mint-fit          Mint an FIT for a deployed module and Forge remote
+  dast  Run pentesting commands
 
   Options:
     -d, --debug
@@ -34,7 +32,7 @@ Commands:
     --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir
 ```
 
-Run `fsrt --help` or `fsrt <COMMAND> --help` for current options.
+Run `fsrt --help`, `fsrt dast --help`, or `fsrt dast <COMMAND> --help` for current options.
 
 ## Installation
 
@@ -65,14 +63,14 @@ cargo install --git https://github.com/atlassian-labs/FSRT --locked
 ## Commands
 
 ```text
-fsrt mint-fct <MODULE_KEY> [OPTIONS]
-fsrt mint-fit <REMOTE_KEY> (--module <MODULE_KEY> | --fct <FCT>) [OPTIONS]
-fsrt invoke-extension <FUNCTION> <MODULE_KEY> [--fct <FCT>] [OPTIONS]
+fsrt dast mint-fct <MODULE_KEY> [OPTIONS]
+fsrt dast mint-fit <REMOTE_KEY> (--module <MODULE_KEY> | --fct <FCT>) [OPTIONS]
+fsrt dast invoke-extension [FUNCTION] <MODULE_KEY> [--entrypoint <ENTRYPOINT>] [--fct <FCT>] [OPTIONS]
 ```
 
-All three commands use `--app-dir` and a TOML configuration file; see
-[`fsrt-remote.toml.example`](fsrt-remote.toml.example). Keep that configuration and its
-cookie file untracked.
+All three commands accept either `--app-id <APP_ID>` to identify the app directly or
+`--app-dir <DIR>` to read the app ID from its manifest. They also use a TOML
+configuration file; see [`fsrt-remote.toml.example`](fsrt-remote.toml.example).
 
 `mint-fct` mints an FCT for a deployed module. Pass `--ctx '<JSON>'` to populate the
 selected extension's `context` object.
@@ -84,18 +82,17 @@ selected extension's `context` object.
 | Use an existing FCT | `<REMOTE_KEY> --fct <FCT>` | Uses the supplied FCT when `--module` and `--ctx` are omitted. |
 | Mint a new FCT | `<REMOTE_KEY> --module <MODULE_KEY>` | Mints an FCT with an empty context, then uses it to mint the FIT. Add `--ctx '<JSON>'` to set its context. |
 
-`invoke-extension` always resolves its request target from `<MODULE_KEY>`. The FCT only supplies
-the request's context token.
+`invoke-extension` calls a deployed Forge module directly, which is useful for testing its behavior
+with custom payloads without going through the product UI. Pass a module key and, when needed, a
+resolver function or `--entrypoint`; omitting `--entrypoint` leaves selection to the backend.
 
-| Mode | Required inputs | Behavior |
-| --- | --- | --- |
-| Use an existing FCT | `<FUNCTION> <MODULE_KEY> --fct <FCT>` | Builds the request from the selected deployed module and uses the supplied FCT only as its context token. |
-| Mint a new FCT | `<FUNCTION> <MODULE_KEY>` | Calls `mint_fct` for the selected module, then invokes it. Add `--ctx '<JSON>'` to use that context for both operations. |
+The command mints an FCT automatically unless one is supplied with `--fct`. Use `--ctx` to provide
+invocation context.
 
 By default, live mint commands print only the token, while `invoke-extension` prints the
 backend response. `--dry-run` queries metadata without signing tokens or invoking the
 extension and prints redacted request variables. `--verbose` prints live diagnostics to
-stderr. Run `fsrt <COMMAND> --help` for all options.
+stderr. Run `fsrt dast <COMMAND> --help` for all options.
 
 ## Tests
 
