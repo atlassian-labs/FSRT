@@ -1163,6 +1163,7 @@ fn api_call_name(intrinsic: &Intrinsic) -> &'static str {
             IntrinsicName::RequestBitbucket => "requestBitbucket",
             IntrinsicName::RequestGraph => "requestGraph",
             IntrinsicName::RequestCompass(_) => "requestCompass",
+            IntrinsicName::InvokeRemote(_) => "invokeRemote",
             IntrinsicName::Other => "request",
         },
         _ => "request",
@@ -1944,6 +1945,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             }
 
             let mut permissions_within_call: Vec<String> = vec![];
+            // What does resolver/regex_map do?
             let (resolver, regex_map) = match intrinsic_func_type {
                 IntrinsicName::RequestJiraAny => (
                     interp.jira_any_permission_resolver,
@@ -1970,6 +1972,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 ),
                 IntrinsicName::RequestCompass(_)
                 | IntrinsicName::RequestGraph
+                | IntrinsicName::InvokeRemote(_)
                 | IntrinsicName::Other => {
                     (&PermissionHashMap::new(), &HashMap::<String, Regex>::new())
                 }

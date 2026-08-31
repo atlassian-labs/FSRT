@@ -634,6 +634,7 @@ pub enum IntrinsicName {
     RequestBitbucket,
     RequestGraph,
     RequestCompass(String),
+    InvokeRemote(String),
     Other,
 }
 
@@ -1186,6 +1187,8 @@ impl FunctionAnalyzer<'_> {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
 
+        fn is_invoke_remote() -> bool { false }
+
         fn resolve_jira_api_type(url: &str) -> Option<IntrinsicName> {
             // Pattern matching to classify, eg: api.[asApp | asUser]().requestJira(route`/rest/api/3/myself`);
             match url {
@@ -1239,6 +1242,11 @@ impl FunctionAnalyzer<'_> {
                 IntrinsicName::RequestBitbucket
             } else if *last == "requestGraph" {
                 IntrinsicName::RequestGraph
+            } else if *last == "invokeRemote" {
+                IntrinsicName::InvokeRemote(match first_arg {
+                    Expr::Lit(Lit::Str(str_lit)) => str_lit.value.to_string(),
+                    _ => "<unknown>".to_string()
+                })
             } else {
                 IntrinsicName::RequestConfluence
             };
@@ -1332,6 +1340,7 @@ impl FunctionAnalyzer<'_> {
             {
                 Some(Intrinsic::Fetch)
             }
+            // Double lookup? Really?
             [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/api").is_some() => {
                 if let Some(ImportKind::Named(name)) = self.res.is_imported_from(def, "@forge/api")
                 {
@@ -1342,6 +1351,7 @@ impl FunctionAnalyzer<'_> {
                     } else if *name == *"requestJira"
                         || *name == *"requestConfluence"
                         || *name == *"requestBitbucket"
+                        || *name == *"invokeRemote"
                     {
                         let method_name: Atom = name.clone();
                         return get_intrinsic(first_arg, false, &method_name);
@@ -1632,7 +1642,21 @@ impl FunctionAnalyzer<'_> {
     }
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
+        println!("lower_call {:?}", callee);
+
         let props = normalize_callee_expr(callee, self.res, self.module);
+        let is_match = match props.first() {
+            Some(prop) => match prop {
+                PropPath::Def(id) => self.res.def_name(*id) == "invokeRemote" && self.res.is_imported_from(*id, "@forge/api").is_some(),
+                _ => false,
+            },
+            None => false,
+        };
+
+        if is_match {
+            println!("invokeRemote");
+        }
+
         if let Some(&PropPath::Def(id)) = props.first()
             && (self.res.is_imported_from(id, "@forge/ui").is_some_and(|imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect")) || calls_method(callee, "then")
                 || calls_method(callee, "map")
