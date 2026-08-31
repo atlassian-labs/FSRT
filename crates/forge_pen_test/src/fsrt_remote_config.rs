@@ -18,6 +18,9 @@ pub struct FsrtRemoteConfig {
     /// Session-cookie file configuration.
     pub auth: AuthConfig,
 
+    /// Optional settings used when harvesting a session cookie with a browser.
+    pub cookie: Option<CookieConfig>,
+
     /// Context ARI owner.
     pub product: String,
 
@@ -31,6 +34,20 @@ pub struct FsrtRemoteConfig {
 pub struct AuthConfig {
     /// File containing the Forge session cookie.
     pub raw_cookie_file: String,
+}
+
+/// Browser-login settings for `fsrt dast mint-cookie`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CookieConfig {
+    /// Atlassian account email. The password is read only from `ATL_PASSWORD`.
+    pub username: String,
+
+    /// Show the browser by default, allowing interactive verification steps.
+    pub headed: Option<bool>,
+
+    /// Maximum number of seconds to wait for manual verification when headed.
+    pub verify_wait_secs: Option<u64>,
 }
 
 impl FsrtRemoteConfig {
