@@ -66,9 +66,10 @@ cargo install --git https://github.com/atlassian-labs/FSRT --locked
 fsrt dast mint-fct <MODULE_KEY> [OPTIONS]
 fsrt dast mint-fit <REMOTE_KEY> (--module <MODULE_KEY> | --fct <FCT>) [OPTIONS]
 fsrt dast invoke-extension [FUNCTION] <MODULE_KEY> [--entrypoint <ENTRYPOINT>] [--fct <FCT>] [OPTIONS]
+fsrt dast mint-cookie [--config <PATH>] [--headed]
 ```
 
-All three commands accept either `--app-id <APP_ID>` to identify the app directly or
+The FCT, FIT, and extension-invocation commands accept either `--app-id <APP_ID>` to identify the app directly or
 `--app-dir <DIR>` to read the app ID from its manifest. They also use a TOML
 configuration file; see [`fsrt-remote.toml.example`](fsrt-remote.toml.example).
 
@@ -93,6 +94,21 @@ By default, live mint commands print only the token, while `invoke-extension` pr
 backend response. `--dry-run` queries metadata without signing tokens or invoking the
 extension and prints redacted request variables. `--verbose` prints live diagnostics to
 stderr. Run `fsrt dast <COMMAND> --help` for all options.
+
+### Harvest a session cookie
+
+`mint-cookie` opens Chrome, signs in to the configured Atlassian site, and stores the
+resulting `tenant.session.token` in `auth.raw_cookie_file`. It is intentionally opt-in:
+
+```sh
+export ATL_PASSWORD='your-account-password'
+cargo run -p fsrt --features mint_cookie -- dast mint-cookie --headed
+```
+
+Set `[cookie].username` in `fsrt-remote.toml`; `--headed` opens a browser window for MFA,
+bot checks, or other manual steps. Chrome must be installed, and the WebDriver may download
+a matching driver. The generated cookie file is a bearer credential: keep it untracked and
+do not paste it into logs, tickets, or chat.
 
 ## Tests
 
