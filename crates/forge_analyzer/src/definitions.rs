@@ -634,7 +634,7 @@ pub enum IntrinsicName {
     RequestBitbucket,
     RequestGraph,
     RequestCompass(String),
-    InvokeRemote(String),
+    InvokeRemote(Option<String>),
     Other,
 }
 
@@ -1187,7 +1187,9 @@ impl FunctionAnalyzer<'_> {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
 
-        fn is_invoke_remote() -> bool { false }
+        fn is_invoke_remote() -> bool {
+            false
+        }
 
         fn resolve_jira_api_type(url: &str) -> Option<IntrinsicName> {
             // Pattern matching to classify, eg: api.[asApp | asUser]().requestJira(route`/rest/api/3/myself`);
@@ -1243,9 +1245,11 @@ impl FunctionAnalyzer<'_> {
             } else if *last == "requestGraph" {
                 IntrinsicName::RequestGraph
             } else if *last == "invokeRemote" {
+                // In general we'd want to detect cases where we can statically infer which remote or set of remotes
+                // is being referred to
                 IntrinsicName::InvokeRemote(match first_arg {
-                    Expr::Lit(Lit::Str(str_lit)) => str_lit.value.to_string(),
-                    _ => "<unknown>".to_string()
+                    Expr::Lit(Lit::Str(str_lit)) => Some(str_lit.value.to_string()),
+                    _ => None,
                 })
             } else {
                 IntrinsicName::RequestConfluence
@@ -1646,11 +1650,11 @@ impl FunctionAnalyzer<'_> {
 
         let props = normalize_callee_expr(callee, self.res, self.module);
         let is_match = match props.first() {
-            Some(prop) => match prop {
-                PropPath::Def(id) => self.res.def_name(*id) == "invokeRemote" && self.res.is_imported_from(*id, "@forge/api").is_some(),
-                _ => false,
-            },
-            None => false,
+            Some(PropPath::Def(id)) => {
+                self.res.def_name(*id) == "invokeRemote"
+                    && self.res.is_imported_from(*id, "@forge/api").is_some()
+            }
+            _ => false,
         };
 
         if is_match {
@@ -1711,6 +1715,10 @@ impl FunctionAnalyzer<'_> {
         };
         let first_arg = args.first().map(|expr| &*expr.expr);
         let intrinsic = self.as_intrinsic(&props, first_arg);
+        if is_match && let Some(tmp) = &intrinsic {
+            println!("intrinsic {:?}", tmp);
+        }
+
         let call = match intrinsic {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),

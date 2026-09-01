@@ -412,7 +412,7 @@ fn has_remote_auth(remotes: &Option<Vec<manifest::Remotes>>) -> bool {
     content
         .iter()
         .map(|e| e.contains_auth())
-        .fold(false, |a, i| a || i)
+        .any(|i| i)
 }
 
 #[tracing::instrument(level = "debug")]
