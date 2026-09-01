@@ -11,7 +11,7 @@ workspace = true
 [features]
 graphql_schema = []
 # Browser-based session-cookie harvesting, opt in.
-mint_cookie = ["dep:thirtyfour", "dep:tokio"]
+mint_cookie = ["dep:thirtyfour", "dep:tokio", "dep:url"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -37,3 +37,4 @@ glob = "0.3.2"
 regex.workspace = true
 thirtyfour = { version = "0.37", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"], optional = true }
+url = { workspace = true, optional = true }

@@ -8,6 +8,7 @@ use std::{path::PathBuf, time::Duration};
 use clap::{Args, ValueHint};
 use thirtyfour::ChromeCapabilities;
 use thirtyfour::prelude::*;
+use url::Url;
 
 use crate::Result;
 
@@ -74,19 +75,19 @@ pub(super) fn run(args: &MintCookieArgs) -> Result<()> {
 
     println!("Harvesting a session cookie for {}", harvest.site_url);
     tokio::runtime::Runtime::new()?.block_on(async {
+        let output = harvest.output.clone();
         let driver = build_driver(&harvest).await?;
-        let result = run_flow(&driver, &harvest).await;
-        let _ = driver.quit().await;
-
-        let value = result?;
-        std::fs::write(&harvest.output, format!("{COOKIE_NAME}={value}"))?;
+        let value = driver
+            .run_and_quit(async move |driver| run_flow(&driver, &harvest).await)
+            .await?;
+        std::fs::write(&output, format!("{COOKIE_NAME}={value}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&harvest.output, std::fs::Permissions::from_mode(0o600))?;
+            std::fs::set_permissions(&output, std::fs::Permissions::from_mode(0o600))?;
         }
-        println!("Wrote {COOKIE_NAME} to {}", harvest.output.display());
-        println!("Warning: this file is a bearer credential; do not commit or share it.");
+        eprintln!("Wrote {COOKIE_NAME} to {}", output.display());
+        eprintln!("Warning: this file is a bearer credential; do not commit or share it.");
         Ok(())
     })
 }
@@ -98,14 +99,17 @@ async fn build_driver(config: &HarvestConfig) -> Result<WebDriver> {
     }
 
     let driver = WebDriver::managed(capabilities).match_local().await?;
-    driver.set_implicit_wait_timeout(config.timeout).await?;
+    driver.set_implicit_wait_timeout(Duration::ZERO).await?;
     Ok(driver)
 }
 
 async fn run_flow(driver: &WebDriver, config: &HarvestConfig) -> Result<String> {
-    driver.goto(LOGIN_URL).await?;
-    let email = query_clickable(driver, "input[name='username']", config.timeout).await?;
-    type_into(&email, &config.username).await?;
+    let mut login_url = Url::parse(LOGIN_URL)?;
+    login_url
+        .query_pairs_mut()
+        .append_pair("email", &config.username)
+        .append_pair("continue", &config.site_url);
+    driver.goto(login_url.as_str()).await?;
     click_continue(driver, config.timeout).await?;
 
     let password = query_clickable(driver, "input[name='password']", config.timeout).await?;
@@ -122,9 +126,7 @@ async fn run_flow(driver: &WebDriver, config: &HarvestConfig) -> Result<String> 
     }
 
     if config.headed {
-        if let Ok(url) = driver.current_url().await {
-            println!("Complete any login step in Chrome, then press ENTER (current page: {url}).");
-        }
+        println!("Complete any login step in Chrome, then press ENTER.");
         let read_line = tokio::task::spawn_blocking(|| {
             let mut line = String::new();
             let _ = std::io::stdin().read_line(&mut line);
@@ -135,7 +137,6 @@ async fn run_flow(driver: &WebDriver, config: &HarvestConfig) -> Result<String> 
         }
     }
 
-    driver.goto(&config.site_url).await?;
     let deadline = std::time::Instant::now() + config.timeout;
     while std::time::Instant::now() < deadline {
         if let Ok(cookie) = driver.get_named_cookie(COOKIE_NAME).await
@@ -146,20 +147,30 @@ async fn run_flow(driver: &WebDriver, config: &HarvestConfig) -> Result<String> 
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
-    Err(std::io::Error::other(
-        "could not obtain tenant.session.token; retry with --headed to complete any interactive login step",
-    )
+    let current_page = driver.current_url().await.ok().map(|mut url| {
+        url.set_query(None);
+        url.set_fragment(None);
+        url
+    });
+    let current_page = current_page
+        .as_ref()
+        .map(|url| format!("; current page: {url}"))
+        .unwrap_or_default();
+    Err(std::io::Error::other(format!(
+        "could not obtain {COOKIE_NAME}{current_page}; retry with --headed to complete any interactive login step"
+    ))
     .into())
 }
 
 async fn click_continue(driver: &WebDriver, timeout: Duration) -> Result<()> {
-    for selector in ["#login-submit", "button[type='submit']"] {
-        if let Ok(button) = query_clickable(driver, selector, timeout).await {
-            button.click().await?;
-            return Ok(());
-        }
-    }
-    Err(std::io::Error::other("could not find the login submit button").into())
+    let button = query_clickable(
+        driver,
+        "button[data-testid='login-submit-idf-testid']",
+        timeout,
+    )
+    .await?;
+    button.click().await?;
+    Ok(())
 }
 
 async fn query_clickable(driver: &WebDriver, css: &str, timeout: Duration) -> Result<WebElement> {
