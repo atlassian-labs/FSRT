@@ -41,7 +41,7 @@ use tracing_tree::HierarchicalLayer;
 use forge_analyzer::{
     checkers::{
         AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
-        PermissionChecker, PermissionVuln, SecretChecker, SecretType, UserAuthZChecker,
+        PermissionChecker, PermissionVuln, SecretChecker, SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -391,17 +391,17 @@ fn get_empty_report() -> Report {
     Reporter::new().into_report()
 }
 
-fn check_remotes(remotes: &Option<Vec<manifest::Remotes>>) -> Vec<&str> {
+fn check_remotes(remotes: &Option<Vec<manifest::Remotes>>) -> HashSet<String> {
     let Some(content) = remotes else {
-        return Vec::new();
+        return HashSet::new();
     };
 
     let result = content
         .iter()
         .filter(|e| e.passes_system_auth() && !e.passes_user_auth())
-        .map(|e| e.key.as_str());
+        .map(|e| e.key.clone());
 
-    Vec::from_iter(result)
+    HashSet::from_iter(result)
 }
 
 fn has_remote_auth(remotes: &Option<Vec<manifest::Remotes>>) -> bool {
@@ -409,10 +409,7 @@ fn has_remote_auth(remotes: &Option<Vec<manifest::Remotes>>) -> bool {
         return false;
     };
 
-    content
-        .iter()
-        .map(|e| e.contains_auth())
-        .any(|i| i)
+    content.iter().any(|e| e.contains_auth())
 }
 
 #[tracing::instrument(level = "debug")]
@@ -517,6 +514,7 @@ pub(crate) fn scan_directory<'a>(
         });
 
     proj.add_funcs(funcrefs);
+    println!("add_funcs {}", proj.funcs.len());
     // resolve_calls(&mut proj.ctx);
     if let Some(func) = opts.dump_ir.as_ref() {
         proj.env.dump_function(&mut std::io::stdout().lock(), func);
@@ -679,7 +677,6 @@ pub(crate) fn scan_directory<'a>(
     );
 
     let suspicious_remotes = check_remotes(&manifest.remotes);
-    let mut _user_authz_checker = UserAuthZChecker::new(&suspicious_remotes);
 
     let mut secret_checker = SecretChecker::new();
     let mut auth_header_checker = AuthHeaderChecker::new();
@@ -697,6 +694,7 @@ pub(crate) fn scan_directory<'a>(
         }
     }
 
+    println!("funcs {}", proj.funcs.len());
     for func in &proj.funcs {
         // if there is a remote backend that accepts an auth token, do not run
         if run_permission_checker {
@@ -735,7 +733,7 @@ pub(crate) fn scan_directory<'a>(
 
         if func.invokable {
             if run_authorization_scanner {
-                let mut checker = AuthZChecker::new();
+                let mut checker = AuthZChecker::new(suspicious_remotes.clone());
                 debug!("checking {:?} at {:?}", func.func_name, &func.path);
                 if let Err(err) = interp.run_checker(
                     func.def_id,

@@ -1187,10 +1187,6 @@ impl FunctionAnalyzer<'_> {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
 
-        fn is_invoke_remote() -> bool {
-            false
-        }
-
         fn resolve_jira_api_type(url: &str) -> Option<IntrinsicName> {
             // Pattern matching to classify, eg: api.[asApp | asUser]().requestJira(route`/rest/api/3/myself`);
             match url {
@@ -1646,21 +1642,7 @@ impl FunctionAnalyzer<'_> {
     }
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
-        println!("lower_call {:?}", callee);
-
         let props = normalize_callee_expr(callee, self.res, self.module);
-        let is_match = match props.first() {
-            Some(PropPath::Def(id)) => {
-                self.res.def_name(*id) == "invokeRemote"
-                    && self.res.is_imported_from(*id, "@forge/api").is_some()
-            }
-            _ => false,
-        };
-
-        if is_match {
-            println!("invokeRemote");
-        }
-
         if let Some(&PropPath::Def(id)) = props.first()
             && (self.res.is_imported_from(id, "@forge/ui").is_some_and(|imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect")) || calls_method(callee, "then")
                 || calls_method(callee, "map")
@@ -1715,10 +1697,6 @@ impl FunctionAnalyzer<'_> {
         };
         let first_arg = args.first().map(|expr| &*expr.expr);
         let intrinsic = self.as_intrinsic(&props, first_arg);
-        if is_match && let Some(tmp) = &intrinsic {
-            println!("intrinsic {:?}", tmp);
-        }
-
         let call = match intrinsic {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
@@ -4104,6 +4082,12 @@ impl Environment {
         module: ModId,
         export_name: &I,
     ) -> Option<DefId> {
+        println!(
+            "exports {:?} {:?} {}",
+            module,
+            self.default_export(module),
+            self.exports[module].len()
+        );
         if *export_name == *"default" {
             self.default_export(module)
         } else {

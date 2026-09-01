@@ -380,11 +380,15 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
 
 pub struct AuthZChecker {
     vulns: Vec<AuthZVuln>,
+    privileged_remotes: HashSet<String>,
 }
 
 impl AuthZChecker {
-    pub fn new() -> Self {
-        Self { vulns: vec![] }
+    pub fn new(privileged_remotes: HashSet<String>) -> Self {
+        Self {
+            vulns: vec![],
+            privileged_remotes,
+        }
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthZVuln> {
@@ -395,7 +399,7 @@ impl AuthZChecker {
 
 impl Default for AuthZChecker {
     fn default() -> Self {
-        Self::new()
+        Self::new(HashSet::new())
     }
 }
 
@@ -488,7 +492,8 @@ impl<'cx> Runner<'cx> for AuthZChecker {
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        match *intrinsic {
+        println!("yo");
+        match intrinsic {
             Intrinsic::Authorize(_) => {
                 debug!("authorize intrinsic found");
                 ControlFlow::Continue(AuthorizeState::Yes)
@@ -505,6 +510,17 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
+            }
+            Intrinsic::SafeCall(IntrinsicName::InvokeRemote(Some(remote_name))) => {
+                println!("invokeRemote {}", remote_name);
+                if self.privileged_remotes.contains(remote_name) {
+                    let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
+                    info!("Found a remote vuln!");
+                    self.vulns.push(vuln);
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(*state)
+                }
             }
             Intrinsic::SecretFunction(_)
             | Intrinsic::ApiCall(_)
@@ -846,18 +862,6 @@ impl<'cx> Dataflow<'cx> for SecretDataflow {
         self.super_join_term(interp, def, block, state, worklist);
         for def in self.needs_call.drain(..) {
             worklist.push_front_blocks(interp.env(), def, interp.call_all);
-        }
-    }
-}
-
-pub struct UserAuthZChecker<'a> {
-    _suspicious_remotes: &'a [&'a str],
-}
-
-impl<'a> UserAuthZChecker<'a> {
-    pub fn new(ids: &'a [&'a str]) -> Self {
-        Self {
-            _suspicious_remotes: ids,
         }
     }
 }

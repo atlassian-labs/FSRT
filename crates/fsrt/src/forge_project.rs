@@ -111,10 +111,18 @@ impl<'a> ForgeProject<'a> {
     pub fn add_funcs<I: IntoIterator<Item = Entrypoint<'a, Resolved>>>(&mut self, iter: I) {
         self.funcs.extend(iter.into_iter().filter_map(|entrypoint| {
             let (func_name, path) = entrypoint.function.into_func_path();
+            println!(
+                "funcrefs {} {}",
+                func_name,
+                path.to_str().unwrap_or_default()
+            );
             let module = self.ctx.modid_from_path(&path)?;
+            println!("funcrefs module {:?}", module);
             let def_id = self.env.module_export(module, func_name)?;
+            println!("funcrefs def_id {:?}", def_id);
             // Resolve ExportAlias / ResolverHandler chains to the actual definition.
             let def_id = self.env.resolve_alias(def_id);
+            println!("funcrefs def_id_0 {:?}", def_id);
             Some(ResolvedEntryPoint {
                 func_name,
                 path,
