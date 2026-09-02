@@ -471,11 +471,17 @@ impl IntoVuln for AuthZVuln {
             .for_each(|comp| comp.hash(&mut hasher));
         self.entry_func.hash(&mut hasher);
         self.stack.hash(&mut hasher);
-        let proof = match self.kind {
-            ApiCall => format!("Unauthorized API call via asApp() found via {}", self.stack),
-            RemoteCall(remote) => format!(
-                "Unauthorized call to forge remote `{}` with app system token found via {}",
-                remote, self.stack
+        let (proof, req_id) = match self.kind {
+            ApiCall => (
+                format!("Unauthorized API call via asApp() found via {}", self.stack),
+                "Requirement 1.2",
+            ),
+            RemoteCall(remote) => (
+                format!(
+                    "Unauthorized call to forge remote `{}` with app system token found via {}",
+                    remote, self.stack
+                ),
+                "AEC Requirement 1.14",
             ),
         };
 
@@ -490,7 +496,7 @@ impl IntoVuln for AuthZVuln {
             severity: Severity::High,
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
-            marketplace_security_requirement: "Requirement 1.2",
+            marketplace_security_requirement: req_id,
             date: reporter.current_date(),
         }
     }
@@ -522,7 +528,9 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             Intrinsic::Fetch => ControlFlow::Continue(*state),
             Intrinsic::ApiCall(name) if *state != AuthorizeState::Yes => match name {
                 IntrinsicName::InvokeRemote(remote) => {
-                    if let Some(remote_name) = remote && self.privileged_remotes.contains(remote_name) {
+                    if let Some(remote_name) = remote
+                        && self.privileged_remotes.contains(remote_name)
+                    {
                         let vuln = AuthZVuln::new(
                             interp.callstack(),
                             interp.env(),

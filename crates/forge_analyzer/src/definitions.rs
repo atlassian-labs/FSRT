@@ -1257,7 +1257,7 @@ impl FunctionAnalyzer<'_> {
                         Some(Intrinsic::ApiCall(function_name))
                     } else if let IntrinsicName::InvokeRemote(_) = function_name {
                         Some(Intrinsic::ApiCall(function_name))
-                    }else {
+                    } else {
                         Some(Intrinsic::SafeCall(function_name))
                     }
                 }
