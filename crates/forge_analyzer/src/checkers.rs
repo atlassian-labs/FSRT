@@ -381,15 +381,11 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
 
 pub struct AuthZChecker {
     vulns: Vec<AuthZVuln>,
-    privileged_remotes: HashSet<String>,
 }
 
 impl AuthZChecker {
-    pub fn new(privileged_remotes: HashSet<String>) -> Self {
-        Self {
-            vulns: vec![],
-            privileged_remotes,
-        }
+    pub fn new() -> Self {
+        Self { vulns: vec![] }
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthZVuln> {
@@ -400,7 +396,7 @@ impl AuthZChecker {
 
 impl Default for AuthZChecker {
     fn default() -> Self {
-        Self::new(HashSet::new())
+        Self::new()
     }
 }
 
@@ -528,9 +524,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             Intrinsic::Fetch => ControlFlow::Continue(*state),
             Intrinsic::ApiCall(name) if *state != AuthorizeState::Yes => match name {
                 IntrinsicName::InvokeRemote(remote) => {
-                    if let Some(remote_name) = remote
-                        && self.privileged_remotes.contains(remote_name)
-                    {
+                    if let Some(remote_name) = remote {
                         let vuln = AuthZVuln::new(
                             interp.callstack(),
                             interp.env(),
@@ -541,7 +535,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                         self.vulns.push(vuln);
                         ControlFlow::Break(())
                     } else {
-                        ControlFlow::Continue(*state)
+                        panic!("unreachable");
                     }
                 }
                 _ => {

@@ -462,11 +462,14 @@ pub(crate) fn scan_directory<'a>(
 
     let mut sorted_paths: Vec<PathBuf> = paths.iter().cloned().collect();
     sorted_paths.sort();
+
+    let suspicious_remotes = check_remotes(&manifest.remotes);
     let mut proj = project.with_files_and_sourceroot(
         Path::new("src"),
         sorted_paths,
         secret_packages,
         &mut perm_map,
+        &suspicious_remotes,
     );
 
     let name = manifest.app.name.unwrap_or_default();
@@ -686,7 +689,6 @@ pub(crate) fn scan_directory<'a>(
         }
     }
 
-    let suspicious_remotes = check_remotes(&manifest.remotes);
     for func in &proj.funcs {
         // if there is a remote backend that accepts an auth token, do not run
         if run_permission_checker {
@@ -723,9 +725,9 @@ pub(crate) fn scan_directory<'a>(
             warn!("error while running auth header checker: {err}");
         }
 
-        if func.invokable || true {
+        if func.invokable {
             if run_authorization_scanner {
-                let mut checker = AuthZChecker::new(suspicious_remotes.clone());
+                let mut checker = AuthZChecker::new();
                 debug!("checking {:?} at {:?}", func.func_name, &func.path);
                 if let Err(err) = interp.run_checker(
                     func.def_id,
