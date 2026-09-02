@@ -42,8 +42,6 @@ use forge_analyzer::{
     checkers::{
         AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
         PermissionChecker, PermissionVuln, SecretChecker, SecretType,
-        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, PermissionChecker, PermissionVuln,
-        SecretChecker, SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -448,11 +446,6 @@ pub(crate) fn scan_directory<'a>(
         None
     };
 
-    let suspicious_remotes = check_remotes(&manifest.remotes);
-    if !suspicious_remotes.is_empty() {
-        eprintln!("Some remotes pass their system token without a user token");
-    }
-
     let requested_permissions = manifest.permissions;
     let permissions_declared = requested_permissions
         .scopes
@@ -677,8 +670,6 @@ pub(crate) fn scan_directory<'a>(
         &compass_permission_resolver,
     );
 
-    let suspicious_remotes = check_remotes(&manifest.remotes);
-
     let mut secret_checker = SecretChecker::new();
     let mut auth_header_checker = AuthHeaderChecker::new();
 
@@ -695,6 +686,7 @@ pub(crate) fn scan_directory<'a>(
         }
     }
 
+    let suspicious_remotes = check_remotes(&manifest.remotes);
     for func in &proj.funcs {
         // if there is a remote backend that accepts an auth token, do not run
         if run_permission_checker {

@@ -2239,11 +2239,6 @@ impl FunctionAnalyzer<'_> {
                     return;
                 }
 
-                if self.break_target == BasicBlockId(u32::MAX) {
-                    warn!("Break target not set for this scope");
-                    return;
-                }
-
                 self.body
                     .set_terminator(self.block, Terminator::Goto(self.break_target));
             }

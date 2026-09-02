@@ -23,7 +23,6 @@ use forge_utils::FxHashMap;
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
 use smallvec::SmallVec;
-use std::ops::Rem;
 use std::{
     cmp::max,
     collections::HashMap,
@@ -408,7 +407,7 @@ impl Default for AuthZChecker {
 #[derive(Debug)]
 pub enum AuthZVulnKind {
     ApiCall,
-    RemoteCall,
+    RemoteCall(String),
 }
 
 #[derive(Debug)]
@@ -474,8 +473,9 @@ impl IntoVuln for AuthZVuln {
         self.stack.hash(&mut hasher);
         let proof = match self.kind {
             ApiCall => format!("Unauthorized API call via asApp() found via {}", self.stack),
-            RemoteCall => format!(
-                "Unauthorized call to a remote with auth.appSystemToken.enabled = true found via {}",
+            RemoteCall(remote) => format!(
+                "Unauthorized call to forge remote `{}` with app system token found via {}",
+                remote,
                 self.stack
             ),
         };
@@ -487,7 +487,7 @@ impl IntoVuln for AuthZVuln {
                 self.entry_func, self.file
             ),
             recommendation: "Use the authorize API _https://developer.atlassian.com/platform/forge/runtime-reference/authorize-api/_ or manually authorize the user via the product REST APIs.",
-            proof: proof,
+            proof,
             severity: Severity::High,
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
@@ -543,7 +543,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                         interp.callstack(),
                         interp.env(),
                         interp.entry(),
-                        RemoteCall,
+                        RemoteCall(remote_name.clone()),
                     );
                     info!("Found a remote vuln!");
                     self.vulns.push(vuln);
