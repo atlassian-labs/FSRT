@@ -1,3 +1,4 @@
+use crate::checkers::AuthZVulnKind::{ApiCall, RemoteCall};
 use crate::interp::ProjectionVec;
 use crate::utils::projvec_from_str;
 use crate::{
@@ -22,6 +23,7 @@ use forge_utils::FxHashMap;
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
 use smallvec::SmallVec;
+use std::ops::Rem;
 use std::{
     cmp::max,
     collections::HashMap,
@@ -404,14 +406,26 @@ impl Default for AuthZChecker {
 }
 
 #[derive(Debug)]
+pub enum AuthZVulnKind {
+    ApiCall,
+    RemoteCall,
+}
+
+#[derive(Debug)]
 pub struct AuthZVuln {
     stack: String,
     entry_func: String,
     file: PathBuf,
+    kind: AuthZVulnKind,
 }
 
 impl AuthZVuln {
-    fn new(callstack: Vec<Frame>, env: &Environment, entry: &EntryPoint) -> Self {
+    fn new(
+        callstack: Vec<Frame>,
+        env: &Environment,
+        entry: &EntryPoint,
+        kind: AuthZVulnKind,
+    ) -> Self {
         let entry_func = match &entry.kind {
             EntryKind::Function(func) => func.clone(),
             EntryKind::Resolver(res, prop) => format!("{res}.{prop}"),
@@ -435,6 +449,7 @@ impl AuthZVuln {
             stack,
             entry_func,
             file,
+            kind,
         }
     }
 }
@@ -457,6 +472,14 @@ impl IntoVuln for AuthZVuln {
             .for_each(|comp| comp.hash(&mut hasher));
         self.entry_func.hash(&mut hasher);
         self.stack.hash(&mut hasher);
+        let proof = match self.kind {
+            ApiCall => format!("Unauthorized API call via asApp() found via {}", self.stack),
+            RemoteCall => format!(
+                "Unauthorized call to a remote with auth.appSystemToken.enabled = true found via {}",
+                self.stack
+            ),
+        };
+
         Vulnerability {
             check_name: format!("Custom-Check-Authorization-{}", hasher.finish()),
             description: format!(
@@ -464,7 +487,7 @@ impl IntoVuln for AuthZVuln {
                 self.entry_func, self.file
             ),
             recommendation: "Use the authorize API _https://developer.atlassian.com/platform/forge/runtime-reference/authorize-api/_ or manually authorize the user via the product REST APIs.",
-            proof: format!("Unauthorized API call via asApp() found via {}", self.stack),
+            proof: proof,
             severity: Severity::High,
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
@@ -492,7 +515,6 @@ impl<'cx> Runner<'cx> for AuthZChecker {
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        println!("yo");
         match intrinsic {
             Intrinsic::Authorize(_) => {
                 debug!("authorize intrinsic found");
@@ -500,21 +522,29 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             }
             Intrinsic::Fetch => ControlFlow::Continue(*state),
             Intrinsic::ApiCall(_) if *state != AuthorizeState::Yes => {
-                let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
+                let vuln =
+                    AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
             }
             Intrinsic::ApiCustomField if *state < AuthorizeState::CustomFieldOnly => {
-                let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
+                let vuln =
+                    AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
             }
-            Intrinsic::SafeCall(IntrinsicName::InvokeRemote(Some(remote_name))) => {
-                println!("invokeRemote {}", remote_name);
+            Intrinsic::SafeCall(IntrinsicName::InvokeRemote(Some(remote_name)))
+                if *state != AuthorizeState::Yes =>
+            {
                 if self.privileged_remotes.contains(remote_name) {
-                    let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
+                    let vuln = AuthZVuln::new(
+                        interp.callstack(),
+                        interp.env(),
+                        interp.entry(),
+                        RemoteCall,
+                    );
                     info!("Found a remote vuln!");
                     self.vulns.push(vuln);
                     ControlFlow::Break(())

@@ -4082,12 +4082,6 @@ impl Environment {
         module: ModId,
         export_name: &I,
     ) -> Option<DefId> {
-        println!(
-            "exports {:?} {:?} {}",
-            module,
-            self.default_export(module),
-            self.exports[module].len()
-        );
         if *export_name == *"default" {
             self.default_export(module)
         } else {

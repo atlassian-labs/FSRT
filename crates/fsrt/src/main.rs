@@ -42,6 +42,8 @@ use forge_analyzer::{
     checkers::{
         AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
         PermissionChecker, PermissionVuln, SecretChecker, SecretType,
+        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, PermissionChecker, PermissionVuln,
+        SecretChecker, SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -514,7 +516,6 @@ pub(crate) fn scan_directory<'a>(
         });
 
     proj.add_funcs(funcrefs);
-    println!("add_funcs {}", proj.funcs.len());
     // resolve_calls(&mut proj.ctx);
     if let Some(func) = opts.dump_ir.as_ref() {
         proj.env.dump_function(&mut std::io::stdout().lock(), func);
@@ -694,7 +695,6 @@ pub(crate) fn scan_directory<'a>(
         }
     }
 
-    println!("funcs {}", proj.funcs.len());
     for func in &proj.funcs {
         // if there is a remote backend that accepts an auth token, do not run
         if run_permission_checker {
