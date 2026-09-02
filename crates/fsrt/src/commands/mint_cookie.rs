@@ -73,7 +73,7 @@ pub(super) fn run(args: &MintCookieArgs) -> Result<()> {
         ),
     };
 
-    println!("Harvesting a session cookie for {}", harvest.site_url);
+    eprintln!("Harvesting a session cookie for {}", harvest.site_url);
     tokio::runtime::Runtime::new()?.block_on(async {
         let output = harvest.output.clone();
         let driver = build_driver(&harvest).await?;
@@ -118,15 +118,19 @@ async fn run_flow(driver: &WebDriver, config: &HarvestConfig) -> Result<String> 
 
     let deadline = std::time::Instant::now() + config.timeout;
     while std::time::Instant::now() < deadline {
-        if matches!(driver.current_url().await, Ok(url) if !url.as_str().contains("id.atlassian.com"))
-        {
+        if matches!(
+            driver.current_url().await,
+            Ok(url)
+                if !url.as_str().contains("id.atlassian.com")
+                    && !url.path().starts_with("/SetCST")
+        ) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
     if config.headed {
-        println!("Complete any login step in Chrome, then press ENTER.");
+        eprintln!("Complete any login step in Chrome, then press ENTER.");
         let read_line = tokio::task::spawn_blocking(|| {
             let mut line = String::new();
             let _ = std::io::stdin().read_line(&mut line);
