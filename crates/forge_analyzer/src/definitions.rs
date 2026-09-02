@@ -1255,7 +1255,9 @@ impl FunctionAnalyzer<'_> {
                 ApiCallKind::Unknown => {
                     if is_as_app {
                         Some(Intrinsic::ApiCall(function_name))
-                    } else {
+                    } else if let IntrinsicName::InvokeRemote(_) = function_name {
+                        Some(Intrinsic::ApiCall(function_name))
+                    }else {
                         Some(Intrinsic::SafeCall(function_name))
                     }
                 }

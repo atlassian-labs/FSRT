@@ -475,8 +475,7 @@ impl IntoVuln for AuthZVuln {
             ApiCall => format!("Unauthorized API call via asApp() found via {}", self.stack),
             RemoteCall(remote) => format!(
                 "Unauthorized call to forge remote `{}` with app system token found via {}",
-                remote,
-                self.stack
+                remote, self.stack
             ),
         };
 
@@ -521,36 +520,36 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                 ControlFlow::Continue(AuthorizeState::Yes)
             }
             Intrinsic::Fetch => ControlFlow::Continue(*state),
-            Intrinsic::ApiCall(_) if *state != AuthorizeState::Yes => {
-                let vuln =
-                    AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
-                info!("Found a vuln!");
-                self.vulns.push(vuln);
-                ControlFlow::Break(())
-            }
+            Intrinsic::ApiCall(name) if *state != AuthorizeState::Yes => match name {
+                IntrinsicName::InvokeRemote(remote) => {
+                    if let Some(remote_name) = remote && self.privileged_remotes.contains(remote_name) {
+                        let vuln = AuthZVuln::new(
+                            interp.callstack(),
+                            interp.env(),
+                            interp.entry(),
+                            RemoteCall(remote_name.clone()),
+                        );
+                        info!("Found a remote vuln!");
+                        self.vulns.push(vuln);
+                        ControlFlow::Break(())
+                    } else {
+                        ControlFlow::Continue(*state)
+                    }
+                }
+                _ => {
+                    let vuln =
+                        AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
+                    info!("Found a vuln!");
+                    self.vulns.push(vuln);
+                    ControlFlow::Break(())
+                }
+            },
             Intrinsic::ApiCustomField if *state < AuthorizeState::CustomFieldOnly => {
                 let vuln =
                     AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
-            }
-            Intrinsic::SafeCall(IntrinsicName::InvokeRemote(Some(remote_name)))
-                if *state != AuthorizeState::Yes =>
-            {
-                if self.privileged_remotes.contains(remote_name) {
-                    let vuln = AuthZVuln::new(
-                        interp.callstack(),
-                        interp.env(),
-                        interp.entry(),
-                        RemoteCall(remote_name.clone()),
-                    );
-                    info!("Found a remote vuln!");
-                    self.vulns.push(vuln);
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(*state)
-                }
             }
             Intrinsic::SecretFunction(_)
             | Intrinsic::ApiCall(_)

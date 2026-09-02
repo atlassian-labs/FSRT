@@ -723,7 +723,7 @@ pub(crate) fn scan_directory<'a>(
             warn!("error while running auth header checker: {err}");
         }
 
-        if func.invokable {
+        if func.invokable || true {
             if run_authorization_scanner {
                 let mut checker = AuthZChecker::new(suspicious_remotes.clone());
                 debug!("checking {:?} at {:?}", func.func_name, &func.path);
