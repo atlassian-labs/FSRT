@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 use swc_core::ecma::ast::{MethodKind, PrivateMethod};
 use swc_core::{
-    common::{DUMMY_SP, Span, SyntaxContext},
+    common::{DUMMY_SP, Span, Spanned, SyntaxContext},
     ecma::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
@@ -56,7 +56,7 @@ use crate::{
     ctx::ModId,
     ir::{
         Base, BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, RETURN_VAR,
-        Rvalue, STARTING_BLOCK, Template, Terminator, VarKind, Variable,
+        Rvalue, STARTING_BLOCK, SqlSink, Template, Terminator, VarKind, Variable,
     },
 };
 
@@ -1002,6 +1002,43 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
     classifier.kind
 }
 
+fn originates_from_resolved_local_call(
+    env: &Environment,
+    body: &Body,
+    variable: VarId,
+    depth: usize,
+) -> bool {
+    if depth == 0 {
+        return false;
+    }
+    body.iter_blocks_enumerated().any(|(_, block)| {
+        block.iter().any(|inst| match inst {
+            Inst::Assign(
+                Variable {
+                    base: Base::Var(target),
+                    projections,
+                },
+                Rvalue::Call(callee, _),
+            ) if *target == variable && projections.is_empty() => {
+                body.resolve_call(env, callee).is_some()
+            }
+            Inst::Assign(
+                Variable {
+                    base: Base::Var(target),
+                    projections,
+                },
+                Rvalue::Read(Operand::Var(Variable {
+                    base: Base::Var(source),
+                    projections: source_projections,
+                })),
+            ) if *target == variable && projections.is_empty() && source_projections.is_empty() => {
+                originates_from_resolved_local_call(env, body, *source, depth - 1)
+            }
+            _ => false,
+        })
+    })
+}
+
 impl FunctionAnalyzer<'_> {
     fn new<'cx>(
         env: &'cx mut Environment,
@@ -1295,6 +1332,58 @@ impl FunctionAnalyzer<'_> {
                 }
                 ApiCallKind::Trivial => Some(Intrinsic::SafeCall(function_name)),
                 ApiCallKind::Authorize => Some(Intrinsic::Authorize(function_name)),
+            }
+        }
+
+        // SQL calls are intentionally matched broadly for the first version of the
+        // rule. Treat the supported method shapes as @forge/sql unless the root
+        // symbol is conclusively imported from another package.
+        let sql_method = callee.iter().rev().find_map(|part| match part {
+            PropPath::Static(name) => Some(name),
+            _ => None,
+        });
+        if let Some(method) = sql_method {
+            let root_def = callee.iter().find_map(|part| match part {
+                PropPath::Def(def) => Some(*def),
+                _ => None,
+            });
+            let confirmed_other_package = root_def
+                .and_then(|def| self.res.as_foreign_import(def))
+                .is_some_and(|(module, _)| module != *"@forge/sql");
+            let confirmed_local_receiver = root_def.is_some_and(|root| {
+                self.res.bodies().any(|body| {
+                    let local_vars = body.vars.iter_enumerated().filter_map(|(var, kind)| {
+                        matches!(kind, VarKind::GlobalRef(def) | VarKind::LocalDef(def) if *def == root)
+                            .then_some(var)
+                    });
+                    local_vars.into_iter().any(|local_var| {
+                        originates_from_resolved_local_call(self.res, body, local_var, 8)
+                    })
+                })
+            });
+
+            if !confirmed_other_package && !confirmed_local_receiver {
+                let sink = if *method == *"prepare" {
+                    Some(SqlSink::Prepare)
+                } else if *method == *"executeRaw" {
+                    Some(SqlSink::ExecuteRaw)
+                } else if *method == *"enqueue" {
+                    let imported_runner = root_def.is_some_and(|def| {
+                        self.res.is_imported_from(def, "@forge/sql").is_some_and(
+                            |kind| matches!(kind, ImportKind::Named(name) if *name == *"migrationRunner"),
+                        )
+                    });
+                    let named_runner = callee.iter().any(|part| {
+                        matches!(part, PropPath::Static(name) if *name == *"migrationRunner")
+                    }) || root_def.is_some_and(|def| self.res.def_name(def).contains("migrationRunner"));
+                    (imported_runner || named_runner).then_some(SqlSink::MigrationEnqueue)
+                } else {
+                    None
+                };
+
+                if let Some(sink) = sink {
+                    return Some(Intrinsic::SqlQuery(sink));
+                }
             }
         }
 
@@ -1666,7 +1755,7 @@ impl FunctionAnalyzer<'_> {
         self.lower_expr(expr, None)
     }
 
-    fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
+    fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread], span: Span) -> Operand {
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first()
             && (self.res.is_imported_from(id, "@forge/ui").is_some_and(|imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect")) || calls_method(callee, "then")
@@ -1682,7 +1771,7 @@ impl FunctionAnalyzer<'_> {
                             .callee
                             .as_expr()
                             .map_or(CalleeRef::Import, |e| CalleeRef::Expr(e));
-                        self.lower_call(inner_callee, &inner_call.args);
+                        self.lower_call(inner_callee, &inner_call.args, inner_call.span);
                     }
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, .. }) => match &**body {
@@ -1726,7 +1815,7 @@ impl FunctionAnalyzer<'_> {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
         };
-        let res = self.body.push_tmp(self.block, call, None);
+        let res = self.body.push_tmp_spanned(self.block, call, None, span);
         Operand::with_var(res)
     }
 
@@ -1892,16 +1981,22 @@ impl FunctionAnalyzer<'_> {
         match n {
             Expr::This(_) => Operand::Var(Variable::THIS),
             Expr::Array(ArrayLit { elems, .. }) => {
-                let array_lit: Vec<_> = elems
-                    .iter()
-                    .map(|e| {
-                        e.as_ref()
-                            .map_or(Operand::UNDEF, |ExprOrSpread { spread, expr }| {
-                                self.lower_expr(expr, None)
-                            })
-                    })
-                    .collect();
-                Operand::UNDEF
+                let def_id = self
+                    .res
+                    .add_anonymous("__ARRAY", AnonType::Obj, self.module);
+                let array_var = self.body.add_var(VarKind::LocalDef(def_id));
+                for (index, element) in elems.iter().enumerate() {
+                    let value = element.as_ref().map_or(Operand::UNDEF, |element| {
+                        self.lower_expr(&element.expr, None)
+                    });
+                    let mut target = Variable::new(array_var);
+                    target
+                        .projections
+                        .push(Projection::Known(index.to_string().into()));
+                    self.body
+                        .push_inst(self.block, Inst::Assign(target, Rvalue::Read(value)));
+                }
+                Operand::with_var(array_var)
             }
             Expr::Object(ObjectLit { span, props }) => {
                 let def_id = self
@@ -2047,8 +2142,11 @@ impl FunctionAnalyzer<'_> {
                         }
                         SimpleAssignTarget::OptChain(OptChainExpr { optional, base, .. }) => {
                             match &**base {
-                                OptChainBase::Call(OptCall { callee, args, .. }) => {
-                                    let callee = self.lower_call(callee.as_ref().into(), args);
+                                OptChainBase::Call(OptCall {
+                                    callee, args, span, ..
+                                }) => {
+                                    let callee =
+                                        self.lower_call(callee.as_ref().into(), args, *span);
                                     let lval = self.body.coerce_to_lval(self.block, callee, None);
                                     self.push_curr_inst(Inst::Assign(
                                         lval,
@@ -2109,13 +2207,18 @@ impl FunctionAnalyzer<'_> {
                 Operand::with_var(phi)
             }
 
-            Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
-            Expr::New(NewExpr { callee, args, .. }) => {
+            Expr::Call(CallExpr {
+                callee, args, span, ..
+            }) => self.lower_call(callee.into(), args, *span),
+            Expr::New(NewExpr {
+                callee, args, span, ..
+            }) => {
                 if let Expr::Ident(ident) = &**callee {
                     // remove the clone
                     return self.lower_call(
                         CalleeRef::Expr(callee),
                         args.clone().unwrap_or_default().as_slice(),
+                        *span,
                     );
                 }
 
@@ -2197,9 +2300,9 @@ impl FunctionAnalyzer<'_> {
             | Expr::TsSatisfies(TsSatisfiesExpr { expr, .. }) => self.lower_expr(expr, None),
             Expr::PrivateName(PrivateName { name, .. }) => todo!(),
             Expr::OptChain(OptChainExpr { base, .. }) => match &**base {
-                OptChainBase::Call(OptCall { callee, args, .. }) => {
-                    self.lower_call(callee.as_ref().into(), args)
-                }
+                OptChainBase::Call(OptCall {
+                    callee, args, span, ..
+                }) => self.lower_call(callee.as_ref().into(), args, *span),
                 OptChainBase::Member(MemberExpr { obj, prop, .. }) => {
                     // TODO: create separate basic blocks
                     self.lower_member(obj, prop)
@@ -2478,6 +2581,7 @@ impl Visit for ArgDefiner<'_> {
             .res
             .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
         self.res.add_parent(defid, self.func);
+        self.body.argument_spans.entry(defid).or_insert(n.span);
         let var = self.body.get_or_insert_global(defid);
         self.body.push_assign(
             STARTING_BLOCK,
@@ -2548,6 +2652,8 @@ impl Visit for ArgDefiner<'_> {
                     .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
                 self.res.add_parent(defid, self.func);
                 self.res.add_parent(defid, self.func);
+                self.body.argument_defs.push(defid);
+                self.body.argument_spans.insert(defid, pat.span());
                 continue;
             } else {
                 //FIXME: clean up unnecessary allocations
@@ -2556,6 +2662,8 @@ impl Visit for ArgDefiner<'_> {
                 let id = Atom::from(self.res.def_name(defid)).to_id();
                 (defid, id)
             };
+            self.body.argument_defs.push(defid);
+            self.body.argument_spans.insert(defid, pat.span());
             let var_id = self.body.add_arg(defid, id);
             // FIXME: use clone_from once we specialize
             self.current_arg = Variable::new(var_id);

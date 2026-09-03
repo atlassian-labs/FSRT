@@ -263,7 +263,8 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
             | Intrinsic::ApiCall(_)
             | Intrinsic::SafeCall(_)
             | Intrinsic::EnvRead
-            | Intrinsic::StorageRead => initial_state,
+            | Intrinsic::StorageRead
+            | Intrinsic::SqlQuery(_) => initial_state,
         }
     }
 
@@ -351,6 +352,7 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
         _interp: &Interp<'cx, Self>,
         _intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -520,6 +522,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -578,7 +581,8 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             | Intrinsic::EnvRead
             | Intrinsic::UserFieldAccess
             | Intrinsic::ApiCustomField
-            | Intrinsic::StorageRead => ControlFlow::Continue(*state),
+            | Intrinsic::StorageRead
+            | Intrinsic::SqlQuery(_) => ControlFlow::Continue(*state),
         }
     }
 }
@@ -641,7 +645,8 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
             | Intrinsic::ApiCall(_)
             | Intrinsic::ApiCustomField
             | Intrinsic::UserFieldAccess
-            | Intrinsic::SafeCall(_) => initial_state,
+            | Intrinsic::SafeCall(_)
+            | Intrinsic::SqlQuery(_) => initial_state,
         }
     }
 
@@ -730,6 +735,7 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -749,7 +755,7 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
             Intrinsic::ApiCall(_) | Intrinsic::UserFieldAccess | Intrinsic::ApiCustomField => {
                 ControlFlow::Continue(*state)
             }
-            Intrinsic::SafeCall(_) => ControlFlow::Continue(*state),
+            Intrinsic::SafeCall(_) | Intrinsic::SqlQuery(_) => ControlFlow::Continue(*state),
         }
     }
 }
@@ -1070,6 +1076,7 @@ impl<'cx> Runner<'cx> for SecretChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         def: DefId,
+        _loc: Location,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -1767,6 +1774,7 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         def: DefId,
+        _loc: Location,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -2215,6 +2223,7 @@ impl<'cx> Runner<'cx> for PermissionChecker<'_> {
         _interp: &Interp<'cx, Self>,
         _intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -2342,6 +2351,7 @@ impl<'cx> Runner<'cx> for DefinitionAnalysisRunner {
         _interp: &Interp<'cx, Self>,
         _intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         _state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
