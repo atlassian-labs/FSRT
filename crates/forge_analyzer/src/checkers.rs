@@ -2228,7 +2228,10 @@ impl ForgeRuntimeVersionPolicyChecker {
         Self::check_at(runtime, OffsetDateTime::now_utc().date())
     }
 
-    fn check_at(runtime: Option<&str>, scan_date: Date) -> Option<ForgeRuntimeVersionPolicyVuln> {
+    pub fn check_at(
+        runtime: Option<&str>,
+        scan_date: Date,
+    ) -> Option<ForgeRuntimeVersionPolicyVuln> {
         let runtime = runtime?;
         let version = format!("v{}", nodejs_major(runtime)?);
         let end_date = NODEJS_END_DATES.get(&version)?;
@@ -2260,60 +2263,6 @@ impl IntoVuln for ForgeRuntimeVersionPolicyVuln {
             marketplace_security_requirement: "Requirement 10.0",
             date: reporter.current_date(),
         }
-    }
-}
-
-#[cfg(test)]
-mod forge_runtime_version_policy_tests {
-    use super::*;
-
-    fn date(year: i32, month: Month, day: u8) -> Date {
-        Date::from_calendar_date(year, month, day).unwrap()
-    }
-
-    #[test]
-    fn flags_runtime_after_its_support_end_date() {
-        let result = ForgeRuntimeVersionPolicyChecker::check_at(
-            Some("nodejs20.x"),
-            date(2026, Month::May, 1),
-        );
-
-        assert_eq!(result.unwrap().runtime, "nodejs20.x");
-    }
-
-    #[test]
-    fn allows_runtime_through_its_support_end_date() {
-        let result = ForgeRuntimeVersionPolicyChecker::check_at(
-            Some("nodejs20.x"),
-            date(2026, Month::April, 30),
-        );
-
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn allows_runtime_with_a_future_support_end_date() {
-        let result = ForgeRuntimeVersionPolicyChecker::check_at(
-            Some("nodejs22.x"),
-            date(2026, Month::May, 1),
-        );
-
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn ignores_unrecognized_runtime_names() {
-        assert!(
-            ForgeRuntimeVersionPolicyChecker::check_at(
-                Some("nodejs999.x"),
-                date(2026, Month::May, 1),
-            )
-            .is_none()
-        );
-        assert!(
-            ForgeRuntimeVersionPolicyChecker::check_at(Some("sandbox"), date(2026, Month::May, 1),)
-                .is_none()
-        );
     }
 }
 
