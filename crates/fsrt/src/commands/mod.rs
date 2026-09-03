@@ -5,6 +5,8 @@ use clap::Subcommand;
 use crate::{Result, forge_project::find_manifest_path};
 
 pub(crate) mod invoke_extension;
+#[cfg(feature = "mint_cookie")]
+pub(crate) mod mint_cookie;
 pub(crate) mod mint_fct;
 pub(crate) mod mint_fit;
 
@@ -52,6 +54,10 @@ pub(crate) enum DastCommand {
 
     /// Mint a FIT for a deployed module and Forge remote.
     MintFit(mint_fit::MintFitArgs),
+
+    /// Harvest an Atlassian session cookie through a browser login.
+    #[cfg(feature = "mint_cookie")]
+    MintCookie(mint_cookie::MintCookieArgs),
 }
 
 impl Command {
@@ -74,6 +80,8 @@ impl DastCommand {
             Self::InvokeExtension(args) => args.diagnostic_logging_requested(),
             Self::MintFct(args) => args.diagnostic_logging_requested(),
             Self::MintFit(args) => args.diagnostic_logging_requested(),
+            #[cfg(feature = "mint_cookie")]
+            Self::MintCookie(args) => args.diagnostic_logging_requested(),
         }
     }
 
@@ -82,6 +90,8 @@ impl DastCommand {
             Self::InvokeExtension(args) => invoke_extension::run(args),
             Self::MintFct(args) => mint_fct::run(args),
             Self::MintFit(args) => mint_fit::run(args),
+            #[cfg(feature = "mint_cookie")]
+            Self::MintCookie(args) => mint_cookie::run(args),
         }
     }
 }

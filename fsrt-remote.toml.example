@@ -15,3 +15,10 @@ product = "jira"
 # Relative paths use the directory where FSRT is run.
 [auth]
 raw_cookie_file = "./session-cookie.txt"
+
+# Optional settings for `cargo run -p fsrt --features mint_cookie -- dast mint-cookie`.
+# The password is read only from ATL_PASSWORD and is never stored in this file.
+[cookie]
+username = "tester@example.atlassian.net"
+# headed = true             # Show Chrome for MFA, bot checks, or consent screens.
+# verify_wait_secs = 120    # Time to allow manual completion when headed.
