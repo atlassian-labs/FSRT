@@ -1,7 +1,7 @@
 use crate::{Args, Scanner, forge_project::ForgeProjectTrait, scan_directory};
 use clap::{CommandFactory, Parser};
-use forge_analyzer::definitions::PackageData;
 use forge_analyzer::reporter::Report;
+use forge_analyzer::{checkers::ForgeRuntimeVersionPolicyChecker, definitions::PackageData};
 use forge_loader::manifest::{ForgeManifest, FunctionMod};
 use std::fmt;
 use std::{
@@ -11,6 +11,7 @@ use std::{
 };
 use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceFile, SourceMap};
+use time::{Date, Month};
 
 trait ReportExt {
     fn has_no_vulns(&self) -> bool;
@@ -355,6 +356,48 @@ fn forge_runtime_version_policy_allows_nodejs22() {
         "Forge Runtime Version Policy Checker",
         "end-of-life Node.js runtime"
     ));
+}
+
+fn date(year: i32, month: Month, day: u8) -> Date {
+    Date::from_calendar_date(year, month, day).unwrap()
+}
+
+#[test]
+fn forge_runtime_version_policy_flags_runtime_after_support_ends() {
+    let result =
+        ForgeRuntimeVersionPolicyChecker::check_at(Some("nodejs20.x"), date(2026, Month::May, 1));
+
+    assert!(result.is_some());
+}
+
+#[test]
+fn forge_runtime_version_policy_allows_runtime_through_support_end_date() {
+    let result = ForgeRuntimeVersionPolicyChecker::check_at(
+        Some("nodejs20.x"),
+        date(2026, Month::April, 30),
+    );
+
+    assert!(result.is_none());
+}
+
+#[test]
+fn forge_runtime_version_policy_allows_runtime_with_future_support_end_date() {
+    let result =
+        ForgeRuntimeVersionPolicyChecker::check_at(Some("nodejs22.x"), date(2026, Month::May, 1));
+
+    assert!(result.is_none());
+}
+
+#[test]
+fn forge_runtime_version_policy_ignores_unrecognized_runtime_names() {
+    assert!(
+        ForgeRuntimeVersionPolicyChecker::check_at(Some("nodejs999.x"), date(2026, Month::May, 1),)
+            .is_none()
+    );
+    assert!(
+        ForgeRuntimeVersionPolicyChecker::check_at(Some("sandbox"), date(2026, Month::May, 1),)
+            .is_none()
+    );
 }
 
 #[test]

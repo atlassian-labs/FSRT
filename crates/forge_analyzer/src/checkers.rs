@@ -21,6 +21,7 @@ use forge_permission_resolver::permissions_resolver::{
 use forge_utils::FxHashMap;
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
+use serde::Deserialize;
 use smallvec::SmallVec;
 use std::{
     cmp::max,
@@ -30,7 +31,9 @@ use std::{
     mem,
     ops::ControlFlow,
     path::PathBuf,
+    sync::LazyLock,
 };
+use time::{Date, Month, OffsetDateTime};
 use tracing::{debug, info, warn};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Default)]
@@ -2176,17 +2179,66 @@ impl IntoVuln for PermissionVuln<'_> {
     }
 }
 
-const EOL_FORGE_RUNTIMES: [&str; 1] = ["nodejs20.x"];
+// Node.js support schedule source:
+// https://github.com/nodejs/Release/blob/main/schedule.json
+const NODEJS_SUPPORT_SCHEDULE: &str = include_str!("../../../nodejs_support.json");
+
+#[derive(Deserialize)]
+struct NodejsRelease {
+    end: String,
+}
+
+static NODEJS_END_DATES: LazyLock<HashMap<String, Date>> = LazyLock::new(|| {
+    let releases: HashMap<String, NodejsRelease> = serde_json::from_str(NODEJS_SUPPORT_SCHEDULE)
+        .expect("nodejs_support.json must contain a valid Node.js support schedule");
+
+    releases
+        .into_iter()
+        .map(|(version, release)| {
+            let end = parse_nodejs_date(&release.end).unwrap_or_else(|| {
+                panic!(
+                    "invalid Node.js support end date for {version}: {}",
+                    release.end
+                )
+            });
+            (version, end)
+        })
+        .collect()
+});
+
+fn parse_nodejs_date(date: &str) -> Option<Date> {
+    let mut parts = date.split('-');
+    let year = parts.next()?.parse().ok()?;
+    let month = Month::try_from(parts.next()?.parse::<u8>().ok()?).ok()?;
+    let day = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Date::from_calendar_date(year, month, day).ok()
+}
+
+fn nodejs_major(runtime: &str) -> Option<&str> {
+    runtime.strip_prefix("nodejs")?.strip_suffix(".x")
+}
 
 pub struct ForgeRuntimeVersionPolicyChecker;
 
 impl ForgeRuntimeVersionPolicyChecker {
     pub fn check(runtime: Option<&str>) -> Option<ForgeRuntimeVersionPolicyVuln> {
-        runtime
-            .filter(|runtime| EOL_FORGE_RUNTIMES.contains(runtime))
-            .map(|runtime| ForgeRuntimeVersionPolicyVuln {
-                runtime: runtime.to_owned(),
-            })
+        Self::check_at(runtime, OffsetDateTime::now_utc().date())
+    }
+
+    pub fn check_at(
+        runtime: Option<&str>,
+        scan_date: Date,
+    ) -> Option<ForgeRuntimeVersionPolicyVuln> {
+        let runtime = runtime?;
+        let version = format!("v{}", nodejs_major(runtime)?);
+        let end_date = NODEJS_END_DATES.get(&version)?;
+
+        (scan_date > *end_date).then(|| ForgeRuntimeVersionPolicyVuln {
+            runtime: runtime.to_owned(),
+        })
     }
 }
 
