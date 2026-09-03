@@ -22,7 +22,7 @@ use petgraph::algo::dominators;
 use smallvec::SmallVec;
 use smallvec::smallvec;
 use smallvec::smallvec_inline;
-use swc_core::common::SyntaxContext;
+use swc_core::common::{Span, SyntaxContext};
 use swc_core::ecma::ast;
 use swc_core::ecma::ast::BinaryOp;
 use swc_core::ecma::ast::JSXText;
@@ -73,6 +73,23 @@ pub enum Terminator {
 
 // FIXME: ideally we should record the API call expression in the IR and the `UserFieldAccess` and `ApiCustomField` variants
 // should be removed and the type of the API call should be determined during dataflow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SqlSink {
+    Prepare,
+    ExecuteRaw,
+    MigrationEnqueue,
+}
+
+impl SqlSink {
+    pub fn api_name(self) -> &'static str {
+        match self {
+            Self::Prepare => "sql.prepare",
+            Self::ExecuteRaw => "sql.executeRaw",
+            Self::MigrationEnqueue => "migrationRunner.enqueue",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intrinsic {
     Authorize(IntrinsicName),
@@ -86,6 +103,7 @@ pub enum Intrinsic {
     StorageRead,
     /// A secret read from `@forge/kvs` (`kvs.getSecret`) or the legacy
     /// `@forge/api` storage API (`storage.getSecret`).
+    SqlQuery(SqlSink),
     SecretRead,
     ConsoleLog(ConsoleMethod),
 }
@@ -185,6 +203,9 @@ pub struct Body {
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
     pub dominator_tree: OnceCell<DomTree>,
     pub blockbuilders: TiVec<BasicBlockId, BasicBlockBuilder>,
+    instruction_spans: FxHashMap<Location, Span>,
+    pub(crate) argument_defs: Vec<DefId>,
+    pub(crate) argument_spans: FxHashMap<DefId, Span>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -444,6 +465,9 @@ impl Body {
             predecessors: Default::default(),
             dominator_tree: Default::default(),
             blockbuilders: vec![BasicBlockBuilder { insts: Vec::new() }].into(),
+            instruction_spans: FxHashMap::default(),
+            argument_defs: Vec::new(),
+            argument_spans: FxHashMap::default(),
         }
     }
 
@@ -916,6 +940,26 @@ impl Body {
         var
     }
 
+    pub(crate) fn push_tmp_spanned(
+        &mut self,
+        bb: BasicBlockId,
+        val: Rvalue,
+        parent: Option<DefId>,
+        span: Span,
+    ) -> VarId {
+        let location = Location::new(bb, self.blockbuilders[bb].insts.len() as u32);
+        self.instruction_spans.insert(location, span);
+        self.push_tmp(bb, val, parent)
+    }
+
+    pub(crate) fn instruction_span(&self, location: Location) -> Option<Span> {
+        self.instruction_spans.get(&location).copied()
+    }
+
+    pub(crate) fn argument_span(&self, def: DefId) -> Option<Span> {
+        self.argument_spans.get(&def).copied()
+    }
+
     #[inline]
     pub(crate) fn push_assign(&mut self, bb: BasicBlockId, var: Variable, val: Rvalue) {
         self.blockbuilders[bb].insts.push(Inst::Assign(var, val));
@@ -1239,6 +1283,7 @@ impl fmt::Display for Intrinsic {
             Intrinsic::StorageRead => write!(f, "forge storage read"),
             Intrinsic::SecretRead => write!(f, "secret read"),
             Intrinsic::ConsoleLog(method) => write!(f, "{method}"),
+            Intrinsic::SqlQuery(sink) => write!(f, "sql query ({sink:?})"),
         }
     }
 }

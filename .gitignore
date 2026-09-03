@@ -5,3 +5,6 @@
 /fsrt-remote.toml
 /session-cookie.txt
 /session-cookie-*.txt
+node_modules/
+.cursor/
+test-apps/

@@ -41,6 +41,7 @@ use forge_analyzer::{
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
     reporter::{Report, Reporter},
+    sql_injection::SqlInjectionChecker,
 };
 
 use crate::{
@@ -62,6 +63,7 @@ enum Scanner {
     Secret,
     SecretLogging,
     RuntimeVersion,
+    SqlInjection,
 }
 
 impl Scanner {
@@ -592,6 +594,7 @@ pub(crate) fn scan_directory<'a>(
     let run_auth_header_scanner = opts.scanner_enabled(Scanner::AuthHeader);
     let run_secret_scanner = opts.scanner_enabled(Scanner::Secret);
     let run_secret_logging_scanner = opts.scanner_enabled(Scanner::SecretLogging);
+    let run_sql_injection_scanner = opts.scanner_enabled(Scanner::SqlInjection);
     let scan_functions =
         opts.scan_functions || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
 
@@ -663,6 +666,7 @@ pub(crate) fn scan_directory<'a>(
     let mut secret_logging_checker =
         SecretLoggingChecker::new(opts.secret_logging.property_reads());
     let mut auth_header_checker = AuthHeaderChecker::new();
+    let mut sql_checker = SqlInjectionChecker::new(std::sync::Arc::clone(&proj.sm));
 
     if run_secret_scanner
         && let Some(providers) = &manifest.providers
@@ -709,6 +713,20 @@ pub(crate) fn scan_directory<'a>(
             )
         {
             warn!("error while running auth header checker: {err}");
+        }
+
+        if run_sql_injection_scanner {
+            // SQL source state is entrypoint-specific. A fresh interpreter prevents
+            // one resolver or trigger from tainting an unrelated entrypoint.
+            let mut sql_interp = interpreters.create::<SqlInjectionChecker>(false);
+            if let Err(err) = sql_interp.run_checker_isolated_resolvers(
+                func.def_id,
+                &mut sql_checker,
+                func.path.clone(),
+                func.func_name.to_owned(),
+            ) {
+                warn!("error while running SQL injection checker: {err}");
+            }
         }
 
         if func.invokable {
@@ -776,6 +794,7 @@ pub(crate) fn scan_directory<'a>(
     reporter.add_vulnerabilities(secret_checker.into_vulns());
     reporter.add_vulnerabilities(secret_logging_checker.into_vulns());
     reporter.add_vulnerabilities(auth_header_checker.into_vulns());
+    reporter.add_vulnerabilities(sql_checker.into_vulns());
 
     if !run_permission_scanner {
         return Ok(reporter.into_report());
