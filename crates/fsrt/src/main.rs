@@ -123,6 +123,9 @@ pub struct Args {
     /// Run a subcommand instead of the default scan.
     #[command(subcommand)]
     command: Option<Command>,
+
+    #[arg(long)]
+    enable_aec_mode: bool,
 }
 
 impl Args {
@@ -727,7 +730,7 @@ pub(crate) fn scan_directory<'a>(
 
         if func.invokable {
             if run_authorization_scanner {
-                let mut checker = AuthZChecker::new();
+                let mut checker = AuthZChecker::new(opts.enable_aec_mode);
                 debug!("checking {:?} at {:?}", func.func_name, &func.path);
                 if let Err(err) = interp.run_checker(
                     func.def_id,

@@ -381,11 +381,15 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
 
 pub struct AuthZChecker {
     vulns: Vec<AuthZVuln>,
+    check_remotes: bool,
 }
 
 impl AuthZChecker {
-    pub fn new() -> Self {
-        Self { vulns: vec![] }
+    pub fn new(check_remotes: bool) -> Self {
+        Self {
+            vulns: vec![],
+            check_remotes,
+        }
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthZVuln> {
@@ -396,7 +400,7 @@ impl AuthZChecker {
 
 impl Default for AuthZChecker {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
 }
 
@@ -524,21 +528,33 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             Intrinsic::Fetch => ControlFlow::Continue(*state),
             Intrinsic::ApiCall(name) if *state != AuthorizeState::Yes => match name {
                 IntrinsicName::InvokeRemote(remote) => {
-                    if let Some(remote_name) = remote {
+                    if !self.check_remotes {
+                        ControlFlow::Continue(*state)
+                    } else if let Some(remote_name) = remote {
                         let vuln = AuthZVuln::new(
                             interp.callstack(),
                             interp.env(),
                             interp.entry(),
                             RemoteCall(remote_name.clone()),
                         );
+
                         info!("Found a remote vuln!");
                         self.vulns.push(vuln);
                         ControlFlow::Break(())
                     } else {
-                        panic!("unreachable");
+                        warn!("Privileged remote missing ID");
+                        ControlFlow::Continue(*state)
                     }
                 }
-                _ => {
+                IntrinsicName::RequestJiraAny
+                | IntrinsicName::RequestJiraSoftware
+                | IntrinsicName::RequestJiraServiceManagement
+                | IntrinsicName::RequestConfluence
+                | IntrinsicName::RequestJira
+                | IntrinsicName::RequestBitbucket
+                | IntrinsicName::RequestGraph
+                | IntrinsicName::RequestCompass(_)
+                | IntrinsicName::Other => {
                     let vuln =
                         AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
                     info!("Found a vuln!");
