@@ -38,3 +38,6 @@ regex.workspace = true
 thirtyfour = { version = "0.37", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"], optional = true }
 url = { workspace = true, optional = true }
+
+[dev-dependencies]
+time.workspace = true
