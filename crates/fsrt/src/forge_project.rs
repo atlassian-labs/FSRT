@@ -44,6 +44,7 @@ pub(crate) trait ForgeProjectTrait<'a> {
         iter: I,
         secret_packages: &[PackageData],
         perm_map: &mut PermMap,
+        suspicious_remotes: &HashSet<String>,
     ) -> ForgeProject<'_> {
         let sm = Arc::<SourceMap>::default();
         let target = EsVersion::latest();
@@ -82,6 +83,7 @@ pub(crate) trait ForgeProjectTrait<'a> {
             ctx.file_resolver(),
             secret_packages,
             perm_map,
+            suspicious_remotes,
         );
         ForgeProject {
             sm,

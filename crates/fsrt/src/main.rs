@@ -33,6 +33,7 @@ use graphql_parser::{
     query::{self, Definition, Field, OperationDefinition, Selection, Type, parse_query},
     schema::{ObjectTypeExtension, TypeDefinition, TypeExtension},
 };
+
 use tracing::{debug, warn};
 use tracing_subscriber::{EnvFilter, prelude::*};
 use tracing_tree::HierarchicalLayer;
@@ -48,11 +49,9 @@ use forge_analyzer::{
     reporter::{Report, Reporter},
 };
 
-use crate::{
-    commands::Command,
-    forge_project::{ForgeProjectFromDir, ForgeProjectTrait, find_manifest_path},
-};
-use forge_loader::manifest::Entrypoint;
+use crate::commands::Command;
+use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait, find_manifest_path};
+use forge_loader::manifest::{self, Entrypoint};
 use walkdir::WalkDir;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -124,6 +123,9 @@ pub struct Args {
     /// Run a subcommand instead of the default scan.
     #[command(subcommand)]
     command: Option<Command>,
+
+    #[arg(long)]
+    enable_aec_mode: bool,
 }
 
 impl Args {
@@ -392,6 +394,27 @@ fn get_empty_report() -> Report {
     Reporter::new().into_report()
 }
 
+fn check_remotes(remotes: &Option<Vec<manifest::Remotes>>) -> HashSet<String> {
+    let Some(content) = remotes else {
+        return HashSet::new();
+    };
+
+    let result = content
+        .iter()
+        .filter(|e| e.passes_system_auth() && !e.passes_user_auth())
+        .map(|e| e.key.clone());
+
+    HashSet::from_iter(result)
+}
+
+fn has_remote_auth(remotes: &Option<Vec<manifest::Remotes>>) -> bool {
+    let Some(content) = remotes else {
+        return false;
+    };
+
+    content.iter().any(|e| e.contains_auth())
+}
+
 #[tracing::instrument(level = "debug")]
 pub(crate) fn scan_directory<'a>(
     dir: PathBuf,
@@ -425,6 +448,7 @@ pub(crate) fn scan_directory<'a>(
     } else {
         None
     };
+
     let requested_permissions = manifest.permissions;
     let permissions_declared = requested_permissions
         .scopes
@@ -437,19 +461,18 @@ pub(crate) fn scan_directory<'a>(
         .map(|s| s.as_str())
         .collect::<HashSet<_>>();
     let mut perm_map = PermMap::new(&permset);
-    let contains_remote_auth_token = manifest
-        .remotes
-        .unwrap_or_default()
-        .into_iter()
-        .any(|remote| remote.contains_auth());
+    let contains_remote_auth_token = has_remote_auth(&manifest.remotes);
 
     let mut sorted_paths: Vec<PathBuf> = paths.iter().cloned().collect();
     sorted_paths.sort();
+
+    let suspicious_remotes = check_remotes(&manifest.remotes);
     let mut proj = project.with_files_and_sourceroot(
         Path::new("src"),
         sorted_paths,
         secret_packages,
         &mut perm_map,
+        &suspicious_remotes,
     );
 
     let name = manifest.app.name.unwrap_or_default();
@@ -707,7 +730,7 @@ pub(crate) fn scan_directory<'a>(
 
         if func.invokable {
             if run_authorization_scanner {
-                let mut checker = AuthZChecker::new();
+                let mut checker = AuthZChecker::new(opts.enable_aec_mode);
                 debug!("checking {:?} at {:?}", func.func_name, &func.path);
                 if let Err(err) = interp.run_checker(
                     func.def_id,

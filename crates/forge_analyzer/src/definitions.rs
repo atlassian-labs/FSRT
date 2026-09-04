@@ -145,6 +145,7 @@ pub fn run_resolver(
     file_resolver: &ForgeResolver,
     secret_packages: &[PackageData],
     perm_map: &mut PermMap,
+    suspicious_remotes: &HashSet<String>,
 ) -> Environment {
     let mut environment = Environment::new();
 
@@ -227,6 +228,7 @@ pub fn run_resolver(
             secret_packages,
             module: curr_mod,
             parent: None,
+            suspicious_remotes,
         };
         module.visit_with(&mut global_collector);
     }
@@ -239,6 +241,7 @@ pub fn run_resolver(
             secret_packages,
             module: curr_mod,
             parent: None,
+            suspicious_remotes,
         };
         module.visit_with(&mut collector);
         module.visit_with(&mut PermCheck {
@@ -616,6 +619,7 @@ struct GlobalCollector<'cx> {
     global_id: DefId,
     secret_packages: &'cx [PackageData],
     parent: Option<DefId>,
+    suspicious_remotes: &'cx HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -634,6 +638,7 @@ pub enum IntrinsicName {
     RequestBitbucket,
     RequestGraph,
     RequestCompass(String),
+    InvokeRemote(Option<String>),
     Other,
 }
 
@@ -889,6 +894,7 @@ struct FunctionCollector<'cx> {
     curr_function: Option<DefId>,
     secret_packages: &'cx [PackageData],
     parent: Option<DefId>,
+    suspicious_remotes: &'cx HashSet<String>,
 }
 
 struct FunctionAnalyzer<'cx> {
@@ -903,6 +909,7 @@ struct FunctionAnalyzer<'cx> {
     in_lhs: bool,
     break_target: BasicBlockId,
     continue_target: BasicBlockId,
+    suspicious_remotes: &'cx HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1002,6 +1009,7 @@ impl FunctionAnalyzer<'_> {
         current_def: DefId,
         secret_packages: &'cx [PackageData],
         body: Body,
+        suspicious_remotes: &'cx HashSet<String>,
     ) -> FunctionAnalyzer<'cx> {
         FunctionAnalyzer {
             res: env,
@@ -1015,6 +1023,7 @@ impl FunctionAnalyzer<'_> {
             in_lhs: false,
             break_target: BasicBlockId::default(),
             continue_target: BasicBlockId::default(),
+            suspicious_remotes,
         }
     }
 
@@ -1037,6 +1046,7 @@ impl FunctionAnalyzer<'_> {
             }
             None => {}
         }
+
         let _: [_; 3] = self.body.new_blocks();
         let [check, cont, body_id] = self.body.new_blockbuilders();
 
@@ -1217,6 +1227,7 @@ impl FunctionAnalyzer<'_> {
             first_arg: Option<&Expr>,
             is_as_app: bool,
             last: &Atom,
+            suspicious_remotes: &HashSet<String>,
         ) -> Option<Intrinsic> {
             let first_arg = first_arg?;
 
@@ -1238,6 +1249,13 @@ impl FunctionAnalyzer<'_> {
                 IntrinsicName::RequestBitbucket
             } else if *last == "requestGraph" {
                 IntrinsicName::RequestGraph
+            } else if *last == "invokeRemote" {
+                // In general we'd want to detect cases where we can statically infer which remote or set of remotes
+                // is being referred to
+                IntrinsicName::InvokeRemote(match first_arg {
+                    Expr::Lit(Lit::Str(str_lit)) => Some(str_lit.value.to_string()),
+                    _ => None,
+                })
             } else {
                 IntrinsicName::RequestConfluence
             };
@@ -1246,6 +1264,17 @@ impl FunctionAnalyzer<'_> {
                 ApiCallKind::Unknown => {
                     if is_as_app {
                         Some(Intrinsic::ApiCall(function_name))
+                    } else if let IntrinsicName::InvokeRemote(remote_name) = &function_name {
+                        match remote_name {
+                            Some(name) => {
+                                if suspicious_remotes.contains(name) {
+                                    Some(Intrinsic::ApiCall(function_name))
+                                } else {
+                                    Some(Intrinsic::SafeCall(function_name))
+                                }
+                            }
+                            None => Some(Intrinsic::ApiCall(function_name)),
+                        }
                     } else {
                         Some(Intrinsic::SafeCall(function_name))
                     }
@@ -1281,7 +1310,7 @@ impl FunctionAnalyzer<'_> {
                     |imp| matches!(imp, ImportKind::Named(s) if *s == *"asApp" || *s == *"asUser")) {
                         let is_as_app = self.res.is_expr_imported_from(expr, self.module).is_some_and(
                             |imp| matches!(imp, ImportKind::Named(s) if *s == *"asApp"));
-                    return get_intrinsic(first_arg, is_as_app, last);
+                    return get_intrinsic(first_arg, is_as_app, last, self.suspicious_remotes);
                 }
                 None
             }
@@ -1300,7 +1329,7 @@ impl FunctionAnalyzer<'_> {
             {
                 let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
                 let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
-                get_intrinsic(first_arg, is_as_app, last)
+                get_intrinsic(first_arg, is_as_app, last, self.suspicious_remotes)
             }
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
                 if let Some(api) = self.res.is_imported_from(def, "@forge/api") {
@@ -1331,6 +1360,7 @@ impl FunctionAnalyzer<'_> {
             {
                 Some(Intrinsic::Fetch)
             }
+            // Double lookup? Really?
             [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/api").is_some() => {
                 if let Some(ImportKind::Named(name)) = self.res.is_imported_from(def, "@forge/api")
                 {
@@ -1341,9 +1371,15 @@ impl FunctionAnalyzer<'_> {
                     } else if *name == *"requestJira"
                         || *name == *"requestConfluence"
                         || *name == *"requestBitbucket"
+                        || *name == *"invokeRemote"
                     {
                         let method_name: Atom = name.clone();
-                        return get_intrinsic(first_arg, false, &method_name);
+                        return get_intrinsic(
+                            first_arg,
+                            false,
+                            &method_name,
+                            self.suspicious_remotes,
+                        );
                     }
                 }
                 None
@@ -1360,7 +1396,7 @@ impl FunctionAnalyzer<'_> {
                         || *name == *"requestBitbucket")
                 {
                     let method_name: Atom = name.clone();
-                    return get_intrinsic(first_arg, false, &method_name);
+                    return get_intrinsic(first_arg, false, &method_name, self.suspicious_remotes);
                 }
                 None
             }
@@ -2780,6 +2816,7 @@ impl Visit for FunctionCollector<'_> {
                 in_lhs: false,
                 break_target: BasicBlockId(u32::MAX),
                 continue_target: BasicBlockId(u32::MAX),
+                suspicious_remotes: self.suspicious_remotes,
             };
             if let Some(BlockStmt { stmts, .. }) = &n.body {
                 analyzer.lower_stmts(stmts);
@@ -2827,8 +2864,14 @@ impl Visit for FunctionCollector<'_> {
             };
             n.function.body.visit_children_with(&mut localdef);
             let body = localdef.body;
-            let mut analyzer =
-                FunctionAnalyzer::new(self.res, self.module, *owner, self.secret_packages, body);
+            let mut analyzer = FunctionAnalyzer::new(
+                self.res,
+                self.module,
+                *owner,
+                self.secret_packages,
+                body,
+                self.suspicious_remotes,
+            );
 
             if let Some(BlockStmt { stmts, .. }) = &n.function.body {
                 analyzer.lower_stmts(stmts);
@@ -2880,8 +2923,14 @@ impl Visit for FunctionCollector<'_> {
         };
         func_body.visit_children_with(&mut localdef);
         let body = localdef.body;
-        let mut analyzer =
-            FunctionAnalyzer::new(self.res, self.module, owner, self.secret_packages, body);
+        let mut analyzer = FunctionAnalyzer::new(
+            self.res,
+            self.module,
+            owner,
+            self.secret_packages,
+            body,
+            self.suspicious_remotes,
+        );
 
         match &**func_body {
             BlockStmtOrExpr::BlockStmt(BlockStmt { stmts, .. }) => {
@@ -3004,6 +3053,7 @@ impl Visit for FunctionCollector<'_> {
                                 owner,
                                 self.secret_packages,
                                 Body::with_owner(owner),
+                                self.suspicious_remotes,
                             );
 
                             let opnd = analyzer.lower_expr(expr, None);
@@ -3128,8 +3178,14 @@ impl FunctionCollector<'_> {
         };
         n.body.visit_children_with(&mut localdef);
         let body = localdef.body;
-        let mut analyzer =
-            FunctionAnalyzer::new(self.res, self.module, owner, self.secret_packages, body);
+        let mut analyzer = FunctionAnalyzer::new(
+            self.res,
+            self.module,
+            owner,
+            self.secret_packages,
+            body,
+            self.suspicious_remotes,
+        );
 
         if let Some(BlockStmt { stmts, .. }) = &n.body {
             analyzer.lower_stmts(stmts);
@@ -3661,8 +3717,14 @@ impl Visit for GlobalCollector<'_> {
         };
         n.visit_children_with(&mut localdef);
         let body = localdef.body;
-        let mut analyzer =
-            FunctionAnalyzer::new(self.res, self.module, owner, self.secret_packages, body);
+        let mut analyzer = FunctionAnalyzer::new(
+            self.res,
+            self.module,
+            owner,
+            self.secret_packages,
+            body,
+            self.suspicious_remotes,
+        );
 
         let mut all_module_items = Vec::new();
 

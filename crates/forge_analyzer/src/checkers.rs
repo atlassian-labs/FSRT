@@ -1,3 +1,4 @@
+use crate::checkers::AuthZVulnKind::{ApiCall, RemoteCall};
 use crate::interp::ProjectionVec;
 use crate::utils::projvec_from_str;
 use crate::{
@@ -383,11 +384,15 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
 
 pub struct AuthZChecker {
     vulns: Vec<AuthZVuln>,
+    check_remotes: bool,
 }
 
 impl AuthZChecker {
-    pub fn new() -> Self {
-        Self { vulns: vec![] }
+    pub fn new(check_remotes: bool) -> Self {
+        Self {
+            vulns: vec![],
+            check_remotes,
+        }
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthZVuln> {
@@ -398,8 +403,14 @@ impl AuthZChecker {
 
 impl Default for AuthZChecker {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
+}
+
+#[derive(Debug)]
+pub enum AuthZVulnKind {
+    ApiCall,
+    RemoteCall(String),
 }
 
 #[derive(Debug)]
@@ -407,10 +418,16 @@ pub struct AuthZVuln {
     stack: String,
     entry_func: String,
     file: PathBuf,
+    kind: AuthZVulnKind,
 }
 
 impl AuthZVuln {
-    fn new(callstack: Vec<Frame>, env: &Environment, entry: &EntryPoint) -> Self {
+    fn new(
+        callstack: Vec<Frame>,
+        env: &Environment,
+        entry: &EntryPoint,
+        kind: AuthZVulnKind,
+    ) -> Self {
         let entry_func = match &entry.kind {
             EntryKind::Function(func) => func.clone(),
             EntryKind::Resolver(res, prop) => format!("{res}.{prop}"),
@@ -434,6 +451,7 @@ impl AuthZVuln {
             stack,
             entry_func,
             file,
+            kind,
         }
     }
 }
@@ -456,6 +474,20 @@ impl IntoVuln for AuthZVuln {
             .for_each(|comp| comp.hash(&mut hasher));
         self.entry_func.hash(&mut hasher);
         self.stack.hash(&mut hasher);
+        let (proof, req_id) = match self.kind {
+            ApiCall => (
+                format!("Unauthorized API call via asApp() found via {}", self.stack),
+                "Requirement 1.2",
+            ),
+            RemoteCall(remote) => (
+                format!(
+                    "Unauthorized call to forge remote `{}` with app system token found via {}",
+                    remote, self.stack
+                ),
+                "AEC Requirement 1.14",
+            ),
+        };
+
         Vulnerability {
             check_name: format!("Custom-Check-Authorization-{}", hasher.finish()),
             description: format!(
@@ -463,11 +495,11 @@ impl IntoVuln for AuthZVuln {
                 self.entry_func, self.file
             ),
             recommendation: "Use the authorize API _https://developer.atlassian.com/platform/forge/runtime-reference/authorize-api/_ or manually authorize the user via the product REST APIs.",
-            proof: format!("Unauthorized API call via asApp() found via {}", self.stack),
+            proof,
             severity: Severity::High,
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
-            marketplace_security_requirement: "Requirement 1.2",
+            marketplace_security_requirement: req_id,
             date: reporter.current_date(),
         }
     }
@@ -491,20 +523,51 @@ impl<'cx> Runner<'cx> for AuthZChecker {
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        match *intrinsic {
+        match intrinsic {
             Intrinsic::Authorize(_) => {
                 debug!("authorize intrinsic found");
                 ControlFlow::Continue(AuthorizeState::Yes)
             }
             Intrinsic::Fetch => ControlFlow::Continue(*state),
-            Intrinsic::ApiCall(_) if *state != AuthorizeState::Yes => {
-                let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
-                info!("Found a vuln!");
-                self.vulns.push(vuln);
-                ControlFlow::Break(())
-            }
+            Intrinsic::ApiCall(name) if *state != AuthorizeState::Yes => match name {
+                IntrinsicName::InvokeRemote(remote) => {
+                    if !self.check_remotes {
+                        ControlFlow::Continue(*state)
+                    } else if let Some(remote_name) = remote {
+                        let vuln = AuthZVuln::new(
+                            interp.callstack(),
+                            interp.env(),
+                            interp.entry(),
+                            RemoteCall(remote_name.clone()),
+                        );
+
+                        info!("Found a remote vuln!");
+                        self.vulns.push(vuln);
+                        ControlFlow::Break(())
+                    } else {
+                        warn!("Privileged remote missing ID");
+                        ControlFlow::Continue(*state)
+                    }
+                }
+                IntrinsicName::RequestJiraAny
+                | IntrinsicName::RequestJiraSoftware
+                | IntrinsicName::RequestJiraServiceManagement
+                | IntrinsicName::RequestConfluence
+                | IntrinsicName::RequestJira
+                | IntrinsicName::RequestBitbucket
+                | IntrinsicName::RequestGraph
+                | IntrinsicName::RequestCompass(_)
+                | IntrinsicName::Other => {
+                    let vuln =
+                        AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
+                    info!("Found a vuln!");
+                    self.vulns.push(vuln);
+                    ControlFlow::Break(())
+                }
+            },
             Intrinsic::ApiCustomField if *state < AuthorizeState::CustomFieldOnly => {
-                let vuln = AuthZVuln::new(interp.callstack(), interp.env(), interp.entry());
+                let vuln =
+                    AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
@@ -1154,6 +1217,7 @@ fn api_call_name(intrinsic: &Intrinsic) -> &'static str {
             IntrinsicName::RequestBitbucket => "requestBitbucket",
             IntrinsicName::RequestGraph => "requestGraph",
             IntrinsicName::RequestCompass(_) => "requestCompass",
+            IntrinsicName::InvokeRemote(_) => "invokeRemote",
             IntrinsicName::Other => "request",
         },
         _ => "request",
@@ -1935,6 +1999,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
             }
 
             let mut permissions_within_call: Vec<String> = vec![];
+            // What does resolver/regex_map do?
             let (resolver, regex_map) = match intrinsic_func_type {
                 IntrinsicName::RequestJiraAny => (
                     interp.jira_any_permission_resolver,
@@ -1961,6 +2026,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                 ),
                 IntrinsicName::RequestCompass(_)
                 | IntrinsicName::RequestGraph
+                | IntrinsicName::InvokeRemote(_)
                 | IntrinsicName::Other => {
                     (&PermissionHashMap::new(), &HashMap::<String, Regex>::new())
                 }
