@@ -33,8 +33,9 @@ use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
     checkers::{
-        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
-        PermissionChecker, PermissionVuln, SecretChecker, SecretType,
+        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, EntryExposure,
+        ForgeRuntimeVersionPolicyChecker, PermissionChecker, PermissionVuln, SecretChecker,
+        SecretStorageChecker, SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -59,6 +60,10 @@ enum Scanner {
     Permission,
     Secret,
     RuntimeVersion,
+    /// Not part of the default set: must be requested explicitly, either with
+    /// `--scanners secret-storage` or `CHECK_SECRET_STORAGE=1`. Its findings
+    /// knowingly over-report and are meant for manual triage.
+    SecretStorage,
 }
 
 #[derive(Parser, Debug)]
@@ -127,6 +132,14 @@ impl Args {
     fn scanner_enabled(&self, scanner: Scanner) -> bool {
         self.scanners.is_empty() || self.scanners.contains(&scanner)
     }
+
+    /// Opt-in scanners are excluded from the default set, so they are enabled
+    /// only when named explicitly. An environment variable is honoured as well so
+    /// the scan can be turned on in deployments whose argument list is fixed.
+    fn optin_scanner_enabled(&self, scanner: Scanner, env_var: &str) -> bool {
+        self.scanners.contains(&scanner)
+            || std::env::var_os(env_var).is_some_and(|value| !value.is_empty())
+    }
 }
 
 #[allow(dead_code)]
@@ -139,6 +152,7 @@ struct ResolvedEntryPoint<'a> {
     webtrigger: bool,
     invokable: bool,
     admin: bool,
+    admin_only: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -496,6 +510,8 @@ pub(crate) fn scan_directory<'a>(
     let run_secret_scanner = opts.scanner_enabled(Scanner::Secret);
     let scan_functions =
         opts.scan_functions || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
+    let run_secret_storage_scanner =
+        opts.optin_scanner_enabled(Scanner::SecretStorage, "CHECK_SECRET_STORAGE");
 
     let funcrefs = manifest
         .modules
@@ -506,6 +522,7 @@ pub(crate) fn scan_directory<'a>(
                 invokable: entrypoint.invokable,
                 web_trigger: entrypoint.web_trigger,
                 admin: entrypoint.admin,
+                admin_only: entrypoint.admin_only,
             })
         });
 
@@ -636,6 +653,48 @@ pub(crate) fn scan_directory<'a>(
                     "error while scanning {:?} in {:?}: {err}",
                     func.func_name, func.path,
                 );
+            }
+            reporter.add_vulnerabilities(checker.into_vulns());
+        }
+    }
+
+    // Optional Forge secret storage scan.
+    //
+    // Only entry points reachable from a non-admin module are scanned. An admin
+    // page's own resolver is left alone: the platform gates those invocations on
+    // admin permission, so no check of the app's own is expected. A resolver that an
+    // admin page shares with another module is the interesting case — sharing voids
+    // that platform check, which is the documented Forge admin resolver exposure.
+    //
+    if let Some(mut secret_storage_interp) =
+        run_secret_storage_scanner.then(|| interpreters.create::<SecretStorageChecker>(true))
+    {
+        // Analyze each entry point, and each resolver property, independently: a
+        // shared helper must be walked again for every entry point that reaches it,
+        // so that both its sinks and its authorization checks are accounted for.
+        secret_storage_interp.set_isolate_entries(true);
+
+        for func in &proj.funcs {
+            if !func.invokable || func.admin_only {
+                continue;
+            }
+            let exposure = if func.admin {
+                EntryExposure::SharedAdminResolver
+            } else {
+                EntryExposure::Invokable
+            };
+            let mut checker = SecretStorageChecker::new(exposure);
+            debug!(
+                "checking secret storage in {:?} at {:?}",
+                func.func_name, &func.path
+            );
+            if let Err(err) = secret_storage_interp.run_checker(
+                func.def_id,
+                &mut checker,
+                func.path.clone(),
+                func.func_name.to_string(),
+            ) {
+                warn!("error while running secret storage checker: {err}");
             }
             reporter.add_vulnerabilities(checker.into_vulns());
         }

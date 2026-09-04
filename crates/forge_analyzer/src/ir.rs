@@ -70,6 +70,14 @@ pub enum Terminator {
     },
 }
 
+/// The Forge secret storage operation behind a `SecretStorage` intrinsic, i.e.
+/// `getSecret`/`setSecret` on `@forge/api`'s `storage` or `@forge/kvs`'s `kvs`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SecretStorageOp {
+    Get,
+    Set,
+}
+
 // FIXME: ideally we should record the API call expression in the IR and the `UserFieldAccess` and `ApiCustomField` variants
 // should be removed and the type of the API call should be determined during dataflow.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,6 +91,7 @@ pub enum Intrinsic {
     SecretFunction(PackageData),
     EnvRead,
     StorageRead,
+    SecretStorage(SecretStorageOp),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1132,6 +1141,12 @@ impl fmt::Display for Intrinsic {
             Intrinsic::SafeCall(_) => write!(f, "safe api call"),
             Intrinsic::EnvRead => write!(f, "env read"),
             Intrinsic::StorageRead => write!(f, "forge storage read"),
+            Intrinsic::SecretStorage(SecretStorageOp::Get) => {
+                write!(f, "forge secret storage read")
+            }
+            Intrinsic::SecretStorage(SecretStorageOp::Set) => {
+                write!(f, "forge secret storage write")
+            }
         }
     }
 }
