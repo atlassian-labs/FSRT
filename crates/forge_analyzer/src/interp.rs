@@ -195,7 +195,14 @@ pub trait Dataflow<'cx>: Sized {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
             Inst::Assign(var, rvalue) => {
-                interp.add_value_to_definition(def, var.clone(), rvalue.clone());
+                // Aggregate values are retained for specialized analyses such as
+                // SQL taint propagation. The shared value engine historically
+                // ignored array values; inserting every aggregate here adds no
+                // precision for existing checkers and is prohibitively expensive
+                // in debug builds of bundled applications.
+                if !matches!(rvalue, Rvalue::Aggregate(_)) {
+                    interp.add_value_to_definition(def, var.clone(), rvalue.clone());
+                }
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
         }
@@ -240,10 +247,18 @@ pub trait Dataflow<'cx>: Sized {
         match block.successors() {
             Successors::Return => {
                 let old_state = interp.func_state(def);
-                let mut final_state = old_state.clone().unwrap_or(Self::State::BOTTOM);
-                let changed = final_state.join_changed(&state);
-                if old_state.is_none() || changed {
-                    interp.set_func_state(def, final_state);
+                let updated_state = if C::JOIN_FUNCTION_RETURN_STATES {
+                    let mut final_state = old_state.clone().unwrap_or(Self::State::BOTTOM);
+                    let changed = final_state.join_changed(&state);
+                    (old_state.is_none() || changed).then_some(final_state)
+                } else {
+                    old_state
+                        .as_ref()
+                        .is_none_or(|old_state| old_state < &state)
+                        .then_some(state)
+                };
+                if let Some(updated_state) = updated_state {
+                    interp.set_func_state(def, updated_state);
                     let calls = interp.called_from(def);
                     let name = interp.env().def_name(def);
                     debug!("{name} {def:?} is called from {calls:?}");
@@ -283,6 +298,7 @@ pub trait Runner<'cx>: Sized {
     const NAME: &'static str = "Runner";
 
     const REQUIRE_CALLEE_STATE_COVERS_CALLER: bool = true;
+    const JOIN_FUNCTION_RETURN_STATES: bool = false;
 
     fn visit_intrinsic(
         &mut self,
