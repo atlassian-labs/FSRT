@@ -386,6 +386,9 @@ fn global_is_proven_constant(env: &Environment, def: DefId) -> bool {
             Rvalue::Read(operand) | Rvalue::Unary(_, operand) => {
                 operand_is_constant(env, body, operand, visiting_vars, visiting_defs)
             }
+            Rvalue::Aggregate(elements) => elements.iter().all(|operand| {
+                operand_is_constant(env, body, operand, visiting_vars, visiting_defs)
+            }),
             Rvalue::Bin(_, left, right) => {
                 operand_is_constant(env, body, left, visiting_vars, visiting_defs)
                     && operand_is_constant(env, body, right, visiting_vars, visiting_defs)
@@ -495,6 +498,9 @@ fn classify_rvalue_inner<'cx, C: Runner<'cx, State = SqlState>>(
     };
     match rvalue {
         Rvalue::Read(operand) | Rvalue::Unary(_, operand) => classify(operand, visiting),
+        Rvalue::Aggregate(elements) => elements.iter().fold(SqlTaint::Trusted, |value, operand| {
+            value.join(&classify(operand, visiting))
+        }),
         Rvalue::Bin(_, left, right) => classify(left, visiting).join(&classify(right, visiting)),
         Rvalue::Template(template) => template.exprs.iter().fold(SqlTaint::Trusted, |value, op| {
             value.join(&classify(op, visiting))
@@ -714,6 +720,14 @@ fn render_query_operand(env: &Environment, def: DefId, operand: &Operand) -> Str
                     .into_iter()
                     .map(|(_, rvalue)| match rvalue {
                         Rvalue::Read(source) => render(env, def, source, visiting),
+                        Rvalue::Aggregate(elements) => format!(
+                            "[{}]",
+                            elements
+                                .iter()
+                                .map(|element| render(env, def, element, visiting))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
                         Rvalue::Bin(crate::ir::BinOp::Add, left, right) => format!(
                             "{} + {}",
                             render(env, def, left, visiting),
@@ -877,6 +891,20 @@ fn collect_sources<'cx, C: Runner<'cx, State = SqlState>>(
                     sources,
                     source_map,
                 ),
+                Rvalue::Aggregate(elements) => {
+                    for source in elements {
+                        collect(
+                            interp,
+                            def,
+                            body,
+                            active_callers,
+                            source,
+                            visiting,
+                            sources,
+                            source_map,
+                        );
+                    }
+                }
                 Rvalue::Bin(_, left, right) => {
                     collect(
                         interp,
@@ -1182,19 +1210,13 @@ impl<'cx> Dataflow<'cx> for SqlDataflow {
         mut state: Self::State,
     ) -> Self::State {
         if let Inst::Assign(target, rvalue) = inst {
-            interp.add_value_to_definition(def, target.clone(), rvalue.clone());
             if let Rvalue::Call(callee, operands) = rvalue {
                 self.propagate_call_arguments(interp, def, callee, operands, &mut state);
-                self.super_transfer_call(
-                    interp,
-                    def,
-                    _loc,
-                    _block,
-                    callee,
-                    state.clone(),
-                    operands.clone(),
-                );
             }
+            // SqlState owns SQL classification, argument propagation, and return
+            // propagation. Populating the shared ValueManager as well duplicates
+            // that work and makes projected object assignments dominate runtime
+            // on large entrypoint graphs.
             let taint = self.classify_rvalue(interp, def, rvalue, &state);
             state.insert_assignment(interp.env(), interp.body(), def, target, taint);
         } else if let Inst::Expr(Rvalue::Call(callee, operands)) = inst {
