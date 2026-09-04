@@ -1426,6 +1426,7 @@ impl<'cx> Runner<'cx> for SqlInjectionChecker {
 
     const NAME: &'static str = "SQLInjection";
     const REQUIRE_CALLEE_STATE_COVERS_CALLER: bool = false;
+    const JOIN_FUNCTION_RETURN_STATES: bool = true;
 
     fn visit_intrinsic(
         &mut self,
