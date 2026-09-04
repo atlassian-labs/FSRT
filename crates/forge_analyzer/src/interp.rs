@@ -175,6 +175,7 @@ pub trait Dataflow<'cx>: Sized {
             Rvalue::Unary(_, _) => initial_state,
             Rvalue::Bin(_, _, _) => initial_state,
             Rvalue::Read(_) => initial_state,
+            Rvalue::Aggregate(_) => initial_state,
             Rvalue::Phi(_) => initial_state,
             Rvalue::Template(_) => initial_state,
         }
@@ -360,6 +361,7 @@ pub trait Runner<'cx>: Sized {
             Rvalue::Unary(_, _)
             | Rvalue::Bin(_, _, _)
             | Rvalue::Read(_)
+            | Rvalue::Aggregate(_)
             | Rvalue::Phi(_)
             | Rvalue::Template(_) => ControlFlow::Continue(curr_state.clone()),
         }

@@ -117,6 +117,7 @@ pub enum Rvalue {
     Unary(UnOp, Operand),
     Bin(BinOp, Operand, Operand),
     Read(Operand),
+    Aggregate(Vec<Operand>),
     Call(Operand, SmallVec<[Operand; 4]>),
     Intrinsic(Intrinsic, SmallVec<[Operand; 4]>),
     Phi(Vec<(VarId, BasicBlockId)>),
@@ -1201,6 +1202,13 @@ impl fmt::Display for Rvalue {
                 write!(f, ")")
             }
             Rvalue::Read(ref opnd) => write!(f, "{opnd}"),
+            Rvalue::Aggregate(ref elements) => {
+                write!(f, "[")?;
+                for element in elements {
+                    write!(f, "{element}, ")?;
+                }
+                write!(f, "]")
+            }
             Rvalue::Phi(ref phis) => {
                 write!(f, "phi(")?;
                 for &(var, block) in phis {

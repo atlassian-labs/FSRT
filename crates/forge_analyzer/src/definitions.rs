@@ -303,6 +303,13 @@ pub fn update_rvalue(rvalue: &mut Rvalue, updated_vars: &HashMap<VarId, VarId>) 
         | Rvalue::Bin(_, _, Operand::Var(variable)) => {
             update_var(variable);
         }
+        Rvalue::Aggregate(elements) => {
+            for element in elements {
+                if let Operand::Var(variable) = element {
+                    update_var(variable);
+                }
+            }
+        }
         // Rvalues of Read (Literal), Binary (Literal), Unary (Literal), Call (method), Intrinsic, Phi, and Template can be kept same.
         Rvalue::Read(_)
         | Rvalue::Bin(_, _, _)
@@ -1347,41 +1354,45 @@ impl FunctionAnalyzer<'_> {
                 PropPath::Def(def) => Some(*def),
                 _ => None,
             });
-            let confirmed_other_package = root_def
-                .and_then(|def| self.res.as_foreign_import(def))
-                .is_some_and(|(module, _)| module != *"@forge/sql");
-            let confirmed_local_receiver = root_def.is_some_and(|root| {
-                self.res.bodies().any(|body| {
-                    let local_vars = body.vars.iter_enumerated().filter_map(|(var, kind)| {
-                        matches!(kind, VarKind::GlobalRef(def) | VarKind::LocalDef(def) if *def == root)
-                            .then_some(var)
-                    });
-                    local_vars.into_iter().any(|local_var| {
-                        originates_from_resolved_local_call(self.res, body, local_var, 8)
+            let sink = if *method == *"prepare" {
+                Some(SqlSink::Prepare)
+            } else if *method == *"executeRaw" {
+                Some(SqlSink::ExecuteRaw)
+            } else if *method == *"enqueue" {
+                let imported_runner = root_def.is_some_and(|def| {
+                    self.res.is_imported_from(def, "@forge/sql").is_some_and(
+                        |kind| matches!(kind, ImportKind::Named(name) if *name == *"migrationRunner"),
+                    )
+                });
+                let named_runner = callee.iter().any(
+                    |part| matches!(part, PropPath::Static(name) if *name == *"migrationRunner"),
+                ) || root_def
+                    .is_some_and(|def| self.res.def_name(def).contains("migrationRunner"));
+                (imported_runner || named_runner).then_some(SqlSink::MigrationEnqueue)
+            } else {
+                None
+            };
+
+            // Provenance checks walk local IR and are only relevant to actual SQL
+            // sink candidates. Running them for every method call makes lowering
+            // quadratic in the size of real-world bundled applications.
+            if let Some(sink) = sink {
+                let confirmed_other_package = root_def
+                    .and_then(|def| self.res.as_foreign_import(def))
+                    .is_some_and(|(module, _)| module != *"@forge/sql");
+                let confirmed_local_receiver = root_def.is_some_and(|root| {
+                    self.res.bodies().any(|body| {
+                        let local_vars = body.vars.iter_enumerated().filter_map(|(var, kind)| {
+                            matches!(kind, VarKind::GlobalRef(def) | VarKind::LocalDef(def) if *def == root)
+                                .then_some(var)
+                        });
+                        local_vars.into_iter().any(|local_var| {
+                            originates_from_resolved_local_call(self.res, body, local_var, 8)
+                        })
                     })
-                })
-            });
+                });
 
-            if !confirmed_other_package && !confirmed_local_receiver {
-                let sink = if *method == *"prepare" {
-                    Some(SqlSink::Prepare)
-                } else if *method == *"executeRaw" {
-                    Some(SqlSink::ExecuteRaw)
-                } else if *method == *"enqueue" {
-                    let imported_runner = root_def.is_some_and(|def| {
-                        self.res.is_imported_from(def, "@forge/sql").is_some_and(
-                            |kind| matches!(kind, ImportKind::Named(name) if *name == *"migrationRunner"),
-                        )
-                    });
-                    let named_runner = callee.iter().any(|part| {
-                        matches!(part, PropPath::Static(name) if *name == *"migrationRunner")
-                    }) || root_def.is_some_and(|def| self.res.def_name(def).contains("migrationRunner"));
-                    (imported_runner || named_runner).then_some(SqlSink::MigrationEnqueue)
-                } else {
-                    None
-                };
-
-                if let Some(sink) = sink {
+                if !confirmed_other_package && !confirmed_local_receiver {
                     return Some(Intrinsic::SqlQuery(sink));
                 }
             }
@@ -1981,21 +1992,17 @@ impl FunctionAnalyzer<'_> {
         match n {
             Expr::This(_) => Operand::Var(Variable::THIS),
             Expr::Array(ArrayLit { elems, .. }) => {
-                let def_id = self
-                    .res
-                    .add_anonymous("__ARRAY", AnonType::Obj, self.module);
-                let array_var = self.body.add_var(VarKind::LocalDef(def_id));
-                for (index, element) in elems.iter().enumerate() {
-                    let value = element.as_ref().map_or(Operand::UNDEF, |element| {
-                        self.lower_expr(&element.expr, None)
-                    });
-                    let mut target = Variable::new(array_var);
-                    target
-                        .projections
-                        .push(Projection::Known(index.to_string().into()));
-                    self.body
-                        .push_inst(self.block, Inst::Assign(target, Rvalue::Read(value)));
-                }
+                let elements = elems
+                    .iter()
+                    .map(|element| {
+                        element.as_ref().map_or(Operand::UNDEF, |element| {
+                            self.lower_expr(&element.expr, None)
+                        })
+                    })
+                    .collect();
+                let array_var = self
+                    .body
+                    .push_tmp(self.block, Rvalue::Aggregate(elements), parent);
                 Operand::with_var(array_var)
             }
             Expr::Object(ObjectLit { span, props }) => {
