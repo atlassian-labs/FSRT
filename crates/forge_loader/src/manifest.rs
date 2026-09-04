@@ -777,7 +777,13 @@ pub struct Entrypoint<'a, S = Unresolved> {
     pub function: FunctionRef<'a, S>,
     pub invokable: bool,
     pub web_trigger: bool,
+    /// Registered by an admin page module (`jira:adminPage`, `compass:adminPage`).
     pub admin: bool,
+    /// Registered by an admin page module and by no other module. The platform
+    /// gates invocations of an admin page's own resolver on admin permission, so
+    /// these are not reachable by non-admins; sharing the resolver with any other
+    /// module voids that check, which is what `admin && !admin_only` identifies.
+    pub admin_only: bool,
 }
 
 impl<T> AsRef<T> for FunctionTy<T> {
@@ -856,7 +862,6 @@ impl<'a> ForgeModules<'a> {
         api_routes.append_functions(&mut invokable_functions);
 
         // Compass Module Functions
-        compass_admin_page.append_functions(&mut invokable_functions);
 
         component_page.append_functions(&mut invokable_functions);
 
@@ -1001,25 +1006,52 @@ impl<'a> ForgeModules<'a> {
 
         queue_page.append_functions(&mut invokable_functions);
 
+        // Snapshot of the functions reachable from a module that is *not* an admin
+        // page, taken before the admin pages contribute. A function registered by
+        // an admin page module is only reachable by non-admins if it also appears
+        // in here, because the platform gates an admin page's own resolver on admin
+        // permission.
+        let non_admin_invokable_functions = invokable_functions.clone();
+        compass_admin_page.append_functions(&mut invokable_functions);
+
+        // Function keys registered by an admin page module. Collected with
+        // `append_functions` so that resolver-backed pages (Custom UI, where the
+        // entry point is declared under `resolver.function` rather than `function`)
+        // are recognized too.
+        let mut admin_function_keys = BTreeSet::new();
+        for admin_page in &jira_admin_page {
+            admin_page
+                .common_keys
+                .append_functions(&mut admin_function_keys);
+        }
+        compass_admin_page.append_functions(&mut admin_function_keys);
+
+        // Apps share an admin resolver by declaring two function keys with the same
+        // handler more often than by naming one key in two modules — e.g.
+        // `admin-resolver` and `import-resolver` both handled by `index.resolver`.
+        // Any key whose handler is also used by an admin-registered key therefore
+        // reaches the admin page's resolver code too.
+        let admin_handlers: BTreeSet<&str> = functions
+            .iter()
+            .filter(|func| admin_function_keys.contains(func.key))
+            .map(|func| func.handler)
+            .collect();
+
         functions.into_iter().flat_map(move |func| {
             let web_trigger = webtriggers
                 .binary_search_by_key(&func.key, |trigger| trigger.function)
                 .is_ok();
             let invokable = invokable_functions.contains(func.key);
-            // this checks whether the function being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
-            // optionally: compass:adminPage could also be considered.
-            let admin = jira_admin_page
-                .iter()
-                .any(|admin_function| admin_function.common_keys.function == Some(func.key))
-                || compass_admin_page
-                    .iter()
-                    .any(|admin_function| admin_function.function == Some(func.key));
+            let admin =
+                admin_function_keys.contains(func.key) || admin_handlers.contains(func.handler);
+            let admin_only = admin && !non_admin_invokable_functions.contains(func.key);
 
             Ok::<_, Error>(Entrypoint {
                 function: FunctionRef::try_from(func)?,
                 invokable,
                 web_trigger,
                 admin,
+                admin_only,
             })
         })
     }
@@ -1323,7 +1355,8 @@ mod tests {
                 .unwrap(),
                 invokable: false,
                 web_trigger: false,
-                admin: true
+                admin: true,
+                admin_only: true
             })
         );
 
@@ -1338,7 +1371,8 @@ mod tests {
                 .unwrap(),
                 invokable: true,
                 web_trigger: false,
-                admin: false
+                admin: false,
+                admin_only: false
             })
         );
     }
@@ -1394,6 +1428,173 @@ mod tests {
 
         assert_eq!(remotes[0].key, "primary");
         assert_eq!(remotes[1].key, "");
+    }
+
+    // Custom UI admin pages declare their entry point under `resolver.function`
+    // instead of `function`, and must still be flagged as admin.
+    #[test]
+    fn test_deserialize_admin_resolver_check() {
+        let json = r#"{
+            "app": {
+                "name": "My App",
+                "id": "my-app"
+            },
+            "modules": {
+                "jira:adminPage": [
+                {
+                    "key": "testing-admin-resolver",
+                    "resource": "main",
+                    "resolver": {
+                        "function": "resolver-fn"
+                    },
+                    "title": "admin-page-with-resolver"
+                }
+                ],
+                "function": [
+                {
+                    "key": "resolver-fn",
+                    "handler": "index.handler"
+                }
+                ]
+            },
+            "permissions": {
+                "scopes": []
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        let mut admin_func = manifest.modules.into_analyzable_functions();
+
+        assert_eq!(
+            admin_func.next(),
+            Some(Entrypoint {
+                function: FunctionRef::try_from(FunctionMod {
+                    key: "resolver-fn",
+                    handler: "index.handler",
+                    providers: None,
+                })
+                .unwrap(),
+                invokable: false,
+                web_trigger: false,
+                admin: true,
+                admin_only: true
+            })
+        );
+    }
+
+    // `compass:adminPage` feeds `invokable_functions` as well as the admin set, so
+    // `admin_only` cannot be derived from `invokable` alone: it comes from a
+    // snapshot of the invokable set taken before the admin pages contribute.
+    #[test]
+    fn test_compass_admin_page_only_resolver_is_admin_only() {
+        let json = r#"{
+            "app": { "id": "my-app" },
+            "modules": {
+                "compass:adminPage": [
+                    {
+                        "key": "admin-page",
+                        "resolver": { "function": "resolver-fn" }
+                    }
+                ],
+                "function": [
+                    { "key": "resolver-fn", "handler": "index.handler" }
+                ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        let mut funcs = manifest.modules.into_analyzable_functions();
+        let entry = funcs.next().unwrap();
+
+        assert!(entry.invokable);
+        assert!(entry.admin);
+        assert!(entry.admin_only);
+    }
+
+    // How apps actually share an admin resolver: two function keys pointing at one
+    // handler, rather than one key named by two modules. Taken from
+    // atlassian-labs/gitlab-for-compass before PR #87, where `admin-resolver` and
+    // `import-resolver` were both handled by `index.resolver`.
+    //
+    // That app used `compass:componentImporter` for the second module, which this
+    // loader does not deserialize yet (only adminPage, componentPage, globalPage and
+    // teamPage are known), so the sharing would still be invisible for it. The audit
+    // of affected apps calls out the import module specifically, so recognizing it is
+    // a prerequisite for catching these in the wild.
+    #[test]
+    fn test_admin_and_non_admin_keys_sharing_a_handler_are_not_admin_only() {
+        let json = r#"{
+            "app": { "id": "my-app" },
+            "modules": {
+                "compass:adminPage": [
+                    { "key": "admin-page-ui", "resolver": { "function": "admin-resolver" } }
+                ],
+                "compass:componentPage": [
+                    { "key": "import-page-ui", "resolver": { "function": "import-resolver" } }
+                ],
+                "function": [
+                    { "key": "admin-resolver", "handler": "index.resolver" },
+                    { "key": "import-resolver", "handler": "index.resolver" }
+                ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        let entries = manifest
+            .modules
+            .into_analyzable_functions()
+            .collect::<Vec<_>>();
+
+        let admin = entries
+            .iter()
+            .find(|e| e.function.key == "admin-resolver")
+            .unwrap();
+        let import = entries
+            .iter()
+            .find(|e| e.function.key == "import-resolver")
+            .unwrap();
+
+        // The admin page's own key is still only reachable through the admin page.
+        assert!(admin.admin);
+        assert!(admin.admin_only);
+        // The importer's key reaches the same handler, so invoking it exposes the
+        // admin page's resolver functions.
+        assert!(
+            import.admin,
+            "handler shared with an admin key was not flagged"
+        );
+        assert!(!import.admin_only);
+        assert!(import.invokable);
+    }
+
+    // The documented exposure: the admin page shares its resolver with another
+    // module, so the platform no longer restricts it to admins.
+    #[test]
+    fn test_admin_resolver_shared_with_other_module_is_not_admin_only() {
+        let json = r#"{
+            "app": { "id": "my-app" },
+            "modules": {
+                "compass:adminPage": [
+                    {
+                        "key": "admin-page",
+                        "resolver": { "function": "resolver-fn" }
+                    }
+                ],
+                "compass:globalPage": [
+                    {
+                        "key": "global-page",
+                        "resolver": { "function": "resolver-fn" }
+                    }
+                ],
+                "function": [
+                    { "key": "resolver-fn", "handler": "index.handler" }
+                ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        let mut funcs = manifest.modules.into_analyzable_functions();
+        let entry = funcs.next().unwrap();
+
+        assert!(entry.invokable);
+        assert!(entry.admin);
+        assert!(!entry.admin_only);
     }
 
     // Test to check if Rovo modules can be deserialized properly from a sample manifest file.
