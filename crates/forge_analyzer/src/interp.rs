@@ -17,7 +17,7 @@ use itertools::Itertools;
 use regex::Regex;
 use smallvec::SmallVec;
 use swc_core::ecma::atoms::Atom;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, instrument, trace, warn};
 
 use crate::definitions::DefKind;
 use crate::ir::{BinOp, Literal, VarKind};
@@ -34,6 +34,9 @@ use crate::{
     },
     worklist::WorkList,
 };
+
+#[cfg(test)]
+mod tests;
 
 pub type DefinitionAnalysisMapProjection = BTreeMap<(DefId, VarId, ProjectionVec), Value>;
 
@@ -208,6 +211,7 @@ pub trait Dataflow<'cx>: Sized {
         let mut state = initial_state;
         for (stmt, inst) in block.iter().enumerate() {
             let loc = Location::new(bb, stmt as u32);
+            trace!(?def, ?loc, ?inst, "transferring instruction");
             state = self.transfer_inst(interp, def, loc, block, inst, state);
         }
         state
@@ -334,7 +338,7 @@ pub trait Runner<'cx>: Sized {
         id: BasicBlockId,
         curr_state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
-        debug!("visiting rvalue {rvalue:?} with {curr_state:?}");
+        trace!("visiting rvalue {rvalue:?} with {curr_state:?}");
         match rvalue {
             Rvalue::Intrinsic(intrinsic, operands) => {
                 self.visit_intrinsic(interp, intrinsic, def, curr_state, Some(operands.clone()))
@@ -571,7 +575,7 @@ impl CallGraph {
             .filter_map(|((def, body), (bb, (inst_idx, inst)))| {
                 let (callee, _) = inst.rvalue().as_call()?;
                 let (callee_def, _) = body.resolve_call(env, callee)?;
-                debug!(
+                trace!(
                     "found call from {def:?} {} to {callee_def:?} {}",
                     env.def_name(def),
                     env.def_name(callee_def)
@@ -720,7 +724,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         value: Value,
         projections: ProjectionVec,
     ) {
-        let (varid, projections) = self.get_farthest_obj(defid_block, varid, projections);
+        let Some((varid, projections)) = self.get_farthest_obj(defid_block, varid, projections)
+        else {
+            return;
+        };
         self.value_manager
             .insert_var_with_projection(defid_block, varid, projections, value);
     }
@@ -755,7 +762,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 }
                 _ => {}
             }
-            let (varid, projections) = self.get_farthest_obj(defid_block, varid, projections);
+            let Some((varid, projections)) = self.get_farthest_obj(defid_block, varid, projections)
+            else {
+                return;
+            };
             let rval_value = self.value_from_rval(defid_block, rvalue);
             if let Some(existing_lval) = self
                 .get_value(defid_block, varid, Some(projections.clone()))
@@ -910,7 +920,11 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 base: Base::Var(varid),
                 projections,
             }) => {
-                let (varid, projections) = self.get_farthest_obj(defid_block, varid, projections);
+                let Some((varid, projections)) =
+                    self.get_farthest_obj(defid_block, varid, projections)
+                else {
+                    return Value::Unknown;
+                };
                 match self.get_value(defid_block, varid, Some(projections)) {
                     Some(value) => value.clone(),
                     None => {
@@ -943,7 +957,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         defid_block: DefId,
         varid: VarId,
         mut projections: ProjectionVec,
-    ) -> (VarId, ProjectionVec) {
+    ) -> Option<(VarId, ProjectionVec)> {
         let mut current_var_id = varid;
         for i in 0..projections.len() {
             if let Some(Value::Object(varid)) = self.get_value(
@@ -956,15 +970,27 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             }
         }
 
+        let mut visited = FxHashSet::default();
         while let Some(Value::Object(varid)) =
             self.get_value(defid_block, current_var_id, Some(ProjectionVec::new()))
         {
             if current_var_id == *varid {
                 break;
             }
+            // A self-reference represents an object root, but a longer cycle has
+            // no root. Do not choose an arbitrary alias as a read or write target.
+            if !visited.insert(current_var_id) {
+                debug!(
+                    function = self.env.def_name(defid_block),
+                    ?defid_block,
+                    ?current_var_id,
+                    "cyclic object aliases; value cannot be resolved"
+                );
+                return None;
+            }
             current_var_id = *varid;
         }
-        (current_var_id, projections)
+        Some((current_var_id, projections))
     }
 
     #[inline]
@@ -1081,7 +1107,12 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         let old_body = self.curr_body.get();
         while let Some((def, block_id)) = worklist.pop_front() {
             let name = self.env.def_name(def);
-            debug!("Dataflow: {name} - {block_id}");
+            debug!(
+                ?def,
+                checker = C::NAME,
+                pending = worklist.len(),
+                "Dataflow: {name} - {block_id}"
+            );
             self.dataflow_visited.insert(def);
             let func = self.env().def_ref(def).expect_body();
             self.curr_body.set(Some(func));
@@ -1162,7 +1193,12 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
 
             while let Some((def, block_id)) = worklist.pop_front() {
                 let name = self.env.def_name(def);
-                debug!("Dataflow: {name} - {block_id}");
+                debug!(
+                    ?def,
+                    checker = C::NAME,
+                    pending = worklist.len(),
+                    "Dataflow: {name} - {block_id}"
+                );
                 self.dataflow_visited.insert(def);
                 let func = self.env().def_ref(def).expect_body();
                 self.curr_body.set(Some(func));
