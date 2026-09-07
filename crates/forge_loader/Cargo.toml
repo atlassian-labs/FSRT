@@ -14,10 +14,10 @@ workspace = true
 forge_utils.workspace = true
 itertools.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 serde_yaml.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true
+serde_json.workspace = true
