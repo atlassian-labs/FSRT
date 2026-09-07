@@ -2,19 +2,12 @@
 
 mod commands;
 mod forge_project;
+mod interpreter;
 #[cfg(test)]
 mod test;
 
 use clap::{Parser, ValueEnum, ValueHint};
-use forge_permission_resolver::{
-    permissions_cache::CacheConfig,
-    permissions_resolver::{
-        PermMap, get_permission_resolver_bitbucket, get_permission_resolver_compass,
-        get_permission_resolver_confluence, get_permission_resolver_jira,
-        get_permission_resolver_jira_any, get_permission_resolver_jira_service_management,
-        get_permission_resolver_jira_software,
-    },
-};
+use forge_permission_resolver::{permissions_cache::CacheConfig, permissions_resolver::PermMap};
 use glob::glob;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -45,12 +38,14 @@ use forge_analyzer::{
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
-    interp::Interp,
     reporter::{Report, Reporter},
 };
 
-use crate::commands::Command;
-use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait, find_manifest_path};
+use crate::{
+    commands::Command,
+    forge_project::{ForgeProjectFromDir, ForgeProjectTrait, find_manifest_path},
+    interpreter::InterpreterFactory,
+};
 use forge_loader::manifest::{self, Entrypoint};
 use walkdir::WalkDir;
 
@@ -526,155 +521,34 @@ pub(crate) fn scan_directory<'a>(
         std::process::exit(0);
     }
 
-    let permissions = permissions_declared
-        .into_iter()
-        .filter(|s| check_perm(s))
-        .collect::<Vec<_>>();
-
-    let (
-        (jira_any_permission_resolver, jira_any_regex_map),
-        (jira_software_permission_resolver, jira_software_regex_map),
-        (jira_service_management_permission_resolver, jira_service_management_regex_map),
-        (jira_permission_resolver, jira_regex_map),
-        (confluence_permission_resolver, confluence_regex_map),
-        (bitbucket_permission_resolver, bitbucket_regex_map),
-        compass_permission_resolver,
-    ) = if run_permission_checker {
-        let config = CacheConfig::new(
-            if opts.no_cache {
-                false
-            } else {
-                match std::env::var("FSRT_CACHE") {
-                    Err(_) => true,
-                    Ok(s) => {
-                        let t = s.trim();
-                        match t {
-                            "0" => false,
-                            t if t.eq_ignore_ascii_case("false") => false,
-                            "" | "1" => true,
-                            t if t.eq_ignore_ascii_case("true") => true,
-                            _ => true,
-                        }
-                    }
-                }
-            },
+    let permission_cache = run_permission_checker.then(|| {
+        CacheConfig::new(
+            !opts.no_cache
+                && !std::env::var("FSRT_CACHE").is_ok_and(|value| {
+                    let value = value.trim();
+                    value == "0" || value.eq_ignore_ascii_case("false")
+                }),
             opts.cached_permissions_path.clone(),
-        );
-        (
-            get_permission_resolver_jira_any(&config),
-            get_permission_resolver_jira_software(&config),
-            get_permission_resolver_jira_service_management(&config),
-            get_permission_resolver_jira(&config),
-            get_permission_resolver_confluence(&config),
-            get_permission_resolver_bitbucket(&config),
-            get_permission_resolver_compass(),
         )
-    } else {
-        Default::default()
-    };
-
-    let mut interp = Interp::new(
-        &proj.env,
-        false,
-        true,
-        permissions.clone(),
-        &jira_any_permission_resolver,
-        &jira_any_regex_map,
-        &jira_software_permission_resolver,
-        &jira_software_regex_map,
-        &jira_service_management_permission_resolver,
-        &jira_service_management_regex_map,
-        &jira_permission_resolver,
-        &jira_regex_map,
-        &confluence_permission_resolver,
-        &confluence_regex_map,
-        &bitbucket_permission_resolver,
-        &bitbucket_regex_map,
-        &compass_permission_resolver,
-    );
-    let mut authn_interp = Interp::new(
-        &proj.env,
-        false,
-        true,
-        permissions.clone(),
-        &jira_any_permission_resolver,
-        &jira_any_regex_map,
-        &jira_software_permission_resolver,
-        &jira_software_regex_map,
-        &jira_service_management_permission_resolver,
-        &jira_service_management_regex_map,
-        &jira_permission_resolver,
-        &jira_regex_map,
-        &confluence_permission_resolver,
-        &confluence_regex_map,
-        &bitbucket_permission_resolver,
-        &bitbucket_regex_map,
-        &compass_permission_resolver,
-    );
+    });
+    let interpreters =
+        InterpreterFactory::new(&proj.env, permissions_declared, permission_cache.as_ref());
+    let mut authz_interp =
+        run_authorization_scanner.then(|| interpreters.create::<AuthZChecker>(true));
+    let mut authn_interp =
+        run_authentication_scanner.then(|| interpreters.create::<AuthenticateChecker>(true));
+    let mut secret_interp = run_secret_scanner.then(|| interpreters.create::<SecretChecker>(true));
+    // Auth-header checks handle uncalled bodies separately in the full-function pass.
+    let mut auth_header_interp =
+        run_auth_header_scanner.then(|| interpreters.create::<AuthHeaderChecker>(false));
+    let mut perm_interp =
+        run_permission_checker.then(|| interpreters.create::<PermissionChecker<'_>>(true));
 
     let mut reporter = Reporter::new();
-    let mut secret_interp = Interp::<SecretChecker>::new(
-        &proj.env,
-        false,
-        true,
-        permissions.clone(),
-        &jira_any_permission_resolver,
-        &jira_any_regex_map,
-        &jira_software_permission_resolver,
-        &jira_software_regex_map,
-        &jira_service_management_permission_resolver,
-        &jira_service_management_regex_map,
-        &jira_permission_resolver,
-        &jira_regex_map,
-        &confluence_permission_resolver,
-        &confluence_regex_map,
-        &bitbucket_permission_resolver,
-        &bitbucket_regex_map,
-        &compass_permission_resolver,
-    );
-    let mut auth_header_interp = Interp::<AuthHeaderChecker>::new(
-        &proj.env,
-        false,
-        false,
-        permissions.clone(),
-        &jira_any_permission_resolver,
-        &jira_any_regex_map,
-        &jira_software_permission_resolver,
-        &jira_software_regex_map,
-        &jira_service_management_permission_resolver,
-        &jira_service_management_regex_map,
-        &jira_permission_resolver,
-        &jira_regex_map,
-        &confluence_permission_resolver,
-        &confluence_regex_map,
-        &bitbucket_permission_resolver,
-        &bitbucket_regex_map,
-        &compass_permission_resolver,
-    );
     reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
     if let Some(vuln) = runtime_policy_vuln {
         reporter.add_vulnerabilities([vuln]);
     }
-
-    let mut perm_interp = Interp::<PermissionChecker<'_>>::new(
-        &proj.env,
-        false,
-        true,
-        permissions,
-        &jira_any_permission_resolver,
-        &jira_any_regex_map,
-        &jira_software_permission_resolver,
-        &jira_software_regex_map,
-        &jira_service_management_permission_resolver,
-        &jira_service_management_regex_map,
-        &jira_permission_resolver,
-        &jira_regex_map,
-        &confluence_permission_resolver,
-        &confluence_regex_map,
-        &bitbucket_permission_resolver,
-        &bitbucket_regex_map,
-        &compass_permission_resolver,
-    );
 
     let mut secret_checker = SecretChecker::new();
     let mut auth_header_checker = AuthHeaderChecker::new();
@@ -693,10 +567,9 @@ pub(crate) fn scan_directory<'a>(
     }
 
     for func in &proj.funcs {
-        // if there is a remote backend that accepts an auth token, do not run
-        if run_permission_checker {
+        if let Some(interp) = &mut perm_interp {
             let mut checker = PermissionChecker::new();
-            if let Err(err) = perm_interp.run_checker(
+            if let Err(err) = interp.run_checker(
                 func.def_id,
                 &mut checker,
                 func.path.clone(),
@@ -706,8 +579,8 @@ pub(crate) fn scan_directory<'a>(
             }
         }
 
-        if run_secret_scanner
-            && let Err(err) = secret_interp.run_checker(
+        if let Some(interp) = &mut secret_interp
+            && let Err(err) = interp.run_checker(
                 func.def_id,
                 &mut secret_checker,
                 func.path.clone(),
@@ -717,8 +590,8 @@ pub(crate) fn scan_directory<'a>(
             warn!("error while running secret checker: {err}");
         }
 
-        if run_auth_header_scanner
-            && let Err(err) = auth_header_interp.run_checker(
+        if let Some(interp) = &mut auth_header_interp
+            && let Err(err) = interp.run_checker(
                 func.def_id,
                 &mut auth_header_checker,
                 func.path.clone(),
@@ -729,7 +602,7 @@ pub(crate) fn scan_directory<'a>(
         }
 
         if func.invokable {
-            if run_authorization_scanner {
+            if let Some(interp) = &mut authz_interp {
                 let mut checker = AuthZChecker::new(opts.enable_aec_mode);
                 debug!("checking {:?} at {:?}", func.func_name, &func.path);
                 if let Err(err) = interp.run_checker(
@@ -745,13 +618,15 @@ pub(crate) fn scan_directory<'a>(
                 }
                 reporter.add_vulnerabilities(checker.into_vulns());
             }
-        } else if func.webtrigger && run_authentication_scanner {
+        } else if func.webtrigger
+            && let Some(interp) = &mut authn_interp
+        {
             let mut checker = AuthenticateChecker::new();
             debug!(
                 "checking webtrigger {:?} at {:?}",
                 func.func_name, func.path,
             );
-            if let Err(err) = authn_interp.run_checker(
+            if let Err(err) = interp.run_checker(
                 func.def_id,
                 &mut checker,
                 func.path.clone(),
@@ -771,7 +646,7 @@ pub(crate) fn scan_directory<'a>(
     // manifest entry points. This is primarily useful for finding issues in helper
     // functions and class methods that are present in the codebase but not on an
     // entry-point-reachable call chain.
-    if run_auth_header_scanner && scan_functions {
+    if scan_functions && let Some(interp) = &mut auth_header_interp {
         let mut full_scan_checker = AuthHeaderChecker::new();
         let all_functions = proj.env.get_all_functions_and_closures();
         for func_def in &all_functions {
@@ -780,8 +655,8 @@ pub(crate) fn scan_directory<'a>(
             // with fresh dataflow. The entry-point pass may have marked it visited
             // during broader module/class traversal without actually checking it as
             // a standalone function body.
-            auth_header_interp.reset_dataflow_visited(*func_def);
-            if let Err(err) = auth_header_interp.check_function(
+            interp.reset_dataflow_visited(*func_def);
+            if let Err(err) = interp.check_function(
                 *func_def,
                 &mut full_scan_checker,
                 PathBuf::from("<project>"),
@@ -862,7 +737,9 @@ pub(crate) fn scan_directory<'a>(
     let ast = parse_schema::<&str>(&joined_schema);
 
     // Lack of coverage, since no apps use raw GraphQL currently.
-    if let std::result::Result::Ok(doc) = ast {
+    if let Ok(doc) = ast
+        && let Some(interp) = &authz_interp
+    {
         let mut used_graphql_perms: Vec<&str> = interp
             .value_manager
             .varid_to_value_with_proj

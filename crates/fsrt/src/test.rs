@@ -282,6 +282,102 @@ fn scanners_only_run_selected_checks() {
 }
 
 #[test]
+fn scanners_keep_findings_independent() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import { AES } from 'crypto-js';
+        import api, { fetch, route } from '@forge/api';
+
+        export function run() {
+            AES.encrypt('plaintext', 'hardcoded-key');
+            api.asApp().requestJira(route`/rest/api/3/issue`);
+            fetch('api.atlassian.com/rest/api/3/issue', {
+                headers: { Authorization: 'Basic ' + process.env.API_TOKEN }
+            });
+        }
+
+        // manifest.yml
+        modules:
+          macro:
+            - key: macro
+              function: main
+              title: Test
+          webtrigger:
+            - key: webhook
+              function: hook
+          function:
+            - key: main
+              handler: index.run
+            - key: hook
+              handler: index.run
+        app:
+          id: test-app
+        permissions:
+          scopes: []",
+    );
+
+    let check_names = |report: Report| {
+        let mut names = report
+            .into_vulns()
+            .iter()
+            .map(|vuln| vuln.check_name().to_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let combined = check_names(scan_directory_test(project.clone()));
+    let mut separate = Vec::new();
+    for (scanner, expected_check) in [
+        ("authentication", Some("Custom-Check-Authentication-")),
+        ("authorization", Some("Custom-Check-Authorization-")),
+        ("auth-header", Some("ATLASSIAN_API_TOKEN")),
+        ("secret", Some("Custom-Check-Hardcoded-Secret-")),
+        ("permission", None),
+        ("runtime-version", None),
+    ] {
+        let args = Args::parse_from(["fsrt", "--scanners", scanner]);
+        let names = check_names(scan_directory_test_with_args(project.clone(), args));
+        if let Some(expected_check) = expected_check {
+            assert!(
+                !names.is_empty() && names.iter().all(|name| name.starts_with(expected_check)),
+                "unexpected findings for {scanner}: {names:?}"
+            );
+        } else {
+            assert!(
+                names.is_empty(),
+                "unexpected findings for {scanner}: {names:?}"
+            );
+        }
+        separate.extend(names);
+    }
+    separate.sort();
+    assert_eq!(combined, separate);
+}
+
+#[test]
+fn auth_header_scans_uncalled_functions_only_when_requested() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import { fetch } from '@forge/api';
+
+        export function run() {}
+
+        function helper() {
+            fetch('api.atlassian.com/rest/api/3/issue', {
+                headers: { Authorization: 'Basic ' + process.env.API_TOKEN }
+            });
+        }",
+    );
+
+    for scan_functions in [false, true] {
+        let mut args = Args::parse_from(["fsrt", "--scanners", "auth-header"]);
+        args.scan_functions = scan_functions;
+        let report = scan_directory_test_with_args(project.clone(), args);
+        assert!(report.contains_api_token_vuln(usize::from(scan_functions)));
+    }
+}
+
+#[test]
 fn test_simple() {
     let forge_manifest = ForgeManifest::create_manifest_with_func_mod(FunctionMod {
         key: "main",
