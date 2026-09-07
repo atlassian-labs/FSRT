@@ -1,0 +1,10 @@
+modules:
+  function:
+    - key: main
+      handler: index.handler
+app:
+  id: ari:cloud:ecosystem::app/test-id
+  runtime:
+    name: nodejs22.x
+permissions:
+  scopes: []
