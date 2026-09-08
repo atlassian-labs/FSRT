@@ -836,6 +836,38 @@ impl WithCallStack for AuthNVuln {
     fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
 }
 
+pub struct RemoteUserAuthZVuln {
+    stack: String,
+    entry_func: String,
+    file: PathBuf,
+}
+
+impl IntoVuln for RemoteUserAuthZVuln {
+    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+        Vulnerability {
+            check_name: String::new(),
+            description: String::new(),
+            recommendation: "",
+            proof: String::new(),
+            app_key: String::new(),
+            severity: Severity::High,
+            app_name: String::new(),
+            marketplace_security_requirement: "AEC Requirement 1.10",
+            date: reporter.current_date(),
+        }
+    }
+}
+
+pub struct RemoteUserAuthZChecker {
+    vulns: Vec<RemoteUserAuthZVuln>,
+}
+
+impl RemoteUserAuthZChecker {
+    pub fn into_vulns(self) -> impl IntoIterator<Item = RemoteUserAuthZVuln> {
+        self.vulns.into_iter()
+    }
+}
+
 pub struct SecretDataflow {
     needs_call: Vec<DefId>,
 }
