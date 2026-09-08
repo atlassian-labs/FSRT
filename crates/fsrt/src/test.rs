@@ -3199,6 +3199,79 @@ fn sql_injection_rejects_untrusted_text_in_returned_structural_fragment() {
 }
 
 #[test]
+fn sql_injection_accepts_exact_array_and_set_identifier_allowlists() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        const VALID_COLUMNS = new Set(['name', 'email']);
+        async function update(column, value) {
+            if (!VALID_COLUMNS.has(column)) {
+                throw new Error('invalid column');
+            }
+            await sql.prepare(`UPDATE users SET ${column} = ?`).bindParams(value).execute();
+        }
+        export async function run(payload) {
+            const allowedSort = ['name', 'email', 'updated_at'];
+            const sort = allowedSort.includes(payload.sortBy) ? payload.sortBy : 'updated_at';
+            await sql.prepare(`SELECT * FROM users ORDER BY ${sort}`).execute();
+            await update(payload.column, payload.value);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_rejects_dynamic_or_shadowed_identifier_allowlists() {
+    let dynamic_allowlist = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const allowed = ['name'];
+            allowed.push(payload.additionalColumn);
+            if (!allowed.includes(payload.column)) {
+                throw new Error('invalid column');
+            }
+            await sql.prepare(`SELECT * FROM users ORDER BY ${payload.column}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(dynamic_allowlist).contains_sql_vuln(Severity::High, 1));
+
+    let shadowed_set = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function Set() {
+            return { has: () => true };
+        }
+        const allowed = new Set(['name']);
+        export async function run(payload) {
+            if (!allowed.has(payload.column)) {
+                throw new Error('invalid column');
+            }
+            await sql.prepare(`SELECT * FROM users ORDER BY ${payload.column}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(shadowed_set).contains_sql_vuln(Severity::High, 1));
+
+    let reassigned_after_check = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const allowed = ['name', 'email'];
+            let column = payload.column;
+            if (!allowed.includes(column)) {
+                throw new Error('invalid column');
+            }
+            column = payload.replacement;
+            await sql.prepare(`SELECT * FROM users ORDER BY ${column}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(reassigned_after_check).contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
 fn sql_injection_reports_each_distinct_sink_location_once() {
     let project = MockForgeProject::files_from_string(
         "// src/index.js

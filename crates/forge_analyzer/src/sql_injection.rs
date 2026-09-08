@@ -5,8 +5,8 @@ use crate::{
         WithCallStack,
     },
     ir::{
-        Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Location, Operand, Projection,
-        Rvalue, STARTING_BLOCK, SqlSink, UnOp, VarId, VarKind, Variable,
+        Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
+        Projection, Rvalue, STARTING_BLOCK, SqlSink, Terminator, UnOp, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     worklist::WorkList,
@@ -14,7 +14,7 @@ use crate::{
 use smallvec::SmallVec;
 use std::{
     cmp::max,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt,
     ops::ControlFlow,
     path::PathBuf,
@@ -52,14 +52,25 @@ type SqlVarKey = (DefId, VarId, Vec<Projection>);
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SqlState {
     values: BTreeMap<SqlVarKey, SqlTaint>,
+    allowlisted: BTreeSet<SqlVarKey>,
+    reachable: bool,
 }
 
 impl JoinSemiLattice for SqlState {
     const BOTTOM: Self = Self {
         values: BTreeMap::new(),
+        allowlisted: BTreeSet::new(),
+        reachable: false,
     };
 
     fn join_changed(&mut self, other: &Self) -> bool {
+        if !other.reachable {
+            return false;
+        }
+        if !self.reachable {
+            *self = other.clone();
+            return true;
+        }
         let old = self.clone();
         for (key, value) in &other.values {
             self.values
@@ -69,6 +80,8 @@ impl JoinSemiLattice for SqlState {
                 })
                 .or_insert(*value);
         }
+        self.allowlisted
+            .retain(|key| other.allowlisted.contains(key));
         old != *self
     }
 
@@ -126,6 +139,7 @@ impl SqlState {
         variable: &Variable,
         value: SqlTaint,
     ) {
+        self.reachable = true;
         if variable.projections.is_empty() {
             if let Some(name) = Self::logical_name(env, body, variable) {
                 let aliases = body
@@ -138,11 +152,33 @@ impl SqlState {
                     .collect::<HashSet<_>>();
                 self.values
                     .retain(|(owner, var, _), _| *owner != def || !aliases.contains(var));
+                self.allowlisted
+                    .retain(|(owner, var, _)| *owner != def || !aliases.contains(var));
             }
             self.insert_variable(def, variable, value);
             return;
         }
 
+        if let Some(name) = Self::logical_name(env, body, variable) {
+            let projections = &variable.projections;
+            let aliases = body
+                .vars
+                .iter_enumerated()
+                .filter_map(|(var, _)| {
+                    let mut candidate = Variable::new(var);
+                    candidate.projections = projections.clone();
+                    (Self::logical_name(env, body, &candidate) == Some(name)).then_some(var)
+                })
+                .collect::<HashSet<_>>();
+            self.allowlisted
+                .retain(|(owner, var, candidate_projections)| {
+                    *owner != def
+                        || !aliases.contains(var)
+                        || candidate_projections.as_slice() != projections.as_slice()
+                });
+        } else if let Some(key) = Self::key(def, variable) {
+            self.allowlisted.remove(&key);
+        }
         self.insert_variable(def, variable, value);
         if let Base::Var(var) = variable.base {
             let root = (def, var, vec![]);
@@ -204,6 +240,49 @@ impl SqlState {
                 .iter()
                 .filter_map(|candidate| self.variable(def, candidate))
                 .reduce(|left, right| left.join(&right))
+        })
+    }
+
+    fn mark_allowlisted(
+        &mut self,
+        env: &Environment,
+        body: &crate::ir::Body,
+        def: DefId,
+        variable: &Variable,
+    ) {
+        self.reachable = true;
+        let Some(name) = Self::logical_name(env, body, variable) else {
+            if let Some(key) = Self::key(def, variable) {
+                self.allowlisted.insert(key);
+            }
+            return;
+        };
+        for (var, _) in body.vars.iter_enumerated() {
+            let mut candidate = Variable::new(var);
+            candidate.projections = variable.projections.clone();
+            if Self::logical_name(env, body, &candidate) == Some(name)
+                && let Some(key) = Self::key(def, &candidate)
+            {
+                self.allowlisted.insert(key);
+            }
+        }
+    }
+
+    fn is_allowlisted(
+        &self,
+        env: &Environment,
+        body: &crate::ir::Body,
+        def: DefId,
+        variable: &Variable,
+    ) -> bool {
+        let Some(name) = Self::logical_name(env, body, variable) else {
+            return Self::key(def, variable).is_some_and(|key| self.allowlisted.contains(&key));
+        };
+        body.vars.iter_enumerated().any(|(var, _)| {
+            let mut candidate = Variable::new(var);
+            candidate.projections = variable.projections.clone();
+            Self::logical_name(env, body, &candidate) == Some(name)
+                && Self::key(def, &candidate).is_some_and(|key| self.allowlisted.contains(&key))
         })
     }
 }
@@ -272,6 +351,9 @@ fn classify_variable_inner<'cx, C: Runner<'cx, State = SqlState>>(
     state: &SqlState,
     visiting: &mut HashSet<(DefId, VarId, Vec<Projection>)>,
 ) -> SqlTaint {
+    if state.is_allowlisted(interp.env(), interp.body(), def, variable) {
+        return SqlTaint::Trusted;
+    }
     let state_taint = state.variable_with_aliases(interp.env(), interp.body(), def, variable);
     if let Some(state_taint @ (SqlTaint::Trusted | SqlTaint::Numeric | SqlTaint::Untrusted)) =
         state_taint
@@ -671,6 +753,255 @@ fn is_numeric_builtin_call<'cx, C: Runner<'cx, State = SqlState>>(
         ),
         _ => false,
     }
+}
+
+fn unresolved_global_named(
+    env: &Environment,
+    body: &crate::ir::Body,
+    operand: &Operand,
+    expected: &str,
+) -> bool {
+    let Operand::Var(variable) = operand else {
+        return false;
+    };
+    let Base::Var(var) = variable.base else {
+        return false;
+    };
+    if !variable.projections.is_empty() {
+        return false;
+    }
+    let Some(VarKind::GlobalRef(binding)) = body.vars.get(var) else {
+        return false;
+    };
+    let binding = env.resolve_alias(*binding);
+    matches!(env.def_ref(binding), DefKind::Undefined) && env.def_name(binding) == expected
+}
+
+fn constant_string_collection(
+    env: &Environment,
+    def: DefId,
+    body: &crate::ir::Body,
+    variable: &Variable,
+) -> Option<HashSet<String>> {
+    fn variable_binding(env: &Environment, body: &crate::ir::Body, var: VarId) -> Option<DefId> {
+        match body.vars.get(var)? {
+            VarKind::GlobalRef(binding) | VarKind::LocalDef(binding) => {
+                Some(env.resolve_alias(*binding))
+            }
+            _ => None,
+        }
+    }
+
+    fn collection_is_mutated(env: &Environment, body: &crate::ir::Body, binding: DefId) -> bool {
+        body.iter_blocks_enumerated()
+            .flat_map(|(_, block)| block.iter())
+            .any(|inst| {
+                if let Inst::Assign(target, _) = inst
+                    && !target.projections.is_empty()
+                    && let Base::Var(var) = target.base
+                    && variable_binding(env, body, var) == Some(binding)
+                {
+                    return true;
+                }
+                let Some((callee, _)) = inst.rvalue().as_call() else {
+                    return false;
+                };
+                let Some((receiver, method)) = method_receiver(callee) else {
+                    return false;
+                };
+                let Base::Var(var) = receiver.base else {
+                    return false;
+                };
+                variable_binding(env, body, var) == Some(binding)
+                    && matches!(method, "add" | "push" | "splice" | "unshift")
+            })
+    }
+
+    fn from_operand(
+        env: &Environment,
+        def: DefId,
+        body: &crate::ir::Body,
+        operand: &Operand,
+        visiting: &mut HashSet<(DefId, VarId)>,
+    ) -> Option<HashSet<String>> {
+        let Operand::Var(variable) = operand else {
+            return None;
+        };
+        from_variable(env, def, body, variable, visiting)
+    }
+
+    fn from_rvalue(
+        env: &Environment,
+        def: DefId,
+        body: &crate::ir::Body,
+        rvalue: &Rvalue,
+        visiting: &mut HashSet<(DefId, VarId)>,
+    ) -> Option<HashSet<String>> {
+        match rvalue {
+            Rvalue::Aggregate(elements) => elements
+                .iter()
+                .map(|element| match element {
+                    Operand::Lit(Literal::Str(value) | Literal::JSXText(value)) => {
+                        Some(value.to_string())
+                    }
+                    _ => None,
+                })
+                .collect(),
+            Rvalue::Read(operand) => from_operand(env, def, body, operand, visiting),
+            Rvalue::Phi(values) => {
+                let mut constants = HashSet::new();
+                for (var, _) in values {
+                    constants.extend(from_variable(
+                        env,
+                        def,
+                        body,
+                        &Variable::new(*var),
+                        visiting,
+                    )?);
+                }
+                Some(constants)
+            }
+            Rvalue::Call(callee, operands)
+                if unresolved_global_named(env, body, callee, "Set") && operands.len() == 1 =>
+            {
+                from_operand(env, def, body, &operands[0], visiting)
+            }
+            _ => None,
+        }
+    }
+
+    fn from_variable(
+        env: &Environment,
+        def: DefId,
+        body: &crate::ir::Body,
+        variable: &Variable,
+        visiting: &mut HashSet<(DefId, VarId)>,
+    ) -> Option<HashSet<String>> {
+        let Base::Var(var) = variable.base else {
+            return None;
+        };
+        if !visiting.insert((def, var)) {
+            return None;
+        }
+
+        let definitions = variable_definitions_with_aliases(env, body, variable);
+        let result = if definitions.is_empty() {
+            let binding = variable_binding(env, body, var)?;
+            let mut found = false;
+            let mut constants = HashSet::new();
+            for candidate_body in env.bodies() {
+                let Some(candidate_def) = candidate_body.owner() else {
+                    continue;
+                };
+                if collection_is_mutated(env, candidate_body, binding) {
+                    return None;
+                }
+                for inst in candidate_body
+                    .iter_blocks_enumerated()
+                    .flat_map(|(_, block)| block.iter())
+                {
+                    let Inst::Assign(target, rvalue) = inst else {
+                        continue;
+                    };
+                    let Base::Var(target_var) = target.base else {
+                        continue;
+                    };
+                    if !target.projections.is_empty()
+                        || variable_binding(env, candidate_body, target_var) != Some(binding)
+                    {
+                        continue;
+                    }
+                    found = true;
+                    constants.extend(from_rvalue(
+                        env,
+                        candidate_def,
+                        candidate_body,
+                        rvalue,
+                        visiting,
+                    )?);
+                }
+            }
+            found.then_some(constants)
+        } else {
+            if variable_binding(env, body, var)
+                .is_some_and(|binding| collection_is_mutated(env, body, binding))
+            {
+                visiting.remove(&(def, var));
+                return None;
+            }
+            let mut constants = HashSet::new();
+            for (_, rvalue) in definitions {
+                constants.extend(from_rvalue(env, def, body, rvalue, visiting)?);
+            }
+            Some(constants)
+        };
+        visiting.remove(&(def, var));
+        result.filter(|constants| !constants.is_empty())
+    }
+
+    from_variable(env, def, body, variable, &mut HashSet::new())
+}
+
+fn exact_allowlist_guard<'cx, C: Runner<'cx, State = SqlState>>(
+    interp: &Interp<'cx, C>,
+    def: DefId,
+    condition: &Operand,
+) -> Option<(Variable, bool)> {
+    fn inspect<'cx, C: Runner<'cx, State = SqlState>>(
+        interp: &Interp<'cx, C>,
+        def: DefId,
+        operand: &Operand,
+        allowed_when_true: bool,
+        visiting: &mut HashSet<VarId>,
+    ) -> Option<(Variable, bool)> {
+        let Operand::Var(variable) = operand else {
+            return None;
+        };
+        let Base::Var(var) = variable.base else {
+            return None;
+        };
+        if !visiting.insert(var) {
+            return None;
+        }
+        let definitions = variable_definitions_with_aliases(interp.env(), interp.body(), variable);
+        for (_, rvalue) in definitions {
+            match rvalue {
+                Rvalue::Unary(UnOp::Not, inner) => {
+                    if let Some(result) = inspect(interp, def, inner, !allowed_when_true, visiting)
+                    {
+                        visiting.remove(&var);
+                        return Some(result);
+                    }
+                }
+                Rvalue::Call(callee, operands) if operands.len() == 1 => {
+                    let Some((receiver, "has" | "includes")) = method_receiver(callee) else {
+                        continue;
+                    };
+                    let constants =
+                        constant_string_collection(interp.env(), def, interp.body(), &receiver);
+                    if constants.is_none() {
+                        continue;
+                    }
+                    let Operand::Var(candidate) = &operands[0] else {
+                        continue;
+                    };
+                    visiting.remove(&var);
+                    return Some((candidate.clone(), allowed_when_true));
+                }
+                Rvalue::Read(inner) => {
+                    if let Some(result) = inspect(interp, def, inner, allowed_when_true, visiting) {
+                        visiting.remove(&var);
+                        return Some(result);
+                    }
+                }
+                _ => {}
+            }
+        }
+        visiting.remove(&var);
+        None
+    }
+
+    inspect(interp, def, condition, true, &mut HashSet::new())
 }
 
 fn method_receiver(callee: &Operand) -> Option<(Variable, &str)> {
@@ -1287,6 +1618,7 @@ fn source_location(
 
 pub struct SqlDataflow {
     needs_call: Vec<(DefId, bool)>,
+    allowlist_refinements: HashMap<(DefId, BasicBlockId), Vec<Variable>>,
 }
 
 impl SqlDataflow {
@@ -1462,7 +1794,10 @@ impl<'cx> Dataflow<'cx> for SqlDataflow {
     type State = SqlState;
 
     fn with_interp<C: Runner<'cx, State = Self::State>>(_interp: &Interp<'cx, C>) -> Self {
-        Self { needs_call: vec![] }
+        Self {
+            needs_call: vec![],
+            allowlist_refinements: HashMap::new(),
+        }
     }
 
     fn transfer_intrinsic<C: Runner<'cx, State = Self::State>>(
@@ -1487,6 +1822,7 @@ impl<'cx> Dataflow<'cx> for SqlDataflow {
         inst: &'cx Inst,
         mut state: Self::State,
     ) -> Self::State {
+        state.reachable = true;
         if let Inst::Assign(target, rvalue) = inst {
             if let Rvalue::Call(callee, operands) = rvalue {
                 self.propagate_call_arguments(interp, def, callee, operands, &mut state);
@@ -1514,6 +1850,27 @@ impl<'cx> Dataflow<'cx> for SqlDataflow {
         state
     }
 
+    fn transfer_block<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        interp: &mut Interp<'cx, C>,
+        def: DefId,
+        bb: BasicBlockId,
+        block: &'cx BasicBlock,
+        initial_state: Self::State,
+    ) -> Self::State {
+        let mut state = initial_state;
+        if let Some(candidates) = self.allowlist_refinements.get(&(def, bb)).cloned() {
+            for candidate in candidates {
+                state.mark_allowlisted(interp.env(), interp.body(), def, &candidate);
+            }
+        }
+        for (stmt, inst) in block.iter().enumerate() {
+            let loc = Location::new(bb, stmt as u32);
+            state = self.transfer_inst(interp, def, loc, block, inst, state);
+        }
+        state
+    }
+
     fn join_term<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
@@ -1522,6 +1879,31 @@ impl<'cx> Dataflow<'cx> for SqlDataflow {
         state: Self::State,
         worklist: &mut WorkList<DefId, BasicBlockId>,
     ) {
+        if let Terminator::If { cond, cons, alt } = &block.term
+            && let Some((candidate, allowed_when_true)) = exact_allowlist_guard(interp, def, cond)
+        {
+            let allowed_successor = if allowed_when_true { *cons } else { *alt };
+            let rejected_successor = if allowed_when_true { *alt } else { *cons };
+            if allowed_successor != rejected_successor
+                && interp.body().predecessors(allowed_successor).len() == 1
+            {
+                let candidates = self
+                    .allowlist_refinements
+                    .entry((def, allowed_successor))
+                    .or_default();
+                if !candidates.contains(&candidate) {
+                    candidates.push(candidate);
+                    // SWC numbers a conditional expression's join block before
+                    // its alternatives. Analyze both alternatives first so a
+                    // sink in the join block does not observe a partial phi.
+                    worklist
+                        .worklist
+                        .retain(|work| *work != (def, *cons) && *work != (def, *alt));
+                    worklist.worklist.push_front((def, *alt));
+                    worklist.worklist.push_front((def, *cons));
+                }
+            }
+        }
         self.super_join_term(interp, def, block, state, worklist);
         for (callee, changed) in self.needs_call.drain(..) {
             if !worklist.push_front_blocks(interp.env(), callee, interp.call_all) && changed {
