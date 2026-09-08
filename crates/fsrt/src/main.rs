@@ -34,7 +34,7 @@ use tracing_tree::HierarchicalLayer;
 use forge_analyzer::{
     checkers::{
         AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
-        PermissionChecker, PermissionVuln, SecretChecker, SecretType,
+        PermissionChecker, PermissionVuln, SecretChecker, SecretLoggingChecker, SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -58,6 +58,7 @@ enum Scanner {
     AuthHeader,
     Permission,
     Secret,
+    SecretLogging,
     RuntimeVersion,
 }
 
@@ -494,6 +495,7 @@ pub(crate) fn scan_directory<'a>(
     let run_authorization_scanner = opts.scanner_enabled(Scanner::Authorization);
     let run_auth_header_scanner = opts.scanner_enabled(Scanner::AuthHeader);
     let run_secret_scanner = opts.scanner_enabled(Scanner::Secret);
+    let run_secret_logging_scanner = opts.scanner_enabled(Scanner::SecretLogging);
     let scan_functions =
         opts.scan_functions || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
 
@@ -538,6 +540,8 @@ pub(crate) fn scan_directory<'a>(
     let mut authn_interp =
         run_authentication_scanner.then(|| interpreters.create::<AuthenticateChecker>(true));
     let mut secret_interp = run_secret_scanner.then(|| interpreters.create::<SecretChecker>(true));
+    let mut secret_logging_interp =
+        run_secret_logging_scanner.then(|| interpreters.create::<SecretLoggingChecker>(false));
     // Auth-header checks handle uncalled bodies separately in the full-function pass.
     let mut auth_header_interp =
         run_auth_header_scanner.then(|| interpreters.create::<AuthHeaderChecker>(false));
@@ -551,6 +555,7 @@ pub(crate) fn scan_directory<'a>(
     }
 
     let mut secret_checker = SecretChecker::new();
+    let mut secret_logging_checker = SecretLoggingChecker::default();
     let mut auth_header_checker = AuthHeaderChecker::new();
 
     if run_secret_scanner
@@ -567,6 +572,16 @@ pub(crate) fn scan_directory<'a>(
     }
 
     for func in &proj.funcs {
+        if let Some(interp) = &mut secret_logging_interp
+            && let Err(err) = interp.run_checker(
+                func.def_id,
+                &mut secret_logging_checker,
+                func.path.clone(),
+                func.func_name.to_owned(),
+            )
+        {
+            warn!("error while running secret logging checker: {err}");
+        }
         if let Some(interp) = &mut perm_interp {
             let mut checker = PermissionChecker::new();
             if let Err(err) = interp.run_checker(
@@ -669,6 +684,7 @@ pub(crate) fn scan_directory<'a>(
     }
 
     reporter.add_vulnerabilities(secret_checker.into_vulns());
+    reporter.add_vulnerabilities(secret_logging_checker.into_vulns());
     reporter.add_vulnerabilities(auth_header_checker.into_vulns());
 
     if !run_permission_scanner {

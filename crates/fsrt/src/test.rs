@@ -13,6 +13,10 @@ use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceFile, SourceMap};
 use time::{Date, Month};
 
+mod legacy_callbacks;
+mod secret_logging;
+mod secret_logging_storage;
+
 trait ReportExt {
     fn has_no_vulns(&self) -> bool;
 
@@ -224,7 +228,7 @@ fn scanners_parse_as_typed_list() {
     let args = Args::try_parse_from([
         "fsrt",
         "--scanners",
-        "secret,auth-header",
+        "secret,auth-header,secret-logging",
         "--scanners",
         "authentication",
     ])
@@ -235,6 +239,7 @@ fn scanners_parse_as_typed_list() {
         vec![
             Scanner::Secret,
             Scanner::AuthHeader,
+            Scanner::SecretLogging,
             Scanner::Authentication,
         ]
     );
@@ -251,6 +256,7 @@ fn scanners_help_lists_possible_values() {
         "auth-header",
         "permission",
         "secret",
+        "secret-logging",
     ] {
         assert!(help.contains(scanner), "help omitted scanner {scanner}");
     }

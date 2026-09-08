@@ -1,7 +1,7 @@
 use std::{
     borrow::BorrowMut,
     cell::{Cell, RefCell, RefMut},
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt::{self, Display},
     hash::Hash,
     iter,
@@ -22,8 +22,7 @@ use tracing::{debug, instrument, trace, warn};
 use crate::definitions::DefKind;
 use crate::ir::{BinOp, Literal, VarKind};
 use crate::utils::{
-    convert_lit_to_raw, convert_operand_to_raw, get_defid_from_varkind, projvec_from_projvec,
-    return_combinations_phi,
+    convert_lit_to_raw, get_defid_from_varkind, projvec_from_projvec, return_combinations_phi,
 };
 use crate::{
     checkers::IntrinsicArguments,
@@ -65,6 +64,16 @@ pub trait Dataflow<'cx>: Sized {
     type State: JoinSemiLattice + Clone;
 
     fn with_interp<C: Runner<'cx, State = Self::State>>(interp: &Interp<'cx, C>) -> Self;
+
+    /// Override the legacy effect analysis for value-sensitive analyses. Return
+    /// true after computing block inputs, function summaries and instruction findings.
+    fn analyze<C: Runner<'cx, State = Self::State>>(
+        &mut self,
+        _interp: &mut Interp<'cx, C>,
+        _entry: DefId,
+    ) -> bool {
+        false
+    }
 
     #[inline]
     fn resolve_call<C: Runner<'cx, State = Self::State>>(
@@ -109,37 +118,16 @@ pub trait Dataflow<'cx>: Sized {
         initial_state: Self::State,
         oprands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
-        let mut all_values_to_be_pushed = vec![];
-
-        for operand in &oprands {
-            match operand.clone() {
-                Operand::Lit(_) => {
-                    if let Some(lit_value) = convert_operand_to_raw(&operand.clone()) {
-                        all_values_to_be_pushed.push(Value::Const(Const::Literal(lit_value)));
-                    } else {
-                        all_values_to_be_pushed.push(Value::Unknown)
-                    }
-                }
-                Operand::Var(var) => match var.base {
-                    Base::Var(varid) => {
-                        if let Some(value) =
-                            interp.get_value(def, varid, Some(ProjectionVec::new()))
-                        {
-                            all_values_to_be_pushed.push(value.clone());
-                        } else {
-                            all_values_to_be_pushed.push(Value::Unknown)
-                        }
-                    }
-                    _ => all_values_to_be_pushed.push(Value::Unknown),
-                },
-            }
-        }
+        let all_values_to_be_pushed = oprands
+            .into_iter()
+            .map(|operand| interp.value_from_operand(def, operand))
+            .collect();
         if let Some((callee_def, _body)) = interp.body().resolve_call(interp.env(), callee) {
             interp
                 .value_manager
                 .expecting_value
                 .borrow_mut()
-                .insert(callee_def, all_values_to_be_pushed);
+                .insert(callee_def, (def, all_values_to_be_pushed));
         }
         initial_state
     }
@@ -189,6 +177,11 @@ pub trait Dataflow<'cx>: Sized {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
+        if let Rvalue::Call(callee, _) = inst.rvalue()
+            && let Some((callee, _)) = interp.body().resolve_call(interp.env(), callee)
+        {
+            interp.value_manager.expecting_captures.insert(callee, def);
+        }
         match inst {
             Inst::Expr(rvalue) => {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
@@ -279,7 +272,16 @@ pub trait Runner<'cx>: Sized {
 
     const VISIT_ALL: bool = true;
 
+    const VISIT_GLOBALS: bool = false;
+
     const NAME: &'static str = "Runner";
+
+    /// Evaluate a value-sensitive sink against the state before its instruction.
+    /// Dataflow retains only matching locations for the later diagnostic walk;
+    /// unrelated instructions never retain copies of the full variable state.
+    fn instruction_has_violation(_inst: &Inst, _state: &Self::State) -> bool {
+        false
+    }
 
     fn visit_intrinsic(
         &mut self,
@@ -362,13 +364,9 @@ pub trait Runner<'cx>: Sized {
     ) -> ControlFlow<(), Self::State> {
         interp.runner_visited.borrow_mut().insert((def, id));
         let mut curr_state = interp.block_state(def, id).join(curr_state);
-        for stmt in block {
-            match stmt {
-                Inst::Expr(r) => curr_state = self.visit_rvalue(interp, r, def, id, &curr_state)?,
-                Inst::Assign(_, r) => {
-                    curr_state = self.visit_rvalue(interp, r, def, id, &curr_state)?
-                }
-            }
+        for (idx, stmt) in block.iter().enumerate() {
+            let loc = Location::new(id, idx as u32);
+            curr_state = self.visit_inst(interp, def, loc, stmt, &curr_state)?;
         }
         match block.successors() {
             Successors::Return => ControlFlow::Continue(curr_state),
@@ -393,6 +391,17 @@ pub trait Runner<'cx>: Sized {
                 }
             }
         }
+    }
+
+    fn visit_inst(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        loc: Location,
+        inst: &'cx Inst,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
     }
 }
 
@@ -435,6 +444,7 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     func_state: RefCell<FxHashMap<DefId, C::State>>,
     pub curr_body: Cell<Option<&'cx Body>>,
     states: RefCell<BTreeMap<(DefId, BasicBlockId), C::State>>,
+    pub(crate) instruction_findings: BTreeSet<(DefId, Location)>,
     dataflow_visited: FxHashSet<DefId>,
     checker_visited: RefCell<FxHashSet<DefId>>,
     callstack: RefCell<Vec<Frame>>,
@@ -462,8 +472,14 @@ pub struct ValueManager {
     pub varid_to_value_with_proj: DefinitionAnalysisMapProjection,
     pub varid_to_value: DefinitionAnalysisMap,
     pub defid_to_value: FxHashMap<DefId, Value>,
-    pub expecting_value: RefCell<FxHashMap<DefId, Vec<Value>>>,
+    pub expecting_value: RefCell<FxHashMap<DefId, (DefId, Vec<Value>)>>,
     pub expected_return_values: HashMap<DefId, (DefId, VarId)>,
+    expecting_captures: FxHashMap<DefId, DefId>,
+    // Imported objects occupy value-manager-only slots after a body's IR variables.
+    // Keep the originating body/slot for analyses that inspect unresolved values' IR.
+    imported_vars: FxHashMap<(DefId, DefId, VarId), VarId>,
+    value_origins: FxHashMap<(DefId, VarId), (DefId, VarId)>,
+    next_imported_var: FxHashMap<DefId, u32>,
     changed: bool,
 }
 
@@ -640,6 +656,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             func_state: RefCell::new(FxHashMap::default()),
             curr_body: Cell::new(None),
             states: RefCell::new(BTreeMap::new()),
+            instruction_findings: BTreeSet::new(),
             dataflow_visited: FxHashSet::default(),
             checker_visited: RefCell::new(FxHashSet::default()),
             callstack: RefCell::new(Vec::new()),
@@ -648,6 +665,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 varid_to_value_with_proj: DefinitionAnalysisMapProjection::default(),
                 defid_to_value: FxHashMap::default(),
                 expected_return_values: HashMap::default(),
+                expecting_captures: FxHashMap::default(),
+                imported_vars: FxHashMap::default(),
+                value_origins: FxHashMap::default(),
+                next_imported_var: FxHashMap::default(),
                 expecting_value: RefCell::new(FxHashMap::default()),
                 changed: false,
             },
@@ -762,11 +783,29 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 }
                 _ => {}
             }
+            let assigned_var = varid;
             let Some((varid, projections)) = self.get_farthest_obj(defid_block, varid, projections)
             else {
                 return;
             };
             let rval_value = self.value_from_rval(defid_block, rvalue);
+            if projections.is_empty()
+                && self
+                    .value_manager
+                    .value_origins
+                    .contains_key(&(defid_block, varid))
+            {
+                // A captured object may be rebound in this body. Its imported
+                // storage is reused by the legacy value lattice, but fallback
+                // IR inspection must follow the new value rather than the capture.
+                let origin = match &rval_value {
+                    Value::Object(source) => self.value_origin(defid_block, *source),
+                    _ => (defid_block, assigned_var),
+                };
+                self.value_manager
+                    .value_origins
+                    .insert((defid_block, varid), origin);
+            }
             if let Some(existing_lval) = self
                 .get_value(defid_block, varid, Some(projections.clone()))
                 .cloned()
@@ -1022,6 +1061,20 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             .unwrap_or(C::State::BOTTOM)
     }
 
+    pub(crate) fn instruction_has_finding(&self, def: DefId, loc: Location) -> bool {
+        self.instruction_findings.contains(&(def, loc))
+    }
+
+    pub(crate) fn set_block_states(&self, states: BTreeMap<(DefId, BasicBlockId), C::State>) {
+        *self.states.borrow_mut() = states;
+    }
+
+    pub(crate) fn replace_func_states(&self, states: impl IntoIterator<Item = (DefId, C::State)>) {
+        let mut summaries = self.func_state.borrow_mut();
+        summaries.clear();
+        summaries.extend(states);
+    }
+
     #[inline]
     fn block_state_mut(&self, def: DefId, block: BasicBlockId) -> RefMut<'_, C::State> {
         let states = self.states.borrow_mut();
@@ -1041,7 +1094,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    fn push_frame(&self, def: DefId, block: BasicBlockId) {
+    pub(crate) fn push_frame(&self, def: DefId, block: BasicBlockId) {
         self.callstack.borrow_mut().push(Frame {
             calling_function: def,
             block,
@@ -1070,7 +1123,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    fn pop_frame(&self) -> Option<Frame> {
+    pub(crate) fn pop_frame(&self) -> Option<Frame> {
         self.callstack.borrow_mut().pop()
     }
 
@@ -1090,12 +1143,163 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             .map(move |(&(_, callee), &loc)| (callee, loc))
     }
 
+    fn bind_arguments(&mut self, def: DefId, body: &Body) {
+        if let Some(caller) = self.value_manager.expecting_captures.remove(&def) {
+            self.propagate_captured_values(caller, def, body);
+        }
+        let Some((caller, args)) = self.value_manager.expecting_value.borrow_mut().remove(&def)
+        else {
+            return;
+        };
+        // GlobalRef slots alias formals; their IR assignments read the Arg slots.
+        // Only the latter consume actual arguments, including destructured formals.
+        let formals = body
+            .vars
+            .iter_enumerated()
+            .filter_map(|(var, kind)| matches!(kind, VarKind::Arg(_)).then_some(var));
+        for (var, value) in formals.zip(args) {
+            let value = self.import_value(caller, def, value, &mut FxHashSet::default());
+            self.add_value(def, var, value);
+        }
+    }
+
+    fn propagate_captured_values(&mut self, caller: DefId, callee: DefId, body: &Body) {
+        if caller == callee {
+            return;
+        }
+        let caller_body = self.env.def_ref(caller).expect_body();
+        let mut visited = FxHashSet::default();
+        for (target, kind) in body.vars.iter_enumerated() {
+            let Some(binding) = get_defid_from_varkind(kind) else {
+                continue;
+            };
+            if self.env.binding_owner(binding) == Some(callee) {
+                continue;
+            }
+            let source = caller_body
+                .def_id_to_vars
+                .get(&binding)
+                .map(|&var| (caller, var))
+                .or_else(|| {
+                    let owner = self.env.binding_owner(binding)?;
+                    let body = self.env.def_ref(owner).as_body().copied()?;
+                    body.def_id_to_vars.get(&binding).map(|&var| (owner, var))
+                });
+            let Some((source_def, source_var)) = source else {
+                continue;
+            };
+            let imported = self.import_variable(source_def, source_var, callee, &mut visited);
+            let value = self
+                .get_value(callee, imported, None)
+                .cloned()
+                .unwrap_or(Value::Unknown);
+            self.add_value(callee, target, value);
+            let origin = self.value_origin(source_def, source_var);
+            self.value_manager
+                .value_origins
+                .insert((callee, target), origin);
+        }
+    }
+
+    fn import_value(
+        &mut self,
+        source: DefId,
+        target: DefId,
+        value: Value,
+        visited: &mut FxHashSet<(DefId, VarId)>,
+    ) -> Value {
+        match value {
+            Value::Object(var) if source != target => {
+                Value::Object(self.import_variable(source, var, target, visited))
+            }
+            value => value,
+        }
+    }
+
+    fn import_variable(
+        &mut self,
+        source: DefId,
+        source_var: VarId,
+        target: DefId,
+        visited: &mut FxHashSet<(DefId, VarId)>,
+    ) -> VarId {
+        let body_len = self.env.def_ref(target).expect_body().vars.len() as u32;
+        let next_var = self
+            .value_manager
+            .next_imported_var
+            .entry(target)
+            .or_insert(body_len);
+        let target_var = *self
+            .value_manager
+            .imported_vars
+            .entry((target, source, source_var))
+            .or_insert_with(|| {
+                let var = VarId(*next_var);
+                *next_var += 1;
+                var
+            });
+        if !visited.insert((source, source_var)) {
+            return target_var;
+        }
+        let origin = self.value_origin(source, source_var);
+        self.value_manager
+            .value_origins
+            .insert((target, target_var), origin);
+        let properties = self
+            .value_manager
+            .varid_to_value_with_proj
+            .range((source, source_var, ProjectionVec::new())..)
+            .take_while(|((def, var, _), _)| *def == source && *var == source_var)
+            .map(|((_, _, projections), value)| (projections.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        let value = self
+            .get_value(source, source_var, None)
+            .cloned()
+            .unwrap_or({
+                if properties.is_empty() {
+                    Value::Unknown
+                } else {
+                    Value::Object(source_var)
+                }
+            });
+        let value = self.import_value(source, target, value, visited);
+        self.add_value(target, target_var, value);
+        // Reusing the same imported slots must not retain properties from an older call.
+        let old_properties = self
+            .value_manager
+            .varid_to_value_with_proj
+            .range((target, target_var, ProjectionVec::new())..)
+            .take_while(|((def, var, _), _)| *def == target && *var == target_var)
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in old_properties {
+            self.value_manager.varid_to_value_with_proj.remove(&key);
+        }
+        for (projection, value) in properties {
+            let value = self.import_value(source, target, value, visited);
+            self.value_manager
+                .insert_var_with_projection(target, target_var, projection, value);
+        }
+        target_var
+    }
+
+    pub(crate) fn value_origin(&self, def: DefId, var: VarId) -> (DefId, VarId) {
+        self.value_manager
+            .value_origins
+            .get(&(def, var))
+            .copied()
+            .unwrap_or((def, var))
+    }
+
     fn run(&mut self, func_def: DefId) {
+        let mut dataflow = C::Dataflow::with_interp(self);
+        if dataflow.analyze(self, func_def) {
+            return;
+        }
         if self.dataflow_visited.contains(&func_def) {
             return;
         }
         self.dataflow_visited.insert(func_def);
-        let mut dataflow = C::Dataflow::with_interp(self);
         let mut worklist: WorkList<DefId, BasicBlockId> = WorkList::new();
 
         // globals first (in module order so dependencies are resolved before dependents),
@@ -1119,39 +1323,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             self.value_manager.reset_changed();
 
             if block_id == STARTING_BLOCK {
-                let mut function_var = func.vars.clone();
-                function_var.pop();
-                let args = self.value_manager.expecting_value.borrow_mut().remove(&def);
-                if let Some(mut args_vec) = args {
-                    args_vec.reverse();
-                    for (varid, varkind) in function_var.iter_enumerated() {
-                        if (matches!(varkind, VarKind::Arg(_))
-                            || matches!(varkind, VarKind::GlobalRef(_)))
-                            && let Some(operand) = args_vec.pop()
-                        {
-                            self.add_value(def, varid, operand.clone());
-                            func.vars
-                                .iter_enumerated()
-                                .for_each(|(varid_alt, varkind_alt)| {
-                                    let default_projections = Variable::from(varid_alt);
-
-                                    if let (Some(defid_alt), Some(defid_arg)) = (
-                                        get_defid_from_varkind(varkind_alt),
-                                        get_defid_from_varkind(varkind),
-                                    ) && defid_arg == defid_alt
-                                        && varid_alt != varid
-                                    {
-                                        self.add_value_with_projection(
-                                            def,
-                                            varid_alt,
-                                            operand.clone(),
-                                            default_projections.projections,
-                                        );
-                                    }
-                                })
-                        }
-                    }
-                }
+                self.bind_arguments(def, func);
             }
 
             let mut before_state = self.block_state(def, block_id);
@@ -1205,39 +1377,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 self.value_manager.reset_changed();
 
                 if block_id == STARTING_BLOCK {
-                    let mut function_var = func.vars.clone();
-                    function_var.pop();
-                    let args = self.value_manager.expecting_value.borrow_mut().remove(&def);
-                    if let Some(mut args_vec) = args {
-                        args_vec.reverse();
-                        for (varid, varkind) in function_var.iter_enumerated() {
-                            if (matches!(varkind, VarKind::Arg(_))
-                                || matches!(varkind, VarKind::GlobalRef(_)))
-                                && let Some(operand) = args_vec.pop()
-                            {
-                                self.add_value(def, varid, operand.clone());
-                                func.vars
-                                    .iter_enumerated()
-                                    .for_each(|(varid_alt, varkind_alt)| {
-                                        let default_projections = Variable::from(varid_alt);
-
-                                        if let (Some(defid_alt), Some(defid_arg)) = (
-                                            get_defid_from_varkind(varkind_alt),
-                                            get_defid_from_varkind(varkind),
-                                        ) && defid_arg == defid_alt
-                                            && varid_alt != varid
-                                        {
-                                            self.add_value_with_projection(
-                                                def,
-                                                varid_alt,
-                                                operand.clone(),
-                                                default_projections.projections,
-                                            );
-                                        }
-                                    })
-                            }
-                        }
-                    }
+                    self.bind_arguments(def, func);
                 }
 
                 let mut before_state = self.block_state(def, block_id);
@@ -1280,6 +1420,12 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         })?;
         self.set_body(body);
         self.run(resolved_def);
+        if C::VISIT_GLOBALS {
+            for &global in &self.env.global {
+                let global_body = self.env.def_ref(global).expect_body();
+                _ = checker.visit_body(self, global, global_body, &C::State::BOTTOM);
+            }
+        }
         _ = checker.visit_body(self, resolved_def, body, &C::State::BOTTOM);
         self.runner_visited.borrow_mut().clear();
         Ok(())

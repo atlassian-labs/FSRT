@@ -83,6 +83,9 @@ pub enum Intrinsic {
     SecretFunction(PackageData),
     EnvRead,
     StorageRead,
+    /// A secret read from the named `kvs` export of `@forge/kvs`.
+    SecretRead,
+    ConsoleLog,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1132,6 +1135,8 @@ impl fmt::Display for Intrinsic {
             Intrinsic::SafeCall(_) => write!(f, "safe api call"),
             Intrinsic::EnvRead => write!(f, "env read"),
             Intrinsic::StorageRead => write!(f, "forge storage read"),
+            Intrinsic::SecretRead => write!(f, "kvs secret read"),
+            Intrinsic::ConsoleLog => write!(f, "console.log"),
         }
     }
 }

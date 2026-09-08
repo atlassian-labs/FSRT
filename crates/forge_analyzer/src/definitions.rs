@@ -121,6 +121,7 @@ pub struct ResolverTable {
     symbol_to_id: FxHashMap<Symbol, DefId>,
     global_defid_to_value: FxHashMap<DefId, Value>,
     parent: FxHashMap<DefId, DefId>,
+    declared_bindings: HashSet<DefId>,
     owning_module: TiVec<DefId, ModId>,
 }
 
@@ -1299,6 +1300,25 @@ impl FunctionAnalyzer<'_> {
         }
 
         match *callee {
+            [PropPath::Def(def), PropPath::Static(ref method)]
+                if self.res.def_name(def) == "console"
+                    && *method == *"log"
+                    && matches!(self.res.def_ref(def), DefKind::Undefined)
+                    && !self.res.resolver.declared_bindings.contains(&def) =>
+            {
+                Some(Intrinsic::ConsoleLog)
+            }
+            [
+                PropPath::Unknown((ref name, ..)),
+                PropPath::Static(ref method),
+            ] if *name == *"console" && *method == *"log" => Some(Intrinsic::ConsoleLog),
+            [PropPath::Def(def), PropPath::Static(ref method)]
+                if *method == *"getSecret"
+                    && matches!(self.res.is_imported_from(def, "@forge/kvs"),
+                        Some(ImportKind::Named(name)) if *name == *"kvs") =>
+            {
+                Some(Intrinsic::SecretRead)
+            }
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" || *name == *"forgeFetch" => {
                 Some(Intrinsic::Fetch)
             }
@@ -1667,6 +1687,46 @@ impl FunctionAnalyzer<'_> {
     }
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
+        // Model fulfillment as a call with the resolved value. Inlining the
+        // callback's statements discarded its parameter and confused callback
+        // returns with returns from the enclosing function.
+        if let CalleeRef::Expr(Expr::Member(MemberExpr {
+            obj,
+            prop: MemberProp::Ident(method),
+            ..
+        })) = callee
+            && method.sym == "then"
+            && let [
+                ExprOrSpread {
+                    expr: callback,
+                    spread: None,
+                },
+            ] = args
+        {
+            let value = self.lower_expr(obj, None);
+            let callback_operand = match &**callback {
+                Expr::Arrow(arrow) => self.lower_callback(&arrow.params, &arrow.body),
+                Expr::Fn(function) if function.function.body.is_some() => {
+                    let params = function
+                        .function
+                        .params
+                        .iter()
+                        .map(|param| param.pat.clone())
+                        .collect::<Vec<_>>();
+                    let body = BlockStmtOrExpr::BlockStmt(function.function.body.clone().unwrap());
+                    self.lower_callback(&params, &body)
+                }
+                _ => self.get_operand_for_call(callback),
+            };
+            let props = normalize_callee_expr(callback.as_ref().into(), self.res, self.module);
+            let args = smallvec::smallvec![value];
+            let call = if let Some(intrinsic) = self.as_intrinsic(&props, None) {
+                Rvalue::Intrinsic(intrinsic, args)
+            } else {
+                Rvalue::Call(callback_operand, args)
+            };
+            return Operand::with_var(self.body.push_tmp(self.block, call, None));
+        }
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first()
             && (self.res.is_imported_from(id, "@forge/ui").is_some_and(|imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect")) || calls_method(callee, "then")
@@ -1728,6 +1788,49 @@ impl FunctionAnalyzer<'_> {
         };
         let res = self.body.push_tmp(self.block, call, None);
         Operand::with_var(res)
+    }
+
+    fn lower_callback(&mut self, params: &[Pat], body: &BlockStmtOrExpr) -> Operand {
+        let owner = self
+            .res
+            .add_anonymous("__FULFILLMENT", AnonType::Closure, self.module);
+        let mut args = ArgDefiner {
+            res: self.res,
+            module: self.module,
+            func: owner,
+            body: Body::with_owner(owner),
+            current_arg: Variable::default(),
+        };
+        args.visit_pats(params);
+        let mut locals = LocalDefiner {
+            res: args.res,
+            module: self.module,
+            func: owner,
+            body: args.body,
+        };
+        body.visit_with(&mut locals);
+        let mut analyzer = FunctionAnalyzer::new(
+            locals.res,
+            self.module,
+            owner,
+            self.secret_packages,
+            locals.body,
+            self.suspicious_remotes,
+        );
+        match body {
+            BlockStmtOrExpr::BlockStmt(body) => analyzer.lower_stmts(&body.stmts),
+            BlockStmtOrExpr::Expr(expr) => {
+                let value = analyzer.lower_expr(expr, None);
+                analyzer.push_curr_inst(Inst::Assign(RETURN_VAR, Rvalue::Read(value)));
+            }
+        }
+        for bb in analyzer.body.iter_block_keys().collect::<Vec<_>>() {
+            if !analyzer.body.block(bb).set_term_called {
+                analyzer.body.set_terminator(bb, Terminator::Ret);
+            }
+        }
+        *analyzer.res.def_mut(owner).expect_body() = analyzer.body;
+        Operand::with_var(self.body.get_or_insert_global(owner))
     }
 
     fn bind_pats(&mut self, n: &Pat, val: Rvalue) {
@@ -1892,16 +1995,22 @@ impl FunctionAnalyzer<'_> {
         match n {
             Expr::This(_) => Operand::Var(Variable::THIS),
             Expr::Array(ArrayLit { elems, .. }) => {
-                let array_lit: Vec<_> = elems
-                    .iter()
-                    .map(|e| {
-                        e.as_ref()
-                            .map_or(Operand::UNDEF, |ExprOrSpread { spread, expr }| {
-                                self.lower_expr(expr, None)
-                            })
-                    })
-                    .collect();
-                Operand::UNDEF
+                // Keep array contents in the IR, just like object properties.
+                // Discarding the aggregate loses dataflow into logging/calls.
+                let def = self
+                    .res
+                    .add_anonymous("__ARRAY", AnonType::Obj, self.module);
+                let id = self.body.add_var(VarKind::LocalDef(def));
+                for (index, elem) in elems.iter().enumerate() {
+                    if let Some(elem) = elem {
+                        let value = self.lower_expr(&elem.expr, None);
+                        let mut var = Variable::new(id);
+                        var.projections
+                            .push(Projection::Known(index.to_string().into()));
+                        self.push_curr_inst(Inst::Assign(var, Rvalue::Read(value)));
+                    }
+                }
+                Operand::with_var(id)
             }
             Expr::Object(ObjectLit { span, props }) => {
                 let def_id = self
@@ -2547,12 +2656,12 @@ impl Visit for ArgDefiner<'_> {
                     .res
                     .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
                 self.res.add_parent(defid, self.func);
-                self.res.add_parent(defid, self.func);
-                continue;
+                (defid, id)
             } else {
                 //FIXME: clean up unnecessary allocations
                 let id = format!("{pos}argument");
                 let defid = self.res.add_anonymous(id, AnonType::Unknown, self.module);
+                self.res.add_parent(defid, self.func);
                 let id = Atom::from(self.res.def_name(defid)).to_id();
                 (defid, id)
             };
@@ -2662,7 +2771,32 @@ impl Visit for PermCheck<'_> {
     }
 }
 
+struct DeclarationOwner<'cx> {
+    res: &'cx mut Environment,
+    module: ModId,
+    owner: DefId,
+}
+
+impl Visit for DeclarationOwner<'_> {
+    noop_visit_type!();
+
+    fn visit_binding_ident(&mut self, n: &BindingIdent) {
+        let def = self.res.get_or_insert_sym(n.id.to_id(), self.module);
+        // An earlier traversal may have encountered a nested reference first.
+        self.res.add_parent(def, self.owner);
+    }
+
+    // Default values and computed keys do not declare pattern bindings.
+    fn visit_expr(&mut self, _: &Expr) {}
+}
+
 impl Visit for LocalDefiner<'_> {
+    fn visit_binding_ident(&mut self, n: &BindingIdent) {
+        let def = self.res.get_or_insert_sym(n.id.to_id(), self.module);
+        self.res.resolver.declared_bindings.insert(def);
+        n.visit_children_with(self);
+    }
+
     fn visit_ident(&mut self, n: &Ident) {
         let id = n.to_id();
         let defid = self.res.get_or_insert_sym(id.clone(), self.module);
@@ -2671,6 +2805,14 @@ impl Visit for LocalDefiner<'_> {
     }
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
+        // A SimpleAssignTarget also contains a BindingIdent. Set ownership only
+        // for declaration patterns, never for a write to an outer binding.
+        let mut declarations = DeclarationOwner {
+            res: self.res,
+            module: self.module,
+            owner: self.func,
+        };
+        n.name.visit_with(&mut declarations);
         n.name.visit_with(self);
         if let Some(Expr::New(new_expr)) = n.init.as_deref()
             && let Pat::Ident(ident) = &n.name
@@ -3958,6 +4100,11 @@ impl Environment {
     #[inline]
     fn add_parent(&mut self, child: DefId, parent: DefId) {
         self.resolver.parent.insert(child, parent);
+    }
+
+    /// The lexical body that declares a binding, independent of its writes.
+    pub(crate) fn binding_owner(&self, binding: DefId) -> Option<DefId> {
+        self.resolver.parent.get(&binding).copied()
     }
 
     fn overwrite_def(&mut self, def: DefId, res: DefRes) {
