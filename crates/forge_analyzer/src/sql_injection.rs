@@ -5,8 +5,8 @@ use crate::{
         WithCallStack,
     },
     ir::{
-        Base, BasicBlock, BasicBlockId, Inst, Intrinsic, Location, Operand, Projection, Rvalue,
-        STARTING_BLOCK, SqlSink, VarId, VarKind, Variable,
+        Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Location, Operand, Projection,
+        Rvalue, STARTING_BLOCK, SqlSink, UnOp, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     worklist::WorkList,
@@ -26,6 +26,9 @@ use swc_core::common::SourceMap;
 pub enum SqlTaint {
     #[default]
     Trusted,
+    /// The value may still be attacker-controlled, but JavaScript semantics
+    /// guarantee that its string representation cannot contain SQL syntax.
+    Numeric,
     Unknown,
     Untrusted,
 }
@@ -249,7 +252,9 @@ fn classify_variable_inner<'cx, C: Runner<'cx, State = SqlState>>(
     visiting: &mut HashSet<(DefId, VarId, Vec<Projection>)>,
 ) -> SqlTaint {
     let state_taint = state.variable_with_aliases(interp.env(), interp.body(), def, variable);
-    if let Some(state_taint @ (SqlTaint::Trusted | SqlTaint::Untrusted)) = state_taint {
+    if let Some(state_taint @ (SqlTaint::Trusted | SqlTaint::Numeric | SqlTaint::Untrusted)) =
+        state_taint
+    {
         return state_taint;
     }
 
@@ -497,11 +502,28 @@ fn classify_rvalue_inner<'cx, C: Runner<'cx, State = SqlState>>(
         classify_operand_inner(interp, def, operand, state, visiting)
     };
     match rvalue {
-        Rvalue::Read(operand) | Rvalue::Unary(_, operand) => classify(operand, visiting),
+        Rvalue::Read(operand) => classify(operand, visiting),
+        Rvalue::Unary(op, operand) => match op {
+            UnOp::Neg | UnOp::Plus | UnOp::BitNot => SqlTaint::Numeric,
+            _ => classify(operand, visiting),
+        },
         Rvalue::Aggregate(elements) => elements.iter().fold(SqlTaint::Trusted, |value, operand| {
             value.join(&classify(operand, visiting))
         }),
-        Rvalue::Bin(_, left, right) => classify(left, visiting).join(&classify(right, visiting)),
+        Rvalue::Bin(op, left, right) => match op {
+            BinOp::Sub
+            | BinOp::Mul
+            | BinOp::Div
+            | BinOp::Exp
+            | BinOp::Mod
+            | BinOp::BitOr
+            | BinOp::BitAnd
+            | BinOp::BitXor
+            | BinOp::Lshift
+            | BinOp::Rshift
+            | BinOp::RshiftLogical => SqlTaint::Numeric,
+            _ => classify(left, visiting).join(&classify(right, visiting)),
+        },
         Rvalue::Template(template) => template.exprs.iter().fold(SqlTaint::Trusted, |value, op| {
             value.join(&classify(op, visiting))
         }),
@@ -546,6 +568,10 @@ fn classify_rvalue_inner<'cx, C: Runner<'cx, State = SqlState>>(
                 return SqlTaint::Unknown;
             }
 
+            if is_numeric_builtin_call(interp, callee) {
+                return SqlTaint::Numeric;
+            }
+
             let operand_taint = operands.iter().fold(SqlTaint::Trusted, |value, operand| {
                 value.join(&classify(operand, visiting))
             });
@@ -560,6 +586,69 @@ fn classify_rvalue_inner<'cx, C: Runner<'cx, State = SqlState>>(
             }
             SqlTaint::Unknown.join(&operand_taint)
         }
+    }
+}
+
+fn is_numeric_builtin_call<'cx, C: Runner<'cx, State = SqlState>>(
+    interp: &Interp<'cx, C>,
+    callee: &Operand,
+) -> bool {
+    let Operand::Var(variable) = callee else {
+        return false;
+    };
+    let Base::Var(var) = variable.base else {
+        return false;
+    };
+    let Some(VarKind::GlobalRef(binding)) = interp.body().vars.get(var) else {
+        return false;
+    };
+    let binding = interp.env().resolve_alias(*binding);
+    if !matches!(interp.env().def_ref(binding), DefKind::Undefined) {
+        return false;
+    }
+
+    let global = interp.env().def_name(binding);
+    match variable.projections.as_slice() {
+        [] => matches!(global, "Number" | "parseInt" | "parseFloat"),
+        [Projection::Known(method)] if global == "Math" => matches!(
+            method.as_ref(),
+            "abs"
+                | "acos"
+                | "acosh"
+                | "asin"
+                | "asinh"
+                | "atan"
+                | "atan2"
+                | "atanh"
+                | "cbrt"
+                | "ceil"
+                | "clz32"
+                | "cos"
+                | "cosh"
+                | "exp"
+                | "expm1"
+                | "floor"
+                | "fround"
+                | "hypot"
+                | "imul"
+                | "log"
+                | "log10"
+                | "log1p"
+                | "log2"
+                | "max"
+                | "min"
+                | "pow"
+                | "random"
+                | "round"
+                | "sign"
+                | "sin"
+                | "sinh"
+                | "sqrt"
+                | "tan"
+                | "tanh"
+                | "trunc"
+        ),
+        _ => false,
     }
 }
 
@@ -1383,7 +1472,9 @@ impl IntoVuln for SqlInjectionVuln {
                     self.query
                 ),
             ),
-            SqlTaint::Trusted => unreachable!("trusted SQL does not produce a finding"),
+            SqlTaint::Trusted | SqlTaint::Numeric => {
+                unreachable!("SQL-safe values do not produce a finding")
+            }
         };
 
         Vulnerability {
@@ -1452,7 +1543,7 @@ impl<'cx> Runner<'cx> for SqlInjectionChecker {
             .get(query_index)
             .map(|operand| classify_operand(interp, def, operand, &final_state))
             .unwrap_or(SqlTaint::Unknown);
-        if query_taint != SqlTaint::Trusted {
+        if !matches!(query_taint, SqlTaint::Trusted | SqlTaint::Numeric) {
             let query = operands.get(query_index).cloned().unwrap_or(Operand::UNDEF);
             let mut sources = collect_sources(interp, def, &query, &self.source_map);
             if query_taint == SqlTaint::Untrusted {
