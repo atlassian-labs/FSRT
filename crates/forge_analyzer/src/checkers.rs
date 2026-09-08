@@ -16,6 +16,7 @@ use crate::{
     worklist::WorkList,
 };
 use core::fmt;
+use std::fmt::format;
 use forge_permission_resolver::permissions_resolver::{
     PermissionHashMap, RequestType, check_url_for_permissions,
 };
@@ -841,6 +842,8 @@ pub struct UnsafeEndpoint<'a> {
 }
 
 impl<'a> UnsafeEndpoint<'a> {
+    pub const DESC: &'static str = "An endpoint declared in this manifest passes an app system token. Remote calls that pass system tokens must also *explicitly* pass the user account ID associated with the request."
+
     pub fn new(key: &'a str) -> Self {
         Self { key }
     }
@@ -849,13 +852,13 @@ impl<'a> UnsafeEndpoint<'a> {
 impl<'a> IntoVuln for UnsafeEndpoint<'a> {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
         Vulnerability {
-            check_name: String::new(),
-            description: String::new(),
-            recommendation: "",
-            proof: String::new(),
-            app_key: String::new(),
+            check_name: "aec-remote-auth".to_string(),
+            description: Self::DESC.to_string(),
+            recommendation: "Endpoint and remote should omit `auth.appSystemToken: true`",
+            proof: format!("Endpoint `{}` declares `auth.appSystemToken: true`", self.key),
+            app_key: reporter.app_key().to_string(),
             severity: Severity::High,
-            app_name: String::new(),
+            app_name: reporter.app_name().to_string(),
             marketplace_security_requirement: "AEC Requirement 1.10",
             date: reporter.current_date(),
         }
