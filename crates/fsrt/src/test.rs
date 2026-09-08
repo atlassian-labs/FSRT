@@ -3143,6 +3143,62 @@ fn sql_injection_accepts_ir_proven_constant_alternatives() {
 }
 
 #[test]
+fn sql_injection_preserves_fixed_structure_separately_from_returned_parameters() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function buildFilter(filtered, status) {
+            const clauses = ['tenant_id = ?'];
+            const params = [status];
+            if (filtered) {
+                clauses.push('active = TRUE');
+            }
+            return {
+                sql: clauses.join(' AND '),
+                params,
+            };
+        }
+        export async function run(payload) {
+            const filter = buildFilter(payload.filtered, payload.status);
+            await sql.prepare(`SELECT * FROM users WHERE ${filter.sql}`)
+                .bindParams(...filter.params)
+                .execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_rejects_untrusted_text_in_returned_structural_fragment() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function buildFilter(fragment, status) {
+            const clauses = ['tenant_id = ?'];
+            const params = [status];
+            clauses.push(fragment);
+            return {
+                sql: clauses.join(' AND '),
+                params,
+            };
+        }
+        export async function run(payload) {
+            const filter = buildFilter(payload.fragment, payload.status);
+            await sql.prepare(`SELECT * FROM users WHERE ${filter.sql}`)
+                .bindParams(...filter.params)
+                .execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
 fn sql_injection_reports_each_distinct_sink_location_once() {
     let project = MockForgeProject::files_from_string(
         "// src/index.js

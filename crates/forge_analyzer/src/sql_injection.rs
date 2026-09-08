@@ -164,6 +164,15 @@ impl SqlState {
             .or_else(|| self.values.get(&(def, var, vec![])).copied())
     }
 
+    fn exact_variable(&self, def: DefId, variable: &Variable) -> Option<SqlTaint> {
+        let Base::Var(var) = variable.base else {
+            return None;
+        };
+        self.values
+            .get(&(def, var, variable.projections.iter().cloned().collect()))
+            .copied()
+    }
+
     fn variable_with_aliases(
         &self,
         env: &Environment,
@@ -174,16 +183,28 @@ impl SqlState {
         let Some(name) = Self::logical_name(env, body, variable) else {
             return self.variable(def, variable);
         };
-        body.vars
+        let aliases = body
+            .vars
             .iter_enumerated()
             .filter_map(|(var, _)| {
                 let mut candidate = Variable::new(var);
                 candidate.projections = variable.projections.clone();
-                (Self::logical_name(env, body, &candidate) == Some(name))
-                    .then(|| self.variable(def, &candidate))
-                    .flatten()
+                (Self::logical_name(env, body, &candidate) == Some(name)).then_some(candidate)
             })
-            .reduce(|left, right| left.join(&right))
+            .collect::<Vec<_>>();
+
+        // A field-specific fact is more precise than the aggregate object fact.
+        // Consult roots only when no alias has a fact for this exact projection.
+        let exact = aliases
+            .iter()
+            .filter_map(|candidate| self.exact_variable(def, candidate))
+            .reduce(|left, right| left.join(&right));
+        exact.or_else(|| {
+            aliases
+                .iter()
+                .filter_map(|candidate| self.variable(def, candidate))
+                .reduce(|left, right| left.join(&right))
+        })
     }
 }
 
@@ -743,6 +764,47 @@ fn variable_definitions_with_aliases<'a>(
     definitions.into_iter().collect()
 }
 
+fn returned_object_variables(body: &crate::ir::Body) -> Vec<Variable> {
+    fn collect(
+        body: &crate::ir::Body,
+        variable: &Variable,
+        visiting: &mut HashSet<VarId>,
+        returned: &mut Vec<Variable>,
+    ) {
+        let Base::Var(var) = variable.base else {
+            return;
+        };
+        if !visiting.insert(var) {
+            return;
+        }
+        for (_, rvalue) in variable_definitions(body, variable) {
+            match rvalue {
+                Rvalue::Read(Operand::Var(source)) => returned.push(source.clone()),
+                Rvalue::Phi(values) => {
+                    for (source, _) in values {
+                        collect(body, &Variable::new(*source), visiting, returned);
+                    }
+                }
+                _ => {}
+            }
+        }
+        visiting.remove(&var);
+    }
+
+    let mut returned = Vec::new();
+    for (variable, kind) in body.vars.iter_enumerated() {
+        if matches!(kind, VarKind::Ret) {
+            collect(
+                body,
+                &Variable::new(variable),
+                &mut HashSet::new(),
+                &mut returned,
+            );
+        }
+    }
+    returned
+}
+
 fn originates_from_prepare<'cx, C: Runner<'cx, State = SqlState>>(
     interp: &Interp<'cx, C>,
     variable: &Variable,
@@ -1228,6 +1290,44 @@ pub struct SqlDataflow {
 }
 
 impl SqlDataflow {
+    fn target_aliases<'cx, C: Runner<'cx, State = SqlState>>(
+        interp: &Interp<'cx, C>,
+        target: &Variable,
+    ) -> Vec<Variable> {
+        SqlState::logical_name(interp.env(), interp.body(), target).map_or_else(
+            || vec![target.clone()],
+            |name| {
+                interp
+                    .body()
+                    .vars
+                    .iter_enumerated()
+                    .filter_map(|(var, _)| {
+                        let candidate = Variable::new(var);
+                        (SqlState::logical_name(interp.env(), interp.body(), &candidate)
+                            == Some(name))
+                        .then_some(candidate)
+                    })
+                    .collect()
+            },
+        )
+    }
+
+    fn insert_projections<'cx, C: Runner<'cx, State = SqlState>>(
+        interp: &Interp<'cx, C>,
+        def: DefId,
+        target: &Variable,
+        projections: BTreeMap<Vec<Projection>, SqlTaint>,
+        state: &mut SqlState,
+    ) {
+        for (suffix, value) in projections {
+            for alias in Self::target_aliases(interp, target) {
+                let mut projected_target = alias;
+                projected_target.projections.extend(suffix.iter().cloned());
+                state.insert_variable(def, &projected_target, value);
+            }
+        }
+    }
+
     fn classify_rvalue<'cx, C: Runner<'cx, State = SqlState>>(
         &self,
         interp: &Interp<'cx, C>,
@@ -1267,6 +1367,95 @@ impl SqlDataflow {
         let changed = interp.join_block_state(callee_def, STARTING_BLOCK, state);
         self.needs_call.push((callee_def, changed));
     }
+
+    fn propagate_call_return_projections<'cx, C: Runner<'cx, State = SqlState>>(
+        &self,
+        interp: &Interp<'cx, C>,
+        caller_def: DefId,
+        callee: &Operand,
+        target: &Variable,
+        state: &mut SqlState,
+    ) {
+        let Some((callee_def, callee_body)) = interp.body().resolve_call(interp.env(), callee)
+        else {
+            return;
+        };
+        let Some(final_state) = interp.func_state(callee_def) else {
+            return;
+        };
+
+        let mut projections = BTreeMap::<Vec<Projection>, SqlTaint>::new();
+        for returned in returned_object_variables(callee_body) {
+            let Base::Var(returned_var) = returned.base else {
+                continue;
+            };
+            for ((owner, var, path), value) in &final_state.values {
+                if *owner != callee_def
+                    || *var != returned_var
+                    || path.len() <= returned.projections.len()
+                    || !path.starts_with(&returned.projections)
+                {
+                    continue;
+                }
+                let suffix = path[returned.projections.len()..].to_vec();
+                projections
+                    .entry(suffix)
+                    .and_modify(|current| *current = current.join(value))
+                    .or_insert(*value);
+            }
+        }
+
+        Self::insert_projections(interp, caller_def, target, projections, state);
+    }
+
+    fn propagate_assignment_projections<'cx, C: Runner<'cx, State = SqlState>>(
+        &self,
+        interp: &Interp<'cx, C>,
+        def: DefId,
+        source: &Variable,
+        target: &Variable,
+        state: &mut SqlState,
+    ) {
+        let Base::Var(source_var) = source.base else {
+            return;
+        };
+        let mut projections = BTreeMap::<Vec<Projection>, SqlTaint>::new();
+        for ((owner, var, path), value) in &state.values {
+            if *owner != def
+                || *var != source_var
+                || path.len() <= source.projections.len()
+                || !path.starts_with(&source.projections)
+            {
+                continue;
+            }
+            let suffix = path[source.projections.len()..].to_vec();
+            projections
+                .entry(suffix)
+                .and_modify(|current| *current = current.join(value))
+                .or_insert(*value);
+        }
+        Self::insert_projections(interp, def, target, projections, state);
+    }
+
+    fn propagate_container_mutation<'cx, C: Runner<'cx, State = SqlState>>(
+        &self,
+        interp: &Interp<'cx, C>,
+        def: DefId,
+        callee: &Operand,
+        operands: &[Operand],
+        state: &mut SqlState,
+    ) {
+        let Some((receiver, "push")) = method_receiver(callee) else {
+            return;
+        };
+        let taint = classify_variable(interp, def, &receiver, state).join(&join_operands(
+            interp,
+            def,
+            operands.iter().cloned(),
+            state,
+        ));
+        state.insert_assignment(interp.env(), interp.body(), def, &receiver, taint);
+    }
 }
 
 impl<'cx> Dataflow<'cx> for SqlDataflow {
@@ -1301,6 +1490,7 @@ impl<'cx> Dataflow<'cx> for SqlDataflow {
         if let Inst::Assign(target, rvalue) = inst {
             if let Rvalue::Call(callee, operands) = rvalue {
                 self.propagate_call_arguments(interp, def, callee, operands, &mut state);
+                self.propagate_container_mutation(interp, def, callee, operands, &mut state);
             }
             // SqlState owns SQL classification, argument propagation, and return
             // propagation. Populating the shared ValueManager as well duplicates
@@ -1308,19 +1498,18 @@ impl<'cx> Dataflow<'cx> for SqlDataflow {
             // on large entrypoint graphs.
             let taint = self.classify_rvalue(interp, def, rvalue, &state);
             state.insert_assignment(interp.env(), interp.body(), def, target, taint);
+            match rvalue {
+                Rvalue::Call(callee, _) => {
+                    self.propagate_call_return_projections(interp, def, callee, target, &mut state);
+                }
+                Rvalue::Read(Operand::Var(source)) => {
+                    self.propagate_assignment_projections(interp, def, source, target, &mut state);
+                }
+                _ => {}
+            }
         } else if let Inst::Expr(Rvalue::Call(callee, operands)) = inst {
             self.propagate_call_arguments(interp, def, callee, operands, &mut state);
-            if let Some((receiver, method)) = method_receiver(callee)
-                && method == "push"
-            {
-                let taint = classify_variable(interp, def, &receiver, &state).join(&join_operands(
-                    interp,
-                    def,
-                    operands.iter().cloned(),
-                    &state,
-                ));
-                state.insert_assignment(interp.env(), interp.body(), def, &receiver, taint);
-            }
+            self.propagate_container_mutation(interp, def, callee, operands, &mut state);
         }
         state
     }
