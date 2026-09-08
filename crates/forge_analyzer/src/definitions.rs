@@ -1763,6 +1763,29 @@ impl FunctionAnalyzer<'_> {
             let var = self.body.get_or_insert_global(*def_constructor);
             return Operand::with_var(var);
         }
+
+        // Preserve the identity of unresolved global calls in the IR. These
+        // definitions intentionally remain `Undefined`, so analyses can model
+        // known JavaScript built-ins without confusing them with locally
+        // declared or imported functions of the same name.
+        if let Expr::Ident(ident) = expr
+            && self.res.sym_to_id(ident.to_id(), self.module).is_none()
+        {
+            let def = self.res.get_or_insert_sym(ident.to_id(), self.module);
+            return Operand::with_var(self.body.get_or_insert_global(def));
+        }
+        if let Expr::Member(MemberExpr { obj, prop, .. }) = expr
+            && let Expr::Ident(ident) = &**obj
+            && self.res.sym_to_id(ident.to_id(), self.module).is_none()
+            && let MemberProp::Ident(method) = prop
+        {
+            let def = self.res.get_or_insert_sym(ident.to_id(), self.module);
+            let mut variable = Variable::new(self.body.get_or_insert_global(def));
+            variable
+                .projections
+                .push(Projection::Known(method.sym.clone()));
+            return Operand::Var(variable);
+        }
         self.lower_expr(expr, None)
     }
 
