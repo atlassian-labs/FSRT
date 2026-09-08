@@ -594,6 +594,167 @@ fn join_operands<'cx, C: Runner<'cx, State = SqlState>>(
         })
 }
 
+fn literal_string(operand: &Operand) -> Option<&str> {
+    match operand {
+        Operand::Lit(Literal::Str(value) | Literal::JSXText(value)) => Some(value.as_ref()),
+        _ => None,
+    }
+}
+
+fn is_placeholder_fragment(operand: &Operand) -> bool {
+    literal_string(operand).is_some_and(|value| value.contains('?'))
+}
+
+fn is_placeholder_separator(operand: &Operand) -> bool {
+    literal_string(operand).is_some()
+}
+
+fn is_fresh_array_variable<'cx, C: Runner<'cx, State = SqlState>>(
+    interp: &Interp<'cx, C>,
+    def: DefId,
+    variable: &Variable,
+    visiting: &mut HashSet<(DefId, VarId)>,
+) -> bool {
+    let Base::Var(var) = variable.base else {
+        return false;
+    };
+    if !visiting.insert((def, var)) {
+        return false;
+    }
+    if placeholder_collection_is_modified_or_escapes(interp.env(), interp.body(), variable, "fill")
+    {
+        visiting.remove(&(def, var));
+        return false;
+    }
+    let definitions = variable_definitions_with_aliases(interp.env(), interp.body(), variable);
+    let result = !definitions.is_empty()
+        && definitions.into_iter().all(|(_, rvalue)| match rvalue {
+            Rvalue::Aggregate(_) => true,
+            Rvalue::Read(Operand::Var(source)) => {
+                is_fresh_array_variable(interp, def, source, visiting)
+            }
+            Rvalue::Phi(values) => values.iter().all(|(source, _)| {
+                is_fresh_array_variable(interp, def, &Variable::new(*source), visiting)
+            }),
+            Rvalue::Call(callee, _) => {
+                unresolved_global_named(interp.env(), interp.body(), callee, "Array")
+            }
+            _ => false,
+        });
+    visiting.remove(&(def, var));
+    result
+}
+
+fn placeholder_collection_is_modified_or_escapes(
+    env: &Environment,
+    body: &crate::ir::Body,
+    variable: &Variable,
+    allowed_method: &str,
+) -> bool {
+    let Base::Var(root) = variable.base else {
+        return true;
+    };
+    let aliases = SqlState::logical_name(env, body, variable).map_or_else(
+        || HashSet::from([root]),
+        |name| {
+            body.vars
+                .iter_enumerated()
+                .filter_map(|(var, _)| {
+                    let candidate = Variable::new(var);
+                    (SqlState::logical_name(env, body, &candidate) == Some(name)).then_some(var)
+                })
+                .collect()
+        },
+    );
+    let is_alias =
+        |candidate: &Variable| matches!(candidate.base, Base::Var(var) if aliases.contains(&var));
+
+    body.iter_blocks_enumerated()
+        .flat_map(|(_, block)| block.iter())
+        .any(|inst| {
+            if let Inst::Assign(target, _) = inst
+                && !target.projections.is_empty()
+                && is_alias(target)
+            {
+                return true;
+            }
+            let Some((callee, operands)) = inst.rvalue().as_call() else {
+                return false;
+            };
+            if operands
+                .iter()
+                .any(|operand| matches!(operand, Operand::Var(value) if is_alias(value)))
+            {
+                return true;
+            }
+            method_receiver(callee).is_some_and(|(receiver, method)| {
+                if !is_alias(&receiver) {
+                    return false;
+                }
+                method != allowed_method
+                    || (allowed_method == "fill"
+                        && (operands.len() != 1 || !is_placeholder_fragment(&operands[0])))
+            })
+        })
+}
+
+fn is_placeholder_sequence_variable<'cx, C: Runner<'cx, State = SqlState>>(
+    interp: &Interp<'cx, C>,
+    def: DefId,
+    variable: &Variable,
+    visiting: &mut HashSet<(DefId, VarId)>,
+) -> bool {
+    let Base::Var(var) = variable.base else {
+        return false;
+    };
+    if !visiting.insert((def, var)) {
+        return false;
+    }
+    if placeholder_collection_is_modified_or_escapes(interp.env(), interp.body(), variable, "join")
+    {
+        visiting.remove(&(def, var));
+        return false;
+    }
+    let definitions = variable_definitions_with_aliases(interp.env(), interp.body(), variable);
+    let result = !definitions.is_empty()
+        && definitions.into_iter().all(|(_, rvalue)| match rvalue {
+            Rvalue::Aggregate(elements) => {
+                !elements.is_empty() && elements.iter().all(is_placeholder_fragment)
+            }
+            Rvalue::Read(Operand::Var(source)) => {
+                is_placeholder_sequence_variable(interp, def, source, visiting)
+            }
+            Rvalue::Phi(values) => values.iter().all(|(source, _)| {
+                is_placeholder_sequence_variable(interp, def, &Variable::new(*source), visiting)
+            }),
+            Rvalue::Call(callee, operands) => {
+                let Some((receiver, "fill")) = method_receiver(callee) else {
+                    return false;
+                };
+                operands.len() == 1
+                    && is_placeholder_fragment(&operands[0])
+                    && is_fresh_array_variable(interp, def, &receiver, &mut HashSet::new())
+            }
+            _ => false,
+        });
+    visiting.remove(&(def, var));
+    result
+}
+
+fn is_placeholder_list_call<'cx, C: Runner<'cx, State = SqlState>>(
+    interp: &Interp<'cx, C>,
+    def: DefId,
+    callee: &Operand,
+    operands: &[Operand],
+) -> bool {
+    let Some((receiver, "join")) = method_receiver(callee) else {
+        return false;
+    };
+    operands.len() <= 1
+        && operands.first().is_none_or(is_placeholder_separator)
+        && is_placeholder_sequence_variable(interp, def, &receiver, &mut HashSet::new())
+}
+
 fn classify_rvalue_inner<'cx, C: Runner<'cx, State = SqlState>>(
     interp: &Interp<'cx, C>,
     def: DefId,
@@ -655,6 +816,9 @@ fn classify_rvalue_inner<'cx, C: Runner<'cx, State = SqlState>>(
             | Intrinsic::EnvRead => SqlTaint::Trusted,
         },
         Rvalue::Call(callee, operands) => {
+            if is_placeholder_list_call(interp, def, callee, operands) {
+                return SqlTaint::Trusted;
+            }
             if let Some((callee_def, callee_body)) =
                 interp.body().resolve_call(interp.env(), callee)
             {

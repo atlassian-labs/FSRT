@@ -1791,6 +1791,7 @@ impl FunctionAnalyzer<'_> {
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread], span: Span) -> Operand {
         let props = normalize_callee_expr(callee, self.res, self.module);
+        let maps_values = calls_method(callee, "map");
         if let Some(&PropPath::Def(id)) = props.first()
             && (self.res.is_imported_from(id, "@forge/ui").is_some_and(|imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect")) || calls_method(callee, "then")
                 || calls_method(callee, "map")
@@ -1814,7 +1815,20 @@ impl FunctionAnalyzer<'_> {
                                 return Operand::UNDEF;
                             }
                             BlockStmtOrExpr::Expr(expr) => {
-                                return self.lower_expr(expr, None);
+                                let value = self.lower_expr(expr, None);
+                                if maps_values {
+                                    // A map returns a collection of callback
+                                    // results, not the callback result itself.
+                                    // Preserve that distinction for analyses
+                                    // that model later container operations.
+                                    return Operand::with_var(self.body.push_tmp_spanned(
+                                        self.block,
+                                        Rvalue::Aggregate(vec![value]),
+                                        None,
+                                        span,
+                                    ));
+                                }
+                                return value;
                             }
                         },
                         Expr::Fn(FnExpr { ident: _, function }) => {
