@@ -46,7 +46,8 @@ use crate::{
     forge_project::{ForgeProjectFromDir, ForgeProjectTrait, find_manifest_path},
     interpreter::InterpreterFactory,
 };
-use forge_loader::manifest::{self, Entrypoint};
+
+use forge_loader::manifest::{self, EndpointMod, Entrypoint, passes_system_auth, passes_user_auth};
 use walkdir::WalkDir;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -396,10 +397,22 @@ fn check_remotes(remotes: &Option<Vec<manifest::Remotes>>) -> HashSet<String> {
 
     let result = content
         .iter()
-        .filter(|e| e.passes_system_auth() && !e.passes_user_auth())
+        .filter(|e| passes_system_auth(&e.auth) && !passes_user_auth(&e.auth))
         .map(|e| e.key.clone());
 
     HashSet::from_iter(result)
+}
+
+fn check_unsafe_remote_endpoints<'a>(
+    privileged_remotes: &HashSet<String>,
+    endpoints: &'a Vec<EndpointMod<'a>>,
+) -> HashSet<&'a str> {
+    HashSet::from_iter(
+        endpoints
+            .iter()
+            .filter(|i| privileged_remotes.contains(i.remote) || passes_system_auth(&i.auth))
+            .map(|i| i.key),
+    )
 }
 
 fn has_remote_auth(remotes: &Option<Vec<manifest::Remotes>>) -> bool {
@@ -462,6 +475,9 @@ pub(crate) fn scan_directory<'a>(
     sorted_paths.sort();
 
     let suspicious_remotes = check_remotes(&manifest.remotes);
+    let _unsafe_endps =
+        check_unsafe_remote_endpoints(&suspicious_remotes, &manifest.modules.endpoint);
+
     let mut proj = project.with_files_and_sourceroot(
         Path::new("src"),
         sorted_paths,

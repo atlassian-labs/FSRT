@@ -87,6 +87,13 @@ pub struct FunctionMod<'a> {
     pub providers: Option<AuthProviders<'a>>,
 }
 
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct EndpointMod<'a> {
+    pub key: &'a str,
+    pub remote: &'a str,
+    pub auth: Option<RemoteAuth>,
+}
+
 // https://developer.atlassian.com/platform/forge/manifest-reference/modules/consumer/
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Consumer<'a> {
@@ -325,6 +332,8 @@ pub struct ForgeModules<'a> {
     pub consumers: Vec<Consumer<'a>>,
     #[serde(rename = "function", default, borrow)]
     pub functions: Vec<FunctionMod<'a>>,
+    #[serde(rename = "endpoint", default, borrow)]
+    pub endpoint: Vec<EndpointMod<'a>>,
     #[serde(rename = "webtrigger", default, borrow)]
     webtriggers: Vec<RawTrigger<'a>>,
     #[serde(rename = "trigger", default, borrow)]
@@ -522,29 +531,29 @@ pub struct Remotes {
     pub operations: Vec<String>,
 }
 
+pub fn passes_user_auth(auth: &Option<RemoteAuth>) -> bool {
+    let Some(auth) = auth else { return false };
+
+    let Some(user_auth) = &auth.app_user_token else {
+        return false;
+    };
+
+    user_auth.enabled
+}
+
+pub fn passes_system_auth(auth: &Option<RemoteAuth>) -> bool {
+    let Some(auth) = auth else { return false };
+
+    let Some(system_auth) = &auth.app_system_token else {
+        return false;
+    };
+
+    system_auth.enabled
+}
+
 impl Remotes {
     pub fn contains_auth(&self) -> bool {
         self.auth.is_some()
-    }
-
-    pub fn passes_user_auth(&self) -> bool {
-        let Some(auth) = &self.auth else { return false };
-
-        let Some(user_auth) = &auth.app_user_token else {
-            return false;
-        };
-
-        user_auth.enabled
-    }
-
-    pub fn passes_system_auth(&self) -> bool {
-        let Some(auth) = &self.auth else { return false };
-
-        let Some(system_auth) = &auth.app_system_token else {
-            return false;
-        };
-
-        system_auth.enabled
     }
 }
 
@@ -798,6 +807,7 @@ impl<'a> ForgeModules<'a> {
             custom_field,
             consumers,
             functions,
+            endpoint,
             event_triggers: _,
             scheduled_triggers: _,
             api_routes,
