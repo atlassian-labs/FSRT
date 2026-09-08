@@ -3310,6 +3310,66 @@ fn sql_injection_accepts_literal_placeholder_list_generation() {
 }
 
 #[test]
+fn sql_injection_accepts_local_array_length_for_placeholder_indexes() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            let query = 'SELECT * FROM users WHERE 1=1';
+            const params = [];
+            if (payload.name) {
+                query += ` AND name = $${params.length + 1}`;
+                params.push(payload.name);
+            }
+            if (payload.email) {
+                query += ` AND email = $${params.length + 1}`;
+                params.push(payload.email);
+            }
+            query += ` LIMIT 25 OFFSET $${params.length + 1}`;
+            params.push(payload.startAt);
+            await sql.prepare(query).bindParams(...params).execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_does_not_trust_unproven_length_properties() {
+    let payload_property = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            await sql.prepare(`SELECT * FROM users LIMIT ${payload.length}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(payload_property).contains_sql_vuln(Severity::High, 1));
+
+    let object_property = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const options = { length: payload.fragment };
+            await sql.prepare(`SELECT * FROM users LIMIT ${options.length}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(object_property).contains_sql_vuln(Severity::High, 1));
+
+    let reassigned_array = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            let params = [];
+            params = payload.params;
+            await sql.prepare(`SELECT * FROM users LIMIT ${params.length}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(reassigned_array).contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
 fn sql_injection_rejects_dynamic_placeholder_tokens_separators_and_constructors() {
     let dynamic_token = MockForgeProject::files_from_string(
         "// src/index.js
