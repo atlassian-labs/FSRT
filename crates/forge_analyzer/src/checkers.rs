@@ -25,183 +25,16 @@ use regex::{Regex, RegexSet};
 use serde::Deserialize;
 use smallvec::SmallVec;
 use std::{
-    cmp::max,
-    collections::HashMap,
-    collections::HashSet,
-    iter::{self, zip},
-    mem,
-    ops::ControlFlow,
-    path::PathBuf,
-    sync::LazyLock,
+    cmp::max, collections::HashMap, collections::HashSet, iter, mem, ops::ControlFlow,
+    path::PathBuf, sync::LazyLock,
 };
 use time::{Date, Month, OffsetDateTime};
 use tracing::{debug, info, warn};
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Default)]
-pub enum Taint {
-    No,
-    Yes,
-    #[default]
-    Unknown,
-}
+mod secret_logging;
+pub use secret_logging::{SecretLoggingChecker, SecretLoggingVuln};
 
-impl JoinSemiLattice for Taint {
-    const BOTTOM: Self = Self::No;
-
-    #[inline]
-    fn join_changed(&mut self, other: &Self) -> bool {
-        let old = mem::replace(self, max(*other, *self));
-        old == *self
-    }
-
-    #[inline]
-    fn join(&self, other: &Self) -> Self {
-        max(*other, *self)
-    }
-}
-
-impl<D: JoinSemiLattice> JoinSemiLattice for Vec<D> {
-    const BOTTOM: Self = vec![];
-    fn join_changed(&mut self, other: &Self) -> bool {
-        let mut changed = false;
-        for (l, r) in zip(self, other) {
-            changed |= l.join_changed(r);
-        }
-        changed
-    }
-    fn join(&self, other: &Self) -> Self {
-        self.iter()
-            .zip(other.iter())
-            .map(|(a, b)| a.join(b))
-            .collect()
-    }
-}
-
-pub struct TaintDataflow {
-    started: bool,
-}
-
-impl<'cx> Dataflow<'cx> for TaintDataflow {
-    type State = Vec<Taint>;
-
-    fn with_interp<C: Runner<'cx, State = Self::State>>(_interp: &Interp<'cx, C>) -> Self {
-        Self { started: false }
-    }
-
-    fn transfer_call<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &Interp<'cx, C>,
-        def: DefId,
-        loc: Location,
-        block: &'cx BasicBlock,
-        callee: &'cx Operand,
-        initial_state: Self::State,
-        oprands: SmallVec<[crate::ir::Operand; 4]>,
-    ) -> Self::State {
-        self.super_transfer_call(
-            interp,
-            def,
-            loc,
-            block,
-            callee,
-            initial_state,
-            oprands.clone(),
-        )
-    }
-
-    fn transfer_intrinsic<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        _interp: &mut Interp<'cx, C>,
-        _def: DefId,
-        _loc: Location,
-        _block: &'cx BasicBlock,
-        _intrinsic: &'cx Intrinsic,
-        initial_state: Self::State,
-        _operands: SmallVec<[crate::ir::Operand; 4]>,
-    ) -> Self::State {
-        initial_state
-    }
-
-    fn transfer_inst<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        loc: Location,
-        block: &'cx BasicBlock,
-        inst: &'cx Inst,
-        mut initial_state: Self::State,
-    ) -> Self::State {
-        match inst {
-            Inst::Assign(l, v) => {
-                interp.add_value_to_definition(def, l.clone(), v.clone());
-                let Some(var) = l.as_var_id() else {
-                    return initial_state;
-                };
-
-                if let Some(var) = v.as_var() {
-                    let Some(var_id) = var.as_var_id() else {
-                        return initial_state;
-                    };
-                    let taint = initial_state[var_id.0 as usize];
-                    if !self.started && taint == Taint::Yes {
-                        let Some(Projection::Known(s)) = var.projections.first() else {
-                            return initial_state;
-                        };
-                        if *s == "payload" {
-                            initial_state[var_id.0 as usize] = Taint::Yes;
-                            self.started = true;
-                        }
-                        return initial_state;
-                    } else {
-                        let new_state = initial_state[var_id.0 as usize].join(&taint);
-                        initial_state[var_id.0 as usize] = new_state;
-                        return initial_state;
-                    }
-                } else if initial_state[var.0 as usize] == Taint::Yes {
-                    initial_state[var.0 as usize] = Taint::Unknown;
-                }
-                initial_state
-            }
-            Inst::Expr(rvalue) => {
-                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
-            }
-        }
-    }
-
-    fn transfer_block<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        bb: BasicBlockId,
-        block: &'cx BasicBlock,
-        mut initial_state: Self::State,
-    ) -> Self::State {
-        if initial_state.len() < interp.body().vars.len() {
-            initial_state.resize(interp.body().vars.len(), Taint::Unknown);
-        }
-        if matches!(interp.entry.kind, EntryKind::Resolver(..)) {
-            debug!("analyzing resolver");
-            let kind = interp.body().vars.get(VarId::from(1));
-            if matches!(kind, Some(VarKind::Arg(_))) {
-                debug!("found taint start");
-                initial_state[1] = Taint::Yes;
-            } else {
-                debug!(first_var = ?kind, "no arguments read");
-            }
-        }
-        for (idx, inst) in block.iter().enumerate() {
-            initial_state = self.transfer_inst(
-                interp,
-                def,
-                Location::new(bb, idx as u32),
-                block,
-                inst,
-                initial_state,
-            );
-        }
-        initial_state
-    }
-}
+pub use crate::taint::{Taint, TaintDataflow};
 
 pub struct AuthorizeDataflow {
     needs_call: Vec<DefId>,
@@ -220,7 +53,7 @@ impl JoinSemiLattice for AuthorizeState {
     #[inline]
     fn join_changed(&mut self, other: &Self) -> bool {
         let old = mem::replace(self, max(*other, *self));
-        old == *self
+        old != *self
     }
 
     #[inline]
@@ -263,7 +96,9 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
             | Intrinsic::ApiCall(_)
             | Intrinsic::SafeCall(_)
             | Intrinsic::EnvRead
-            | Intrinsic::StorageRead => initial_state,
+            | Intrinsic::StorageRead
+            | Intrinsic::SecretRead
+            | Intrinsic::ConsoleLog => initial_state,
         }
     }
 
@@ -346,6 +181,14 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
 
     const NAME: &'static str = "PrototypePollution";
 
+    fn instruction_has_violation(inst: &Inst, state: &Self::State) -> bool {
+        matches!(inst, Inst::Assign(l, _)
+            if matches!(&*l.projections,
+                [Projection::Computed(Base::Var(first)), Projection::Computed(Base::Var(second)), ..]
+                if state.get(first.0 as usize) == Some(&Taint::Yes)
+                    && state.get(second.0 as usize) == Some(&Taint::Yes)))
+    }
+
     fn visit_intrinsic(
         &mut self,
         _interp: &Interp<'cx, Self>,
@@ -356,29 +199,30 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
     ) -> ControlFlow<(), Self::State> {
         ControlFlow::Continue(state.clone())
     }
-    fn visit_block(
+    fn visit_call(
         &mut self,
-        _interp: &Interp<'cx, Self>,
-        _def: DefId,
-        _id: BasicBlockId,
-        block: &'cx BasicBlock,
-        curr_state: &Self::State,
+        interp: &Interp<'cx, Self>,
+        callee: &'cx Operand,
+        _args: &'cx [Operand],
+        block: BasicBlockId,
+        state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
-        for inst in &block.insts {
-            if let Inst::Assign(l, _r) = inst
-                && let [
-                    Projection::Computed(Base::Var(fst)),
-                    Projection::Computed(Base::Var(snd)),
-                    ..,
-                ] = *l.projections
-                && curr_state.get(fst.0 as usize).copied() == Some(Taint::Yes)
-                && curr_state.get(snd.0 as usize).copied() == Some(Taint::Yes)
-            {
-                info!("Prototype pollution vuln detected");
-                return ControlFlow::Break(());
-            }
+        crate::taint::visit_taint_call(self, interp, callee, block, state)
+    }
+
+    fn visit_inst(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        loc: Location,
+        inst: &'cx Inst,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        if interp.instruction_has_finding(def, loc) {
+            info!("Prototype pollution vuln detected");
+            return ControlFlow::Break(());
         }
-        ControlFlow::Continue(curr_state.clone())
+        self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
     }
 }
 
@@ -578,7 +422,9 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             | Intrinsic::EnvRead
             | Intrinsic::UserFieldAccess
             | Intrinsic::ApiCustomField
-            | Intrinsic::StorageRead => ControlFlow::Continue(*state),
+            | Intrinsic::StorageRead
+            | Intrinsic::SecretRead
+            | Intrinsic::ConsoleLog => ControlFlow::Continue(*state),
         }
     }
 }
@@ -599,7 +445,7 @@ impl JoinSemiLattice for Authenticated {
     #[inline]
     fn join_changed(&mut self, other: &Self) -> bool {
         let old = mem::replace(self, max(*other, *self));
-        old == *self
+        old != *self
     }
 
     #[inline]
@@ -632,8 +478,11 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         _operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         match *intrinsic {
-            Intrinsic::Authorize(_) => initial_state,
-            Intrinsic::Fetch | Intrinsic::EnvRead | Intrinsic::StorageRead => {
+            Intrinsic::Authorize(_) | Intrinsic::ConsoleLog => initial_state,
+            Intrinsic::Fetch
+            | Intrinsic::EnvRead
+            | Intrinsic::StorageRead
+            | Intrinsic::SecretRead => {
                 debug!("authenticated");
                 Authenticated::Yes
             }
@@ -734,8 +583,11 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         match *intrinsic {
-            Intrinsic::Authorize(_) => ControlFlow::Continue(*state),
-            Intrinsic::Fetch | Intrinsic::EnvRead | Intrinsic::StorageRead => {
+            Intrinsic::Authorize(_) | Intrinsic::ConsoleLog => ControlFlow::Continue(*state),
+            Intrinsic::Fetch
+            | Intrinsic::EnvRead
+            | Intrinsic::StorageRead
+            | Intrinsic::SecretRead => {
                 debug!("authenticated");
                 ControlFlow::Continue(Authenticated::Yes)
             }
@@ -851,7 +703,7 @@ impl JoinSemiLattice for SecretState {
     #[inline]
     fn join_changed(&mut self, other: &Self) -> bool {
         let old = mem::replace(self, max(*other, *self));
-        old == *self
+        old != *self
     }
 
     #[inline]
@@ -1799,7 +1651,13 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                 })) => match interp.get_value(def, *varid, None) {
                     Some(Value::Const(Const::Literal(s))) => Some(s.clone()),
                     Some(Value::Phi(phi)) => phi.iter().map(|Const::Literal(s)| s.clone()).next(),
-                    _ => extract_url_prefix_from_body(interp.body(), *varid),
+                    _ => {
+                        let (origin, var) = interp.value_origin(def, *varid);
+                        extract_url_prefix_from_body(
+                            interp.env().def_ref(origin).expect_body(),
+                            var,
+                        )
+                    }
                 },
                 Some(Operand::Lit(lit)) => convert_lit_to_raw(lit),
                 _ => None,
@@ -1838,7 +1696,11 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                         Some(Value::Unknown) | None => {
                             // Value collapsed to Unknown — inspect the IR directly.
                             // The auth header VarId is `*varid` from the headers object.
-                            extract_auth_scheme_from_body(interp.body(), *varid)
+                            let (origin, var) = interp.value_origin(def, *varid);
+                            extract_auth_scheme_from_body(
+                                interp.env().def_ref(origin).expect_body(),
+                                var,
+                            )
                         }
                         _ => None,
                     };

@@ -34,6 +34,51 @@ Commands:
 
 Run `fsrt --help`, `fsrt dast --help`, or `fsrt dast <COMMAND> --help` for current options.
 
+### Secret logging
+
+The `secret-logging` scanner reports values returned by the named `kvs` export's
+`getSecret` method from `@forge/kvs` when they reach `console.log`. It is enabled
+by default, or can be selected on its own:
+
+```sh
+fsrt --scanners secret-logging ./my-forge-app
+```
+
+```js
+import { kvs } from '@forge/kvs';
+
+export async function run() {
+  const token = await kvs.getSecret('token');
+  console.log(`Token: ${token}`); // reported
+}
+```
+
+It follows import aliases, assignments, expressions, arrays and objects,
+branches, loops, helper arguments and returns, and single-handler `.then()`
+fulfillment callbacks. It checks manifest entrypoints, resolver handlers, their
+reachable helpers, and module initializers. Ordinary `kvs.get` calls and other
+console methods are outside this rule. Captured bindings use their values at
+the helper call, and operators returning only metadata (such as `typeof`, `void`,
+boolean negation, and comparisons) clear secret taint.
+
+The shared engine in `crates/forge_analyzer/src/taint.rs` separates source policies
+(`TaintPolicy`) from sink checks (`Runner::instruction_has_violation`). A new
+scanner can select `TaintDataflow<MyPolicy>`, implement that predicate, and reuse
+`visit_taint_call` for interprocedural traversal. Both this scanner and the
+existing prototype-pollution checker use that engine. The predicate sees values
+before each instruction; only matching sink locations are retained for the
+diagnostic walk after analysis converges. Variable vectors are retained at block
+boundaries, rather than copied and stored at every instruction.
+
+This is a conservative analysis: properties share their containing object's
+taint, and helper summaries combine call sites within an entrypoint. Calls to
+unresolved functions propagate argument/receiver taint. Dynamic dispatch,
+mutation through object aliases, and callback APIs other than the modeled
+fulfillment form can still miss flows; sanitization through unresolved functions
+can produce warnings. Callee summaries do not propagate writes to outer bindings
+back to callers. Findings identify the sink function, unique IR body, and
+instruction location, not a source line or a runtime secret value.
+
 ## Installation
 
 You will need to install [Rust] to compile `FSRT`. You can install `Rust` through [Rustup] or through your distro's package manager. You will also
