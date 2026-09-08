@@ -34,7 +34,7 @@ use tracing_tree::HierarchicalLayer;
 use forge_analyzer::{
     checkers::{
         AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
-        PermissionChecker, PermissionVuln, SecretChecker, SecretType,
+        PermissionChecker, PermissionVuln, SecretChecker, SecretType, UnsafeEndpoint,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -405,13 +405,13 @@ fn check_remotes(remotes: &Option<Vec<manifest::Remotes>>) -> HashSet<String> {
 
 fn check_unsafe_remote_endpoints<'a>(
     privileged_remotes: &HashSet<String>,
-    endpoints: &'a Vec<EndpointMod<'a>>,
-) -> HashSet<&'a str> {
+    endpoints: &Vec<EndpointMod<'a>>,
+) -> HashSet<String> {
     HashSet::from_iter(
         endpoints
             .iter()
             .filter(|i| privileged_remotes.contains(i.remote) || passes_system_auth(&i.auth))
-            .map(|i| i.key),
+            .map(|i| i.key.to_string()),
     )
 }
 
@@ -562,6 +562,7 @@ pub(crate) fn scan_directory<'a>(
 
     let mut reporter = Reporter::new();
     reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
+    reporter.add_vulnerabilities(_unsafe_endps.iter().map(|i| UnsafeEndpoint::new(i)));
     if let Some(vuln) = runtime_policy_vuln {
         reporter.add_vulnerabilities([vuln]);
     }
