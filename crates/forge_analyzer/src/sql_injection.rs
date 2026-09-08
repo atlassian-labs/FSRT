@@ -344,6 +344,53 @@ fn classify_variable<'cx, C: Runner<'cx, State = SqlState>>(
     classify_variable_inner(interp, def, variable, state, &mut HashSet::new())
 }
 
+fn is_proven_local_array_length<'cx, C: Runner<'cx, State = SqlState>>(
+    interp: &Interp<'cx, C>,
+    def: DefId,
+    variable: &Variable,
+) -> bool {
+    let Some(Projection::Known(property)) = variable.projections.last() else {
+        return false;
+    };
+    if property != "length" {
+        return false;
+    }
+
+    fn is_array<'cx, C: Runner<'cx, State = SqlState>>(
+        interp: &Interp<'cx, C>,
+        def: DefId,
+        variable: &Variable,
+        visiting: &mut HashSet<(DefId, VarId)>,
+    ) -> bool {
+        let Base::Var(var) = variable.base else {
+            return false;
+        };
+        if !visiting.insert((def, var)) {
+            return false;
+        }
+
+        let definitions = variable_definitions_with_aliases(interp.env(), interp.body(), variable);
+        let result = !definitions.is_empty()
+            && definitions.into_iter().all(|(_, rvalue)| match rvalue {
+                Rvalue::Aggregate(_) => true,
+                Rvalue::Read(Operand::Var(source)) => is_array(interp, def, source, visiting),
+                Rvalue::Phi(values) => values
+                    .iter()
+                    .all(|(source, _)| is_array(interp, def, &Variable::new(*source), visiting)),
+                Rvalue::Call(callee, _) => {
+                    unresolved_global_named(interp.env(), interp.body(), callee, "Array")
+                }
+                _ => false,
+            });
+        visiting.remove(&(def, var));
+        result
+    }
+
+    let mut receiver = variable.clone();
+    receiver.projections.pop();
+    is_array(interp, def, &receiver, &mut HashSet::new())
+}
+
 fn classify_variable_inner<'cx, C: Runner<'cx, State = SqlState>>(
     interp: &Interp<'cx, C>,
     def: DefId,
@@ -353,6 +400,12 @@ fn classify_variable_inner<'cx, C: Runner<'cx, State = SqlState>>(
 ) -> SqlTaint {
     if state.is_allowlisted(interp.env(), interp.body(), def, variable) {
         return SqlTaint::Trusted;
+    }
+    // Array length is numeric regardless of whether the array's elements are
+    // attacker-controlled. Require a locally proven array so an arbitrary
+    // payload object's `length` property is not treated as safe.
+    if is_proven_local_array_length(interp, def, variable) {
+        return SqlTaint::Numeric;
     }
     let state_taint = state.variable_with_aliases(interp.env(), interp.body(), def, variable);
     if let Some(state_taint @ (SqlTaint::Trusted | SqlTaint::Numeric | SqlTaint::Untrusted)) =
