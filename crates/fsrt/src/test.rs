@@ -13,9 +13,12 @@ use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceFile, SourceMap};
 use time::{Date, Month};
 
+mod captured_values;
 mod legacy_callbacks;
 mod secret_logging;
 mod secret_logging_storage;
+mod taint_regressions;
+mod value_regressions;
 
 trait ReportExt {
     fn has_no_vulns(&self) -> bool;
