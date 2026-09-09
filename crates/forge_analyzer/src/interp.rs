@@ -43,6 +43,8 @@ pub type DefinitionAnalysisMap = FxHashMap<(DefId, VarId), Value>;
 
 pub type ProjectionVec = SmallVec<[Projection; 1]>;
 
+type PendingArguments = (DefId, Location, Vec<Value>);
+
 pub trait JoinSemiLattice: Sized + Ord {
     const BOTTOM: Self;
 
@@ -112,7 +114,7 @@ pub trait Dataflow<'cx>: Sized {
         &mut self,
         interp: &Interp<'cx, C>,
         def: DefId,
-        _loc: Location,
+        loc: Location,
         _block: &'cx BasicBlock,
         callee: &'cx Operand,
         initial_state: Self::State,
@@ -127,7 +129,7 @@ pub trait Dataflow<'cx>: Sized {
                 .value_manager
                 .expecting_value
                 .borrow_mut()
-                .insert(callee_def, (def, all_values_to_be_pushed));
+                .insert(callee_def, (def, loc, all_values_to_be_pushed));
         }
         initial_state
     }
@@ -180,13 +182,23 @@ pub trait Dataflow<'cx>: Sized {
         if let Rvalue::Call(callee, _) = inst.rvalue()
             && let Some((callee, _)) = interp.body().resolve_call(interp.env(), callee)
         {
-            interp.value_manager.expecting_captures.insert(callee, def);
+            interp
+                .value_manager
+                .expecting_captures
+                .insert(callee, (def, loc));
+            interp
+                .value_manager
+                .import_call_sites
+                .entry((def, callee))
+                .or_default()
+                .insert(loc);
         }
         match inst {
             Inst::Expr(rvalue) => {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
             Inst::Assign(var, rvalue) => {
+                interp.record_projection_assignment(def, var, loc, rvalue);
                 interp.add_value_to_definition(def, var.clone(), rvalue.clone());
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
@@ -472,13 +484,18 @@ pub struct ValueManager {
     pub varid_to_value_with_proj: DefinitionAnalysisMapProjection,
     pub varid_to_value: DefinitionAnalysisMap,
     pub defid_to_value: FxHashMap<DefId, Value>,
-    pub expecting_value: RefCell<FxHashMap<DefId, (DefId, Vec<Value>)>>,
+    pub expecting_value: RefCell<FxHashMap<DefId, PendingArguments>>,
     pub expected_return_values: HashMap<DefId, (DefId, VarId)>,
-    expecting_captures: FxHashMap<DefId, DefId>,
+    expecting_captures: FxHashMap<DefId, (DefId, Location)>,
+    import_call_sites: FxHashMap<(DefId, DefId), BTreeSet<Location>>,
     // Imported objects occupy value-manager-only slots after a body's IR variables.
     // Keep the originating body/slot for analyses that inspect unresolved values' IR.
     imported_vars: FxHashMap<(DefId, DefId, VarId), VarId>,
     value_origins: FxHashMap<(DefId, VarId), (DefId, VarId)>,
+    // Properties can be overwritten without rebinding their containing object.
+    // Keep branch alternatives when inspecting unresolved property values.
+    projection_origins: BTreeMap<(DefId, VarId, ProjectionVec), BTreeSet<(DefId, Location)>>,
+    projection_values: FxHashMap<(DefId, Location), Value>,
     next_imported_var: FxHashMap<DefId, u32>,
     changed: bool,
 }
@@ -666,8 +683,11 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 defid_to_value: FxHashMap::default(),
                 expected_return_values: HashMap::default(),
                 expecting_captures: FxHashMap::default(),
+                import_call_sites: FxHashMap::default(),
                 imported_vars: FxHashMap::default(),
                 value_origins: FxHashMap::default(),
+                projection_origins: BTreeMap::default(),
+                projection_values: FxHashMap::default(),
                 next_imported_var: FxHashMap::default(),
                 expecting_value: RefCell::new(FxHashMap::default()),
                 changed: false,
@@ -789,6 +809,9 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 return;
             };
             let rval_value = self.value_from_rval(defid_block, rvalue);
+            if projections.is_empty() && !matches!(rval_value, Value::Object(_)) {
+                self.clear_projection_origins(defid_block, varid);
+            }
             if projections.is_empty()
                 && self
                     .value_manager
@@ -861,11 +884,23 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
 
                         let vals = query_new
                             .map(|((_, _, projections), value)| {
-                                (projections.clone(), value.clone())
+                                let origin = self.projection_origins(
+                                    defid_block,
+                                    new_var,
+                                    projections.clone(),
+                                    None,
+                                );
+                                (projections.clone(), value.clone(), origin)
                             })
                             .collect_vec();
-                        for (projections, value) in vals {
+                        self.clear_projection_origins(defid_block, exist_var);
+                        for (projections, value, origin) in vals {
                             projections_transferred.push(projections.clone());
+                            if let Some(origin) = origin {
+                                self.value_manager
+                                    .projection_origins
+                                    .insert((defid_block, exist_var, projections.clone()), origin);
+                            }
                             self.add_value_with_projection(
                                 defid_block,
                                 exist_var,
@@ -1144,10 +1179,11 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     fn bind_arguments(&mut self, def: DefId, body: &Body) {
-        if let Some(caller) = self.value_manager.expecting_captures.remove(&def) {
-            self.propagate_captured_values(caller, def, body);
+        if let Some((caller, loc)) = self.value_manager.expecting_captures.remove(&def) {
+            self.propagate_captured_values(caller, loc, def, body);
         }
-        let Some((caller, args)) = self.value_manager.expecting_value.borrow_mut().remove(&def)
+        let Some((caller, loc, args)) =
+            self.value_manager.expecting_value.borrow_mut().remove(&def)
         else {
             return;
         };
@@ -1158,12 +1194,18 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             .iter_enumerated()
             .filter_map(|(var, kind)| matches!(kind, VarKind::Arg(_)).then_some(var));
         for (var, value) in formals.zip(args) {
-            let value = self.import_value(caller, def, value, &mut FxHashSet::default());
+            let value = self.import_value(caller, Some(loc), def, value, &mut FxHashSet::default());
             self.add_value(def, var, value);
         }
     }
 
-    fn propagate_captured_values(&mut self, caller: DefId, callee: DefId, body: &Body) {
+    fn propagate_captured_values(
+        &mut self,
+        caller: DefId,
+        loc: Location,
+        callee: DefId,
+        body: &Body,
+    ) {
         if caller == callee {
             return;
         }
@@ -1179,6 +1221,20 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             let source = caller_body
                 .def_id_to_vars
                 .get(&binding)
+                // A reference alone does not initialize the caller's slot. Keep
+                // recorded Unknown values (for example, a reassignment), but use
+                // the binding owner when the caller has no value or properties.
+                .filter(|&&var| {
+                    self.get_value(caller, var, None).is_some()
+                        || self
+                            .value_manager
+                            .varid_to_value_with_proj
+                            .range((caller, var, ProjectionVec::new())..)
+                            .next()
+                            .is_some_and(|((def, source_var, _), _)| {
+                                *def == caller && *source_var == var
+                            })
+                })
                 .map(|&var| (caller, var))
                 .or_else(|| {
                     let owner = self.env.binding_owner(binding)?;
@@ -1188,7 +1244,9 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             let Some((source_def, source_var)) = source else {
                 continue;
             };
-            let imported = self.import_variable(source_def, source_var, callee, &mut visited);
+            let source_at = (source_def == caller).then_some(loc);
+            let imported =
+                self.import_variable(source_def, source_var, source_at, callee, &mut visited);
             let value = self
                 .get_value(callee, imported, None)
                 .cloned()
@@ -1204,13 +1262,14 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     fn import_value(
         &mut self,
         source: DefId,
+        source_at: Option<Location>,
         target: DefId,
         value: Value,
         visited: &mut FxHashSet<(DefId, VarId)>,
     ) -> Value {
         match value {
             Value::Object(var) if source != target => {
-                Value::Object(self.import_variable(source, var, target, visited))
+                Value::Object(self.import_variable(source, var, source_at, target, visited))
             }
             value => value,
         }
@@ -1220,6 +1279,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         &mut self,
         source: DefId,
         source_var: VarId,
+        source_at: Option<Location>,
         target: DefId,
         visited: &mut FxHashSet<(DefId, VarId)>,
     ) -> VarId {
@@ -1250,7 +1310,32 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             .varid_to_value_with_proj
             .range((source, source_var, ProjectionVec::new())..)
             .take_while(|((def, var, _), _)| *def == source && *var == source_var)
-            .map(|((_, _, projections), value)| (projections.clone(), value.clone()))
+            .map(|((_, _, projections), value)| {
+                let mut origin =
+                    self.projection_origins(source, source_var, projections.clone(), source_at);
+                if let Some(origins) = &mut origin
+                    && source_at.is_some()
+                    && let Some(call_sites) =
+                        self.value_manager.import_call_sites.get(&(source, target))
+                {
+                    // Legacy helpers share one summary across their calls. Keep
+                    // every call's reaching assignments instead of letting the
+                    // last call erase a secret used by an earlier invocation.
+                    for &loc in call_sites {
+                        if Some(loc) != source_at
+                            && let Some(reaching) = self.projection_origins(
+                                source,
+                                source_var,
+                                projections.clone(),
+                                Some(loc),
+                            )
+                        {
+                            origins.extend(reaching);
+                        }
+                    }
+                }
+                (projections.clone(), value.clone(), origin)
+            })
             .collect::<Vec<_>>();
         let value = self
             .get_value(source, source_var, None)
@@ -1262,7 +1347,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                     Value::Object(source_var)
                 }
             });
-        let value = self.import_value(source, target, value, visited);
+        let value = self.import_value(source, source_at, target, value, visited);
         self.add_value(target, target_var, value);
         // Reusing the same imported slots must not retain properties from an older call.
         let old_properties = self
@@ -1275,8 +1360,14 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         for key in old_properties {
             self.value_manager.varid_to_value_with_proj.remove(&key);
         }
-        for (projection, value) in properties {
-            let value = self.import_value(source, target, value, visited);
+        self.clear_projection_origins(target, target_var);
+        for (projection, value, origin) in properties {
+            let value = self.import_value(source, source_at, target, value, visited);
+            if let Some(origin) = origin {
+                self.value_manager
+                    .projection_origins
+                    .insert((target, target_var, projection.clone()), origin);
+            }
             self.value_manager
                 .insert_var_with_projection(target, target_var, projection, value);
         }
@@ -1289,6 +1380,101 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             .get(&(def, var))
             .copied()
             .unwrap_or((def, var))
+    }
+
+    fn clear_projection_origins(&mut self, def: DefId, var: VarId) {
+        let keys = self
+            .value_manager
+            .projection_origins
+            .range((def, var, ProjectionVec::new())..)
+            .take_while(|((origin_def, origin_var, _), _)| *origin_def == def && *origin_var == var)
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.value_manager.projection_origins.remove(&key);
+        }
+    }
+
+    fn record_projection_assignment(
+        &mut self,
+        def: DefId,
+        var: &Variable,
+        loc: Location,
+        rvalue: &Rvalue,
+    ) {
+        if !var.projections.is_empty()
+            && let Base::Var(assigned_var) = var.base
+            && let Some((base, projections)) =
+                self.get_farthest_obj(def, assigned_var, var.projections.clone())
+        {
+            let value = self.value_from_rval(def, rvalue.clone());
+            self.value_manager
+                .projection_values
+                .insert((def, loc), value);
+            self.value_manager
+                .projection_origins
+                .entry((def, base, projections))
+                .or_default()
+                .insert((def, loc));
+        }
+    }
+
+    pub(crate) fn projection_value(&self, def: DefId, loc: Location) -> Option<&Value> {
+        self.value_manager.projection_values.get(&(def, loc))
+    }
+
+    /// Find the assignments reaching an instruction, or the function exits when
+    /// importing a value. Stop each predecessor path at its nearest write, and
+    /// retain inherited sources only on paths that reach the function entry.
+    pub(crate) fn projection_origins(
+        &self,
+        def: DefId,
+        var: VarId,
+        projections: ProjectionVec,
+        at: Option<Location>,
+    ) -> Option<BTreeSet<(DefId, Location)>> {
+        let (var, projections) = self.get_farthest_obj(def, var, projections)?;
+        let origins = self
+            .value_manager
+            .projection_origins
+            .get(&(def, var, projections))?;
+        let body = self.env.def_ref(def).expect_body();
+        let mut pending = match at {
+            Some(loc) => vec![loc],
+            None => body
+                .iter_blocks_enumerated()
+                .filter(|(_, block)| matches!(block.successors(), Successors::Return))
+                .map(|(block, data)| Location::new(block, data.insts.len() as u32))
+                .collect(),
+        };
+        let mut visited = FxHashSet::default();
+        let mut reaching = BTreeSet::new();
+        while let Some(loc) = pending.pop() {
+            if !visited.insert(loc) {
+                continue;
+            }
+            if let Some(&origin) = origins
+                .range((def, Location::new(loc.block, 0))..(def, loc))
+                .next_back()
+            {
+                reaching.insert(origin);
+                continue;
+            }
+            if loc.block == STARTING_BLOCK {
+                reaching.extend(
+                    origins
+                        .iter()
+                        .filter(|&&(source, _)| source != def)
+                        .copied(),
+                );
+            }
+            pending.extend(
+                body.predecessors(loc.block)
+                    .iter()
+                    .map(|&block| Location::new(block, body.block(block).insts.len() as u32)),
+            );
+        }
+        Some(reaching)
     }
 
     fn run(&mut self, func_def: DefId) {

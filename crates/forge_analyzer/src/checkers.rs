@@ -1491,6 +1491,7 @@ fn extract_auth_scheme_from_body(body: &crate::ir::Body, target: VarId) -> Optio
 /// holds the concat result, possibly through intermediate copies.
 fn classify_rvalue_auth_scheme(rvalue: &Rvalue, body: &crate::ir::Body) -> Option<AuthScheme> {
     match rvalue {
+        Rvalue::Read(operand @ Operand::Lit(_)) => operand_auth_scheme(operand),
         // "Basic " + token  or  token + "Basic ..."
         Rvalue::Bin(BinOp::Add, op1, op2) => {
             operand_auth_scheme(op1).or_else(|| operand_auth_scheme(op2))
@@ -1526,6 +1527,7 @@ fn follow_var_to_auth_scheme(
                 && var.projections.is_empty()
             {
                 match rval {
+                    Rvalue::Read(operand @ Operand::Lit(_)) => return operand_auth_scheme(operand),
                     Rvalue::Bin(BinOp::Add, op1, op2) => {
                         return operand_auth_scheme(op1).or_else(|| operand_auth_scheme(op2));
                     }
@@ -1608,20 +1610,16 @@ fn extract_url_prefix_from_var(body: &crate::ir::Body, target: VarId, depth: u8)
     None
 }
 
-impl<'cx> Runner<'cx> for AuthHeaderChecker {
-    type State = SecretState;
-    type Dataflow = AuthHeaderDataflow;
-
-    const NAME: &'static str = "AuthHeader";
-
-    fn visit_intrinsic(
+impl AuthHeaderChecker {
+    fn visit_intrinsic_at<'cx>(
         &mut self,
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         def: DefId,
-        state: &Self::State,
+        state: &SecretState,
         operands: Option<SmallVec<[Operand; 4]>>,
-    ) -> ControlFlow<(), Self::State> {
+        location: Option<Location>,
+    ) -> ControlFlow<(), SecretState> {
         // Determine if this is a fetch-like or platform API intrinsic.
         // Platform API shims (requestJira, requestConfluence, etc.) are always
         // Atlassian calls, so the api.atlassian.com URL check is skipped.
@@ -1680,29 +1678,51 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                 {
                     let auth_proj = projvec_from_str("Authorization");
                     let aut_proj_lower = projvec_from_str("authorization");
-                    let auth_val = interp
-                        .get_value(def, *varid, Some(auth_proj.clone()))
-                        .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower.clone())));
+                    let (auth_val, auth_projection) =
+                        match interp.get_value(def, *varid, Some(auth_proj.clone())) {
+                            Some(value) => (Some(value), auth_proj),
+                            None => (
+                                interp.get_value(def, *varid, Some(aut_proj_lower.clone())),
+                                aut_proj_lower,
+                            ),
+                        };
 
-                    // Try to determine the auth scheme from the resolved value.
-                    // If the value is fully known, classify directly. If unknown
-                    // (e.g. "Basic " + variable), walk the IR to inspect the
-                    // operands of the concatenation/template that produced it.
-                    let auth_scheme: Option<AuthScheme> = match auth_val {
-                        Some(Value::Const(Const::Literal(s))) => classify_auth_literal(s),
-                        Some(Value::Phi(phi)) => phi
-                            .iter()
-                            .find_map(|Const::Literal(s)| classify_auth_literal(s)),
-                        Some(Value::Unknown) | None => {
-                            // Value collapsed to Unknown — inspect the IR directly.
-                            // The auth header VarId is `*varid` from the headers object.
-                            let (origin, var) = interp.value_origin(def, *varid);
-                            extract_auth_scheme_from_body(
-                                interp.env().def_ref(origin).expect_body(),
-                                var,
-                            )
+                    // A property overwrite supersedes its initializer, including
+                    // a known constant retained by the legacy value lattice.
+                    // Inspect only assignments that can reach this fetch.
+                    let auth_scheme: Option<AuthScheme> = if let Some(origins) =
+                        interp.projection_origins(def, *varid, auth_projection, location)
+                    {
+                        origins.iter().find_map(|&(origin, loc)| {
+                            match interp.projection_value(origin, loc) {
+                                Some(Value::Const(Const::Literal(s))) => classify_auth_literal(s),
+                                Some(Value::Phi(phi)) => phi
+                                    .iter()
+                                    .find_map(|Const::Literal(s)| classify_auth_literal(s)),
+                                Some(Value::Unknown) | None => {
+                                    let body = interp.env().def_ref(origin).expect_body();
+                                    let value =
+                                        body.block(loc.block).insts[loc.stmt as usize].rvalue();
+                                    classify_rvalue_auth_scheme(value, body)
+                                }
+                                _ => None,
+                            }
+                        })
+                    } else {
+                        match auth_val {
+                            Some(Value::Const(Const::Literal(s))) => classify_auth_literal(s),
+                            Some(Value::Phi(phi)) => phi
+                                .iter()
+                                .find_map(|Const::Literal(s)| classify_auth_literal(s)),
+                            Some(Value::Unknown) | None => {
+                                let (origin, var) = interp.value_origin(def, *varid);
+                                extract_auth_scheme_from_body(
+                                    interp.env().def_ref(origin).expect_body(),
+                                    var,
+                                )
+                            }
+                            _ => None,
                         }
-                        _ => None,
                     };
 
                     if let Some(scheme @ (AuthScheme::Basic | AuthScheme::Bearer)) = auth_scheme {
@@ -1738,6 +1758,46 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
             }
         }
         ControlFlow::Continue(*state)
+    }
+}
+
+impl<'cx> Runner<'cx> for AuthHeaderChecker {
+    type State = SecretState;
+    type Dataflow = AuthHeaderDataflow;
+
+    const NAME: &'static str = "AuthHeader";
+
+    fn visit_intrinsic(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        intrinsic: &'cx Intrinsic,
+        def: DefId,
+        state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
+    ) -> ControlFlow<(), Self::State> {
+        self.visit_intrinsic_at(interp, intrinsic, def, state, operands, None)
+    }
+
+    fn visit_inst(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        loc: Location,
+        inst: &'cx Inst,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        if let Rvalue::Intrinsic(intrinsic, operands) = inst.rvalue() {
+            self.visit_intrinsic_at(
+                interp,
+                intrinsic,
+                def,
+                state,
+                Some(operands.clone()),
+                Some(loc),
+            )
+        } else {
+            self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
+        }
     }
 }
 
