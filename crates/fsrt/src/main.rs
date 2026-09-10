@@ -651,11 +651,6 @@ pub(crate) fn scan_directory<'a>(
         let all_functions = proj.env.get_all_functions_and_closures();
         for func_def in &all_functions {
             let func_name = proj.env.def_name(*func_def).to_string();
-            // Reset dataflow_visited so that run() re-analyzes this function body
-            // with fresh dataflow. The entry-point pass may have marked it visited
-            // during broader module/class traversal without actually checking it as
-            // a standalone function body.
-            interp.reset_dataflow_visited(*func_def);
             if let Err(err) = interp.check_function(
                 *func_def,
                 &mut full_scan_checker,

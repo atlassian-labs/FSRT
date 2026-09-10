@@ -1105,7 +1105,9 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         // globals first (in module order so dependencies are resolved before dependents),
         // then the entry function
         for global_def in self.env().global.iter() {
-            worklist.push_back_blocks(self.env, *global_def, self.call_all);
+            if self.call_all || !self.dataflow_visited.contains(global_def) {
+                worklist.push_back_blocks(self.env, *global_def, self.call_all);
+            }
         }
         worklist.push_back_blocks(self.env, func_def, self.call_all);
         let old_body = self.curr_body.get();
@@ -1267,11 +1269,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         }
 
         self.curr_body.set(old_body);
-    }
-
-    /// Removes a DefId from the dataflow visited set so it can be re-analyzed.
-    pub fn reset_dataflow_visited(&mut self, def: DefId) {
-        self.dataflow_visited.remove(&def);
     }
 
     pub fn try_check_function(&mut self, def: DefId, checker: &mut C) -> Result<(), Error> {
