@@ -73,21 +73,26 @@ pub enum Terminator {
 
 // FIXME: ideally we should record the API call expression in the IR and the `UserFieldAccess` and `ApiCustomField` variants
 // should be removed and the type of the API call should be determined during dataflow.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SqlSink {
-    Prepare,
-    ExecuteRaw,
-    MigrationEnqueue,
+/// Syntactic call facts retained without assigning scanner-specific meaning.
+#[derive(Clone, Debug)]
+pub enum CallPathPart {
+    Binding(DefId),
+    Property(Atom),
+    MemberCall(Atom),
+    Unresolved(Id),
+    Computed(Id),
+    Private(Id),
+    Expression,
+    This,
+    Super,
 }
-
-impl SqlSink {
-    pub fn api_name(self) -> &'static str {
-        match self {
-            Self::Prepare => "sql.prepare",
-            Self::ExecuteRaw => "sql.executeRaw",
-            Self::MigrationEnqueue => "migrationRunner.enqueue",
-        }
-    }
+#[derive(Clone, Debug)]
+pub struct CallFacts {
+    pub path: Vec<CallPathPart>,
+    pub root: Option<DefId>,
+    pub import: Option<(Atom, crate::definitions::ImportKind)>,
+    /// Immutable provenance, computed only when an analysis requests it.
+    pub(crate) local_receiver: OnceCell<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,7 +108,6 @@ pub enum Intrinsic {
     StorageRead,
     /// A secret read from `@forge/kvs` (`kvs.getSecret`) or the legacy
     /// `@forge/api` storage API (`storage.getSecret`).
-    SqlQuery(SqlSink),
     SecretRead,
     ConsoleLog(ConsoleMethod),
 }
@@ -150,7 +154,8 @@ pub enum Rvalue {
     Unary(UnOp, Operand),
     Bin(BinOp, Operand, Operand),
     Read(Operand),
-    Aggregate(Vec<Operand>),
+    /// Compact array summary; map callbacks may contribute representative elements.
+    Array(Vec<Operand>),
     Call(Operand, SmallVec<[Operand; 4]>),
     Intrinsic(Intrinsic, SmallVec<[Operand; 4]>),
     Phi(Vec<(VarId, BasicBlockId)>),
@@ -205,6 +210,8 @@ pub struct Body {
     pub dominator_tree: OnceCell<DomTree>,
     pub blockbuilders: TiVec<BasicBlockId, BasicBlockBuilder>,
     instruction_spans: FxHashMap<Location, Span>,
+    call_facts: FxHashMap<Location, CallFacts>,
+    assignment_locations: OnceCell<FxHashMap<Variable, Vec<Location>>>,
     pub(crate) argument_defs: Vec<DefId>,
     pub(crate) argument_spans: FxHashMap<DefId, Span>,
 }
@@ -467,6 +474,8 @@ impl Body {
             dominator_tree: Default::default(),
             blockbuilders: vec![BasicBlockBuilder { insts: Vec::new() }].into(),
             instruction_spans: FxHashMap::default(),
+            call_facts: FxHashMap::default(),
+            assignment_locations: OnceCell::new(),
             argument_defs: Vec::new(),
             argument_spans: FxHashMap::default(),
         }
@@ -953,6 +962,42 @@ impl Body {
         self.push_tmp(bb, val, parent)
     }
 
+    pub(crate) fn set_call_facts(&mut self, location: Location, facts: CallFacts) {
+        self.call_facts.insert(location, facts);
+    }
+
+    /// Indexed reads over finalized IR, like the cached predecessor/dominator data.
+    /// This is populated lazily by analyses, never during lowering or SSA rewriting.
+    pub(crate) fn assignments_to<'a>(
+        &'a self,
+        variable: &Variable,
+    ) -> impl Iterator<Item = (Location, &'a Rvalue)> + 'a {
+        let index = self.assignment_locations.get_or_init(|| {
+            let mut index = FxHashMap::<Variable, Vec<Location>>::default();
+            for (bb, block) in self.iter_blocks_enumerated() {
+                for (stmt, inst) in block.iter().enumerate() {
+                    if let Inst::Assign(target, _) = inst {
+                        index
+                            .entry(target.clone())
+                            .or_default()
+                            .push(Location::new(bb, stmt as u32));
+                    }
+                }
+            }
+            index
+        });
+        index.get(variable).into_iter().flatten().map(|location| {
+            (
+                *location,
+                self.block(location.block).insts[location.stmt as usize].rvalue(),
+            )
+        })
+    }
+
+    pub fn call_facts(&self, location: Location) -> Option<&CallFacts> {
+        self.call_facts.get(&location)
+    }
+
     pub(crate) fn instruction_span(&self, location: Location) -> Option<Span> {
         self.instruction_spans.get(&location).copied()
     }
@@ -1284,7 +1329,6 @@ impl fmt::Display for Intrinsic {
             Intrinsic::StorageRead => write!(f, "forge storage read"),
             Intrinsic::SecretRead => write!(f, "secret read"),
             Intrinsic::ConsoleLog(method) => write!(f, "{method}"),
-            Intrinsic::SqlQuery(sink) => write!(f, "sql query ({sink:?})"),
         }
     }
 }
@@ -1315,7 +1359,7 @@ impl fmt::Display for Rvalue {
                 write!(f, ")")
             }
             Rvalue::Read(ref opnd) => write!(f, "{opnd}"),
-            Rvalue::Aggregate(ref elements) => {
+            Rvalue::Array(ref elements) => {
                 write!(f, "[")?;
                 for element in elements {
                     write!(f, "{element}, ")?;

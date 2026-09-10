@@ -102,8 +102,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
             | Intrinsic::EnvRead
             | Intrinsic::StorageRead
             | Intrinsic::SecretRead
-            | Intrinsic::ConsoleLog(_)
-            | Intrinsic::SqlQuery(_) => initial_state,
+            | Intrinsic::ConsoleLog(_) => initial_state,
         }
     }
 
@@ -443,8 +442,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             | Intrinsic::ApiCustomField
             | Intrinsic::StorageRead
             | Intrinsic::SecretRead
-            | Intrinsic::ConsoleLog(_)
-            | Intrinsic::SqlQuery(_) => ControlFlow::Continue(*state),
+            | Intrinsic::ConsoleLog(_) => ControlFlow::Continue(*state),
         }
     }
 }
@@ -510,8 +508,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
             | Intrinsic::ApiCall(_)
             | Intrinsic::ApiCustomField
             | Intrinsic::UserFieldAccess
-            | Intrinsic::SafeCall(_)
-            | Intrinsic::SqlQuery(_) => initial_state,
+            | Intrinsic::SafeCall(_) => initial_state,
         }
     }
 
@@ -623,7 +620,7 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
             Intrinsic::ApiCall(_) | Intrinsic::UserFieldAccess | Intrinsic::ApiCustomField => {
                 ControlFlow::Continue(*state)
             }
-            Intrinsic::SafeCall(_) | Intrinsic::SqlQuery(_) => ControlFlow::Continue(*state),
+            Intrinsic::SafeCall(_) => ControlFlow::Continue(*state),
         }
     }
 }

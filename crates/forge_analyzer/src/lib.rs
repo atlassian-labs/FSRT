@@ -6,7 +6,10 @@ pub mod ir;
 pub mod lattice;
 pub mod pretty;
 pub mod reporter;
-pub mod taint;
 pub mod sql_injection;
+#[path = "taint.rs"]
+pub mod taint;
+#[path = "taint/mod.rs"]
+pub mod taint_flow;
 pub mod utils;
 pub mod worklist;

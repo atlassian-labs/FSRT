@@ -63,6 +63,8 @@ pub trait WithCallStack {
 }
 
 pub trait Dataflow<'cx>: Sized {
+    const REQUIRE_CALLEE_STATE_COVERS_CALLER: bool = true;
+    const JOIN_FUNCTION_RETURN_STATES: bool = false;
     type State: JoinSemiLattice + Clone;
 
     fn with_interp<C: Runner<'cx, State = Self::State>>(interp: &Interp<'cx, C>) -> Self;
@@ -165,7 +167,7 @@ pub trait Dataflow<'cx>: Sized {
             Rvalue::Unary(_, _) => initial_state,
             Rvalue::Bin(_, _, _) => initial_state,
             Rvalue::Read(_) => initial_state,
-            Rvalue::Aggregate(_) => initial_state,
+            Rvalue::Array(_) => initial_state,
             Rvalue::Phi(_) => initial_state,
             Rvalue::Template(_) => initial_state,
         }
@@ -200,12 +202,11 @@ pub trait Dataflow<'cx>: Sized {
             }
             Inst::Assign(var, rvalue) => {
                 interp.record_projection_assignment(def, var, loc, rvalue);
-                // Aggregate values are retained for specialized analyses such as
-                // SQL taint propagation. The shared value engine historically
+                // Array summaries are retained for opt-in flow analyses. The shared value engine historically
                 // ignored array values; inserting every aggregate here adds no
                 // precision for existing checkers and is prohibitively expensive
                 // in debug builds of bundled applications.
-                if !matches!(rvalue, Rvalue::Aggregate(_)) {
+                if !matches!(rvalue, Rvalue::Array(_)) {
                     interp.add_value_to_definition(def, var.clone(), rvalue.clone());
                 }
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
@@ -309,8 +310,9 @@ pub trait Runner<'cx>: Sized {
     fn dataflow(&self, interp: &Interp<'cx, Self>) -> Self::Dataflow {
         Self::Dataflow::with_interp(interp)
     }
-    const REQUIRE_CALLEE_STATE_COVERS_CALLER: bool = true;
-    const JOIN_FUNCTION_RETURN_STATES: bool = false;
+    const REQUIRE_CALLEE_STATE_COVERS_CALLER: bool =
+        Self::Dataflow::REQUIRE_CALLEE_STATE_COVERS_CALLER;
+    const JOIN_FUNCTION_RETURN_STATES: bool = Self::Dataflow::JOIN_FUNCTION_RETURN_STATES;
 
     fn visit_intrinsic(
         &mut self,
@@ -323,6 +325,18 @@ pub trait Runner<'cx>: Sized {
     ) -> ControlFlow<(), Self::State>;
 
     fn visit_call(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        caller: DefId,
+        callee: &'cx Operand,
+        _args: &'cx [Operand],
+        loc: Location,
+        curr_state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        self.super_visit_call(interp, caller, callee, _args, loc, curr_state)
+    }
+
+    fn super_visit_call(
         &mut self,
         interp: &Interp<'cx, Self>,
         caller: DefId,
@@ -389,7 +403,7 @@ pub trait Runner<'cx>: Sized {
             Rvalue::Unary(_, _)
             | Rvalue::Bin(_, _, _)
             | Rvalue::Read(_)
-            | Rvalue::Aggregate(_)
+            | Rvalue::Array(_)
             | Rvalue::Phi(_)
             | Rvalue::Template(_) => ControlFlow::Continue(curr_state.clone()),
         }
@@ -1743,6 +1757,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         entry_file: PathBuf,
         function: String,
     ) -> Result<(), Error> {
+        self.reset_analysis_state();
         self.entry = EntryPoint {
             file: entry_file.clone(),
             kind: EntryKind::Function(function.clone()),
