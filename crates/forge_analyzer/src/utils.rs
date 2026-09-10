@@ -102,6 +102,7 @@ pub fn return_combinations_phi(exprs: Vec<Value>) -> Value {
             Value::Phi(value_vec) => value_vec
                 .iter()
                 .map(|Const::Literal(string)| string.clone())
+                .unique()
                 .collect(),
             Value::Const(Const::Literal(string)) => vec![string.clone()],
             _ => vec![],
