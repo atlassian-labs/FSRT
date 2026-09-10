@@ -1,8 +1,8 @@
-use crate::interp::{Interp, ProjectionVec, Runner};
+use crate::interp::ProjectionVec;
 use crate::ir::Projection;
 use crate::{
     definitions::{CalleeRef, Const, DefId, Value},
-    ir::{Base, Literal, Operand, VarKind, Variable},
+    ir::{Literal, Operand, VarKind},
 };
 use forge_permission_resolver::permissions_resolver::RequestType;
 use itertools::Itertools;
@@ -69,30 +69,6 @@ pub fn translate_request_type(request_type: Option<&str>) -> RequestType {
     } else {
         RequestType::Get
     }
-}
-
-/// Resolves an operand to the string values it can hold, consulting the value
-/// lattice for variables. Empty when the value is not statically known, and
-/// longer than one element for a `Phi` with several alternatives.
-pub fn resolve_operand_literals<'cx, C: Runner<'cx>>(
-    interp: &Interp<'cx, C>,
-    def: DefId,
-    operand: &Operand,
-) -> Vec<String> {
-    let mut values = vec![];
-    match operand {
-        Operand::Lit(lit) => values.extend(convert_lit_to_raw(lit)),
-        Operand::Var(Variable {
-            base: Base::Var(varid),
-            ..
-        }) => {
-            if let Some(value) = interp.get_value(def, *varid, None) {
-                add_elements_to_intrinsic_struct(value, &mut values);
-            }
-        }
-        Operand::Var(_) => {}
-    }
-    values
 }
 
 pub fn get_str_from_operand(operand: &Operand) -> Option<String> {

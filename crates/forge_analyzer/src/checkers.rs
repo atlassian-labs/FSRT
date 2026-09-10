@@ -9,10 +9,10 @@ use crate::{
     },
     ir::{
         Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
-        Projection, Rvalue, SecretStorageOp, VarId, VarKind, Variable,
+        Projection, Rvalue, StorageAccess, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    utils::{add_elements_to_intrinsic_struct, resolve_operand_literals, translate_request_type},
+    utils::{add_elements_to_intrinsic_struct, convert_lit_to_raw, translate_request_type},
     worklist::WorkList,
 };
 use core::fmt;
@@ -263,8 +263,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
             | Intrinsic::ApiCall(_)
             | Intrinsic::SafeCall(_)
             | Intrinsic::EnvRead
-            | Intrinsic::StorageRead
-            | Intrinsic::SecretStorage(_) => initial_state,
+            | Intrinsic::Storage(_) => initial_state,
         }
     }
 
@@ -579,8 +578,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             | Intrinsic::EnvRead
             | Intrinsic::UserFieldAccess
             | Intrinsic::ApiCustomField
-            | Intrinsic::StorageRead
-            | Intrinsic::SecretStorage(_) => ControlFlow::Continue(*state),
+            | Intrinsic::Storage(_) => ControlFlow::Continue(*state),
         }
     }
 }
@@ -589,32 +587,29 @@ impl Checker<'_> for AuthZChecker {
     type Vuln = AuthZVuln;
 }
 
-/// How the entry point is reachable, which determines why no authorization check
-/// of the app's own is a problem. Surfaced in the finding so triage can
-/// prioritise the shared-resolver case.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryExposure {
-    /// Registered by a module any user can reach.
-    Invokable,
-    /// Registered by an admin page module (`jira:adminPage`, `compass:adminPage`)
-    /// *and* by a non-admin module. The platform gates invocations of an admin
-    /// page's own resolver on admin permission, but sharing that resolver with
-    /// another module voids the check.
-    SharedAdminResolver,
-}
-
-impl EntryExposure {
-    /// The sentence explaining, for this exposure, who can reach the call.
-    fn note(self) -> &'static str {
-        match self {
-            EntryExposure::Invokable => {
-                "The entry point belongs to a user-invokable module, so any authenticated user can call its resolver."
-            }
-            EntryExposure::SharedAdminResolver => {
-                "The resolver is registered by an admin page module and by a non-admin module. The platform restricts an admin page's own resolver to admin users, but that restriction is not enforced once another module shares the resolver, so any authenticated user can call every function on it — including the ones written for the admin page. Define a separate resolver for the admin module."
+/// Resolves an operand to a single string, but only when it is unambiguous: a
+/// `Phi` with more than one distinct alternative yields `None` rather than an
+/// arbitrary pick, so a reported secret key is never one of several guesses.
+fn unambiguous_literal<'cx, C: Runner<'cx>>(
+    interp: &Interp<'cx, C>,
+    def: DefId,
+    operand: &Operand,
+) -> Option<String> {
+    let mut values = vec![];
+    match operand {
+        Operand::Lit(lit) => values.extend(convert_lit_to_raw(lit)),
+        Operand::Var(Variable {
+            base: Base::Var(varid),
+            ..
+        }) => {
+            if let Some(value) = interp.get_value(def, *varid, None) {
+                add_elements_to_intrinsic_struct(value, &mut values);
             }
         }
+        Operand::Var(_) => {}
     }
+    values.dedup();
+    values.pop().filter(|_| values.is_empty())
 }
 
 /// Reports Forge secret storage calls (`storage.setSecret` / `storage.getSecret`
@@ -626,14 +621,15 @@ impl EntryExposure {
 /// for manual triage, which is why the scan is off by default behind
 /// `--check-secret-storage`.
 pub struct SecretStorageChecker {
-    exposure: EntryExposure,
+    /// Manifest keys of the modules exposing this entry point, named in the report.
+    modules: Vec<&'static str>,
     vulns: Vec<SecretStorageVuln>,
 }
 
 impl SecretStorageChecker {
-    pub fn new(exposure: EntryExposure) -> Self {
+    pub fn new(modules: Vec<&'static str>) -> Self {
         Self {
-            exposure,
+            modules,
             vulns: vec![],
         }
     }
@@ -653,7 +649,7 @@ impl SecretStorageChecker {
                 seen.insert((
                     vuln.entry_func.clone(),
                     vuln.stack.clone(),
-                    vuln.op,
+                    vuln.access,
                     vuln.key.clone(),
                 ))
             })
@@ -666,16 +662,16 @@ pub struct SecretStorageVuln {
     stack: String,
     entry_func: String,
     file: PathBuf,
-    op: SecretStorageOp,
-    exposure: EntryExposure,
+    access: StorageAccess,
+    modules: Vec<&'static str>,
     /// The secret key, when it resolves to a literal.
     key: Option<String>,
 }
 
 impl SecretStorageVuln {
     fn new(
-        op: SecretStorageOp,
-        exposure: EntryExposure,
+        access: StorageAccess,
+        modules: Vec<&'static str>,
         key: Option<String>,
         callstack: Vec<Frame>,
         env: &Environment,
@@ -704,16 +700,16 @@ impl SecretStorageVuln {
             stack,
             entry_func,
             file,
-            op,
-            exposure,
+            access,
+            modules,
             key,
         }
     }
 
     fn api_name(&self) -> &'static str {
-        match self.op {
-            SecretStorageOp::Get => "getSecret",
-            SecretStorageOp::Set => "setSecret",
+        match self.access {
+            StorageAccess { write: true, .. } => "setSecret",
+            _ => "getSecret",
         }
     }
 }
@@ -748,14 +744,14 @@ impl IntoVuln for SecretStorageVuln {
         Vulnerability {
             check_name: format!("Custom-Check-Secret-Storage-{}", hasher.finish()),
             description: format!(
-                "Forge secret storage call {}(){} is reachable from {} in {:?} without any authorization check. {}",
+                "Forge secret storage call {}(){} is reachable from {} in {:?} with no authorization check. The resolver is exposed by {}: an admin page module shares it with a module any authenticated user can reach, so the platform's admin-only restriction on that resolver no longer applies and every function on it can be called by any user.",
                 self.api_name(),
                 key,
                 self.entry_func,
                 self.file,
-                self.exposure.note(),
+                self.modules.join(" and "),
             ),
-            recommendation: "Authorize the caller before reading or writing app secrets, either via the authorize API _https://developer.atlassian.com/platform/forge/runtime-reference/authorize-api/_ or by checking the user's permissions through the product REST APIs.",
+            recommendation: "Define a separate resolver for the admin module so that its functions are not reachable from other modules, and authorize the caller before reading or writing app secrets via the authorize API _https://developer.atlassian.com/platform/forge/runtime-reference/authorize-api/_.",
             proof: format!(
                 "Unauthorized {}() call found via {}",
                 self.api_name(),
@@ -803,7 +799,7 @@ impl<'cx> Runner<'cx> for SecretStorageChecker {
                 debug!("authorize intrinsic found");
                 ControlFlow::Continue(AuthorizeState::Yes)
             }
-            Intrinsic::SecretStorage(op) if *state != AuthorizeState::Yes => {
+            Intrinsic::Storage(access) if access.secret && *state != AuthorizeState::Yes => {
                 // Name the secret in the finding, but only when the key resolves
                 // unambiguously — reporting one alternative of several would be
                 // misleading, e.g. for a helper called with a different key per
@@ -811,15 +807,11 @@ impl<'cx> Runner<'cx> for SecretStorageChecker {
                 let key = operands
                     .as_deref()
                     .and_then(|ops| ops.first())
-                    .map(|op| resolve_operand_literals(interp, def, op))
-                    .and_then(|mut keys| {
-                        keys.dedup();
-                        keys.pop().filter(|_| keys.is_empty())
-                    });
+                    .and_then(|op| unambiguous_literal(interp, def, op));
                 info!("Found an unauthorized secret storage call!");
                 self.vulns.push(SecretStorageVuln::new(
-                    op,
-                    self.exposure,
+                    access,
+                    self.modules.clone(),
                     key,
                     interp.callstack(),
                     interp.env(),
@@ -829,15 +821,14 @@ impl<'cx> Runner<'cx> for SecretStorageChecker {
                 // that touches several distinct secrets reports each of them.
                 ControlFlow::Continue(*state)
             }
-            Intrinsic::SecretStorage(_)
+            Intrinsic::Storage(_)
             | Intrinsic::Fetch
             | Intrinsic::SecretFunction(_)
             | Intrinsic::ApiCall(_)
             | Intrinsic::ApiCustomField
             | Intrinsic::SafeCall(_)
             | Intrinsic::EnvRead
-            | Intrinsic::UserFieldAccess
-            | Intrinsic::StorageRead => ControlFlow::Continue(*state),
+            | Intrinsic::UserFieldAccess => ControlFlow::Continue(*state),
         }
     }
 }
@@ -895,10 +886,13 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
             // Reading a secret out of storage is how webtriggers validate an
             // incoming request, so it counts as authentication evidence. Writing
             // one does not.
-            Intrinsic::Fetch
-            | Intrinsic::EnvRead
-            | Intrinsic::StorageRead
-            | Intrinsic::SecretStorage(SecretStorageOp::Get) => {
+            Intrinsic::Fetch | Intrinsic::EnvRead => {
+                debug!("authenticated");
+                Authenticated::Yes
+            }
+            // Reading from storage is how a webtrigger validates an incoming
+            // request, so it counts as authentication evidence. Writing does not.
+            Intrinsic::Storage(access) if !access.write => {
                 debug!("authenticated");
                 Authenticated::Yes
             }
@@ -906,7 +900,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
             | Intrinsic::ApiCall(_)
             | Intrinsic::ApiCustomField
             | Intrinsic::UserFieldAccess
-            | Intrinsic::SecretStorage(SecretStorageOp::Set)
+            | Intrinsic::Storage(_)
             | Intrinsic::SafeCall(_) => initial_state,
         }
     }
@@ -1003,8 +997,10 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
             Intrinsic::Authorize(_) => ControlFlow::Continue(*state),
             Intrinsic::Fetch
             | Intrinsic::EnvRead
-            | Intrinsic::StorageRead
-            | Intrinsic::SecretStorage(SecretStorageOp::Get) => {
+            | Intrinsic::Storage(StorageAccess {
+                write: false,
+                secret: _,
+            }) => {
                 debug!("authenticated");
                 ControlFlow::Continue(Authenticated::Yes)
             }
@@ -1014,9 +1010,7 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
             }
-            Intrinsic::SecretFunction(_) | Intrinsic::SecretStorage(SecretStorageOp::Set) => {
-                ControlFlow::Continue(*state)
-            }
+            Intrinsic::SecretFunction(_) | Intrinsic::Storage(_) => ControlFlow::Continue(*state),
             Intrinsic::ApiCall(_) | Intrinsic::UserFieldAccess | Intrinsic::ApiCustomField => {
                 ControlFlow::Continue(*state)
             }
@@ -2064,17 +2058,16 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
             // Try the value lattice first; fall back to IR inspection for
             // template literals / concatenations with unknown parts.
             let url_str: Option<String> = match ops.first() {
-                Some(
-                    op @ Operand::Var(Variable {
-                        base: Base::Var(varid),
-                        ..
-                    }),
-                ) => resolve_operand_literals(interp, def, op)
-                    .into_iter()
-                    .next()
-                    .or_else(|| extract_url_prefix_from_body(interp.body(), *varid)),
-                Some(op) => resolve_operand_literals(interp, def, op).into_iter().next(),
-                None => None,
+                Some(Operand::Var(Variable {
+                    base: Base::Var(varid),
+                    ..
+                })) => match interp.get_value(def, *varid, None) {
+                    Some(Value::Const(Const::Literal(s))) => Some(s.clone()),
+                    Some(Value::Phi(phi)) => phi.iter().map(|Const::Literal(s)| s.clone()).next(),
+                    _ => extract_url_prefix_from_body(interp.body(), *varid),
+                },
+                Some(Operand::Lit(lit)) => convert_lit_to_raw(lit),
+                _ => None,
             };
 
             if let Some(Operand::Var(Variable {

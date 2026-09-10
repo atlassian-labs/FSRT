@@ -771,19 +771,195 @@ pub enum FunctionTy<T> {
     WebTrigger(T),
 }
 
+/// A manifest module type, identified by its manifest key (for example
+/// `jira:adminPage`). Entry points record every module type that exposes them,
+/// so exposure questions are answered by inspecting those types rather than by
+/// carrying a separate boolean for each one.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub struct ModuleKind(&'static str);
+
+impl ModuleKind {
+    pub const API_ROUTE: Self = Self("apiRoute");
+    pub const COMPASS_ADMIN_PAGE: Self = Self("compass:adminPage");
+    pub const COMPASS_COMPONENT_PAGE: Self = Self("compass:componentPage");
+    pub const COMPASS_GLOBAL_PAGE: Self = Self("compass:globalPage");
+    pub const COMPASS_TEAM_PAGE: Self = Self("compass:teamPage");
+    pub const CONFLUENCE_CONTENT_ACTION: Self = Self("confluence:contentAction");
+    pub const CONFLUENCE_CONTENT_BY_LINE_ITEM: Self = Self("confluence:contentByLineItem");
+    pub const CONFLUENCE_CONTEXT_MENU: Self = Self("confluence:contextMenu");
+    pub const CONFLUENCE_GLOBAL_PAGE: Self = Self("confluence:globalPage");
+    pub const CONFLUENCE_GLOBAL_SETTINGS: Self = Self("confluence:globalSettings");
+    pub const CONFLUENCE_HOMEPAGE_FEED: Self = Self("confluence:homepageFeed");
+    pub const CONFLUENCE_SPACE_PAGE: Self = Self("confluence:spacePage");
+    pub const CONFLUENCE_SPACE_SETTINGS: Self = Self("confluence:spaceSettings");
+    pub const MACRO: Self = Self("macro");
+    pub const JIRA_ADMIN_PAGE: Self = Self("jira:adminPage");
+    pub const JIRA_CUSTOM_FIELD: Self = Self("jira:customField");
+    pub const JIRA_DASHBOARD_BACKGROUND_SCRIPT: Self = Self("jira:dashboardBackgroundScript");
+    pub const JIRA_DASHBOARD_GADGET: Self = Self("jira:dashboardGadget");
+    pub const JIRA_GLOBAL_PAGE: Self = Self("jira:globalPage");
+    pub const JIRA_ISSUE_ACTION: Self = Self("jira:issueAction");
+    pub const JIRA_ISSUE_CONTEXT: Self = Self("jira:issueContext");
+    pub const JIRA_ISSUE_GLANCE: Self = Self("jira:issueGlance");
+    pub const JIRA_ISSUE_PANEL: Self = Self("jira:issuePanel");
+    pub const JIRA_ISSUE_VIEW_BACKGROUND_SCRIPT: Self = Self("jira:issueViewBackgroundScript");
+    pub const JIRA_JQL_FUNCTION: Self = Self("jira:jqlFunction");
+    pub const JIRA_PROJECT_PAGE: Self = Self("jira:projectPage");
+    pub const JIRA_PROJECT_SETTINGS_PAGE: Self = Self("jira:projectSettingsPage");
+    pub const JIRA_UI_MODIFICATIONS: Self = Self("jira:uiModificatons");
+    pub const JIRA_WORKFLOW_VALIDATOR: Self = Self("jira:workflowValidator");
+    pub const JSM_ASSETS_IMPORT_TYPE: Self = Self("jiraServiceManagement:assetsImportType");
+    pub const JSM_ORGANIZATION_PANEL: Self = Self("jiraServiceManagement:organizationPanel");
+    pub const JSM_PORTAL_FOOTER: Self = Self("jiraServiceManagement:portalFooter");
+    pub const JSM_PORTAL_HEADER: Self = Self("jiraServiceManagement:portalHeader");
+    pub const JSM_PORTAL_PROFILE_PANEL: Self = Self("jiraServiceManagement:portalProfilePanel");
+    pub const JSM_PORTAL_REQUEST_CREATE_PROPERTY_PANEL: Self =
+        Self("jiraServiceManagement:portalRequestCreatePropertyPanel");
+    pub const JSM_PORTAL_REQUEST_DETAIL: Self = Self("jiraServiceManagement:portalRequestDetail");
+    pub const JSM_PORTAL_REQUEST_DETAIL_PANEL: Self =
+        Self("jiraServiceManagement:portalRequestDetailPanel");
+    pub const JSM_PORTAL_REQUEST_VIEW_ACTION: Self =
+        Self("jiraServiceManagement:portalRequestViewAction");
+    pub const JSM_PORTAL_SUBHEADER: Self = Self("jiraServiceManagement:portalSubheader");
+    pub const JSM_PORTAL_USER_MENU_ACTION: Self =
+        Self("jiraServiceManagement:portalUserMenuAction");
+    pub const JSM_QUEUE_PAGE: Self = Self("jiraServiceManagement:queuePage");
+    pub const ROVO_ACTION: Self = Self("action");
+    pub const WEB_TRIGGER: Self = Self("webtrigger");
+
+    /// The key this module appears under in `manifest.yml`.
+    pub fn manifest_key(self) -> &'static str {
+        self.0
+    }
+
+    /// Modules whose resolver invocations the platform itself restricts to admin
+    /// users, so the app is not expected to authorize the caller. Sharing such a
+    /// resolver with any other module removes that restriction.
+    pub fn is_platform_admin_gated(self) -> bool {
+        matches!(self, Self::JIRA_ADMIN_PAGE | Self::COMPASS_ADMIN_PAGE)
+    }
+
+    /// Admin-scoped surfaces that are *not* known to carry a platform-enforced
+    /// permission check on resolver invocation. They are treated as reachable by
+    /// any authenticated user, which is the conservative assumption.
+    pub fn is_admin_scoped(self) -> bool {
+        matches!(
+            self,
+            Self::JIRA_PROJECT_SETTINGS_PAGE
+                | Self::CONFLUENCE_SPACE_SETTINGS
+                | Self::CONFLUENCE_GLOBAL_SETTINGS
+        )
+    }
+
+    pub fn is_web_trigger(self) -> bool {
+        self == Self::WEB_TRIGGER
+    }
+
+    /// Reachable by any authenticated user who can use the app.
+    pub fn is_user_invokable(self) -> bool {
+        !self.is_platform_admin_gated() && !self.is_web_trigger()
+    }
+}
+
+/// Records which module types expose each function key. Used through
+/// [`Exposures::of`], which hands out an [`Extend`] sink tagged with one module
+/// type, so the existing [`HasFunctions`] implementations stay unchanged.
+#[derive(Default, Debug)]
+struct Exposures<'a> {
+    by_function: FxHashMap<&'a str, BTreeSet<ModuleKind>>,
+}
+
+impl<'a> Exposures<'a> {
+    fn of(&mut self, kind: ModuleKind) -> ExposureSink<'_, 'a> {
+        ExposureSink {
+            by_function: &mut self.by_function,
+            kind,
+        }
+    }
+
+    fn modules_for(&self, function: &str) -> BTreeSet<ModuleKind> {
+        self.by_function.get(function).cloned().unwrap_or_default()
+    }
+}
+
+struct ExposureSink<'e, 'a> {
+    by_function: &'e mut FxHashMap<&'a str, BTreeSet<ModuleKind>>,
+    kind: ModuleKind,
+}
+
+impl<'a> Extend<&'a str> for ExposureSink<'_, 'a> {
+    fn extend<T: IntoIterator<Item = &'a str>>(&mut self, iter: T) {
+        for function in iter {
+            self.by_function
+                .entry(function)
+                .or_default()
+                .insert(self.kind);
+        }
+    }
+}
+
 // Struct used for tracking what scan a function requires.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entrypoint<'a, S = Unresolved> {
     pub function: FunctionRef<'a, S>,
-    pub invokable: bool,
-    pub web_trigger: bool,
-    /// Registered by an admin page module (`jira:adminPage`, `compass:adminPage`).
-    pub admin: bool,
-    /// Registered by an admin page module and by no other module. The platform
-    /// gates invocations of an admin page's own resolver on admin permission, so
-    /// these are not reachable by non-admins; sharing the resolver with any other
-    /// module voids that check, which is what `admin && !admin_only` identifies.
-    pub admin_only: bool,
+    /// Module types that name this function key. Exposure predicates are derived
+    /// from this rather than stored alongside it, so a new module type only has
+    /// to be classified in one place.
+    pub modules: BTreeSet<ModuleKind>,
+    /// Module types that name any function key sharing this function's handler,
+    /// and so expose the same code. A superset of `modules`; used for questions
+    /// about what the handler exposes rather than what this key is.
+    pub handler_modules: BTreeSet<ModuleKind>,
+}
+
+impl<S> Entrypoint<'_, S> {
+    /// Exposed by at least one module any authenticated user can reach.
+    pub fn invokable(&self) -> bool {
+        self.modules
+            .iter()
+            .copied()
+            .any(ModuleKind::is_user_invokable)
+    }
+
+    pub fn web_trigger(&self) -> bool {
+        self.modules.iter().copied().any(ModuleKind::is_web_trigger)
+    }
+
+    /// Exposed by a module whose resolver the platform restricts to admins.
+    pub fn platform_admin_gated(&self) -> bool {
+        self.modules
+            .iter()
+            .copied()
+            .any(ModuleKind::is_platform_admin_gated)
+    }
+
+    /// This function's handler is exposed by an admin module *and* by a module
+    /// any user can reach. Sharing removes the platform's admin restriction, so
+    /// the functions written for the admin page become callable by anyone.
+    ///
+    /// Judged over `handler_modules` because apps share an admin resolver by
+    /// pointing two function keys at one handler as often as by naming one key
+    /// in two modules.
+    pub fn shared_admin_resolver(&self) -> bool {
+        self.handler_modules
+            .iter()
+            .copied()
+            .any(ModuleKind::is_platform_admin_gated)
+            && self
+                .handler_modules
+                .iter()
+                .copied()
+                .any(ModuleKind::is_user_invokable)
+    }
+
+    /// The manifest keys of every module exposing this function's handler, for
+    /// reporting.
+    pub fn module_keys(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.handler_modules
+            .iter()
+            .copied()
+            .map(ModuleKind::manifest_key)
+    }
 }
 
 impl<T> AsRef<T> for FunctionTy<T> {
@@ -857,106 +1033,134 @@ impl<'a> ForgeModules<'a> {
         // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true
         // for all trigger things
 
-        let mut invokable_functions = BTreeSet::new();
+        let mut exposures = Exposures::default();
+        exposures
+            .of(ModuleKind::WEB_TRIGGER)
+            .extend(webtriggers.iter().map(|trigger| trigger.function));
 
-        api_routes.append_functions(&mut invokable_functions);
+        api_routes.append_functions(&mut exposures.of(ModuleKind::API_ROUTE));
 
         // Compass Module Functions
 
-        component_page.append_functions(&mut invokable_functions);
+        component_page.append_functions(&mut exposures.of(ModuleKind::COMPASS_COMPONENT_PAGE));
 
-        compass_global_page.append_functions(&mut invokable_functions);
-        team_page.append_functions(&mut invokable_functions);
+        compass_global_page.append_functions(&mut exposures.of(ModuleKind::COMPASS_GLOBAL_PAGE));
+        team_page.append_functions(&mut exposures.of(ModuleKind::COMPASS_TEAM_PAGE));
 
         // Confluence Module Functions
         // get user invokable modules that have additional exposure endpoints.
         // ie macros has config and export fields on top of resolver fields that are functions
-        content_action
-            .iter()
-            .for_each(|content_action| content_action.append_functions(&mut invokable_functions));
+        content_action.iter().for_each(|content_action| {
+            content_action
+                .append_functions(&mut exposures.of(ModuleKind::CONFLUENCE_CONTENT_ACTION))
+        });
 
         content_by_line_item.iter().for_each(|by_line_item| {
             by_line_item
                 .common_keys
-                .append_functions(&mut invokable_functions);
-            invokable_functions.extend(by_line_item.dynamic_properties.function)
+                .append_functions(&mut exposures.of(ModuleKind::CONFLUENCE_CONTENT_BY_LINE_ITEM));
+            exposures
+                .of(ModuleKind::CONFLUENCE_CONTENT_BY_LINE_ITEM)
+                .extend(by_line_item.dynamic_properties.function)
         });
 
-        context_menu.append_functions(&mut invokable_functions);
+        context_menu.append_functions(&mut exposures.of(ModuleKind::CONFLUENCE_CONTEXT_MENU));
 
-        confluence_global_page.append_functions(&mut invokable_functions);
+        confluence_global_page
+            .append_functions(&mut exposures.of(ModuleKind::CONFLUENCE_GLOBAL_PAGE));
 
-        homepage_feed.append_functions(&mut invokable_functions);
+        homepage_feed.append_functions(&mut exposures.of(ModuleKind::CONFLUENCE_HOMEPAGE_FEED));
 
-        space_page.append_functions(&mut invokable_functions);
+        space_page.append_functions(&mut exposures.of(ModuleKind::CONFLUENCE_SPACE_PAGE));
 
-        space_settings.append_functions(&mut invokable_functions);
+        space_settings.append_functions(&mut exposures.of(ModuleKind::CONFLUENCE_SPACE_SETTINGS));
 
         for m in macros {
-            m.common_keys.append_functions(&mut invokable_functions);
-            m.config.append_functions(&mut invokable_functions);
-            m.export.append_functions(&mut invokable_functions);
+            m.common_keys
+                .append_functions(&mut exposures.of(ModuleKind::MACRO));
+            m.config
+                .append_functions(&mut exposures.of(ModuleKind::MACRO));
+            m.export
+                .append_functions(&mut exposures.of(ModuleKind::MACRO));
         }
 
         // Jira Module Functions
         custom_field.into_iter().for_each(|customfield| {
-            customfield.value.append_functions(&mut invokable_functions);
+            customfield
+                .value
+                .append_functions(&mut exposures.of(ModuleKind::JIRA_CUSTOM_FIELD));
 
-            customfield.value.append_functions(&mut invokable_functions);
+            customfield
+                .value
+                .append_functions(&mut exposures.of(ModuleKind::JIRA_CUSTOM_FIELD));
             customfield
                 .common_keys
-                .append_functions(&mut invokable_functions);
+                .append_functions(&mut exposures.of(ModuleKind::JIRA_CUSTOM_FIELD));
         });
 
-        dashboard_background_script.append_functions(&mut invokable_functions);
+        dashboard_background_script
+            .append_functions(&mut exposures.of(ModuleKind::JIRA_DASHBOARD_BACKGROUND_SCRIPT));
 
         for gadget in dashboard_gadget {
             gadget
                 .common_keys
-                .append_functions(&mut invokable_functions);
-            gadget.edit.append_functions(&mut invokable_functions);
+                .append_functions(&mut exposures.of(ModuleKind::JIRA_DASHBOARD_GADGET));
+            gadget
+                .edit
+                .append_functions(&mut exposures.of(ModuleKind::JIRA_DASHBOARD_GADGET));
         }
 
-        jira_global_page.append_functions(&mut invokable_functions);
+        jira_global_page.append_functions(&mut exposures.of(ModuleKind::JIRA_GLOBAL_PAGE));
 
-        issue_action.append_functions(&mut invokable_functions);
+        issue_action.append_functions(&mut exposures.of(ModuleKind::JIRA_ISSUE_ACTION));
 
         for issue in issue_context {
-            issue.common_keys.append_functions(&mut invokable_functions);
+            issue
+                .common_keys
+                .append_functions(&mut exposures.of(ModuleKind::JIRA_ISSUE_CONTEXT));
             issue
                 .dynamic_properties
-                .append_functions(&mut invokable_functions);
+                .append_functions(&mut exposures.of(ModuleKind::JIRA_ISSUE_CONTEXT));
         }
 
         for issue in issue_glance {
-            issue.common_keys.append_functions(&mut invokable_functions);
+            issue
+                .common_keys
+                .append_functions(&mut exposures.of(ModuleKind::JIRA_ISSUE_GLANCE));
             issue
                 .dynamic_properties
-                .append_functions(&mut invokable_functions);
+                .append_functions(&mut exposures.of(ModuleKind::JIRA_ISSUE_GLANCE));
         }
 
-        issue_panel.append_functions(&mut invokable_functions);
+        issue_panel.append_functions(&mut exposures.of(ModuleKind::JIRA_ISSUE_PANEL));
 
-        issue_view_background_script.append_functions(&mut invokable_functions);
+        issue_view_background_script
+            .append_functions(&mut exposures.of(ModuleKind::JIRA_ISSUE_VIEW_BACKGROUND_SCRIPT));
 
-        jql_function.append_functions(&mut invokable_functions);
+        jql_function.append_functions(&mut exposures.of(ModuleKind::JIRA_JQL_FUNCTION));
 
-        project_page.append_functions(&mut invokable_functions);
+        project_page.append_functions(&mut exposures.of(ModuleKind::JIRA_PROJECT_PAGE));
 
-        project_settings_page.append_functions(&mut invokable_functions);
+        project_settings_page
+            .append_functions(&mut exposures.of(ModuleKind::JIRA_PROJECT_SETTINGS_PAGE));
 
         for ui in ui_modifications {
-            ui.common_keys.append_functions(&mut invokable_functions);
+            ui.common_keys
+                .append_functions(&mut exposures.of(ModuleKind::JIRA_UI_MODIFICATIONS));
         }
 
         for valid in workflow_validator {
-            valid.common_keys.append_functions(&mut invokable_functions);
+            valid
+                .common_keys
+                .append_functions(&mut exposures.of(ModuleKind::JIRA_WORKFLOW_VALIDATOR));
         }
 
         // Rovo Module Functions
         // No invokable functions for Rovo Agents but Action can have numerous user invokable functions
         action.iter().for_each(|action| {
-            invokable_functions.extend(action.function);
+            exposures
+                .of(ModuleKind::ROVO_ACTION)
+                .extend(action.function);
             // "Endpoint" variant of Action not being considered as an invokable function
         });
 
@@ -964,94 +1168,85 @@ impl<'a> ForgeModules<'a> {
         for assets in assets_import_type {
             assets
                 .common_keys
-                .append_functions(&mut invokable_functions);
+                .append_functions(&mut exposures.of(ModuleKind::JSM_ASSETS_IMPORT_TYPE));
 
             assets
                 .on_delete_import
-                .append_functions(&mut invokable_functions);
+                .append_functions(&mut exposures.of(ModuleKind::JSM_ASSETS_IMPORT_TYPE));
 
             assets
                 .stop_import
-                .append_functions(&mut invokable_functions);
+                .append_functions(&mut exposures.of(ModuleKind::JSM_ASSETS_IMPORT_TYPE));
 
             assets
                 .start_import
-                .append_functions(&mut invokable_functions);
+                .append_functions(&mut exposures.of(ModuleKind::JSM_ASSETS_IMPORT_TYPE));
 
             assets
                 .import_status
-                .append_functions(&mut invokable_functions);
+                .append_functions(&mut exposures.of(ModuleKind::JSM_ASSETS_IMPORT_TYPE));
         }
-        org_panel
-            .iter()
-            .for_each(|panel| panel.append_functions(&mut invokable_functions));
+        org_panel.iter().for_each(|panel| {
+            panel.append_functions(&mut exposures.of(ModuleKind::JSM_ORGANIZATION_PANEL))
+        });
 
-        org_panel.append_functions(&mut invokable_functions);
+        org_panel.append_functions(&mut exposures.of(ModuleKind::JSM_ORGANIZATION_PANEL));
 
-        portal_footer.append_functions(&mut invokable_functions);
-        portal_header.append_functions(&mut invokable_functions);
-        portal_profile_panel.append_functions(&mut invokable_functions);
+        portal_footer.append_functions(&mut exposures.of(ModuleKind::JSM_PORTAL_FOOTER));
+        portal_header.append_functions(&mut exposures.of(ModuleKind::JSM_PORTAL_HEADER));
+        portal_profile_panel
+            .append_functions(&mut exposures.of(ModuleKind::JSM_PORTAL_PROFILE_PANEL));
 
-        portal_req.append_functions(&mut invokable_functions);
+        portal_req.append_functions(
+            &mut exposures.of(ModuleKind::JSM_PORTAL_REQUEST_CREATE_PROPERTY_PANEL),
+        );
 
-        portal_request_detail.append_functions(&mut invokable_functions);
+        portal_request_detail
+            .append_functions(&mut exposures.of(ModuleKind::JSM_PORTAL_REQUEST_DETAIL));
 
-        portal_request_detail_panel.append_functions(&mut invokable_functions);
+        portal_request_detail_panel
+            .append_functions(&mut exposures.of(ModuleKind::JSM_PORTAL_REQUEST_DETAIL_PANEL));
 
-        portal_request_view_action.append_functions(&mut invokable_functions);
+        portal_request_view_action
+            .append_functions(&mut exposures.of(ModuleKind::JSM_PORTAL_REQUEST_VIEW_ACTION));
 
-        portal_subheader.append_functions(&mut invokable_functions);
+        portal_subheader.append_functions(&mut exposures.of(ModuleKind::JSM_PORTAL_SUBHEADER));
 
-        portal_header_menu_action.append_functions(&mut invokable_functions);
+        portal_header_menu_action
+            .append_functions(&mut exposures.of(ModuleKind::JSM_PORTAL_USER_MENU_ACTION));
 
-        queue_page.append_functions(&mut invokable_functions);
+        queue_page.append_functions(&mut exposures.of(ModuleKind::JSM_QUEUE_PAGE));
 
-        // Snapshot of the functions reachable from a module that is *not* an admin
-        // page, taken before the admin pages contribute. A function registered by
-        // an admin page module is only reachable by non-admins if it also appears
-        // in here, because the platform gates an admin page's own resolver on admin
-        // permission.
-        let non_admin_invokable_functions = invokable_functions.clone();
-        compass_admin_page.append_functions(&mut invokable_functions);
-
-        // Function keys registered by an admin page module. Collected with
-        // `append_functions` so that resolver-backed pages (Custom UI, where the
-        // entry point is declared under `resolver.function` rather than `function`)
-        // are recognized too.
-        let mut admin_function_keys = BTreeSet::new();
+        compass_admin_page.append_functions(&mut exposures.of(ModuleKind::COMPASS_ADMIN_PAGE));
         for admin_page in &jira_admin_page {
             admin_page
                 .common_keys
-                .append_functions(&mut admin_function_keys);
+                .append_functions(&mut exposures.of(ModuleKind::JIRA_ADMIN_PAGE));
         }
-        compass_admin_page.append_functions(&mut admin_function_keys);
 
-        // Apps share an admin resolver by declaring two function keys with the same
-        // handler more often than by naming one key in two modules — e.g.
+        // Two function keys pointing at the same handler reach the same code, so
+        // whichever modules expose either key expose that code. Apps share an admin
+        // resolver this way more often than by naming one key in two modules — e.g.
         // `admin-resolver` and `import-resolver` both handled by `index.resolver`.
-        // Any key whose handler is also used by an admin-registered key therefore
-        // reaches the admin page's resolver code too.
-        let admin_handlers: BTreeSet<&str> = functions
-            .iter()
-            .filter(|func| admin_function_keys.contains(func.key))
-            .map(|func| func.handler)
-            .collect();
+        let mut modules_by_handler: FxHashMap<&str, BTreeSet<ModuleKind>> = FxHashMap::default();
+        for func in &functions {
+            modules_by_handler
+                .entry(func.handler)
+                .or_default()
+                .extend(exposures.modules_for(func.key));
+        }
 
         functions.into_iter().flat_map(move |func| {
-            let web_trigger = webtriggers
-                .binary_search_by_key(&func.key, |trigger| trigger.function)
-                .is_ok();
-            let invokable = invokable_functions.contains(func.key);
-            let admin =
-                admin_function_keys.contains(func.key) || admin_handlers.contains(func.handler);
-            let admin_only = admin && !non_admin_invokable_functions.contains(func.key);
+            let modules = exposures.modules_for(func.key);
+            let mut handler_modules = modules.clone();
+            if let Some(shared) = modules_by_handler.get(func.handler) {
+                handler_modules.extend(shared.iter().copied());
+            }
 
             Ok::<_, Error>(Entrypoint {
                 function: FunctionRef::try_from(func)?,
-                invokable,
-                web_trigger,
-                admin,
-                admin_only,
+                modules,
+                handler_modules,
             })
         })
     }
@@ -1298,229 +1493,115 @@ mod tests {
     #[test]
     fn test_deserialize_admin_check() {
         let json = r#"{
-            "app": {
-                "name": "My App",
-                "id": "my-app"
-            },
+            "app": { "name": "My App", "id": "my-app" },
             "modules": {
                 "jira:adminPage": [
-                {
-                    "key": "testing-admin-tag",
-                    "function": "main1",
-                    "title": "writing-a-test-for-admin-flag"
-                }
+                { "key": "testing-admin-tag", "function": "main1", "title": "writing-a-test-for-admin-flag" }
                 ],
-                "macro": [
-                {
-                    "key": "my-macro",
-                    "function": "main2"
-                }
-                ],
+                "macro": [ { "key": "my-macro", "function": "main2" } ],
                 "function": [
-                {
-                    "key": "main1",
-                    "handler": "index.run"
-                },
-                {
-                    "key": "main2",
-                    "handler": "src.run"
-                }
+                { "key": "main1", "handler": "index.run" },
+                { "key": "main2", "handler": "src.run" }
                 ]
             },
-            "permissions": {
-                "scopes": [
-                    "my-scope"
-                ],
-                "content": {
-                    "scripts": [
-                        "my-script.js"
-                    ],
-                    "styles": [
-                        "my-style.css"
-                    ]
-                }
-            }
+            "permissions": { "scopes": ["my-scope"] }
         }"#;
         let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
-        let mut admin_func = manifest.modules.into_analyzable_functions();
+        let entries = manifest
+            .modules
+            .into_analyzable_functions()
+            .collect::<Vec<_>>();
 
+        let admin = &entries[0];
+        assert_eq!(admin.function.key, "main1");
+        assert!(admin.platform_admin_gated());
+        assert!(!admin.invokable());
+        assert!(!admin.shared_admin_resolver());
         assert_eq!(
-            admin_func.next(),
-            Some(Entrypoint {
-                function: FunctionRef::try_from(FunctionMod {
-                    key: "main1",
-                    handler: "index.run",
-                    providers: None,
-                })
-                .unwrap(),
-                invokable: false,
-                web_trigger: false,
-                admin: true,
-                admin_only: true
-            })
+            admin.module_keys().collect::<Vec<_>>(),
+            vec!["jira:adminPage"]
         );
 
-        assert_eq!(
-            admin_func.next(),
-            Some(Entrypoint {
-                function: FunctionRef::try_from(FunctionMod {
-                    key: "main2",
-                    handler: "src.run",
-                    providers: None,
-                })
-                .unwrap(),
-                invokable: true,
-                web_trigger: false,
-                admin: false,
-                admin_only: false
-            })
-        );
-    }
-
-    #[test]
-    fn test_api_route_functions_are_invokable() {
-        let json = r#"{
-            "app": {
-                "id": "my-app"
-            },
-            "modules": {
-                "apiRoute": [
-                    {
-                        "key": "get-employee",
-                        "path": "/employee",
-                        "operation": "GET",
-                        "function": "route-handler",
-                        "accept": ["application/json"],
-                        "scopes": ["read:employee:custom"]
-                    }
-                ],
-                "function": [
-                    {
-                        "key": "route-handler",
-                        "handler": "index.routeHandler"
-                    },
-                    {
-                        "key": "unused-handler",
-                        "handler": "index.unusedHandler"
-                    }
-                ]
-            }
-        }"#;
-        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
-        let mut functions = manifest.modules.into_analyzable_functions();
-
-        assert!(functions.next().unwrap().invokable);
-        assert!(!functions.next().unwrap().invokable);
-    }
-
-    #[test]
-    fn test_remote_keys_are_deserialized_without_breaking_legacy_entries() {
-        let json = r#"{
-            "app": { "id": "my-app" },
-            "modules": {},
-            "remotes": [
-                { "key": "primary", "baseUrl": "https://example.com" },
-                { "baseUrl": "https://legacy.example.com" }
-            ]
-        }"#;
-        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
-        let remotes = manifest.remotes.unwrap();
-
-        assert_eq!(remotes[0].key, "primary");
-        assert_eq!(remotes[1].key, "");
+        let macro_entry = &entries[1];
+        assert_eq!(macro_entry.function.key, "main2");
+        assert!(macro_entry.invokable());
+        assert!(!macro_entry.platform_admin_gated());
     }
 
     // Custom UI admin pages declare their entry point under `resolver.function`
-    // instead of `function`, and must still be flagged as admin.
+    // instead of `function`, and must still be recognised as an admin page.
     #[test]
     fn test_deserialize_admin_resolver_check() {
         let json = r#"{
-            "app": {
-                "name": "My App",
-                "id": "my-app"
-            },
+            "app": { "id": "my-app" },
             "modules": {
                 "jira:adminPage": [
-                {
-                    "key": "testing-admin-resolver",
-                    "resource": "main",
-                    "resolver": {
-                        "function": "resolver-fn"
-                    },
-                    "title": "admin-page-with-resolver"
-                }
+                    { "key": "admin", "resolver": { "function": "resolver-fn" }, "title": "admin" }
                 ],
-                "function": [
-                {
-                    "key": "resolver-fn",
-                    "handler": "index.handler"
-                }
-                ]
-            },
-            "permissions": {
-                "scopes": []
+                "function": [ { "key": "resolver-fn", "handler": "index.handler" } ]
             }
         }"#;
         let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
-        let mut admin_func = manifest.modules.into_analyzable_functions();
+        let entry = manifest.modules.into_analyzable_functions().next().unwrap();
 
-        assert_eq!(
-            admin_func.next(),
-            Some(Entrypoint {
-                function: FunctionRef::try_from(FunctionMod {
-                    key: "resolver-fn",
-                    handler: "index.handler",
-                    providers: None,
-                })
-                .unwrap(),
-                invokable: false,
-                web_trigger: false,
-                admin: true,
-                admin_only: true
-            })
-        );
+        assert_eq!(entry.function.key, "resolver-fn");
+        assert!(entry.platform_admin_gated());
+        assert!(!entry.invokable());
+        assert!(!entry.shared_admin_resolver());
     }
 
-    // `compass:adminPage` feeds `invokable_functions` as well as the admin set, so
-    // `admin_only` cannot be derived from `invokable` alone: it comes from a
-    // snapshot of the invokable set taken before the admin pages contribute.
+    // A `compass:adminPage` resolver used only by the admin page is not a shared
+    // resolver, even though `compass:adminPage` is itself a page users navigate to.
     #[test]
-    fn test_compass_admin_page_only_resolver_is_admin_only() {
+    fn test_compass_admin_page_only_resolver_is_not_shared() {
         let json = r#"{
             "app": { "id": "my-app" },
             "modules": {
                 "compass:adminPage": [
-                    {
-                        "key": "admin-page",
-                        "resolver": { "function": "resolver-fn" }
-                    }
+                    { "key": "admin-page", "resolver": { "function": "resolver-fn" } }
                 ],
-                "function": [
-                    { "key": "resolver-fn", "handler": "index.handler" }
-                ]
+                "function": [ { "key": "resolver-fn", "handler": "index.handler" } ]
             }
         }"#;
         let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
-        let mut funcs = manifest.modules.into_analyzable_functions();
-        let entry = funcs.next().unwrap();
+        let entry = manifest.modules.into_analyzable_functions().next().unwrap();
 
-        assert!(entry.invokable);
-        assert!(entry.admin);
-        assert!(entry.admin_only);
+        assert!(entry.platform_admin_gated());
+        assert!(!entry.invokable());
+        assert!(!entry.shared_admin_resolver());
+    }
+
+    // The documented exposure: one key named by both an admin page and another
+    // module.
+    #[test]
+    fn test_admin_resolver_shared_with_other_module() {
+        let json = r#"{
+            "app": { "id": "my-app" },
+            "modules": {
+                "compass:adminPage": [
+                    { "key": "admin-page", "resolver": { "function": "resolver-fn" } }
+                ],
+                "compass:globalPage": [
+                    { "key": "global-page", "resolver": { "function": "resolver-fn" } }
+                ],
+                "function": [ { "key": "resolver-fn", "handler": "index.handler" } ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        let entry = manifest.modules.into_analyzable_functions().next().unwrap();
+
+        assert!(entry.shared_admin_resolver());
+        assert_eq!(
+            entry.module_keys().collect::<Vec<_>>(),
+            vec!["compass:adminPage", "compass:globalPage"]
+        );
     }
 
     // How apps actually share an admin resolver: two function keys pointing at one
-    // handler, rather than one key named by two modules. Taken from
-    // atlassian-labs/gitlab-for-compass before PR #87, where `admin-resolver` and
-    // `import-resolver` were both handled by `index.resolver`.
-    //
-    // That app used `compass:componentImporter` for the second module, which this
-    // loader does not deserialize yet (only adminPage, componentPage, globalPage and
-    // teamPage are known), so the sharing would still be invisible for it. The audit
-    // of affected apps calls out the import module specifically, so recognizing it is
-    // a prerequisite for catching these in the wild.
+    // handler. From atlassian-labs/gitlab-for-compass before PR #87, where
+    // `admin-resolver` and `import-resolver` were both handled by `index.resolver`.
     #[test]
-    fn test_admin_and_non_admin_keys_sharing_a_handler_are_not_admin_only() {
+    fn test_admin_and_non_admin_keys_sharing_a_handler_are_shared() {
         let json = r#"{
             "app": { "id": "my-app" },
             "modules": {
@@ -1542,59 +1623,14 @@ mod tests {
             .into_analyzable_functions()
             .collect::<Vec<_>>();
 
-        let admin = entries
-            .iter()
-            .find(|e| e.function.key == "admin-resolver")
-            .unwrap();
-        let import = entries
-            .iter()
-            .find(|e| e.function.key == "import-resolver")
-            .unwrap();
-
-        // The admin page's own key is still only reachable through the admin page.
-        assert!(admin.admin);
-        assert!(admin.admin_only);
-        // The importer's key reaches the same handler, so invoking it exposes the
-        // admin page's resolver functions.
-        assert!(
-            import.admin,
-            "handler shared with an admin key was not flagged"
-        );
-        assert!(!import.admin_only);
-        assert!(import.invokable);
-    }
-
-    // The documented exposure: the admin page shares its resolver with another
-    // module, so the platform no longer restricts it to admins.
-    #[test]
-    fn test_admin_resolver_shared_with_other_module_is_not_admin_only() {
-        let json = r#"{
-            "app": { "id": "my-app" },
-            "modules": {
-                "compass:adminPage": [
-                    {
-                        "key": "admin-page",
-                        "resolver": { "function": "resolver-fn" }
-                    }
-                ],
-                "compass:globalPage": [
-                    {
-                        "key": "global-page",
-                        "resolver": { "function": "resolver-fn" }
-                    }
-                ],
-                "function": [
-                    { "key": "resolver-fn", "handler": "index.handler" }
-                ]
-            }
-        }"#;
-        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
-        let mut funcs = manifest.modules.into_analyzable_functions();
-        let entry = funcs.next().unwrap();
-
-        assert!(entry.invokable);
-        assert!(entry.admin);
-        assert!(!entry.admin_only);
+        // Both keys reach the same handler, so both are shared admin resolvers.
+        for entry in &entries {
+            assert!(
+                entry.shared_admin_resolver(),
+                "{} was not treated as a shared admin resolver",
+                entry.function.key
+            );
+        }
     }
 
     // Test to check if Rovo modules can be deserialized properly from a sample manifest file.

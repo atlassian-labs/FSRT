@@ -33,9 +33,8 @@ use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
     checkers::{
-        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, EntryExposure,
-        ForgeRuntimeVersionPolicyChecker, PermissionChecker, PermissionVuln, SecretChecker,
-        SecretStorageChecker, SecretType,
+        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
+        PermissionChecker, PermissionVuln, SecretChecker, SecretStorageChecker, SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -151,8 +150,11 @@ struct ResolvedEntryPoint<'a> {
     def_id: DefId,
     webtrigger: bool,
     invokable: bool,
-    admin: bool,
-    admin_only: bool,
+    /// Exposed by an admin page module *and* by a module any user can reach, so
+    /// the platform's admin restriction on that resolver does not apply.
+    shared_admin_resolver: bool,
+    /// Manifest keys of the modules exposing this function, for the report.
+    modules: Vec<&'static str>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -519,10 +521,8 @@ pub(crate) fn scan_directory<'a>(
         .flat_map(|entrypoint| {
             Ok::<_, forge_loader::Error>(Entrypoint {
                 function: entrypoint.function.try_resolve(&paths, &dir)?,
-                invokable: entrypoint.invokable,
-                web_trigger: entrypoint.web_trigger,
-                admin: entrypoint.admin,
-                admin_only: entrypoint.admin_only,
+                modules: entrypoint.modules,
+                handler_modules: entrypoint.handler_modules,
             })
         });
 
@@ -660,11 +660,12 @@ pub(crate) fn scan_directory<'a>(
 
     // Optional Forge secret storage scan.
     //
-    // Only entry points reachable from a non-admin module are scanned. An admin
-    // page's own resolver is left alone: the platform gates those invocations on
-    // admin permission, so no check of the app's own is expected. A resolver that an
-    // admin page shares with another module is the interesting case — sharing voids
-    // that platform check, which is the documented Forge admin resolver exposure.
+    // Scoped to admin resolvers that are shared with another module. The platform
+    // restricts an admin page's own resolver to admin users, so an admin-only entry
+    // point has nothing for the app to authorize; and a resolver exposed solely by
+    // ordinary modules was never admin-restricted in the first place. Sharing one
+    // resolver between an admin page and another module is what removes a
+    // restriction that was there — the documented Forge admin resolver exposure.
     //
     if let Some(mut secret_storage_interp) =
         run_secret_storage_scanner.then(|| interpreters.create::<SecretStorageChecker>(true))
@@ -675,15 +676,10 @@ pub(crate) fn scan_directory<'a>(
         secret_storage_interp.set_isolate_entries(true);
 
         for func in &proj.funcs {
-            if !func.invokable || func.admin_only {
+            if !func.shared_admin_resolver {
                 continue;
             }
-            let exposure = if func.admin {
-                EntryExposure::SharedAdminResolver
-            } else {
-                EntryExposure::Invokable
-            };
-            let mut checker = SecretStorageChecker::new(exposure);
+            let mut checker = SecretStorageChecker::new(func.modules.clone());
             debug!(
                 "checking secret storage in {:?} at {:?}",
                 func.func_name, &func.path

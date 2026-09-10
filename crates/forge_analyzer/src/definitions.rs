@@ -56,7 +56,7 @@ use crate::{
     ctx::ModId,
     ir::{
         Base, BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, RETURN_VAR,
-        Rvalue, STARTING_BLOCK, SecretStorageOp, Template, Terminator, VarKind, Variable,
+        Rvalue, STARTING_BLOCK, StorageAccess, Template, Terminator, VarKind, Variable,
     },
 };
 
@@ -1335,9 +1335,9 @@ impl FunctionAnalyzer<'_> {
             // import { kvs } from '@forge/kvs'; kvs.query(...)
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
                 let intrinsic = if *s == *"getSecret" {
-                    Intrinsic::SecretStorage(SecretStorageOp::Get)
+                    Intrinsic::Storage(StorageAccess::SECRET_READ)
                 } else {
-                    Intrinsic::StorageRead
+                    Intrinsic::Storage(StorageAccess::READ)
                 };
                 if let Some(api) = self.res.is_imported_from(def, "@forge/api") {
                     match api {
@@ -1362,7 +1362,7 @@ impl FunctionAnalyzer<'_> {
                     && (matches!(self.res.is_imported_from(def, "@forge/api"), Some(ImportKind::Named(name)) if *name == *"storage")
                         || matches!(self.res.is_imported_from(def, "@forge/kvs"), Some(ImportKind::Named(name)) if *name == *"kvs")) =>
             {
-                Some(Intrinsic::SecretStorage(SecretStorageOp::Set))
+                Some(Intrinsic::Storage(StorageAccess::SECRET_WRITE))
             }
             // import api from '@forge/api'; api.storage.setSecret(...)
             // import * as api from '@forge/api'; api.storage.setSecret(...)
@@ -1383,7 +1383,7 @@ impl FunctionAnalyzer<'_> {
                     .is_imported_from(def, "@forge/api")
                     .is_some_and(|imp| matches!(imp, ImportKind::Default | ImportKind::Star)) =>
             {
-                Some(Intrinsic::SecretStorage(SecretStorageOp::Set))
+                Some(Intrinsic::Storage(StorageAccess::SECRET_WRITE))
             }
             [PropPath::Def(def), PropPath::Static(ref method), ..]
             | [PropPath::Def(def), PropPath::MemberCall(ref method), ..]
