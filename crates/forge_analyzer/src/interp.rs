@@ -956,19 +956,23 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         &self,
         defid_block: DefId,
         varid: VarId,
-        mut projections: ProjectionVec,
+        projections: ProjectionVec,
     ) -> Option<(VarId, ProjectionVec)> {
         let mut current_var_id = varid;
-        for i in 0..projections.len() {
+        let mut projection_start = 0;
+        for projection_end in 0..projections.len() {
             if let Some(Value::Object(varid)) = self.get_value(
                 defid_block,
                 current_var_id,
-                Some(projvec_from_projvec(&projections[..i])),
+                Some(projvec_from_projvec(
+                    &projections[projection_start..projection_end],
+                )),
             ) {
                 current_var_id = *varid;
-                projections = projvec_from_projvec(&projections[i..]);
+                projection_start = projection_end;
             }
         }
+        let projections = projvec_from_projvec(&projections[projection_start..]);
 
         let mut visited = FxHashSet::default();
         while let Some(Value::Object(varid)) =
