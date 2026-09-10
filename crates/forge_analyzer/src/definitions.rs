@@ -55,8 +55,9 @@ use crate::ir::VarId;
 use crate::{
     ctx::ModId,
     ir::{
-        Base, BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, RETURN_VAR,
-        Rvalue, STARTING_BLOCK, SqlSink, Template, Terminator, VarKind, Variable,
+        Base, BasicBlockId, Body, CallFacts, CallPathPart, Inst, Intrinsic, Literal, Location,
+        Operand, Projection, RETURN_VAR, Rvalue, STARTING_BLOCK, Template, Terminator, VarKind,
+        Variable,
     },
 };
 
@@ -303,7 +304,7 @@ pub fn update_rvalue(rvalue: &mut Rvalue, updated_vars: &HashMap<VarId, VarId>) 
         | Rvalue::Bin(_, _, Operand::Var(variable)) => {
             update_var(variable);
         }
-        Rvalue::Aggregate(elements) => {
+        Rvalue::Array(elements) => {
             for element in elements {
                 if let Operand::Var(variable) = element {
                     update_var(variable);
@@ -1009,43 +1010,6 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
     classifier.kind
 }
 
-fn originates_from_resolved_local_call(
-    env: &Environment,
-    body: &Body,
-    variable: VarId,
-    depth: usize,
-) -> bool {
-    if depth == 0 {
-        return false;
-    }
-    body.iter_blocks_enumerated().any(|(_, block)| {
-        block.iter().any(|inst| match inst {
-            Inst::Assign(
-                Variable {
-                    base: Base::Var(target),
-                    projections,
-                },
-                Rvalue::Call(callee, _),
-            ) if *target == variable && projections.is_empty() => {
-                body.resolve_call(env, callee).is_some()
-            }
-            Inst::Assign(
-                Variable {
-                    base: Base::Var(target),
-                    projections,
-                },
-                Rvalue::Read(Operand::Var(Variable {
-                    base: Base::Var(source),
-                    projections: source_projections,
-                })),
-            ) if *target == variable && projections.is_empty() && source_projections.is_empty() => {
-                originates_from_resolved_local_call(env, body, *source, depth - 1)
-            }
-            _ => false,
-        })
-    })
-}
-
 impl FunctionAnalyzer<'_> {
     fn new<'cx>(
         env: &'cx mut Environment,
@@ -1339,62 +1303,6 @@ impl FunctionAnalyzer<'_> {
                 }
                 ApiCallKind::Trivial => Some(Intrinsic::SafeCall(function_name)),
                 ApiCallKind::Authorize => Some(Intrinsic::Authorize(function_name)),
-            }
-        }
-
-        // SQL calls are intentionally matched broadly for the first version of the
-        // rule. Treat the supported method shapes as @forge/sql unless the root
-        // symbol is conclusively imported from another package.
-        let sql_method = callee.iter().rev().find_map(|part| match part {
-            PropPath::Static(name) => Some(name),
-            _ => None,
-        });
-        if let Some(method) = sql_method {
-            let root_def = callee.iter().find_map(|part| match part {
-                PropPath::Def(def) => Some(*def),
-                _ => None,
-            });
-            let sink = if *method == *"prepare" {
-                Some(SqlSink::Prepare)
-            } else if *method == *"executeRaw" {
-                Some(SqlSink::ExecuteRaw)
-            } else if *method == *"enqueue" {
-                let imported_runner = root_def.is_some_and(|def| {
-                    self.res.is_imported_from(def, "@forge/sql").is_some_and(
-                        |kind| matches!(kind, ImportKind::Named(name) if *name == *"migrationRunner"),
-                    )
-                });
-                let named_runner = callee.iter().any(
-                    |part| matches!(part, PropPath::Static(name) if *name == *"migrationRunner"),
-                ) || root_def
-                    .is_some_and(|def| self.res.def_name(def).contains("migrationRunner"));
-                (imported_runner || named_runner).then_some(SqlSink::MigrationEnqueue)
-            } else {
-                None
-            };
-
-            // Provenance checks walk local IR and are only relevant to actual SQL
-            // sink candidates. Running them for every method call makes lowering
-            // quadratic in the size of real-world bundled applications.
-            if let Some(sink) = sink {
-                let confirmed_other_package = root_def
-                    .and_then(|def| self.res.as_foreign_import(def))
-                    .is_some_and(|(module, _)| module != *"@forge/sql");
-                let confirmed_local_receiver = root_def.is_some_and(|root| {
-                    self.res.bodies().any(|body| {
-                        let local_vars = body.vars.iter_enumerated().filter_map(|(var, kind)| {
-                            matches!(kind, VarKind::GlobalRef(def) | VarKind::LocalDef(def) if *def == root)
-                                .then_some(var)
-                        });
-                        local_vars.into_iter().any(|local_var| {
-                            originates_from_resolved_local_call(self.res, body, local_var, 8)
-                        })
-                    })
-                });
-
-                if !confirmed_other_package && !confirmed_local_receiver {
-                    return Some(Intrinsic::SqlQuery(sink));
-                }
             }
         }
 
@@ -1823,7 +1731,7 @@ impl FunctionAnalyzer<'_> {
                                     // that model later container operations.
                                     return Operand::with_var(self.body.push_tmp_spanned(
                                         self.block,
-                                        Rvalue::Aggregate(vec![value]),
+                                        Rvalue::Array(vec![value]),
                                         None,
                                         span,
                                     ));
@@ -1863,6 +1771,34 @@ impl FunctionAnalyzer<'_> {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
         };
+        let root = props.iter().find_map(|part| match part {
+            PropPath::Def(def) => Some(*def),
+            _ => None,
+        });
+        let facts = CallFacts {
+            local_receiver: Default::default(),
+            import: root.and_then(|def| self.res.as_foreign_import(def)),
+            root,
+            path: props
+                .into_iter()
+                .map(|part| match part {
+                    PropPath::Def(def) => CallPathPart::Binding(def),
+                    PropPath::Static(name) => CallPathPart::Property(name),
+                    PropPath::MemberCall(name) => CallPathPart::MemberCall(name),
+                    PropPath::Unknown(id) => CallPathPart::Unresolved(id),
+                    PropPath::Computed(id) => CallPathPart::Computed(id),
+                    PropPath::Private(id) => CallPathPart::Private(id),
+                    PropPath::Expr(_) => CallPathPart::Expression,
+                    PropPath::This => CallPathPart::This,
+                    PropPath::Super => CallPathPart::Super,
+                })
+                .collect(),
+        };
+        let location = Location::new(
+            self.block,
+            self.body.blockbuilders[self.block].insts.len() as u32,
+        );
+        self.body.set_call_facts(location, facts);
         let res = self.body.push_tmp_spanned(self.block, call, None, span);
         Operand::with_var(res)
     }
@@ -2039,7 +1975,7 @@ impl FunctionAnalyzer<'_> {
                     .collect();
                 let array_var = self
                     .body
-                    .push_tmp(self.block, Rvalue::Aggregate(elements), parent);
+                    .push_tmp(self.block, Rvalue::Array(elements), parent);
                 Operand::with_var(array_var)
             }
             Expr::Object(ObjectLit { span, props }) => {

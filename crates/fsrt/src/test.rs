@@ -187,12 +187,13 @@ impl<'a> ForgeProjectTrait<'a> for MockForgeProject<'a> {
     fn load_file(
         &self,
         p: impl AsRef<Path>,
-        _: Arc<SourceMap>,
+        source_map: Arc<SourceMap>,
     ) -> std::io::Result<Arc<SourceFile>> {
-        self.files_name_to_source
+        let source = self
+            .files_name_to_source
             .get(p.as_ref())
-            .cloned()
-            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+        Ok(source_map.new_source_file(source.name.clone(), source.src.as_ref().clone()))
     }
 
     fn get_paths(&self) -> HashSet<PathBuf> {
@@ -2731,7 +2732,7 @@ fn sql_injection_tracks_local_function_arguments_and_returns() {
     assert!(report.into_vulns().iter().any(|finding| {
         finding.check_name() == "forge-sql-injection"
             && finding.proof().contains("call from")
-            && finding.proof().contains("instruction")
+            && finding.proof().contains("src/index.js:")
     }));
 }
 
@@ -3867,4 +3868,231 @@ mod is_admin_path_tests {
             );
         }
     }
+}
+
+#[test]
+fn sql_injection_attributes_returned_api_data_without_unrelated_entry_inputs() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import api from '@forge/api';
+        import sql from '@forge/sql';
+        function wrap(value) { return { fragment: value }; }
+        async function load() {
+            const issue = await api.asApp().requestJira('/rest/api/3/issue/ABC-1');
+            return wrap(issue.fields.summary);
+        }
+        export async function run(payload) {
+            const result = await load();
+            await sql.executeRaw(`SELECT ${result.fragment}`);
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1), "{report:#?}");
+    let finding = report
+        .into_vulns()
+        .iter()
+        .find(|v| v.check_name() == "forge-sql-injection")
+        .unwrap();
+    assert!(
+        finding.proof().contains("Atlassian API response at"),
+        "{}",
+        finding.proof()
+    );
+    assert!(
+        finding.proof().contains("index.js:5:"),
+        "{}",
+        finding.proof()
+    );
+    assert!(
+        !finding.proof().contains("`payload`"),
+        "{}",
+        finding.proof()
+    );
+    assert!(!finding.proof().contains("`value`"), "{}", finding.proof());
+}
+
+#[test]
+fn sql_injection_drops_overwritten_source_origins() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import api from '@forge/api';
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            let fragment = payload.table;
+            const response = await api.asApp().requestJira('/rest/api/3/issue/ABC-1');
+            fragment = response.fields.summary;
+            await sql.prepare(`SELECT ${fragment}`);
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+    let finding = report
+        .into_vulns()
+        .iter()
+        .find(|v| v.check_name() == "forge-sql-injection")
+        .unwrap();
+    assert!(
+        finding.proof().contains("Atlassian API response"),
+        "{}",
+        finding.proof()
+    );
+    assert!(
+        !finding.proof().contains("`payload`"),
+        "{}",
+        finding.proof()
+    );
+}
+
+#[test]
+fn sql_injection_numeric_provenance_does_not_promote_unknown_sql_to_high() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function number(value) { return Number(value); }
+        export async function run(payload, unknown) {
+            const limit = number(payload.limit);
+            await sql.prepare(`SELECT ${unknown} LIMIT ${limit}`);
+            await sql.prepare(`SELECT ${payload.column} LIMIT ${limit}`);
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::Low, 1), "{report:#?}");
+    assert!(report.contains_sql_vuln(Severity::High, 1), "{report:#?}");
+}
+
+#[test]
+fn sql_injection_preserves_origins_through_cross_file_projected_arguments() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import sql from '@forge/sql';
+        import { build } from './helper';
+        const resolver = new Resolver();
+        resolver.define('search', async ({ payload }) => {
+            const options = { field: payload.field };
+            const alias = options;
+            await sql.prepare(build(alias));
+        });
+        export const run = resolver.getDefinitions();
+        // src/helper.js
+        export function build({ field }) {
+            const values = [field];
+            return `SELECT ${values.join(',')}`;
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1), "{report:#?}");
+    let finding = report
+        .into_vulns()
+        .iter()
+        .find(|v| v.check_name() == "forge-sql-injection")
+        .unwrap();
+    assert!(
+        finding.proof().contains("resolver payload `payload` at"),
+        "{}",
+        finding.proof()
+    );
+    assert!(
+        !finding
+            .proof()
+            .contains("entrypoint or propagated input `field`"),
+        "{}",
+        finding.proof()
+    );
+}
+
+#[test]
+fn sql_injection_merges_branch_origins_even_when_trust_is_unchanged() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import api, { storage } from '@forge/api';
+        import sql from '@forge/sql';
+        function identity(value) { return value; }
+        export async function run(flag) {
+            let fragment;
+            if (flag) { fragment = await storage.get('fragment'); }
+            else { fragment = await api.asApp().requestJira('/rest/api/3/issue/ABC-1'); }
+            await sql.prepare(identity(fragment));
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1), "{report:#?}");
+    let finding = report
+        .into_vulns()
+        .iter()
+        .find(|v| v.check_name() == "forge-sql-injection")
+        .unwrap();
+    assert!(
+        finding.proof().contains("Forge storage read"),
+        "{}",
+        finding.proof()
+    );
+    assert!(
+        finding.proof().contains("Atlassian API response"),
+        "{}",
+        finding.proof()
+    );
+    assert!(!finding.proof().contains("`flag`"), "{}", finding.proof());
+}
+
+#[test]
+fn sql_injection_bounds_many_source_origins_without_losing_high_severity() {
+    let mut source = String::from(
+        "// src/index.js\nimport { storage } from '@forge/api';\nimport sql from '@forge/sql';\nexport async function run() {\n",
+    );
+    for index in 0..12 {
+        source.push_str(&format!(
+            "const v{index} = await storage.get('key{index}');\n"
+        ));
+    }
+    source.push_str("await sql.prepare(");
+    source.push_str(
+        &(0..12)
+            .map(|index| format!("v{index}"))
+            .collect::<Vec<_>>()
+            .join(" + "),
+    );
+    source.push_str(");\n}");
+    let report = scan_directory_test(MockForgeProject::files_from_string(&source));
+    assert!(report.contains_sql_vuln(Severity::High, 1), "{report:#?}");
+    let finding = report
+        .into_vulns()
+        .iter()
+        .find(|v| v.check_name() == "forge-sql-injection")
+        .unwrap();
+    assert_eq!(
+        finding.proof().matches("Forge storage read at").count(),
+        8,
+        "{}",
+        finding.proof()
+    );
+}
+
+#[test]
+fn sql_injection_recursive_returns_reach_a_bounded_fixed_point() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function recurse(value, again) {
+            if (again) { return recurse(value, false); }
+            return value;
+        }
+        export async function run(payload) {
+            await sql.prepare(recurse(payload.query, true));
+        }",
+    );
+    let report = scan_directory_test(project);
+    // Recursive returns remain unresolved in the baseline; convergence must terminate
+    // without inventing an untrusted return or an unrelated source.
+    assert!(report.contains_sql_vuln(Severity::Low, 1), "{report:#?}");
+    let finding = report
+        .into_vulns()
+        .iter()
+        .find(|v| v.check_name() == "forge-sql-injection")
+        .unwrap();
+    assert!(
+        finding.proof().contains("Unresolved dynamic origin"),
+        "{}",
+        finding.proof()
+    );
 }

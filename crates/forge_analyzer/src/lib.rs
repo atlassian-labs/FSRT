@@ -7,5 +7,6 @@ pub mod lattice;
 pub mod pretty;
 pub mod reporter;
 pub mod sql_injection;
+pub mod taint;
 pub mod utils;
 pub mod worklist;
