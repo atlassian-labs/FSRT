@@ -468,7 +468,7 @@ pub(crate) fn scan_directory<'a>(
         secret_packages,
         &mut perm_map,
         &suspicious_remotes,
-    );
+    )?;
 
     let name = manifest.app.name.unwrap_or_default();
 

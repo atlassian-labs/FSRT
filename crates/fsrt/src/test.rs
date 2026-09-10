@@ -172,8 +172,15 @@ impl<'a> MockForgeProject<'a> {
 }
 
 impl<'a> ForgeProjectTrait<'a> for MockForgeProject<'a> {
-    fn load_file(&self, p: impl AsRef<Path>, _: Arc<SourceMap>) -> Arc<SourceFile> {
-        self.files_name_to_source.get(p.as_ref()).unwrap().clone()
+    fn load_file(
+        &self,
+        p: impl AsRef<Path>,
+        _: Arc<SourceMap>,
+    ) -> std::io::Result<Arc<SourceFile>> {
+        self.files_name_to_source
+            .get(p.as_ref())
+            .cloned()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
     }
 
     fn get_paths(&self) -> HashSet<PathBuf> {

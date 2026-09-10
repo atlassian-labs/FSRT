@@ -32,7 +32,7 @@ pub(crate) fn find_manifest_path(app_dir: &Path) -> io::Result<PathBuf> {
 }
 
 pub(crate) trait ForgeProjectTrait<'a> {
-    fn load_file(&self, path: impl AsRef<Path>, _: Arc<SourceMap>) -> Arc<SourceFile>;
+    fn load_file(&self, path: impl AsRef<Path>, _: Arc<SourceMap>) -> io::Result<Arc<SourceFile>>;
 
     #[inline]
     fn with_files_and_sourceroot<
@@ -45,22 +45,22 @@ pub(crate) trait ForgeProjectTrait<'a> {
         secret_packages: &[PackageData],
         perm_map: &mut PermMap,
         suspicious_remotes: &HashSet<String>,
-    ) -> ForgeProject<'_> {
+    ) -> crate::Result<ForgeProject<'_>> {
         let sm = Arc::<SourceMap>::default();
         let target = EsVersion::latest();
         let globals = Globals::new();
         let ctx = AppCtx::new(src);
-        let ctx = iter.into_iter().fold(ctx, |mut ctx, p| {
+        let ctx = iter.into_iter().try_fold(ctx, |mut ctx, p| {
             let sourcemap = Arc::clone(&sm);
-            GLOBALS.set(&globals, || {
+            GLOBALS.set(&globals, || -> crate::Result<_> {
                 debug!(file = %p.display(), "parsing");
-                let src = self.load_file(p.clone(), sourcemap);
+                let src = self.load_file(p.clone(), sourcemap)?;
                 debug!("loaded sourcemap");
                 let mut recovered_errors = vec![];
                 let mut module = parse_file_as_module(
                     src.as_ref(),
                     Syntax::Typescript(TsSyntax {
-                        tsx: true,
+                        tsx: p.extension().and_then(|extension| extension.to_str()) != Some("ts"),
                         decorators: true,
                         ..Default::default()
                     }),
@@ -68,14 +68,19 @@ pub(crate) trait ForgeProjectTrait<'a> {
                     None,
                     &mut recovered_errors,
                 )
-                .unwrap();
+                .map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Could not parse {}: {error:?}", p.display()),
+                    )
+                })?;
                 debug!("finished parsing");
                 let mut hygeine = resolver(Mark::new(), Mark::new(), true);
                 module.visit_mut_with(&mut hygeine);
                 ctx.load_module(p, module);
-                ctx
+                Ok(ctx)
             })
-        });
+        })?;
         let keys = ctx.module_ids().collect::<Vec<_>>();
         debug!(?keys);
         let env = run_resolver(
@@ -85,12 +90,12 @@ pub(crate) trait ForgeProjectTrait<'a> {
             perm_map,
             suspicious_remotes,
         );
-        ForgeProject {
+        Ok(ForgeProject {
             sm,
             ctx,
             env,
             funcs: vec![],
-        }
+        })
     }
 
     fn get_paths(&self) -> HashSet<PathBuf>;
@@ -137,8 +142,12 @@ pub(crate) struct ForgeProjectFromDir {
 }
 
 impl ForgeProjectTrait<'_> for ForgeProjectFromDir {
-    fn load_file(&self, path: impl AsRef<Path>, sourcemap: Arc<SourceMap>) -> Arc<SourceFile> {
-        sourcemap.load_file(path.as_ref()).unwrap()
+    fn load_file(
+        &self,
+        path: impl AsRef<Path>,
+        sourcemap: Arc<SourceMap>,
+    ) -> io::Result<Arc<SourceFile>> {
+        sourcemap.load_file(path.as_ref())
     }
 
     fn get_paths(&self) -> HashSet<PathBuf> {
