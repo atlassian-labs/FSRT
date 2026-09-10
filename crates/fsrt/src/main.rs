@@ -842,39 +842,38 @@ fn main() -> Result<()> {
         serde_yaml::from_str(secretdata_file).expect("Failed to deserialize packages");
 
     for dir in dirs {
-        let manifest_file = find_manifest_path(&dir)?;
-        debug!(?manifest_file);
-
-        let manifest_text = fs::read_to_string(&manifest_file)?;
-
-        let forge_project_from_dir = ForgeProjectFromDir {
-            dir: dir.clone(),
-            manifest_file_content: manifest_text,
-        };
-
-        debug!(?dir);
-
         if let Some(path) = &args.out {
             let report = serde_json::to_string(&get_empty_report())?;
             fs::write(path, report)?;
         }
 
-        let reporter_result =
-            scan_directory(dir, &mut args, forge_project_from_dir, &secret_packages);
-        match reporter_result {
-            Result::Ok(report) => {
-                let report = serde_json::to_string(&report)?;
-                debug!("On the debug layer: Writing Report");
-                match &args.out {
-                    Some(path) => {
-                        fs::write(path, &*report)?;
-                    }
-                    None => println!("{report}"),
-                }
+        let reporter_result = (|| -> Result<Report> {
+            let manifest_file = find_manifest_path(&dir)?;
+            debug!(?manifest_file);
+
+            let manifest_text = fs::read_to_string(&manifest_file)?;
+            let forge_project_from_dir = ForgeProjectFromDir {
+                dir: dir.clone(),
+                manifest_file_content: manifest_text,
+            };
+
+            debug!(?dir);
+            scan_directory(dir, &mut args, forge_project_from_dir, &secret_packages)
+        })();
+
+        let report = match reporter_result {
+            Ok(report) => report,
+            Err(err) => {
+                let error_message = err.to_string();
+                warn!("Could not scan due to {error_message}");
+                Report::error(error_message, vec![args.appkey.clone().unwrap_or_default()])
             }
-            Result::Err(err) => {
-                warn!("Could not scan due to {err}")
-            }
+        };
+        let report = serde_json::to_string(&report)?;
+        debug!("On the debug layer: Writing Report");
+        match &args.out {
+            Some(path) => fs::write(path, &*report)?,
+            None => println!("{report}"),
         }
     }
     Ok(())
