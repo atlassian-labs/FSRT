@@ -9,7 +9,7 @@ use crate::{
     },
     ir::{
         Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
-        Projection, Rvalue, VarId, VarKind, Variable,
+        Projection, Rvalue, StorageAccess, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     utils::{add_elements_to_intrinsic_struct, convert_lit_to_raw, translate_request_type},
@@ -263,7 +263,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
             | Intrinsic::ApiCall(_)
             | Intrinsic::SafeCall(_)
             | Intrinsic::EnvRead
-            | Intrinsic::StorageRead => initial_state,
+            | Intrinsic::Storage(_) => initial_state,
         }
     }
 
@@ -578,13 +578,263 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             | Intrinsic::EnvRead
             | Intrinsic::UserFieldAccess
             | Intrinsic::ApiCustomField
-            | Intrinsic::StorageRead => ControlFlow::Continue(*state),
+            | Intrinsic::Storage(_) => ControlFlow::Continue(*state),
         }
     }
 }
 
 impl Checker<'_> for AuthZChecker {
     type Vuln = AuthZVuln;
+}
+
+/// Resolves an operand to a single string, but only when it is unambiguous: a
+/// `Phi` with more than one distinct alternative yields `None` rather than an
+/// arbitrary pick, so a reported secret key is never one of several guesses.
+fn unambiguous_literal<'cx, C: Runner<'cx>>(
+    interp: &Interp<'cx, C>,
+    def: DefId,
+    operand: &Operand,
+) -> Option<String> {
+    let mut values = vec![];
+    match operand {
+        Operand::Lit(lit) => values.extend(convert_lit_to_raw(lit)),
+        Operand::Var(Variable {
+            base: Base::Var(varid),
+            ..
+        }) => {
+            if let Some(value) = interp.get_value(def, *varid, None) {
+                add_elements_to_intrinsic_struct(value, &mut values);
+            }
+        }
+        Operand::Var(_) => {}
+    }
+    values.dedup();
+    values.pop().filter(|_| values.is_empty())
+}
+
+/// Reports Forge secret storage calls (`storage.setSecret` / `storage.getSecret`
+/// and their `@forge/kvs` equivalents) that are reachable from an app entry point
+/// without any authorization check in between.
+///
+/// This intentionally over-reports: a `setSecret` reachable by non-admins can be
+/// legitimate (e.g. per-user credentials keyed by `accountId`). Findings are meant
+/// for manual triage, which is why the scan is off by default behind
+/// `--check-secret-storage`.
+pub struct SecretStorageChecker {
+    /// Manifest keys of the modules exposing this entry point, named in the report.
+    modules: Vec<&'static str>,
+    vulns: Vec<SecretStorageVuln>,
+}
+
+impl SecretStorageChecker {
+    pub fn new(modules: Vec<&'static str>) -> Self {
+        Self {
+            modules,
+            vulns: vec![],
+        }
+    }
+
+    /// Returns the findings, dropping duplicates that arise when the same call
+    /// site is reached through more than one path.
+    ///
+    /// Findings are keyed partly on the secret name, so calls that resolve to the
+    /// same name — or to no name at all — collapse into one. When a helper is
+    /// called with a different key per call site the key resolves to whichever
+    /// caller the dataflow bound last, so one finding stands in for all of them.
+    pub fn into_vulns(self) -> impl IntoIterator<Item = SecretStorageVuln> {
+        let mut seen = HashSet::new();
+        self.vulns
+            .into_iter()
+            .filter(move |vuln| {
+                seen.insert((
+                    vuln.entry_func.clone(),
+                    vuln.stack.clone(),
+                    vuln.access,
+                    vuln.key.clone(),
+                ))
+            })
+            .collect::<Vec<_>>()
+    }
+}
+
+#[derive(Debug)]
+pub struct SecretStorageVuln {
+    stack: String,
+    entry_func: String,
+    file: PathBuf,
+    access: StorageAccess,
+    modules: Vec<&'static str>,
+    /// The secret key, when it resolves to a literal.
+    key: Option<String>,
+}
+
+impl SecretStorageVuln {
+    fn new(
+        access: StorageAccess,
+        modules: Vec<&'static str>,
+        key: Option<String>,
+        callstack: Vec<Frame>,
+        env: &Environment,
+        entry: &EntryPoint,
+    ) -> Self {
+        let entry_func = match &entry.kind {
+            EntryKind::Function(func) => func.clone(),
+            EntryKind::Resolver(res, prop) => format!("{res}.{prop}"),
+            EntryKind::Empty => {
+                warn!("empty function");
+                String::new()
+            }
+        };
+        let file = entry.file.clone();
+        let stack = Itertools::intersperse(
+            iter::once(&*entry_func).chain(
+                callstack
+                    .into_iter()
+                    .rev()
+                    .map(|frame| env.def_name(frame.calling_function)),
+            ),
+            " -> ",
+        )
+        .collect();
+        Self {
+            stack,
+            entry_func,
+            file,
+            access,
+            modules,
+            key,
+        }
+    }
+
+    fn api_name(&self) -> &'static str {
+        match self.access {
+            StorageAccess { write: true, .. } => "setSecret",
+            _ => "getSecret",
+        }
+    }
+}
+
+impl fmt::Display for SecretStorageVuln {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Secret storage exposed without authorization")
+    }
+}
+
+impl IntoVuln for SecretStorageVuln {
+    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.file
+            .iter()
+            .skip_while(|comp| *comp != "src")
+            .for_each(|comp| comp.hash(&mut hasher));
+        self.entry_func.hash(&mut hasher);
+        self.stack.hash(&mut hasher);
+        self.api_name().hash(&mut hasher);
+        self.key.hash(&mut hasher);
+
+        let key = self
+            .key
+            .as_deref()
+            .map(|key| format!(" for the secret {key:?}"))
+            .unwrap_or_default();
+
+        Vulnerability {
+            check_name: format!("Custom-Check-Secret-Storage-{}", hasher.finish()),
+            description: format!(
+                "Forge secret storage call {}(){} is reachable from {} in {:?} with no authorization check. The resolver is exposed by {}: an admin page module shares it with a module any authenticated user can reach, so the platform's admin-only restriction on that resolver no longer applies and every function on it can be called by any user.",
+                self.api_name(),
+                key,
+                self.entry_func,
+                self.file,
+                self.modules.join(" and "),
+            ),
+            recommendation: "Define a separate resolver for the admin module so that its functions are not reachable from other modules, and authorize the caller before reading or writing app secrets via the authorize API _https://developer.atlassian.com/platform/forge/runtime-reference/authorize-api/_.",
+            proof: format!(
+                "Unauthorized {}() call found via {}",
+                self.api_name(),
+                self.stack
+            ),
+            // Deliberately Medium rather than High, even though a confirmed finding is
+            // the same class as an AuthZ vuln: every High FSRT finding blocks
+            // Marketplace app approval, and this check knowingly over-reports and is
+            // triaged by hand. Raise it only once the false positive rate is known.
+            severity: Severity::Medium,
+            app_key: reporter.app_key().to_owned(),
+            app_name: reporter.app_name().to_owned(),
+            marketplace_security_requirement: "Requirement 1.2",
+            date: reporter.current_date(),
+        }
+    }
+}
+
+impl WithCallStack for SecretStorageVuln {
+    fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
+}
+
+impl<'cx> Runner<'cx> for SecretStorageChecker {
+    type State = AuthorizeState;
+    type Dataflow = AuthorizeDataflow;
+
+    const NAME: &'static str = "SecretStorage";
+
+    // The sinks live inside callees, so a helper must be walked even when its
+    // summarised state is below the caller's. Otherwise an intermediate state such
+    // as `CustomFieldOnly`, which is not an authorization check, hides a helper
+    // that writes a secret.
+    const DESCEND_INTO_ALL_CALLS: bool = true;
+
+    fn visit_intrinsic(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        intrinsic: &'cx Intrinsic,
+        def: DefId,
+        state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
+    ) -> ControlFlow<(), Self::State> {
+        match *intrinsic {
+            Intrinsic::Authorize(_) => {
+                debug!("authorize intrinsic found");
+                ControlFlow::Continue(AuthorizeState::Yes)
+            }
+            Intrinsic::Storage(access) if access.secret && *state != AuthorizeState::Yes => {
+                // Name the secret in the finding, but only when the key resolves
+                // unambiguously — reporting one alternative of several would be
+                // misleading, e.g. for a helper called with a different key per
+                // call site.
+                let key = operands
+                    .as_deref()
+                    .and_then(|ops| ops.first())
+                    .and_then(|op| unambiguous_literal(interp, def, op));
+                info!("Found an unauthorized secret storage call!");
+                self.vulns.push(SecretStorageVuln::new(
+                    access,
+                    self.modules.clone(),
+                    key,
+                    interp.callstack(),
+                    interp.env(),
+                    interp.entry(),
+                ));
+                // Unlike the AuthZ checker we keep walking, so an entry point
+                // that touches several distinct secrets reports each of them.
+                ControlFlow::Continue(*state)
+            }
+            Intrinsic::Storage(_)
+            | Intrinsic::Fetch
+            | Intrinsic::SecretFunction(_)
+            | Intrinsic::ApiCall(_)
+            | Intrinsic::ApiCustomField
+            | Intrinsic::SafeCall(_)
+            | Intrinsic::EnvRead
+            | Intrinsic::UserFieldAccess => ControlFlow::Continue(*state),
+        }
+    }
+}
+
+impl Checker<'_> for SecretStorageChecker {
+    type Vuln = SecretStorageVuln;
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
@@ -633,7 +883,16 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
     ) -> Self::State {
         match *intrinsic {
             Intrinsic::Authorize(_) => initial_state,
-            Intrinsic::Fetch | Intrinsic::EnvRead | Intrinsic::StorageRead => {
+            // Reading a secret out of storage is how webtriggers validate an
+            // incoming request, so it counts as authentication evidence. Writing
+            // one does not.
+            Intrinsic::Fetch | Intrinsic::EnvRead => {
+                debug!("authenticated");
+                Authenticated::Yes
+            }
+            // Reading from storage is how a webtrigger validates an incoming
+            // request, so it counts as authentication evidence. Writing does not.
+            Intrinsic::Storage(access) if !access.write => {
                 debug!("authenticated");
                 Authenticated::Yes
             }
@@ -641,6 +900,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
             | Intrinsic::ApiCall(_)
             | Intrinsic::ApiCustomField
             | Intrinsic::UserFieldAccess
+            | Intrinsic::Storage(_)
             | Intrinsic::SafeCall(_) => initial_state,
         }
     }
@@ -735,7 +995,12 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
     ) -> ControlFlow<(), Self::State> {
         match *intrinsic {
             Intrinsic::Authorize(_) => ControlFlow::Continue(*state),
-            Intrinsic::Fetch | Intrinsic::EnvRead | Intrinsic::StorageRead => {
+            Intrinsic::Fetch
+            | Intrinsic::EnvRead
+            | Intrinsic::Storage(StorageAccess {
+                write: false,
+                secret: _,
+            }) => {
                 debug!("authenticated");
                 ControlFlow::Continue(Authenticated::Yes)
             }
@@ -745,7 +1010,7 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
             }
-            Intrinsic::SecretFunction(_) => ControlFlow::Continue(*state),
+            Intrinsic::SecretFunction(_) | Intrinsic::Storage(_) => ControlFlow::Continue(*state),
             Intrinsic::ApiCall(_) | Intrinsic::UserFieldAccess | Intrinsic::ApiCustomField => {
                 ControlFlow::Continue(*state)
             }

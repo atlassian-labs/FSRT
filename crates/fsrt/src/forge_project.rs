@@ -112,6 +112,10 @@ impl<'a> ForgeProject<'a> {
     #[inline]
     pub fn add_funcs<I: IntoIterator<Item = Entrypoint<'a, Resolved>>>(&mut self, iter: I) {
         self.funcs.extend(iter.into_iter().filter_map(|entrypoint| {
+            let invokable = entrypoint.invokable();
+            let webtrigger = entrypoint.web_trigger();
+            let shared_admin_resolver = entrypoint.shared_admin_resolver();
+            let modules = entrypoint.module_keys().collect::<Vec<_>>();
             let (func_name, path) = entrypoint.function.into_func_path();
             let module = self.ctx.modid_from_path(&path)?;
             let def_id = self.env.module_export(module, func_name)?;
@@ -122,9 +126,10 @@ impl<'a> ForgeProject<'a> {
                 path,
                 module,
                 def_id,
-                invokable: entrypoint.invokable,
-                webtrigger: entrypoint.web_trigger,
-                admin: entrypoint.admin,
+                invokable,
+                webtrigger,
+                shared_admin_resolver,
+                modules,
             })
         }));
     }

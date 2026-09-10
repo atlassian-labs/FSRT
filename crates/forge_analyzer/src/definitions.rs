@@ -56,7 +56,7 @@ use crate::{
     ctx::ModId,
     ir::{
         Base, BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, RETURN_VAR,
-        Rvalue, STARTING_BLOCK, Template, Terminator, VarKind, Variable,
+        Rvalue, STARTING_BLOCK, StorageAccess, Template, Terminator, VarKind, Variable,
     },
 };
 
@@ -1331,22 +1331,59 @@ impl FunctionAnalyzer<'_> {
                 let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
                 get_intrinsic(first_arg, is_as_app, last, self.suspicious_remotes)
             }
+            // import { storage } from '@forge/api'; storage.get(...) / storage.getSecret(...)
+            // import { kvs } from '@forge/kvs'; kvs.query(...)
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
+                let intrinsic = if *s == *"getSecret" {
+                    Intrinsic::Storage(StorageAccess::SECRET_READ)
+                } else {
+                    Intrinsic::Storage(StorageAccess::READ)
+                };
                 if let Some(api) = self.res.is_imported_from(def, "@forge/api") {
                     match api {
-                        ImportKind::Named(name) if *name == *"storage" => {
-                            Some(Intrinsic::StorageRead)
-                        }
+                        ImportKind::Named(name) if *name == *"storage" => Some(intrinsic),
                         _ => None,
                     }
                 } else if let Some(kvs) = self.res.is_imported_from(def, "@forge/kvs") {
                     match kvs {
-                        ImportKind::Named(name) if *name == *"kvs" => Some(Intrinsic::StorageRead),
+                        ImportKind::Named(name) if *name == *"kvs" => Some(intrinsic),
                         _ => None,
                     }
                 } else {
                     None
                 }
+            }
+            // import { storage } from '@forge/api'; storage.setSecret(...)
+            // import { kvs } from '@forge/kvs'; kvs.setSecret(...)
+            // The import is checked in the guard so that a `setSecret` method on an
+            // unrelated import still falls through to the secret-package arms below.
+            [PropPath::Def(def), PropPath::Static(ref s), ..]
+                if *s == *"setSecret"
+                    && (matches!(self.res.is_imported_from(def, "@forge/api"), Some(ImportKind::Named(name)) if *name == *"storage")
+                        || matches!(self.res.is_imported_from(def, "@forge/kvs"), Some(ImportKind::Named(name)) if *name == *"kvs")) =>
+            {
+                Some(Intrinsic::Storage(StorageAccess::SECRET_WRITE))
+            }
+            // import api from '@forge/api'; api.storage.setSecret(...)
+            // import * as api from '@forge/api'; api.storage.setSecret(...)
+            //
+            // Writes only. On this path `get` and `getSecret` previously produced no
+            // intrinsic at all, and classifying either of them as a storage read would
+            // make it count as evidence of authentication in `AuthenticateChecker`,
+            // suppressing findings that scanner reports today.
+            [
+                PropPath::Def(def),
+                PropPath::Static(ref storage),
+                PropPath::Static(ref s),
+                ..,
+            ] if *storage == *"storage"
+                && *s == *"setSecret"
+                && self
+                    .res
+                    .is_imported_from(def, "@forge/api")
+                    .is_some_and(|imp| matches!(imp, ImportKind::Default | ImportKind::Star)) =>
+            {
+                Some(Intrinsic::Storage(StorageAccess::SECRET_WRITE))
             }
             [PropPath::Def(def), PropPath::Static(ref method), ..]
             | [PropPath::Def(def), PropPath::MemberCall(ref method), ..]

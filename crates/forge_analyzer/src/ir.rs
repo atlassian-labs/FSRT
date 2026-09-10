@@ -70,6 +70,33 @@ pub enum Terminator {
     },
 }
 
+/// A Forge storage access (`@forge/api`'s `storage`, `@forge/kvs`'s `kvs`).
+/// Kept as one intrinsic with properties so that every storage function is
+/// modelled the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct StorageAccess {
+    /// Reads the secret store (`getSecret`) or writes it (`setSecret`), as
+    /// opposed to ordinary app storage.
+    pub secret: bool,
+    /// Writes rather than reads.
+    pub write: bool,
+}
+
+impl StorageAccess {
+    pub const READ: Self = Self {
+        secret: false,
+        write: false,
+    };
+    pub const SECRET_READ: Self = Self {
+        secret: true,
+        write: false,
+    };
+    pub const SECRET_WRITE: Self = Self {
+        secret: true,
+        write: true,
+    };
+}
+
 // FIXME: ideally we should record the API call expression in the IR and the `UserFieldAccess` and `ApiCustomField` variants
 // should be removed and the type of the API call should be determined during dataflow.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,7 +109,7 @@ pub enum Intrinsic {
     SafeCall(IntrinsicName),
     SecretFunction(PackageData),
     EnvRead,
-    StorageRead,
+    Storage(StorageAccess),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1131,7 +1158,12 @@ impl fmt::Display for Intrinsic {
             Intrinsic::UserFieldAccess => write!(f, "accessing which fields a user can access"),
             Intrinsic::SafeCall(_) => write!(f, "safe api call"),
             Intrinsic::EnvRead => write!(f, "env read"),
-            Intrinsic::StorageRead => write!(f, "forge storage read"),
+            Intrinsic::Storage(access) => write!(
+                f,
+                "forge {}storage {}",
+                if access.secret { "secret " } else { "" },
+                if access.write { "write" } else { "read" }
+            ),
         }
     }
 }
