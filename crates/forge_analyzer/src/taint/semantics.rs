@@ -29,7 +29,7 @@ pub(crate) fn is_proven_local_array_length<'cx, C: Runner<'cx>>(
             return false;
         }
 
-        let definitions = variable_definitions_with_aliases(interp.env(), interp.body(), variable);
+        let definitions = variable_definitions_with_aliases(interp.body(), variable);
         let result = !definitions.is_empty()
             && definitions.into_iter().all(|(_, rvalue)| match rvalue {
                 Rvalue::Array(_) => true,
@@ -183,11 +183,10 @@ pub(crate) fn projected_variable_definitions<'a>(
 }
 
 pub(crate) fn variable_definitions_with_aliases<'a>(
-    env: &Environment,
     body: &'a crate::ir::Body,
     variable: &Variable,
 ) -> Vec<(Location, &'a Rvalue)> {
-    let Some(aliases) = body.logical_aliases(env, variable) else {
+    let Some(aliases) = body.binding_variables(variable) else {
         let definitions = variable_definitions(body, variable);
         if definitions.is_empty() && variable.projections.is_empty() {
             return projected_variable_definitions(body, variable);

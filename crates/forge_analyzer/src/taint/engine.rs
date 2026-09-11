@@ -102,7 +102,7 @@ fn classify_variable_base<'cx, P: FlowPolicy, C: Runner<'cx, State = FlowState<P
     state: &FlowState<P::Facts>,
     visiting: &mut HashSet<(DefId, VarId, Vec<Projection>)>,
 ) -> FlowValue<P::Facts> {
-    let state_taint = state.variable_with_aliases(interp.env(), interp.body(), def, variable);
+    let state_taint = state.variable_with_aliases(interp.body(), def, variable);
     if let Some(value) = &state_taint
         && !value.facts.is_unknown()
     {
@@ -320,13 +320,10 @@ impl<P: FlowPolicy> TaintDataflow<P> {
         interp: &Interp<'cx, C>,
         target: &Variable,
     ) -> Vec<Variable> {
-        interp
-            .body()
-            .logical_aliases(interp.env(), target)
-            .map_or_else(
-                || vec![target.clone()],
-                |aliases| aliases.iter().copied().map(Variable::new).collect(),
-            )
+        interp.body().binding_variables(target).map_or_else(
+            || vec![target.clone()],
+            |aliases| aliases.iter().copied().map(Variable::new).collect(),
+        )
     }
 
     fn insert_projections<'cx, C: Runner<'cx, State = FlowState<P::Facts>>>(
@@ -477,7 +474,7 @@ impl<P: FlowPolicy> TaintDataflow<P> {
         let taint = classify_variable::<P, C>(interp, def, &receiver, state).join(
             &join_operands::<P, C>(interp, def, operands.iter().cloned(), state),
         );
-        state.insert_assignment(interp.env(), interp.body(), def, &receiver, taint);
+        state.insert_assignment(interp.body(), def, &receiver, taint);
     }
 }
 
@@ -527,7 +524,7 @@ impl<'cx, P: FlowPolicy> Dataflow<'cx> for TaintDataflow<P> {
             // that work and makes projected object assignments dominate runtime
             // on large entrypoint graphs.
             let taint = self.classify_rvalue(interp, def, loc, rvalue, &state);
-            state.insert_assignment(interp.env(), interp.body(), def, target, taint);
+            state.insert_assignment(interp.body(), def, target, taint);
             match rvalue {
                 Rvalue::Call(callee, _) => {
                     self.propagate_call_return_projections(interp, def, callee, target, &mut state);
@@ -555,7 +552,7 @@ impl<'cx, P: FlowPolicy> Dataflow<'cx> for TaintDataflow<P> {
         let mut state = initial_state;
         if let Some(candidates) = self.branch_refinements.get(&(def, bb)).cloned() {
             for candidate in candidates {
-                state.mark_refined(interp.env(), interp.body(), def, &candidate);
+                state.mark_refined(interp.body(), def, &candidate);
             }
         }
         for (stmt, inst) in block.iter().enumerate() {

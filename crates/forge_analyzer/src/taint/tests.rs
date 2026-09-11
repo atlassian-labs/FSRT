@@ -64,12 +64,10 @@ fn origin_only_changes_trigger_convergence_once() {
 #[test]
 fn reachable_unknown_is_distinct_from_unreachable_bottom() {
     let mut state = FlowState::<NoFacts>::BOTTOM;
-    let env = Environment::default();
     let mut body = Body::with_owner(DefId::new(0));
     let var = body.vars.push_and_get_key(VarKind::Temp { parent: None });
     let mut reached = state.clone();
     reached.insert_assignment(
-        &env,
         &body,
         DefId::new(0),
         &Variable::new(var),
@@ -94,24 +92,21 @@ fn reachable_unknown_is_distinct_from_unreachable_bottom() {
 #[test]
 fn strong_assignment_replaces_taint_and_origins() {
     let def = DefId::new(0);
-    let env = Environment::default();
     let mut body = Body::with_owner(def);
     let var = Variable::new(body.vars.push_and_get_key(VarKind::Temp { parent: None }));
     let mut state = FlowState::<NoFacts>::BOTTOM;
     state.insert_assignment(
-        &env,
         &body,
         def,
         &var,
         FlowValue::source(Classification::Untrusted, origin(1)),
     );
-    state.insert_assignment(&env, &body, def, &var, FlowValue::trusted());
+    state.insert_assignment(&body, def, &var, FlowValue::trusted());
     assert_eq!(state.variable(def, &var), Some(FlowValue::trusted()));
 }
 #[test]
 fn exact_projection_precedes_conservative_root_summary() {
     let def = DefId::new(0);
-    let env = Environment::default();
     let mut body = Body::with_owner(def);
     let root = Variable::new(body.vars.push_and_get_key(VarKind::Temp { parent: None }));
     let mut field = root.clone();
@@ -120,15 +115,14 @@ fn exact_projection_precedes_conservative_root_summary() {
     other.projections.push(Projection::Known("other".into()));
     let mut state = FlowState::<NoFacts>::BOTTOM;
     state.insert_assignment(
-        &env,
         &body,
         def,
         &root,
         FlowValue::source(Classification::Untrusted, origin(1)),
     );
-    state.insert_assignment(&env, &body, def, &field, FlowValue::trusted());
+    state.insert_assignment(&body, def, &field, FlowValue::trusted());
     assert_eq!(
-        state.variable_with_aliases(&env, &body, def, &field),
+        state.variable_with_aliases(&body, def, &field),
         Some(FlowValue::trusted())
     );
     assert_eq!(
@@ -139,20 +133,17 @@ fn exact_projection_precedes_conservative_root_summary() {
 #[test]
 fn state_joins_notice_new_origins_even_when_classification_and_policy_facts_match() {
     let def = DefId::new(0);
-    let env = Environment::default();
     let mut body = Body::with_owner(def);
     let var = Variable::new(body.vars.push_and_get_key(VarKind::Temp { parent: None }));
     let mut first = FlowState::<NoFacts>::BOTTOM;
     let mut second = FlowState::<NoFacts>::BOTTOM;
     first.insert_assignment(
-        &env,
         &body,
         def,
         &var,
         FlowValue::source(Classification::Untrusted, origin(1)),
     );
     second.insert_assignment(
-        &env,
         &body,
         def,
         &var,
@@ -186,37 +177,35 @@ fn binding_alias_overwrites_clear_related_projections_and_refinements() {
         .push(Projection::Known("field".into()));
     let mut state = FlowState::<NoFacts>::BOTTOM;
     state.insert_assignment(
-        &env,
         &body,
         def,
         &projected,
         FlowValue::source(Classification::Untrusted, origin(1)),
     );
-    state.mark_refined(&env, &body, def, &projected);
-    state.insert_assignment(&env, &body, def, &alias, FlowValue::trusted());
+    state.mark_refined(&body, def, &projected);
+    state.insert_assignment(&body, def, &alias, FlowValue::trusted());
     assert_eq!(
-        state.variable_with_aliases(&env, &body, def, &projected),
+        state.variable_with_aliases(&body, def, &projected),
         Some(FlowValue::trusted())
     );
-    assert!(!state.is_refined(&env, &body, def, &projected));
+    assert!(!state.is_refined(&body, def, &projected));
 }
 
 #[test]
 fn branch_refinement_requires_all_reachable_predecessors() {
     let def = DefId::new(0);
-    let env = Environment::default();
     let mut body = Body::with_owner(def);
     let var = Variable::new(body.vars.push_and_get_key(VarKind::Temp { parent: None }));
     let mut checked = FlowState::<NoFacts>::BOTTOM;
-    checked.insert_assignment(&env, &body, def, &var, FlowValue::unknown());
+    checked.insert_assignment(&body, def, &var, FlowValue::unknown());
     let unchecked = checked.clone();
-    checked.mark_refined(&env, &body, def, &var);
+    checked.mark_refined(&body, def, &var);
     assert!(
         checked
             .join(&FlowState::BOTTOM)
-            .is_refined(&env, &body, def, &var)
+            .is_refined(&body, def, &var)
     );
-    assert!(!checked.join(&unchecked).is_refined(&env, &body, def, &var));
+    assert!(!checked.join(&unchecked).is_refined(&body, def, &var));
 }
 
 #[test]
@@ -260,4 +249,26 @@ fn indexed_ir_definitions_preserve_exact_projection_and_assignment_order() {
         .projections
         .push(Projection::Known("missing".into()));
     assert_eq!(body.assignments_to(&projected).count(), 0);
+}
+
+#[test]
+fn shadowed_bindings_do_not_share_values_or_refinements() {
+    let def = DefId::new(0);
+    let mut env = Environment::default();
+    let outer_binding = env.resolver.names.push_and_get_key("query".into());
+    let inner_binding = env.resolver.names.push_and_get_key("query".into());
+    let mut body = Body::with_owner(def);
+    let outer = Variable::new(body.vars.push_and_get_key(VarKind::LocalDef(outer_binding)));
+    let inner = Variable::new(body.vars.push_and_get_key(VarKind::LocalDef(inner_binding)));
+    let mut field = outer.clone();
+    field.projections.push(Projection::Known("field".into()));
+    let value = FlowValue::source(Classification::Untrusted, origin(1));
+    let mut state = FlowState::<NoFacts>::BOTTOM;
+    state.insert_assignment(&body, def, &field, value.clone());
+    assert_eq!(state.variable_with_aliases(&body, def, &inner), None);
+    state.mark_refined(&body, def, &outer);
+    assert!(!state.is_refined(&body, def, &inner));
+    state.insert_assignment(&body, def, &inner, FlowValue::trusted());
+    assert_eq!(state.variable_with_aliases(&body, def, &field), Some(value));
+    assert!(state.is_refined(&body, def, &outer));
 }

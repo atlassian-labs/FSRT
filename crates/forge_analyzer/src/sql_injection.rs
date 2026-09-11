@@ -151,7 +151,7 @@ impl FlowPolicy for SqlPolicy {
         variable: &Variable,
         state: &SqlState,
     ) -> Option<SqlTextSafety> {
-        if state.is_refined(interp.env(), interp.body(), def, variable) {
+        if state.is_refined(interp.body(), def, variable) {
             Some(SqlTextSafety::Trusted)
         } else if is_proven_local_array_length(interp, def, variable) {
             Some(SqlTextSafety::Numeric)
@@ -274,12 +274,11 @@ fn is_fresh_array_variable<'cx, C: Runner<'cx, State = SqlState>>(
     if !visiting.insert((def, var)) {
         return false;
     }
-    if placeholder_collection_is_modified_or_escapes(interp.env(), interp.body(), variable, "fill")
-    {
+    if placeholder_collection_is_modified_or_escapes(interp.body(), variable, "fill") {
         visiting.remove(&(def, var));
         return false;
     }
-    let definitions = variable_definitions_with_aliases(interp.env(), interp.body(), variable);
+    let definitions = variable_definitions_with_aliases(interp.body(), variable);
     let result = !definitions.is_empty()
         && definitions.into_iter().all(|(_, rvalue)| match rvalue {
             Rvalue::Array(_) => true,
@@ -299,7 +298,6 @@ fn is_fresh_array_variable<'cx, C: Runner<'cx, State = SqlState>>(
 }
 
 fn placeholder_collection_is_modified_or_escapes(
-    env: &Environment,
     body: &crate::ir::Body,
     variable: &Variable,
     allowed_method: &str,
@@ -307,7 +305,7 @@ fn placeholder_collection_is_modified_or_escapes(
     let Base::Var(root) = variable.base else {
         return true;
     };
-    let aliases = body.logical_aliases(env, variable).map_or_else(
+    let aliases = body.binding_variables(variable).map_or_else(
         || HashSet::from([root]),
         |aliases| aliases.iter().copied().collect(),
     );
@@ -355,12 +353,11 @@ fn is_placeholder_sequence_variable<'cx, C: Runner<'cx, State = SqlState>>(
     if !visiting.insert((def, var)) {
         return false;
     }
-    if placeholder_collection_is_modified_or_escapes(interp.env(), interp.body(), variable, "join")
-    {
+    if placeholder_collection_is_modified_or_escapes(interp.body(), variable, "join") {
         visiting.remove(&(def, var));
         return false;
     }
-    let definitions = variable_definitions_with_aliases(interp.env(), interp.body(), variable);
+    let definitions = variable_definitions_with_aliases(interp.body(), variable);
     let result = !definitions.is_empty()
         && definitions.into_iter().all(|(_, rvalue)| match rvalue {
             Rvalue::Array(elements) => {
@@ -507,7 +504,7 @@ fn constant_string_collection(
             return None;
         }
 
-        let definitions = variable_definitions_with_aliases(env, body, variable);
+        let definitions = variable_definitions_with_aliases(body, variable);
         let result = if definitions.is_empty() {
             let binding = variable_binding(env, body, var)?;
             let mut found = false;
@@ -586,7 +583,7 @@ fn exact_allowlist_guard<'cx, C: Runner<'cx, State = SqlState>>(
         if !visiting.insert(var) {
             return None;
         }
-        let definitions = variable_definitions_with_aliases(interp.env(), interp.body(), variable);
+        let definitions = variable_definitions_with_aliases(interp.body(), variable);
         for (_, rvalue) in definitions {
             match rvalue {
                 Rvalue::Unary(UnOp::Not, inner) => {
@@ -693,7 +690,7 @@ fn render_query_operand(env: &Environment, def: DefId, operand: &Operand) -> Str
                 if !variable.projections.is_empty() || !visiting.insert((def, var)) {
                     return variable_name(env, body, variable);
                 }
-                let mut alternatives = variable_definitions_with_aliases(env, body, variable)
+                let mut alternatives = variable_definitions_with_aliases(body, variable)
                     .into_iter()
                     .map(|(_, rvalue)| match rvalue {
                         Rvalue::Read(source) => render(env, def, source, visiting),
