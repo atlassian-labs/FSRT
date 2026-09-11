@@ -1,4 +1,3 @@
-use super::{NoFacts, state::FlowState};
 use crate::{
     definitions::{DefId, DefKind, Environment},
     interp::{Interp, Runner},
@@ -50,115 +49,6 @@ pub(crate) fn is_proven_local_array_length<'cx, C: Runner<'cx>>(
     let mut receiver = variable.clone();
     receiver.projections.pop();
     is_array(interp, def, &receiver, &mut HashSet::new())
-}
-
-pub(crate) fn global_is_proven_constant(env: &Environment, def: DefId) -> bool {
-    fn operand_is_constant(
-        env: &Environment,
-        body: &crate::ir::Body,
-        operand: &Operand,
-        visiting_vars: &mut HashSet<VarId>,
-        visiting_defs: &mut HashSet<DefId>,
-    ) -> bool {
-        match operand {
-            Operand::Lit(_) => true,
-            Operand::Var(variable) => {
-                let Base::Var(var) = variable.base else {
-                    return false;
-                };
-                if !visiting_vars.insert(var) {
-                    return false;
-                }
-                let definitions = variable_definitions(body, variable);
-                let result = if definitions.is_empty() {
-                    match body.vars.get(var) {
-                        Some(VarKind::GlobalRef(global) | VarKind::LocalDef(global)) => {
-                            definition_is_constant(env, env.resolve_alias(*global), visiting_defs)
-                        }
-                        _ => false,
-                    }
-                } else {
-                    definitions.into_iter().all(|(_, rvalue)| {
-                        rvalue_is_constant(env, body, rvalue, visiting_vars, visiting_defs)
-                    })
-                };
-                visiting_vars.remove(&var);
-                result
-            }
-        }
-    }
-
-    fn rvalue_is_constant(
-        env: &Environment,
-        body: &crate::ir::Body,
-        rvalue: &Rvalue,
-        visiting_vars: &mut HashSet<VarId>,
-        visiting_defs: &mut HashSet<DefId>,
-    ) -> bool {
-        match rvalue {
-            Rvalue::Read(operand) | Rvalue::Unary(_, operand) => {
-                operand_is_constant(env, body, operand, visiting_vars, visiting_defs)
-            }
-            Rvalue::Array(elements) => elements.iter().all(|operand| {
-                operand_is_constant(env, body, operand, visiting_vars, visiting_defs)
-            }),
-            Rvalue::Bin(_, left, right) => {
-                operand_is_constant(env, body, left, visiting_vars, visiting_defs)
-                    && operand_is_constant(env, body, right, visiting_vars, visiting_defs)
-            }
-            Rvalue::Template(template) => template.exprs.iter().all(|operand| {
-                operand_is_constant(env, body, operand, visiting_vars, visiting_defs)
-            }),
-            Rvalue::Phi(values) => values.iter().all(|(var, _)| {
-                operand_is_constant(
-                    env,
-                    body,
-                    &Operand::Var(Variable::new(*var)),
-                    visiting_vars,
-                    visiting_defs,
-                )
-            }),
-            Rvalue::Call(_, _) | Rvalue::Intrinsic(_, _) => false,
-        }
-    }
-
-    fn definition_is_constant(
-        env: &Environment,
-        def: DefId,
-        visiting_defs: &mut HashSet<DefId>,
-    ) -> bool {
-        if !visiting_defs.insert(def) {
-            return false;
-        }
-        let mut found = false;
-        let result = env.bodies().all(|body| {
-            body.iter_blocks_enumerated()
-                .flat_map(|(_, block)| block.iter())
-                .filter_map(|inst| match inst {
-                    Inst::Assign(target, rvalue) => {
-                        let Base::Var(var) = target.base else {
-                            return None;
-                        };
-                        let binding = match body.vars.get(var) {
-                            Some(VarKind::GlobalRef(binding) | VarKind::LocalDef(binding)) => {
-                                env.resolve_alias(*binding)
-                            }
-                            _ => return None,
-                        };
-                        (binding == def).then_some(rvalue)
-                    }
-                    _ => None,
-                })
-                .all(|rvalue| {
-                    found = true;
-                    rvalue_is_constant(env, body, rvalue, &mut HashSet::new(), visiting_defs)
-                })
-        });
-        visiting_defs.remove(&def);
-        found && result
-    }
-
-    definition_is_constant(env, def, &mut HashSet::new())
 }
 
 pub(crate) fn is_numeric_builtin_call<'cx, C: Runner<'cx>>(
@@ -297,7 +187,7 @@ pub(crate) fn variable_definitions_with_aliases<'a>(
     body: &'a crate::ir::Body,
     variable: &Variable,
 ) -> Vec<(Location, &'a Rvalue)> {
-    let Some(name) = FlowState::<NoFacts>::logical_name(env, body, variable) else {
+    let Some(aliases) = body.logical_aliases(env, variable) else {
         let definitions = variable_definitions(body, variable);
         if definitions.is_empty() && variable.projections.is_empty() {
             return projected_variable_definitions(body, variable);
@@ -305,17 +195,15 @@ pub(crate) fn variable_definitions_with_aliases<'a>(
         return definitions;
     };
     let mut definitions = BTreeMap::new();
-    for (var, _) in body.vars.iter_enumerated() {
+    for &var in aliases {
         let mut candidate = Variable::new(var);
         candidate.projections = variable.projections.clone();
-        if FlowState::<NoFacts>::logical_name(env, body, &candidate) == Some(name) {
-            let mut candidate_definitions = variable_definitions(body, &candidate);
-            if candidate_definitions.is_empty() && candidate.projections.is_empty() {
-                candidate_definitions = projected_variable_definitions(body, &candidate);
-            }
-            for (location, rvalue) in candidate_definitions {
-                definitions.entry(location).or_insert(rvalue);
-            }
+        let mut candidate_definitions = variable_definitions(body, &candidate);
+        if candidate_definitions.is_empty() && candidate.projections.is_empty() {
+            candidate_definitions = projected_variable_definitions(body, &candidate);
+        }
+        for (location, rvalue) in candidate_definitions {
+            definitions.entry(location).or_insert(rvalue);
         }
     }
     definitions.into_iter().collect()

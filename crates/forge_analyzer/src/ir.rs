@@ -178,6 +178,7 @@ pub struct Body {
     instruction_spans: FxHashMap<Location, Span>,
     call_facts: FxHashMap<Location, CallFacts>,
     assignment_locations: OnceCell<FxHashMap<Variable, Vec<Location>>>,
+    logical_alias_groups: OnceCell<FxHashMap<Atom, Vec<VarId>>>,
     pub(crate) argument_defs: Vec<DefId>,
     pub(crate) argument_spans: FxHashMap<DefId, Span>,
 }
@@ -371,6 +372,7 @@ impl Body {
             instruction_spans: FxHashMap::default(),
             call_facts: FxHashMap::default(),
             assignment_locations: OnceCell::new(),
+            logical_alias_groups: OnceCell::new(),
             argument_defs: Vec::new(),
             argument_spans: FxHashMap::default(),
         }
@@ -859,6 +861,43 @@ impl Body {
 
     pub(crate) fn set_call_facts(&mut self, location: Location, facts: CallFacts) {
         self.call_facts.insert(location, facts);
+    }
+
+    fn logical_name<'a>(&self, env: &'a Environment, variable: &Variable) -> Option<&'a Atom> {
+        let Base::Var(var) = variable.base else {
+            return None;
+        };
+        let binding = match self.vars.get(var)? {
+            VarKind::Arg(binding) | VarKind::GlobalRef(binding) | VarKind::LocalDef(binding) => {
+                *binding
+            }
+            _ => return None,
+        };
+        let name = &env.resolver.names[binding];
+        (!name.starts_with("__")).then_some(name)
+    }
+
+    /// Compatibility heuristic for finalized IR: arguments, local definitions,
+    /// and global references with the same logical name alias within this body.
+    /// This is not lexical binding identity or a JavaScript heap alias model.
+    /// Preserve variable order and exclude synthetic names and temporaries.
+    /// The cached groups contain no projections or mutable flow facts.
+    pub(crate) fn logical_aliases(
+        &self,
+        env: &Environment,
+        variable: &Variable,
+    ) -> Option<&[VarId]> {
+        let name = self.logical_name(env, variable)?;
+        let groups = self.logical_alias_groups.get_or_init(|| {
+            let mut groups = FxHashMap::<Atom, Vec<VarId>>::default();
+            for (var, _) in self.vars.iter_enumerated() {
+                if let Some(name) = self.logical_name(env, &Variable::new(var)) {
+                    groups.entry(name.clone()).or_default().push(var);
+                }
+            }
+            groups
+        });
+        groups.get(name).map(Vec::as_slice)
     }
 
     /// Indexed reads over finalized IR, like the cached predecessor/dominator data.

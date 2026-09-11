@@ -2,7 +2,7 @@ use super::value::{FlowValue, PolicyFacts};
 use crate::{
     definitions::{DefId, Environment},
     interp::JoinSemiLattice,
-    ir::{Base, Projection, VarId, VarKind, Variable},
+    ir::{Base, Projection, VarId, Variable},
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -77,24 +77,6 @@ impl<F: PolicyFacts> FlowState<F> {
         self.insert_variable(def, &Variable::new(var), value);
     }
 
-    pub(crate) fn logical_name<'a>(
-        env: &'a Environment,
-        body: &crate::ir::Body,
-        variable: &Variable,
-    ) -> Option<&'a str> {
-        let Base::Var(var) = variable.base else {
-            return None;
-        };
-        let binding = match body.vars.get(var)? {
-            VarKind::Arg(binding) | VarKind::GlobalRef(binding) | VarKind::LocalDef(binding) => {
-                *binding
-            }
-            _ => return None,
-        };
-        let name = env.def_name(binding);
-        (!name.starts_with("__")).then_some(name)
-    }
-
     pub(crate) fn insert_assignment(
         &mut self,
         env: &Environment,
@@ -105,15 +87,8 @@ impl<F: PolicyFacts> FlowState<F> {
     ) {
         self.reachable = true;
         if variable.projections.is_empty() {
-            if let Some(name) = Self::logical_name(env, body, variable) {
-                let aliases = body
-                    .vars
-                    .iter_enumerated()
-                    .filter_map(|(var, _)| {
-                        let candidate = Variable::new(var);
-                        (Self::logical_name(env, body, &candidate) == Some(name)).then_some(var)
-                    })
-                    .collect::<HashSet<_>>();
+            if let Some(aliases) = body.logical_aliases(env, variable) {
+                let aliases = aliases.iter().copied().collect::<HashSet<_>>();
                 self.values
                     .retain(|(owner, var, _), _| *owner != def || !aliases.contains(var));
                 self.refined
@@ -132,17 +107,9 @@ impl<F: PolicyFacts> FlowState<F> {
             return;
         }
 
-        if let Some(name) = Self::logical_name(env, body, variable) {
+        if let Some(aliases) = body.logical_aliases(env, variable) {
             let projections = &variable.projections;
-            let aliases = body
-                .vars
-                .iter_enumerated()
-                .filter_map(|(var, _)| {
-                    let mut candidate = Variable::new(var);
-                    candidate.projections = projections.clone();
-                    (Self::logical_name(env, body, &candidate) == Some(name)).then_some(var)
-                })
-                .collect::<HashSet<_>>();
+            let aliases = aliases.iter().copied().collect::<HashSet<_>>();
             self.refined.retain(|(owner, var, candidate_projections)| {
                 *owner != def
                     || !aliases.contains(var)
@@ -188,29 +155,25 @@ impl<F: PolicyFacts> FlowState<F> {
         def: DefId,
         variable: &Variable,
     ) -> Option<FlowValue<F>> {
-        let Some(name) = Self::logical_name(env, body, variable) else {
+        let Some(aliases) = body.logical_aliases(env, variable) else {
             return self.variable(def, variable);
         };
-        let aliases = body
-            .vars
-            .iter_enumerated()
-            .filter_map(|(var, _)| {
+        let candidates = || {
+            aliases.iter().map(|&var| {
                 let mut candidate = Variable::new(var);
                 candidate.projections = variable.projections.clone();
-                (Self::logical_name(env, body, &candidate) == Some(name)).then_some(candidate)
+                candidate
             })
-            .collect::<Vec<_>>();
+        };
 
         // A field-specific fact is more precise than the aggregate object fact.
         // Consult roots only when no alias has a fact for this exact projection.
-        let exact = aliases
-            .iter()
-            .filter_map(|candidate| self.exact_variable(def, candidate))
+        let exact = candidates()
+            .filter_map(|candidate| self.exact_variable(def, &candidate))
             .reduce(|left, right| left.join(&right));
         exact.or_else(|| {
-            aliases
-                .iter()
-                .filter_map(|candidate| self.variable(def, candidate))
+            candidates()
+                .filter_map(|candidate| self.variable(def, &candidate))
                 .reduce(|left, right| left.join(&right))
         })
     }
@@ -245,18 +208,16 @@ impl<F: PolicyFacts> FlowState<F> {
         variable: &Variable,
     ) {
         self.reachable = true;
-        let Some(name) = Self::logical_name(env, body, variable) else {
+        let Some(aliases) = body.logical_aliases(env, variable) else {
             if let Some(key) = Self::key(def, variable) {
                 self.refined.insert(key);
             }
             return;
         };
-        for (var, _) in body.vars.iter_enumerated() {
+        for &var in aliases {
             let mut candidate = Variable::new(var);
             candidate.projections = variable.projections.clone();
-            if Self::logical_name(env, body, &candidate) == Some(name)
-                && let Some(key) = Self::key(def, &candidate)
-            {
+            if let Some(key) = Self::key(def, &candidate) {
                 self.refined.insert(key);
             }
         }
@@ -269,14 +230,13 @@ impl<F: PolicyFacts> FlowState<F> {
         def: DefId,
         variable: &Variable,
     ) -> bool {
-        let Some(name) = Self::logical_name(env, body, variable) else {
+        let Some(aliases) = body.logical_aliases(env, variable) else {
             return Self::key(def, variable).is_some_and(|key| self.refined.contains(&key));
         };
-        body.vars.iter_enumerated().any(|(var, _)| {
+        aliases.iter().any(|&var| {
             let mut candidate = Variable::new(var);
             candidate.projections = variable.projections.clone();
-            Self::logical_name(env, body, &candidate) == Some(name)
-                && Self::key(def, &candidate).is_some_and(|key| self.refined.contains(&key))
+            Self::key(def, &candidate).is_some_and(|key| self.refined.contains(&key))
         })
     }
 }

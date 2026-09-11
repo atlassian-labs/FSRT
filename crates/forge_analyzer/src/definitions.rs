@@ -1,5 +1,7 @@
 #![allow(dead_code, unused)]
 
+mod facts;
+
 use std::borrow::BorrowMut;
 use std::hash::Hash;
 use std::iter::Zip;
@@ -597,6 +599,7 @@ pub struct Definitions {
 
 #[derive(Debug, Clone, Default)]
 pub struct Environment {
+    immutable_facts: facts::ImmutableFacts,
     exports: TiVec<ModId, Vec<(Atom, DefId)>>,
     pub global: TiVec<ModId, DefId>,
     pub defs: Definitions,

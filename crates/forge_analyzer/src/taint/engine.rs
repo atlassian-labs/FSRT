@@ -149,7 +149,7 @@ fn classify_variable_base<'cx, P: FlowPolicy, C: Runner<'cx, State = FlowState<P
                     return result;
                 }
                 let resolved_global = interp.env().resolve_alias(*global_def);
-                if global_is_proven_constant(interp.env(), resolved_global)
+                if interp.env().global_is_proven_constant(resolved_global)
                     || matches!(
                         interp
                             .value_manager
@@ -320,25 +320,13 @@ impl<P: FlowPolicy> TaintDataflow<P> {
         interp: &Interp<'cx, C>,
         target: &Variable,
     ) -> Vec<Variable> {
-        FlowState::<P::Facts>::logical_name(interp.env(), interp.body(), target).map_or_else(
-            || vec![target.clone()],
-            |name| {
-                interp
-                    .body()
-                    .vars
-                    .iter_enumerated()
-                    .filter_map(|(var, _)| {
-                        let candidate = Variable::new(var);
-                        (FlowState::<P::Facts>::logical_name(
-                            interp.env(),
-                            interp.body(),
-                            &candidate,
-                        ) == Some(name))
-                        .then_some(candidate)
-                    })
-                    .collect()
-            },
-        )
+        interp
+            .body()
+            .logical_aliases(interp.env(), target)
+            .map_or_else(
+                || vec![target.clone()],
+                |aliases| aliases.iter().copied().map(Variable::new).collect(),
+            )
     }
 
     fn insert_projections<'cx, C: Runner<'cx, State = FlowState<P::Facts>>>(
