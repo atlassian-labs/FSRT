@@ -227,6 +227,29 @@ pub(crate) fn scan_directory_test(
 }
 
 #[test]
+fn default_export_class_with_private_method_does_not_panic() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        export default class Service {
+            run() {
+                return this.#privateMethod();
+            }
+
+            #privateMethod() {
+                return 'ok';
+            }
+        }
+
+        export function run() {
+            return new Service().run();
+        }
+        ",
+    );
+
+    let _ = scan_directory_test(test_forge_project);
+}
+
+#[test]
 fn scanners_parse_as_typed_list() {
     let args = Args::try_parse_from([
         "fsrt",

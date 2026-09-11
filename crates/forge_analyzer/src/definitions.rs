@@ -2706,16 +2706,23 @@ impl Visit for LocalDefiner<'_> {
 
 impl Visit for FunctionCollector<'_> {
     fn visit_export_default_decl(&mut self, n: &ExportDefaultDecl) {
+        let old_class = self.curr_class.take();
+        let old_function = self.curr_function.take();
+
         if let Some(defid) = self.res.default_export(self.module) {
-            // we don't need to check that it is either a class or a function because
-            // it will get caught by the respective methods.
-            self.curr_class = Some(defid);
-            self.curr_function = Some(defid);
+            match self.res.def_ref(defid) {
+                DefKind::Class(_) => self.curr_class = Some(defid),
+                DefKind::Function(_) | DefKind::Closure(_) => {
+                    self.curr_function = Some(defid);
+                }
+                _ => {}
+            }
         }
+
         n.visit_children_with(self);
 
-        self.curr_class = None;
-        self.curr_function = None;
+        self.curr_class = old_class;
+        self.curr_function = old_function;
     }
 
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
