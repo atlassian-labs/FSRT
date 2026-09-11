@@ -307,17 +307,9 @@ fn placeholder_collection_is_modified_or_escapes(
     let Base::Var(root) = variable.base else {
         return true;
     };
-    let aliases = SqlState::logical_name(env, body, variable).map_or_else(
+    let aliases = body.logical_aliases(env, variable).map_or_else(
         || HashSet::from([root]),
-        |name| {
-            body.vars
-                .iter_enumerated()
-                .filter_map(|(var, _)| {
-                    let candidate = Variable::new(var);
-                    (SqlState::logical_name(env, body, &candidate) == Some(name)).then_some(var)
-                })
-                .collect()
-        },
+        |aliases| aliases.iter().copied().collect(),
     );
     let is_alias =
         |candidate: &Variable| matches!(candidate.base, Base::Var(var) if aliases.contains(&var));
