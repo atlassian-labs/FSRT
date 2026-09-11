@@ -47,7 +47,9 @@ use crate::{
     interpreter::InterpreterFactory,
 };
 
-use forge_loader::manifest::{self, EndpointMod, Entrypoint, passes_system_auth, passes_user_auth};
+use forge_loader::manifest::{
+    self, EndpointMod, Entrypoint, Remotes, passes_system_auth, passes_user_auth,
+};
 use walkdir::WalkDir;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -404,15 +406,24 @@ fn check_remotes(remotes: &Option<Vec<manifest::Remotes>>) -> HashSet<String> {
 }
 
 fn check_unsafe_remote_endpoints<'a>(
-    privileged_remotes: &HashSet<String>,
+    remotes: &Option<Vec<Remotes>>,
     endpoints: &Vec<EndpointMod<'a>>,
 ) -> HashSet<String> {
-    HashSet::from_iter(
-        endpoints
+    let endp_iter = endpoints
+        .iter()
+        .filter(|i| passes_system_auth(&i.auth))
+        .map(|i| i.key.to_string());
+
+    if let Some(remotes) = remotes {
+        let remote_iter = remotes
             .iter()
-            .filter(|i| privileged_remotes.contains(i.remote) || passes_system_auth(&i.auth))
-            .map(|i| i.key.to_string()),
-    )
+            .filter(|i| passes_system_auth(&i.auth))
+            .map(|i| i.key.to_string());
+
+        HashSet::from_iter(std::iter::chain(endp_iter, remote_iter))
+    } else {
+        HashSet::from_iter(endp_iter)
+    }
 }
 
 fn has_remote_auth(remotes: &Option<Vec<manifest::Remotes>>) -> bool {
@@ -476,7 +487,7 @@ pub(crate) fn scan_directory<'a>(
 
     let suspicious_remotes = check_remotes(&manifest.remotes);
     let _unsafe_endps =
-        check_unsafe_remote_endpoints(&suspicious_remotes, &manifest.modules.endpoint);
+        check_unsafe_remote_endpoints(&manifest.remotes, &manifest.modules.endpoint);
 
     let mut proj = project.with_files_and_sourceroot(
         Path::new("src"),
