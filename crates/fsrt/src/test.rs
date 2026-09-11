@@ -4162,3 +4162,37 @@ fn sql_injection_recursive_returns_reach_a_bounded_fixed_point() {
         finding.proof()
     );
 }
+
+#[test]
+fn sql_injection_keeps_shadowed_query_bindings_independent() {
+    for (body, high) in [
+        (
+            "let query = payload.query; { let query = 'SELECT 1'; } sql.executeRaw(query);",
+            1,
+        ),
+        (
+            "let query = 'SELECT 1'; { let query = payload.query; } sql.executeRaw(query);",
+            0,
+        ),
+        (
+            "let query = payload.query; { let query = 'SELECT 1'; query = payload.other; } query = 'SELECT 1'; sql.executeRaw(query);",
+            0,
+        ),
+    ] {
+        let source = format!(
+            "// src/index.js\nimport sql from '@forge/sql'; export function run(payload) {{ {body} }}"
+        );
+        let report = scan_directory_test_with_args(
+            MockForgeProject::files_from_string(&source),
+            Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::High, high),
+            "{body}: {report:#?}"
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::Low, 0),
+            "{body}: {report:#?}"
+        );
+    }
+}

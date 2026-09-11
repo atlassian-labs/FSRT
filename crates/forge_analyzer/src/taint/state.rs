@@ -1,13 +1,13 @@
 use super::value::{FlowValue, PolicyFacts};
 use crate::{
-    definitions::{DefId, Environment},
+    definitions::DefId,
     interp::JoinSemiLattice,
     ir::{Base, Projection, VarId, Variable},
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-// Compatibility adapter for FSRT's current binding representation. Logical-name
-// equivalence is deliberately body-local; it is not a JavaScript heap alias model.
+// Values stay keyed by instruction variable and projection. Binding identity is
+// used to reconcile references and assignment versions within the same body.
 type FlowVarKey = (DefId, VarId, Vec<Projection>);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -79,7 +79,6 @@ impl<F: PolicyFacts> FlowState<F> {
 
     pub(crate) fn insert_assignment(
         &mut self,
-        env: &Environment,
         body: &crate::ir::Body,
         def: DefId,
         variable: &Variable,
@@ -87,7 +86,7 @@ impl<F: PolicyFacts> FlowState<F> {
     ) {
         self.reachable = true;
         if variable.projections.is_empty() {
-            if let Some(aliases) = body.logical_aliases(env, variable) {
+            if let Some(aliases) = body.binding_variables(variable) {
                 let aliases = aliases.iter().copied().collect::<HashSet<_>>();
                 self.values
                     .retain(|(owner, var, _), _| *owner != def || !aliases.contains(var));
@@ -107,7 +106,7 @@ impl<F: PolicyFacts> FlowState<F> {
             return;
         }
 
-        if let Some(aliases) = body.logical_aliases(env, variable) {
+        if let Some(aliases) = body.binding_variables(variable) {
             let projections = &variable.projections;
             let aliases = aliases.iter().copied().collect::<HashSet<_>>();
             self.refined.retain(|(owner, var, candidate_projections)| {
@@ -150,12 +149,11 @@ impl<F: PolicyFacts> FlowState<F> {
 
     pub(crate) fn variable_with_aliases(
         &self,
-        env: &Environment,
         body: &crate::ir::Body,
         def: DefId,
         variable: &Variable,
     ) -> Option<FlowValue<F>> {
-        let Some(aliases) = body.logical_aliases(env, variable) else {
+        let Some(aliases) = body.binding_variables(variable) else {
             return self.variable(def, variable);
         };
         let candidates = || {
@@ -200,15 +198,9 @@ impl<F: PolicyFacts> FlowState<F> {
             .collect()
     }
 
-    pub(crate) fn mark_refined(
-        &mut self,
-        env: &Environment,
-        body: &crate::ir::Body,
-        def: DefId,
-        variable: &Variable,
-    ) {
+    pub(crate) fn mark_refined(&mut self, body: &crate::ir::Body, def: DefId, variable: &Variable) {
         self.reachable = true;
-        let Some(aliases) = body.logical_aliases(env, variable) else {
+        let Some(aliases) = body.binding_variables(variable) else {
             if let Some(key) = Self::key(def, variable) {
                 self.refined.insert(key);
             }
@@ -225,12 +217,11 @@ impl<F: PolicyFacts> FlowState<F> {
 
     pub(crate) fn is_refined(
         &self,
-        env: &Environment,
         body: &crate::ir::Body,
         def: DefId,
         variable: &Variable,
     ) -> bool {
-        let Some(aliases) = body.logical_aliases(env, variable) else {
+        let Some(aliases) = body.binding_variables(variable) else {
             return Self::key(def, variable).is_some_and(|key| self.refined.contains(&key));
         };
         aliases.iter().any(|&var| {

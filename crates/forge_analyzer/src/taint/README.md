@@ -56,8 +56,12 @@ argument projections, returned objects, arrays, templates, concatenation, and ph
 nodes carry the complete value, including origins and policy facts. Callees and
 callers are revisited when their incoming state or return summaries change.
 
-The binding adapter deliberately preserves FSRT's current body-local logical-name
-alias heuristic. This is not a general JavaScript heap alias model. Static IR
+Binding references and assignment versions are grouped by their resolved `DefId`
+within each body, using a lazy index over finalized IR. Display names do not
+establish identity: shadowed declarations remain independent, and synthetic
+bindings use the same rule as named bindings. Values remain keyed by `VarId` and
+projection; distinct bindings that reference the same object are not implicitly
+merged. This is not a general JavaScript heap alias model. Static IR
 fallbacks also preserve the existing constant/unknown classification behavior.
 Recursive calls converge, but some recursive return shapes remain Unknown, as in
 the compatibility baseline. No new sanitizers, heap semantics, or call-context

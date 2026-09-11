@@ -331,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn logical_alias_groups_preserve_body_local_name_heuristic_and_variable_order() {
+    fn binding_variables_preserve_identity_and_variable_order() {
         let mut env = Environment::default();
         let binding = definition(&mut env, "shared");
         let same_name = definition(&mut env, "shared");
@@ -340,26 +340,30 @@ mod tests {
         let argument = body.vars.push_and_get_key(VarKind::Arg(binding));
         let global = body.vars.push_and_get_key(VarKind::GlobalRef(binding));
         let local = body.vars.push_and_get_key(VarKind::LocalDef(same_name));
-        let excluded = body.vars.push_and_get_key(VarKind::LocalDef(synthetic));
+        let generated = body.vars.push_and_get_key(VarKind::LocalDef(synthetic));
+        let generated_ref = body.vars.push_and_get_key(VarKind::GlobalRef(synthetic));
         let temp = body.vars.push_and_get_key(VarKind::Temp { parent: None });
         let mut projected = Variable::new(argument);
         projected
             .projections
             .push(Projection::Known("field".into()));
         assert_eq!(
-            body.logical_aliases(&env, &projected),
-            Some([argument, global, local].as_slice())
+            body.binding_variables(&projected),
+            Some([argument, global].as_slice())
         );
         assert_eq!(
-            body.logical_aliases(&env, &Variable::new(local)),
-            Some([argument, global, local].as_slice())
+            body.binding_variables(&Variable::new(local)),
+            Some([local].as_slice())
         );
-        assert_eq!(body.logical_aliases(&env, &Variable::new(excluded)), None);
-        assert_eq!(body.logical_aliases(&env, &Variable::new(temp)), None);
+        assert_eq!(
+            body.binding_variables(&Variable::new(generated)),
+            Some([generated, generated_ref].as_slice())
+        );
+        assert_eq!(body.binding_variables(&Variable::new(temp)), None);
         let mut other = Body::default();
         let other_var = reference(&mut other, binding);
         assert_eq!(
-            other.logical_aliases(&env, &other_var),
+            other.binding_variables(&other_var),
             Some([other_var.as_var_id().unwrap()].as_slice())
         );
     }
