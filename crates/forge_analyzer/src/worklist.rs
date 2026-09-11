@@ -12,23 +12,28 @@ use crate::{
 pub struct WorkList<V, W> {
     pub worklist: VecDeque<(V, W)>,
     pub visited: FxHashSet<V>,
+    pending: FxHashSet<(V, W)>,
 }
 
 impl<V, W> WorkList<V, W>
 where
     V: Eq + Hash,
+    W: Eq + Hash,
 {
     #[inline]
     pub fn new() -> Self {
         Self {
             worklist: VecDeque::new(),
             visited: FxHashSet::default(),
+            pending: FxHashSet::default(),
         }
     }
 
     #[inline]
     pub fn pop_front(&mut self) -> Option<(V, W)> {
-        self.worklist.pop_front()
+        let work = self.worklist.pop_front()?;
+        self.pending.remove(&work);
+        Some(work)
     }
 
     #[inline]
@@ -44,6 +49,7 @@ where
     #[inline]
     pub fn reserve(&mut self, n: usize) {
         self.worklist.reserve(n);
+        self.pending.reserve(n);
     }
 
     #[inline]
@@ -54,16 +60,12 @@ where
     {
         self.visited.contains(key)
     }
-
-    #[inline]
-    pub fn push_back_force(&mut self, v: V, w: W) {
-        self.worklist.push_back((v, w));
-    }
 }
 
 impl<V, W> Default for WorkList<V, W>
 where
     V: Eq + Hash,
+    W: Eq + Hash,
 {
     fn default() -> Self {
         Self::new()
@@ -73,10 +75,18 @@ where
 impl<V, W> WorkList<V, W>
 where
     V: Eq + Hash + Copy,
+    W: Eq + Hash + Copy,
 {
     #[inline]
     pub fn push_back(&mut self, v: V, w: W) {
-        if self.visited.insert(v) {
+        if self.visited.insert(v) && self.pending.insert((v, w)) {
+            self.worklist.push_back((v, w));
+        }
+    }
+
+    #[inline]
+    pub fn push_back_force(&mut self, v: V, w: W) {
+        if self.pending.insert((v, w)) {
             self.worklist.push_back((v, w));
         }
     }
@@ -96,8 +106,10 @@ impl WorkList<DefId, BasicBlockId> {
             let blocks = body.iter_block_keys().map(|bb| (def, bb)).rev();
             self.worklist.reserve(blocks.len());
             for work in blocks {
-                debug!(?work, "push_front_blocks");
-                self.worklist.push_front(work);
+                if self.pending.insert(work) {
+                    debug!(?work, "push_front_blocks");
+                    self.worklist.push_front(work);
+                }
             }
             return true;
         }
@@ -117,8 +129,10 @@ impl WorkList<DefId, BasicBlockId> {
             self.worklist.reserve(body.iter_block_keys().len());
             for bb in body.iter_block_keys() {
                 let work = (def, bb);
-                debug!(?work, "push_back_blocks");
-                self.worklist.push_back(work);
+                if self.pending.insert(work) {
+                    debug!(?work, "push_back_blocks");
+                    self.worklist.push_back(work);
+                }
             }
             return true;
         }
@@ -128,10 +142,16 @@ impl WorkList<DefId, BasicBlockId> {
 
 impl<V, W> Extend<(V, W)> for WorkList<V, W>
 where
-    V: Eq + Hash,
+    V: Eq + Hash + Copy,
+    W: Eq + Hash + Copy,
 {
     #[inline]
     fn extend<T: IntoIterator<Item = (V, W)>>(&mut self, iter: T) {
-        self.worklist.extend(iter);
+        for (v, w) in iter {
+            self.push_back_force(v, w);
+        }
     }
 }
+
+#[cfg(test)]
+mod tests;
