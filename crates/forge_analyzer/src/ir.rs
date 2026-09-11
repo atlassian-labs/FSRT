@@ -21,7 +21,7 @@ use petgraph::algo::dominators;
 use smallvec::SmallVec;
 use smallvec::smallvec;
 use smallvec::smallvec_inline;
-use swc_core::common::SyntaxContext;
+use swc_core::common::{Span, SyntaxContext};
 use swc_core::ecma::ast;
 use swc_core::ecma::ast::BinaryOp;
 use swc_core::ecma::ast::JSXText;
@@ -72,6 +72,28 @@ pub enum Terminator {
 
 // FIXME: ideally we should record the API call expression in the IR and the `UserFieldAccess` and `ApiCustomField` variants
 // should be removed and the type of the API call should be determined during dataflow.
+/// Syntactic call facts retained without assigning scanner-specific meaning.
+#[derive(Clone, Debug)]
+pub enum CallPathPart {
+    Binding(DefId),
+    Property(Atom),
+    MemberCall(Atom),
+    Unresolved(Id),
+    Computed(Id),
+    Private(Id),
+    Expression,
+    This,
+    Super,
+}
+#[derive(Clone, Debug)]
+pub struct CallFacts {
+    pub path: Vec<CallPathPart>,
+    pub root: Option<DefId>,
+    pub import: Option<(Atom, crate::definitions::ImportKind)>,
+    /// Immutable provenance, computed only when an analysis requests it.
+    pub(crate) local_receiver: OnceCell<bool>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intrinsic {
     Authorize(IntrinsicName),
@@ -99,6 +121,8 @@ pub enum Rvalue {
     Unary(UnOp, Operand),
     Bin(BinOp, Operand, Operand),
     Read(Operand),
+    /// Compact array summary; map callbacks may contribute representative elements.
+    Array(Vec<Operand>),
     Call(Operand, SmallVec<[Operand; 4]>),
     Intrinsic(Intrinsic, SmallVec<[Operand; 4]>),
     Phi(Vec<(VarId, BasicBlockId)>),
@@ -151,6 +175,12 @@ pub struct Body {
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
     pub dominator_tree: OnceCell<DomTree>,
     pub blockbuilders: TiVec<BasicBlockId, BasicBlockBuilder>,
+    instruction_spans: FxHashMap<Location, Span>,
+    call_facts: FxHashMap<Location, CallFacts>,
+    assignment_locations: OnceCell<FxHashMap<Variable, Vec<Location>>>,
+    binding_var_groups: OnceCell<FxHashMap<DefId, Vec<VarId>>>,
+    pub(crate) argument_defs: Vec<DefId>,
+    pub(crate) argument_spans: FxHashMap<DefId, Span>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -339,6 +369,12 @@ impl Body {
             predecessors: Default::default(),
             dominator_tree: Default::default(),
             blockbuilders: vec![BasicBlockBuilder { insts: Vec::new() }].into(),
+            instruction_spans: FxHashMap::default(),
+            call_facts: FxHashMap::default(),
+            assignment_locations: OnceCell::new(),
+            binding_var_groups: OnceCell::new(),
+            argument_defs: Vec::new(),
+            argument_spans: FxHashMap::default(),
         }
     }
 
@@ -811,6 +847,93 @@ impl Body {
         var
     }
 
+    pub(crate) fn push_tmp_spanned(
+        &mut self,
+        bb: BasicBlockId,
+        val: Rvalue,
+        parent: Option<DefId>,
+        span: Span,
+    ) -> VarId {
+        let location = Location::new(bb, self.blockbuilders[bb].insts.len() as u32);
+        self.instruction_spans.insert(location, span);
+        self.push_tmp(bb, val, parent)
+    }
+
+    pub(crate) fn set_call_facts(&mut self, location: Location, facts: CallFacts) {
+        self.call_facts.insert(location, facts);
+    }
+
+    fn variable_binding(&self, variable: &Variable) -> Option<DefId> {
+        let Base::Var(var) = variable.base else {
+            return None;
+        };
+        match self.vars.get(var)? {
+            VarKind::Arg(binding) | VarKind::GlobalRef(binding) | VarKind::LocalDef(binding) => {
+                Some(*binding)
+            }
+            _ => None,
+        }
+    }
+
+    /// IR variables representing the same resolved source binding in this body.
+    /// Assignment versions retain distinct VarIds but share their original DefId.
+    /// Shadowed declarations have different DefIds even when their names match.
+    /// This groups binding references, not objects aliased by different bindings.
+    /// The lazy index is valid only after lowering and variable rewriting finish.
+    pub(crate) fn binding_variables(&self, variable: &Variable) -> Option<&[VarId]> {
+        let binding = self.variable_binding(variable)?;
+        let groups = self.binding_var_groups.get_or_init(|| {
+            let mut groups = FxHashMap::<DefId, Vec<VarId>>::default();
+            for (var, _) in self.vars.iter_enumerated() {
+                if let Some(binding) = self.variable_binding(&Variable::new(var)) {
+                    groups.entry(binding).or_default().push(var);
+                }
+            }
+            groups
+        });
+        groups.get(&binding).map(Vec::as_slice)
+    }
+
+    /// Indexed reads over finalized IR, like the cached predecessor/dominator data.
+    /// This is populated lazily by analyses, never during lowering or SSA rewriting.
+    pub(crate) fn assignments_to<'a>(
+        &'a self,
+        variable: &Variable,
+    ) -> impl Iterator<Item = (Location, &'a Rvalue)> + 'a {
+        let index = self.assignment_locations.get_or_init(|| {
+            let mut index = FxHashMap::<Variable, Vec<Location>>::default();
+            for (bb, block) in self.iter_blocks_enumerated() {
+                for (stmt, inst) in block.iter().enumerate() {
+                    if let Inst::Assign(target, _) = inst {
+                        index
+                            .entry(target.clone())
+                            .or_default()
+                            .push(Location::new(bb, stmt as u32));
+                    }
+                }
+            }
+            index
+        });
+        index.get(variable).into_iter().flatten().map(|location| {
+            (
+                *location,
+                self.block(location.block).insts[location.stmt as usize].rvalue(),
+            )
+        })
+    }
+
+    pub fn call_facts(&self, location: Location) -> Option<&CallFacts> {
+        self.call_facts.get(&location)
+    }
+
+    pub(crate) fn instruction_span(&self, location: Location) -> Option<Span> {
+        self.instruction_spans.get(&location).copied()
+    }
+
+    pub(crate) fn argument_span(&self, def: DefId) -> Option<Span> {
+        self.argument_spans.get(&def).copied()
+    }
+
     #[inline]
     pub(crate) fn push_assign(&mut self, bb: BasicBlockId, var: Variable, val: Rvalue) {
         self.blockbuilders[bb].insts.push(Inst::Assign(var, val));
@@ -1156,6 +1279,13 @@ impl fmt::Display for Rvalue {
                 write!(f, ")")
             }
             Rvalue::Read(ref opnd) => write!(f, "{opnd}"),
+            Rvalue::Array(ref elements) => {
+                write!(f, "[")?;
+                for element in elements {
+                    write!(f, "{element}, ")?;
+                }
+                write!(f, "]")
+            }
             Rvalue::Phi(ref phis) => {
                 write!(f, "phi(")?;
                 for &(var, block) in phis {

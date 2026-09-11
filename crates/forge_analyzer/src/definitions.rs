@@ -1,5 +1,7 @@
 #![allow(dead_code, unused)]
 
+mod facts;
+
 use std::borrow::BorrowMut;
 use std::hash::Hash;
 use std::iter::Zip;
@@ -20,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 use swc_core::ecma::ast::{MethodKind, PrivateMethod};
 use swc_core::{
-    common::{DUMMY_SP, Span, SyntaxContext},
+    common::{DUMMY_SP, Span, Spanned, SyntaxContext},
     ecma::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
@@ -55,8 +57,9 @@ use crate::ir::VarId;
 use crate::{
     ctx::ModId,
     ir::{
-        Base, BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, RETURN_VAR,
-        Rvalue, STARTING_BLOCK, Template, Terminator, VarKind, Variable,
+        Base, BasicBlockId, Body, CallFacts, CallPathPart, Inst, Intrinsic, Literal, Location,
+        Operand, Projection, RETURN_VAR, Rvalue, STARTING_BLOCK, Template, Terminator, VarKind,
+        Variable,
     },
 };
 
@@ -302,6 +305,13 @@ pub fn update_rvalue(rvalue: &mut Rvalue, updated_vars: &HashMap<VarId, VarId>) 
         | Rvalue::Bin(_, Operand::Var(variable), _)
         | Rvalue::Bin(_, _, Operand::Var(variable)) => {
             update_var(variable);
+        }
+        Rvalue::Array(elements) => {
+            for element in elements {
+                if let Operand::Var(variable) = element {
+                    update_var(variable);
+                }
+            }
         }
         // Rvalues of Read (Literal), Binary (Literal), Unary (Literal), Call (method), Intrinsic, Phi, and Template can be kept same.
         Rvalue::Read(_)
@@ -589,6 +599,7 @@ pub struct Definitions {
 
 #[derive(Debug, Clone, Default)]
 pub struct Environment {
+    immutable_facts: facts::ImmutableFacts,
     exports: TiVec<ModId, Vec<(Atom, DefId)>>,
     pub global: TiVec<ModId, DefId>,
     pub defs: Definitions,
@@ -1663,11 +1674,35 @@ impl FunctionAnalyzer<'_> {
             let var = self.body.get_or_insert_global(*def_constructor);
             return Operand::with_var(var);
         }
+
+        // Preserve the identity of unresolved global calls in the IR. These
+        // definitions intentionally remain `Undefined`, so analyses can model
+        // known JavaScript built-ins without confusing them with locally
+        // declared or imported functions of the same name.
+        if let Expr::Ident(ident) = expr
+            && self.res.sym_to_id(ident.to_id(), self.module).is_none()
+        {
+            let def = self.res.get_or_insert_sym(ident.to_id(), self.module);
+            return Operand::with_var(self.body.get_or_insert_global(def));
+        }
+        if let Expr::Member(MemberExpr { obj, prop, .. }) = expr
+            && let Expr::Ident(ident) = &**obj
+            && self.res.sym_to_id(ident.to_id(), self.module).is_none()
+            && let MemberProp::Ident(method) = prop
+        {
+            let def = self.res.get_or_insert_sym(ident.to_id(), self.module);
+            let mut variable = Variable::new(self.body.get_or_insert_global(def));
+            variable
+                .projections
+                .push(Projection::Known(method.sym.clone()));
+            return Operand::Var(variable);
+        }
         self.lower_expr(expr, None)
     }
 
-    fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
+    fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread], span: Span) -> Operand {
         let props = normalize_callee_expr(callee, self.res, self.module);
+        let maps_values = calls_method(callee, "map");
         if let Some(&PropPath::Def(id)) = props.first()
             && (self.res.is_imported_from(id, "@forge/ui").is_some_and(|imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect")) || calls_method(callee, "then")
                 || calls_method(callee, "map")
@@ -1682,7 +1717,7 @@ impl FunctionAnalyzer<'_> {
                             .callee
                             .as_expr()
                             .map_or(CalleeRef::Import, |e| CalleeRef::Expr(e));
-                        self.lower_call(inner_callee, &inner_call.args);
+                        self.lower_call(inner_callee, &inner_call.args, inner_call.span);
                     }
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, .. }) => match &**body {
@@ -1691,7 +1726,20 @@ impl FunctionAnalyzer<'_> {
                                 return Operand::UNDEF;
                             }
                             BlockStmtOrExpr::Expr(expr) => {
-                                return self.lower_expr(expr, None);
+                                let value = self.lower_expr(expr, None);
+                                if maps_values {
+                                    // A map returns a collection of callback
+                                    // results, not the callback result itself.
+                                    // Preserve that distinction for analyses
+                                    // that model later container operations.
+                                    return Operand::with_var(self.body.push_tmp_spanned(
+                                        self.block,
+                                        Rvalue::Array(vec![value]),
+                                        None,
+                                        span,
+                                    ));
+                                }
+                                return value;
                             }
                         },
                         Expr::Fn(FnExpr { ident: _, function }) => {
@@ -1726,7 +1774,35 @@ impl FunctionAnalyzer<'_> {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
         };
-        let res = self.body.push_tmp(self.block, call, None);
+        let root = props.iter().find_map(|part| match part {
+            PropPath::Def(def) => Some(*def),
+            _ => None,
+        });
+        let facts = CallFacts {
+            local_receiver: Default::default(),
+            import: root.and_then(|def| self.res.as_foreign_import(def)),
+            root,
+            path: props
+                .into_iter()
+                .map(|part| match part {
+                    PropPath::Def(def) => CallPathPart::Binding(def),
+                    PropPath::Static(name) => CallPathPart::Property(name),
+                    PropPath::MemberCall(name) => CallPathPart::MemberCall(name),
+                    PropPath::Unknown(id) => CallPathPart::Unresolved(id),
+                    PropPath::Computed(id) => CallPathPart::Computed(id),
+                    PropPath::Private(id) => CallPathPart::Private(id),
+                    PropPath::Expr(_) => CallPathPart::Expression,
+                    PropPath::This => CallPathPart::This,
+                    PropPath::Super => CallPathPart::Super,
+                })
+                .collect(),
+        };
+        let location = Location::new(
+            self.block,
+            self.body.blockbuilders[self.block].insts.len() as u32,
+        );
+        self.body.set_call_facts(location, facts);
+        let res = self.body.push_tmp_spanned(self.block, call, None, span);
         Operand::with_var(res)
     }
 
@@ -1892,16 +1968,18 @@ impl FunctionAnalyzer<'_> {
         match n {
             Expr::This(_) => Operand::Var(Variable::THIS),
             Expr::Array(ArrayLit { elems, .. }) => {
-                let array_lit: Vec<_> = elems
+                let elements = elems
                     .iter()
-                    .map(|e| {
-                        e.as_ref()
-                            .map_or(Operand::UNDEF, |ExprOrSpread { spread, expr }| {
-                                self.lower_expr(expr, None)
-                            })
+                    .map(|element| {
+                        element.as_ref().map_or(Operand::UNDEF, |element| {
+                            self.lower_expr(&element.expr, None)
+                        })
                     })
                     .collect();
-                Operand::UNDEF
+                let array_var = self
+                    .body
+                    .push_tmp(self.block, Rvalue::Array(elements), parent);
+                Operand::with_var(array_var)
             }
             Expr::Object(ObjectLit { span, props }) => {
                 let def_id = self
@@ -2047,8 +2125,11 @@ impl FunctionAnalyzer<'_> {
                         }
                         SimpleAssignTarget::OptChain(OptChainExpr { optional, base, .. }) => {
                             match &**base {
-                                OptChainBase::Call(OptCall { callee, args, .. }) => {
-                                    let callee = self.lower_call(callee.as_ref().into(), args);
+                                OptChainBase::Call(OptCall {
+                                    callee, args, span, ..
+                                }) => {
+                                    let callee =
+                                        self.lower_call(callee.as_ref().into(), args, *span);
                                     let lval = self.body.coerce_to_lval(self.block, callee, None);
                                     self.push_curr_inst(Inst::Assign(
                                         lval,
@@ -2109,13 +2190,18 @@ impl FunctionAnalyzer<'_> {
                 Operand::with_var(phi)
             }
 
-            Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
-            Expr::New(NewExpr { callee, args, .. }) => {
+            Expr::Call(CallExpr {
+                callee, args, span, ..
+            }) => self.lower_call(callee.into(), args, *span),
+            Expr::New(NewExpr {
+                callee, args, span, ..
+            }) => {
                 if let Expr::Ident(ident) = &**callee {
                     // remove the clone
                     return self.lower_call(
                         CalleeRef::Expr(callee),
                         args.clone().unwrap_or_default().as_slice(),
+                        *span,
                     );
                 }
 
@@ -2197,9 +2283,9 @@ impl FunctionAnalyzer<'_> {
             | Expr::TsSatisfies(TsSatisfiesExpr { expr, .. }) => self.lower_expr(expr, None),
             Expr::PrivateName(PrivateName { name, .. }) => todo!(),
             Expr::OptChain(OptChainExpr { base, .. }) => match &**base {
-                OptChainBase::Call(OptCall { callee, args, .. }) => {
-                    self.lower_call(callee.as_ref().into(), args)
-                }
+                OptChainBase::Call(OptCall {
+                    callee, args, span, ..
+                }) => self.lower_call(callee.as_ref().into(), args, *span),
                 OptChainBase::Member(MemberExpr { obj, prop, .. }) => {
                     // TODO: create separate basic blocks
                     self.lower_member(obj, prop)
@@ -2478,6 +2564,7 @@ impl Visit for ArgDefiner<'_> {
             .res
             .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
         self.res.add_parent(defid, self.func);
+        self.body.argument_spans.entry(defid).or_insert(n.span);
         let var = self.body.get_or_insert_global(defid);
         self.body.push_assign(
             STARTING_BLOCK,
@@ -2548,6 +2635,8 @@ impl Visit for ArgDefiner<'_> {
                     .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
                 self.res.add_parent(defid, self.func);
                 self.res.add_parent(defid, self.func);
+                self.body.argument_defs.push(defid);
+                self.body.argument_spans.insert(defid, pat.span());
                 continue;
             } else {
                 //FIXME: clean up unnecessary allocations
@@ -2556,6 +2645,8 @@ impl Visit for ArgDefiner<'_> {
                 let id = Atom::from(self.res.def_name(defid)).to_id();
                 (defid, id)
             };
+            self.body.argument_defs.push(defid);
+            self.body.argument_spans.insert(defid, pat.span());
             let var_id = self.body.add_arg(defid, id);
             // FIXME: use clone_from once we specialize
             self.current_arg = Variable::new(var_id);

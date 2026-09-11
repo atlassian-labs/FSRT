@@ -62,6 +62,8 @@ pub trait WithCallStack {
 }
 
 pub trait Dataflow<'cx>: Sized {
+    const REQUIRE_CALLEE_STATE_COVERS_CALLER: bool = true;
+    const JOIN_FUNCTION_RETURN_STATES: bool = false;
     type State: JoinSemiLattice + Clone;
 
     fn with_interp<C: Runner<'cx, State = Self::State>>(interp: &Interp<'cx, C>) -> Self;
@@ -175,6 +177,7 @@ pub trait Dataflow<'cx>: Sized {
             Rvalue::Unary(_, _) => initial_state,
             Rvalue::Bin(_, _, _) => initial_state,
             Rvalue::Read(_) => initial_state,
+            Rvalue::Array(_) => initial_state,
             Rvalue::Phi(_) => initial_state,
             Rvalue::Template(_) => initial_state,
         }
@@ -194,7 +197,13 @@ pub trait Dataflow<'cx>: Sized {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
             Inst::Assign(var, rvalue) => {
-                interp.add_value_to_definition(def, var.clone(), rvalue.clone());
+                // Array summaries are retained for opt-in flow analyses. The shared value engine historically
+                // ignored array values; inserting every aggregate here adds no
+                // precision for existing checkers and is prohibitively expensive
+                // in debug builds of bundled applications.
+                if !matches!(rvalue, Rvalue::Array(_)) {
+                    interp.add_value_to_definition(def, var.clone(), rvalue.clone());
+                }
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
         }
@@ -238,11 +247,19 @@ pub trait Dataflow<'cx>: Sized {
     ) {
         match block.successors() {
             Successors::Return => {
-                if interp
-                    .func_state(def)
-                    .is_none_or(|old_state| old_state < state)
-                {
-                    interp.set_func_state(def, state);
+                let old_state = interp.func_state(def);
+                let updated_state = if C::JOIN_FUNCTION_RETURN_STATES {
+                    let mut final_state = old_state.clone().unwrap_or(Self::State::BOTTOM);
+                    let changed = final_state.join_changed(&state);
+                    (old_state.is_none() || changed).then_some(final_state)
+                } else {
+                    old_state
+                        .as_ref()
+                        .is_none_or(|old_state| old_state < &state)
+                        .then_some(state)
+                };
+                if let Some(updated_state) = updated_state {
+                    interp.set_func_state(def, updated_state);
                     let calls = interp.called_from(def);
                     let name = interp.env().def_name(def);
                     debug!("{name} {def:?} is called from {calls:?}");
@@ -281,11 +298,16 @@ pub trait Runner<'cx>: Sized {
 
     const NAME: &'static str = "Runner";
 
+    const REQUIRE_CALLEE_STATE_COVERS_CALLER: bool =
+        Self::Dataflow::REQUIRE_CALLEE_STATE_COVERS_CALLER;
+    const JOIN_FUNCTION_RETURN_STATES: bool = Self::Dataflow::JOIN_FUNCTION_RETURN_STATES;
+
     fn visit_intrinsic(
         &mut self,
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         def: DefId,
+        loc: Location,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State>;
@@ -293,9 +315,22 @@ pub trait Runner<'cx>: Sized {
     fn visit_call(
         &mut self,
         interp: &Interp<'cx, Self>,
+        caller: DefId,
         callee: &'cx Operand,
         _args: &'cx [Operand],
-        block: BasicBlockId,
+        loc: Location,
+        curr_state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        self.super_visit_call(interp, caller, callee, _args, loc, curr_state)
+    }
+
+    fn super_visit_call(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        caller: DefId,
+        callee: &'cx Operand,
+        _args: &'cx [Operand],
+        loc: Location,
         curr_state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
         let Some((callee, body)) = interp.body().resolve_call(interp.env(), callee) else {
@@ -303,10 +338,12 @@ pub trait Runner<'cx>: Sized {
         };
 
         let func_state = interp.func_state(callee).unwrap_or(Self::State::BOTTOM);
-        if func_state < *curr_state || !interp.checker_visit(callee) {
+        if (Self::REQUIRE_CALLEE_STATE_COVERS_CALLER && func_state < *curr_state)
+            || !interp.checker_visit(callee)
+        {
             return ControlFlow::Continue(curr_state.clone());
         }
-        interp.push_frame(callee, block);
+        interp.push_frame(caller, loc.block, loc.stmt as usize);
         let res = self.visit_body(interp, callee, body, curr_state);
         interp.pop_frame();
         // FIXME: Should probably join instead of relying on the caller to propogate state
@@ -335,18 +372,26 @@ pub trait Runner<'cx>: Sized {
         interp: &Interp<'cx, Self>,
         rvalue: &'cx Rvalue,
         def: DefId,
-        id: BasicBlockId,
+        loc: Location,
         curr_state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
         trace!("visiting rvalue {rvalue:?} with {curr_state:?}");
         match rvalue {
-            Rvalue::Intrinsic(intrinsic, operands) => {
-                self.visit_intrinsic(interp, intrinsic, def, curr_state, Some(operands.clone()))
+            Rvalue::Intrinsic(intrinsic, operands) => self.visit_intrinsic(
+                interp,
+                intrinsic,
+                def,
+                loc,
+                curr_state,
+                Some(operands.clone()),
+            ),
+            Rvalue::Call(callee, args) => {
+                self.visit_call(interp, def, callee, args, loc, curr_state)
             }
-            Rvalue::Call(callee, args) => self.visit_call(interp, callee, args, id, curr_state),
             Rvalue::Unary(_, _)
             | Rvalue::Bin(_, _, _)
             | Rvalue::Read(_)
+            | Rvalue::Array(_)
             | Rvalue::Phi(_)
             | Rvalue::Template(_) => ControlFlow::Continue(curr_state.clone()),
         }
@@ -362,11 +407,14 @@ pub trait Runner<'cx>: Sized {
     ) -> ControlFlow<(), Self::State> {
         interp.runner_visited.borrow_mut().insert((def, id));
         let mut curr_state = interp.block_state(def, id).join(curr_state);
-        for stmt in block {
+        for (inst_idx, stmt) in block.iter().enumerate() {
+            let loc = Location::new(id, inst_idx as u32);
             match stmt {
-                Inst::Expr(r) => curr_state = self.visit_rvalue(interp, r, def, id, &curr_state)?,
+                Inst::Expr(r) => {
+                    curr_state = self.visit_rvalue(interp, r, def, loc, &curr_state)?
+                }
                 Inst::Assign(_, r) => {
-                    curr_state = self.visit_rvalue(interp, r, def, id, &curr_state)?
+                    curr_state = self.visit_rvalue(interp, r, def, loc, &curr_state)?
                 }
             }
         }
@@ -1034,6 +1082,15 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         })
     }
 
+    pub(crate) fn join_block_state(
+        &self,
+        def: DefId,
+        block: BasicBlockId,
+        state: &C::State,
+    ) -> bool {
+        self.block_state_mut(def, block).join_changed(state)
+    }
+
     #[inline]
     pub(crate) fn func_state(&self, def: DefId) -> Option<C::State> {
         self.func_state.borrow().get(&def).cloned()
@@ -1045,11 +1102,11 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    fn push_frame(&self, def: DefId, block: BasicBlockId) {
+    fn push_frame(&self, def: DefId, block: BasicBlockId, inst_idx: usize) {
         self.callstack.borrow_mut().push(Frame {
             calling_function: def,
             block,
-            inst_idx: 0,
+            inst_idx,
         });
     }
 
@@ -1335,6 +1392,61 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 EntryKind::Function(fname) => EntryKind::Resolver(fname, name.clone()),
                 EntryKind::Resolver(res, _) => EntryKind::Resolver(res, name.clone()),
                 EntryKind::Empty => unreachable!(),
+            };
+            if let Err(error) = self.try_check_function(prop, checker) {
+                warn!("Resolver prop {name} failed: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    fn reset_analysis_state(&mut self) {
+        self.return_value = None;
+        self.return_value_alt.clear();
+        self.func_state.get_mut().clear();
+        self.curr_body.set(None);
+        self.states.get_mut().clear();
+        self.dataflow_visited.clear();
+        self.checker_visited.get_mut().clear();
+        self.callstack.get_mut().clear();
+        self.runner_visited.get_mut().clear();
+        self.value_manager = ValueManager {
+            varid_to_value: DefinitionAnalysisMap::default(),
+            varid_to_value_with_proj: DefinitionAnalysisMapProjection::default(),
+            defid_to_value: FxHashMap::default(),
+            expected_return_values: HashMap::default(),
+            expecting_value: RefCell::new(FxHashMap::default()),
+            changed: false,
+        };
+    }
+
+    /// Run an entrypoint while giving each resolver callback independent
+    /// dataflow and visitation state. The checker itself is retained so it can
+    /// merge evidence for a concrete sink reached from multiple callbacks.
+    pub fn run_checker_isolated_resolvers(
+        &mut self,
+        def: DefId,
+        checker: &mut C,
+        entry_file: PathBuf,
+        function: String,
+    ) -> Result<(), Error> {
+        self.reset_analysis_state();
+        self.entry = EntryPoint {
+            file: entry_file.clone(),
+            kind: EntryKind::Function(function.clone()),
+        };
+        let Err(error) = self.try_check_function(def, checker) else {
+            return Ok(());
+        };
+        let resolver = self.env.resolver_defs(def);
+        if resolver.is_empty() {
+            return Err(error);
+        }
+        for (name, prop) in resolver {
+            self.reset_analysis_state();
+            self.entry = EntryPoint {
+                file: entry_file.clone(),
+                kind: EntryKind::Resolver(function.clone(), name.clone()),
             };
             if let Err(error) = self.try_check_function(prop, checker) {
                 warn!("Resolver prop {name} failed: {error}");

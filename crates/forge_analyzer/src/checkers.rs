@@ -351,6 +351,7 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
         _interp: &Interp<'cx, Self>,
         _intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -520,6 +521,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -730,6 +732,7 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -1070,6 +1073,7 @@ impl<'cx> Runner<'cx> for SecretChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         def: DefId,
+        _loc: Location,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -1767,6 +1771,7 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         def: DefId,
+        _loc: Location,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -2215,6 +2220,7 @@ impl<'cx> Runner<'cx> for PermissionChecker<'_> {
         _interp: &Interp<'cx, Self>,
         _intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -2342,6 +2348,7 @@ impl<'cx> Runner<'cx> for DefinitionAnalysisRunner {
         _interp: &Interp<'cx, Self>,
         _intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         _state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
