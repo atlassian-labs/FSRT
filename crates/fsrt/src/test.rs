@@ -250,6 +250,25 @@ fn default_export_class_with_private_method_does_not_panic() {
 }
 
 #[test]
+fn transpiled_async_detection_uses_helpers_not_strict_mode() {
+    for source in [
+        "\"use strict\";\nmodule.exports = function () {};",
+        "'use strict';\nasync function run() { await work(); }",
+    ] {
+        assert!(!crate::contains_transpiled_async(source));
+    }
+
+    for source in [
+        "return __awaiter(this, void 0, void 0, function* () {});",
+        "return __generator(this, function (_a) {});",
+        "const run = _asyncToGenerator(function* () {});",
+        "regeneratorRuntime.mark(function run() {});",
+    ] {
+        assert!(crate::contains_transpiled_async(source));
+    }
+}
+
+#[test]
 fn scanners_parse_as_typed_list() {
     let args = Args::try_parse_from([
         "fsrt",

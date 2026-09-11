@@ -158,6 +158,19 @@ impl fmt::Display for Error {
     }
 }
 
+fn contains_transpiled_async(source: &str) -> bool {
+    const TRANSPILED_ASYNC_MARKERS: [&str; 4] = [
+        "__awaiter",
+        "__generator",
+        "_asyncToGenerator",
+        "regeneratorRuntime",
+    ];
+
+    TRANSPILED_ASYNC_MARKERS
+        .iter()
+        .any(|marker| source.contains(marker))
+}
+
 struct PermissionsAndNextSelection<'a, 'b> {
     permission_vec: Vec<&'a str>,
     next_selection: NextSelection<'a, 'b>,
@@ -473,13 +486,7 @@ pub(crate) fn scan_directory<'a>(
     let name = manifest.app.name.unwrap_or_default();
 
     let transpiled_async = paths.iter().any(|path| {
-        if let Ok(data) = fs::read_to_string(path) {
-            return data
-                .lines()
-                .next()
-                .is_some_and(|data| data == "\"use strict\";" || data == "'use strict';");
-        }
-        false
+        fs::read_to_string(path).is_ok_and(|source| contains_transpiled_async(&source))
     });
 
     if transpiled_async {
