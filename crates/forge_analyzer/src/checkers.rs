@@ -15,11 +15,12 @@ use crate::{
     utils::{add_elements_to_intrinsic_struct, convert_lit_to_raw, translate_request_type},
     worklist::WorkList,
 };
+
 use core::fmt;
-use std::fmt::format;
 use forge_permission_resolver::permissions_resolver::{
     PermissionHashMap, RequestType, check_url_for_permissions,
 };
+
 use forge_utils::FxHashMap;
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
@@ -842,7 +843,7 @@ pub struct UnsafeEndpoint<'a> {
 }
 
 impl<'a> UnsafeEndpoint<'a> {
-    pub const DESC: &'static str = "An endpoint declared in this manifest passes an app system token. Remote calls that pass system tokens must also *explicitly* pass the user account ID associated with the request."
+    pub const DESC: &'static str = "An endpoint declared in this manifest passes an app system token. Remote calls that pass system tokens must also *explicitly* pass the user account ID associated with the request.";
 
     pub fn new(key: &'a str) -> Self {
         Self { key }
