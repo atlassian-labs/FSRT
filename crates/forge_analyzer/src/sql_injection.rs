@@ -946,6 +946,21 @@ pub struct SqlInjectionChecker {
 }
 
 impl SqlInjectionChecker {
+    /// Whether any lowered call can be a SQL sink under the reporting rules.
+    ///
+    /// Check every body, including helpers and closures: a sink need not occur
+    /// directly in an entrypoint. This does not require resolved import provenance
+    /// and performs no taint analysis.
+    pub fn has_candidate_sinks(env: &Environment) -> bool {
+        env.bodies().any(|body| {
+            body.iter_blocks_enumerated().any(|(block, data)| {
+                data.insts.iter().enumerate().any(|(index, _)| {
+                    sql_sink(env, body, Location::new(block, index as u32)).is_some()
+                })
+            })
+        })
+    }
+
     pub fn new(source_map: Arc<SourceMap>) -> Self {
         Self {
             vulns: vec![],

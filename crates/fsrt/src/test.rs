@@ -2568,6 +2568,72 @@ providers:
 // -----------------------------------------------------------------------------
 
 #[test]
+fn sql_injection_candidate_gate_uses_lowered_sink_recognition() {
+    use forge_analyzer::sql_injection::SqlInjectionChecker;
+    use forge_permission_resolver::permissions_resolver::PermMap;
+
+    let cases = [
+        ("export function run(payload) { return payload; }", false),
+        (
+            "import sql from '@forge/sql'; export function run(payload) { return payload; }",
+            false,
+        ),
+        (
+            "import sql from 'another-sql-library'; export function run(payload) { sql.executeRaw(payload.query); }",
+            false,
+        ),
+        (
+            "function customLibrary() { return { executeRaw() {} }; } const sql = customLibrary(); export function run(payload) { sql.executeRaw(payload.query); }",
+            false,
+        ),
+        (
+            "import sql from '@forge/sql'; export function run() { sql.prepare('SELECT 1'); }",
+            true,
+        ),
+        (
+            "export function run(payload) { sql.executeRaw(payload.query); }",
+            true,
+        ),
+        (
+            "import { migrationRunner as migrations } from '@forge/sql'; export function run(payload) { migrations.enqueue('migration', payload.query); }",
+            true,
+        ),
+        (
+            "const sql_1 = tslib_1.__importStar(require('@forge/sql')); export function run(payload) { sql_1.default.executeRaw(payload.query); }",
+            true,
+        ),
+        (
+            "import sql from '@forge/sql'; function helper(query) { sql.executeRaw(query); } export function run(payload) { helper(payload.query); }",
+            true,
+        ),
+        (
+            "import sql from '@forge/sql'; export function run(payload) { return payload.queries.map(query => sql.executeRaw(query)); }",
+            true,
+        ),
+    ];
+    for (source, expected) in cases {
+        let files = format!("// src/index.js\n{source}");
+        let project = MockForgeProject::files_from_string(&files);
+        let permissions = HashSet::new();
+        let mut perm_map = PermMap::new(&permissions);
+        let lowered = project
+            .with_files_and_sourceroot(
+                Path::new("src"),
+                project.get_paths(),
+                &[],
+                &mut perm_map,
+                &HashSet::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            SqlInjectionChecker::has_candidate_sinks(&lowered.env),
+            expected,
+            "unexpected SQL candidate gate result for: {source}",
+        );
+    }
+}
+
+#[test]
 fn sql_injection_reports_direct_payload_interpolation() {
     let project = MockForgeProject::files_from_string(
         "// src/index.js
