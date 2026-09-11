@@ -594,7 +594,8 @@ pub(crate) fn scan_directory<'a>(
     let run_auth_header_scanner = opts.scanner_enabled(Scanner::AuthHeader);
     let run_secret_scanner = opts.scanner_enabled(Scanner::Secret);
     let run_secret_logging_scanner = opts.scanner_enabled(Scanner::SecretLogging);
-    let run_sql_injection_scanner = opts.scanner_enabled(Scanner::SqlInjection);
+    let run_sql_injection_scanner = opts.scanner_enabled(Scanner::SqlInjection)
+        && SqlInjectionChecker::has_candidate_sinks(&proj.env);
     let scan_functions =
         opts.scan_functions || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
 
