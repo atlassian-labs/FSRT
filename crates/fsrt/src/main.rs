@@ -35,6 +35,7 @@ use forge_analyzer::{
     checkers::{
         AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
         PermissionChecker, PermissionVuln, SecretChecker, SecretType, UnsafeEndpoint,
+        UnsafeEndpointKind,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -408,17 +409,17 @@ fn check_remotes(remotes: &Option<Vec<manifest::Remotes>>) -> HashSet<String> {
 fn check_unsafe_remote_endpoints<'a>(
     remotes: &Option<Vec<Remotes>>,
     endpoints: &Vec<EndpointMod<'a>>,
-) -> HashSet<String> {
+) -> HashSet<(UnsafeEndpointKind, String)> {
     let endp_iter = endpoints
         .iter()
         .filter(|i| passes_system_auth(&i.auth))
-        .map(|i| i.key.to_string());
+        .map(|i| (UnsafeEndpointKind::Endpoint, i.key.to_string()));
 
     if let Some(remotes) = remotes {
         let remote_iter = remotes
             .iter()
             .filter(|i| passes_system_auth(&i.auth))
-            .map(|i| i.key.to_string());
+            .map(|i| (UnsafeEndpointKind::Remote, i.key.to_string()));
 
         HashSet::from_iter(std::iter::chain(endp_iter, remote_iter))
     } else {
@@ -486,8 +487,7 @@ pub(crate) fn scan_directory<'a>(
     sorted_paths.sort();
 
     let suspicious_remotes = check_remotes(&manifest.remotes);
-    let _unsafe_endps =
-        check_unsafe_remote_endpoints(&manifest.remotes, &manifest.modules.endpoint);
+    let unsafe_endps = check_unsafe_remote_endpoints(&manifest.remotes, &manifest.modules.endpoint);
 
     let mut proj = project.with_files_and_sourceroot(
         Path::new("src"),
@@ -573,9 +573,16 @@ pub(crate) fn scan_directory<'a>(
 
     let mut reporter = Reporter::new();
     reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
-    reporter.add_vulnerabilities(_unsafe_endps.iter().map(|i| UnsafeEndpoint::new(i)));
     if let Some(vuln) = runtime_policy_vuln {
         reporter.add_vulnerabilities([vuln]);
+    }
+
+    if opts.enable_aec_mode {
+        reporter.add_vulnerabilities(
+            unsafe_endps
+                .iter()
+                .map(|(kind, name)| UnsafeEndpoint::new(*kind, name)),
+        );
     }
 
     let mut secret_checker = SecretChecker::new();

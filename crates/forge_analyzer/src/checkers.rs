@@ -838,15 +838,33 @@ impl WithCallStack for AuthNVuln {
     fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
 }
 
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+pub enum UnsafeEndpointKind {
+    Endpoint,
+    Remote,
+}
+
+impl fmt::Display for UnsafeEndpointKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            UnsafeEndpointKind::Endpoint => "Endpoint",
+            UnsafeEndpointKind::Remote => "Remote",
+        };
+
+        f.write_str(name)
+    }
+}
+
 pub struct UnsafeEndpoint<'a> {
     key: &'a str,
+    kind: UnsafeEndpointKind,
 }
 
 impl<'a> UnsafeEndpoint<'a> {
-    pub const DESC: &'static str = "An endpoint declared in this manifest passes an app system token. Remote calls that pass system tokens must also *explicitly* pass the user account ID associated with the request.";
+    pub const DESC: &'static str = "A remote endpoint declared in this manifest passes an app system token. Remote calls that pass system tokens must also *explicitly* pass the user account ID associated with the request.";
 
-    pub fn new(key: &'a str) -> Self {
-        Self { key }
+    pub fn new(kind: UnsafeEndpointKind, key: &'a str) -> Self {
+        Self { key, kind }
     }
 }
 
@@ -855,10 +873,10 @@ impl<'a> IntoVuln for UnsafeEndpoint<'a> {
         Vulnerability {
             check_name: "aec-remote-auth".to_string(),
             description: Self::DESC.to_string(),
-            recommendation: "Endpoint and remote should omit `auth.appSystemToken: true`",
+            recommendation: "Endpoints and remotes should omit `auth.appSystemToken: true`",
             proof: format!(
-                "Endpoint `{}` declares `auth.appSystemToken: true`",
-                self.key
+                "{} `{}` declares `auth.appSystemToken: true`",
+                self.kind, self.key
             ),
             app_key: reporter.app_key().to_string(),
             severity: Severity::High,
