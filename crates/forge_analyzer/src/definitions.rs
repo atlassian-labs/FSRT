@@ -2706,16 +2706,23 @@ impl Visit for LocalDefiner<'_> {
 
 impl Visit for FunctionCollector<'_> {
     fn visit_export_default_decl(&mut self, n: &ExportDefaultDecl) {
+        let old_class = self.curr_class.take();
+        let old_function = self.curr_function.take();
+
         if let Some(defid) = self.res.default_export(self.module) {
-            // we don't need to check that it is either a class or a function because
-            // it will get caught by the respective methods.
-            self.curr_class = Some(defid);
-            self.curr_function = Some(defid);
+            match self.res.def_ref(defid) {
+                DefKind::Class(_) => self.curr_class = Some(defid),
+                DefKind::Function(_) | DefKind::Closure(_) => {
+                    self.curr_function = Some(defid);
+                }
+                _ => {}
+            }
         }
+
         n.visit_children_with(self);
 
-        self.curr_class = None;
-        self.curr_function = None;
+        self.curr_class = old_class;
+        self.curr_function = old_function;
     }
 
     fn visit_assign_expr(&mut self, n: &AssignExpr) {
@@ -2780,18 +2787,23 @@ impl Visit for FunctionCollector<'_> {
     }
 
     fn visit_constructor(&mut self, n: &Constructor) {
-        if let Some(class_def) = self.curr_class
-            && let DefKind::Class(class) = self.res.clone().def_ref(class_def)
-            && let Some((_, owner)) = &class
+        let owner = self.curr_class.and_then(|class_def| {
+            let DefKind::Class(class) = self.res.def_ref(class_def) else {
+                return None;
+            };
+            class
                 .pub_members
                 .iter()
-                .find(|(name, defid)| name == "constructor")
-        {
+                .find(|(name, _)| name == "constructor")
+                .map(|(_, owner)| *owner)
+        });
+
+        if let Some(owner) = owner {
             let mut argdef = ArgDefiner {
                 res: self.res,
                 module: self.module,
-                func: *owner,
-                body: Body::with_owner(*owner),
+                func: owner,
+                body: Body::with_owner(owner),
                 current_arg: Default::default(),
             };
             n.params.visit_with(&mut argdef);
@@ -2799,7 +2811,7 @@ impl Visit for FunctionCollector<'_> {
             let mut localdef = LocalDefiner {
                 res: self.res,
                 module: self.module,
-                func: *owner,
+                func: owner,
                 body,
             };
             n.body.visit_children_with(&mut localdef);
@@ -2807,7 +2819,7 @@ impl Visit for FunctionCollector<'_> {
             let mut analyzer = FunctionAnalyzer {
                 res: self.res,
                 module: self.module,
-                current_def: *owner,
+                current_def: owner,
                 assigning_to: None,
                 secret_packages: self.secret_packages,
                 body,
@@ -2832,26 +2844,29 @@ impl Visit for FunctionCollector<'_> {
                     body.set_terminator(id, Terminator::Ret);
                 }
 
-                *self.res.def_mut(*owner).expect_body() = body;
+                *self.res.def_mut(owner).expect_body() = body;
             }
         }
     }
 
     fn visit_class_method(&mut self, n: &ClassMethod) {
-        if let Some(class_def) = self.curr_class
-            && let DefKind::Class(class) = self.res.clone().def_ref(class_def)
-            && let Some((_, owner)) = &class.pub_members.iter().find(|(name, defid)| {
-                if let PropName::Ident(ident) = &n.key {
-                    return name == &ident.sym;
-                }
-                false
-            })
-        {
+        let owner = self.curr_class.and_then(|class_def| {
+            let DefKind::Class(class) = self.res.def_ref(class_def) else {
+                return None;
+            };
+            class
+                .pub_members
+                .iter()
+                .find(|(name, _)| matches!(&n.key, PropName::Ident(ident) if name == &ident.sym))
+                .map(|(_, owner)| *owner)
+        });
+
+        if let Some(owner) = owner {
             let mut argdef = ArgDefiner {
                 res: self.res,
                 module: self.module,
-                func: *owner,
-                body: Body::with_owner(*owner),
+                func: owner,
+                body: Body::with_owner(owner),
                 current_arg: Default::default(),
             };
             n.function.params.visit_with(&mut argdef);
@@ -2859,7 +2874,7 @@ impl Visit for FunctionCollector<'_> {
             let mut localdef = LocalDefiner {
                 res: self.res,
                 module: self.module,
-                func: *owner,
+                func: owner,
                 body,
             };
             n.function.body.visit_children_with(&mut localdef);
@@ -2867,7 +2882,7 @@ impl Visit for FunctionCollector<'_> {
             let mut analyzer = FunctionAnalyzer::new(
                 self.res,
                 self.module,
-                *owner,
+                owner,
                 self.secret_packages,
                 body,
                 self.suspicious_remotes,
@@ -2887,7 +2902,7 @@ impl Visit for FunctionCollector<'_> {
                     body.set_terminator(id, Terminator::Ret);
                 }
 
-                *self.res.def_mut(*owner).expect_body() = body;
+                *self.res.def_mut(owner).expect_body() = body;
             }
         }
     }

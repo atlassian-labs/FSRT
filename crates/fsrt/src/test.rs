@@ -172,8 +172,15 @@ impl<'a> MockForgeProject<'a> {
 }
 
 impl<'a> ForgeProjectTrait<'a> for MockForgeProject<'a> {
-    fn load_file(&self, p: impl AsRef<Path>, _: Arc<SourceMap>) -> Arc<SourceFile> {
-        self.files_name_to_source.get(p.as_ref()).unwrap().clone()
+    fn load_file(
+        &self,
+        p: impl AsRef<Path>,
+        _: Arc<SourceMap>,
+    ) -> std::io::Result<Arc<SourceFile>> {
+        self.files_name_to_source
+            .get(p.as_ref())
+            .cloned()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
     }
 
     fn get_paths(&self) -> HashSet<PathBuf> {
@@ -217,6 +224,48 @@ pub(crate) fn scan_directory_test(
     // disallow parsing arguments meant for test harness (e.g., --nocapture, --exact) from std::env::args()
     let args = Args::parse_from([""]);
     scan_directory_test_with_args(forge_test_proj, args)
+}
+
+#[test]
+fn default_export_class_with_private_method_does_not_panic() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        export default class Service {
+            run() {
+                return this.#privateMethod();
+            }
+
+            #privateMethod() {
+                return 'ok';
+            }
+        }
+
+        export function run() {
+            return new Service().run();
+        }
+        ",
+    );
+
+    let _ = scan_directory_test(test_forge_project);
+}
+
+#[test]
+fn transpiled_async_detection_uses_helpers_not_strict_mode() {
+    for source in [
+        "\"use strict\";\nmodule.exports = function () {};",
+        "'use strict';\nasync function run() { await work(); }",
+    ] {
+        assert!(!crate::contains_transpiled_async(source));
+    }
+
+    for source in [
+        "return __awaiter(this, void 0, void 0, function* () {});",
+        "return __generator(this, function (_a) {});",
+        "const run = _asyncToGenerator(function* () {});",
+        "regeneratorRuntime.mark(function run() {});",
+    ] {
+        assert!(crate::contains_transpiled_async(source));
+    }
 }
 
 #[test]

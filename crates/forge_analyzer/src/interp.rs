@@ -956,19 +956,23 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         &self,
         defid_block: DefId,
         varid: VarId,
-        mut projections: ProjectionVec,
+        projections: ProjectionVec,
     ) -> Option<(VarId, ProjectionVec)> {
         let mut current_var_id = varid;
-        for i in 0..projections.len() {
+        let mut projection_start = 0;
+        for projection_end in 0..projections.len() {
             if let Some(Value::Object(varid)) = self.get_value(
                 defid_block,
                 current_var_id,
-                Some(projvec_from_projvec(&projections[..i])),
+                Some(projvec_from_projvec(
+                    &projections[projection_start..projection_end],
+                )),
             ) {
                 current_var_id = *varid;
-                projections = projvec_from_projvec(&projections[i..]);
+                projection_start = projection_end;
             }
         }
+        let projections = projvec_from_projvec(&projections[projection_start..]);
 
         let mut visited = FxHashSet::default();
         while let Some(Value::Object(varid)) =
@@ -1101,7 +1105,9 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         // globals first (in module order so dependencies are resolved before dependents),
         // then the entry function
         for global_def in self.env().global.iter() {
-            worklist.push_back_blocks(self.env, *global_def, self.call_all);
+            if self.call_all || !self.dataflow_visited.contains(global_def) {
+                worklist.push_back_blocks(self.env, *global_def, self.call_all);
+            }
         }
         worklist.push_back_blocks(self.env, func_def, self.call_all);
         let old_body = self.curr_body.get();
@@ -1263,11 +1269,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         }
 
         self.curr_body.set(old_body);
-    }
-
-    /// Removes a DefId from the dataflow visited set so it can be re-analyzed.
-    pub fn reset_dataflow_visited(&mut self, def: DefId) {
-        self.dataflow_visited.remove(&def);
     }
 
     pub fn try_check_function(&mut self, def: DefId, checker: &mut C) -> Result<(), Error> {

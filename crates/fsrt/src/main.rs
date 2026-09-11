@@ -158,6 +158,19 @@ impl fmt::Display for Error {
     }
 }
 
+fn contains_transpiled_async(source: &str) -> bool {
+    const TRANSPILED_ASYNC_MARKERS: [&str; 4] = [
+        "__awaiter",
+        "__generator",
+        "_asyncToGenerator",
+        "regeneratorRuntime",
+    ];
+
+    TRANSPILED_ASYNC_MARKERS
+        .iter()
+        .any(|marker| source.contains(marker))
+}
+
 struct PermissionsAndNextSelection<'a, 'b> {
     permission_vec: Vec<&'a str>,
     next_selection: NextSelection<'a, 'b>,
@@ -468,18 +481,12 @@ pub(crate) fn scan_directory<'a>(
         secret_packages,
         &mut perm_map,
         &suspicious_remotes,
-    );
+    )?;
 
     let name = manifest.app.name.unwrap_or_default();
 
     let transpiled_async = paths.iter().any(|path| {
-        if let Ok(data) = fs::read_to_string(path) {
-            return data
-                .lines()
-                .next()
-                .is_some_and(|data| data == "\"use strict\";" || data == "'use strict';");
-        }
-        false
+        fs::read_to_string(path).is_ok_and(|source| contains_transpiled_async(&source))
     });
 
     if transpiled_async {
@@ -651,11 +658,6 @@ pub(crate) fn scan_directory<'a>(
         let all_functions = proj.env.get_all_functions_and_closures();
         for func_def in &all_functions {
             let func_name = proj.env.def_name(*func_def).to_string();
-            // Reset dataflow_visited so that run() re-analyzes this function body
-            // with fresh dataflow. The entry-point pass may have marked it visited
-            // during broader module/class traversal without actually checking it as
-            // a standalone function body.
-            interp.reset_dataflow_visited(*func_def);
             if let Err(err) = interp.check_function(
                 *func_def,
                 &mut full_scan_checker,
@@ -842,39 +844,38 @@ fn main() -> Result<()> {
         serde_yaml::from_str(secretdata_file).expect("Failed to deserialize packages");
 
     for dir in dirs {
-        let manifest_file = find_manifest_path(&dir)?;
-        debug!(?manifest_file);
-
-        let manifest_text = fs::read_to_string(&manifest_file)?;
-
-        let forge_project_from_dir = ForgeProjectFromDir {
-            dir: dir.clone(),
-            manifest_file_content: manifest_text,
-        };
-
-        debug!(?dir);
-
         if let Some(path) = &args.out {
             let report = serde_json::to_string(&get_empty_report())?;
             fs::write(path, report)?;
         }
 
-        let reporter_result =
-            scan_directory(dir, &mut args, forge_project_from_dir, &secret_packages);
-        match reporter_result {
-            Result::Ok(report) => {
-                let report = serde_json::to_string(&report)?;
-                debug!("On the debug layer: Writing Report");
-                match &args.out {
-                    Some(path) => {
-                        fs::write(path, &*report)?;
-                    }
-                    None => println!("{report}"),
-                }
+        let reporter_result = (|| -> Result<Report> {
+            let manifest_file = find_manifest_path(&dir)?;
+            debug!(?manifest_file);
+
+            let manifest_text = fs::read_to_string(&manifest_file)?;
+            let forge_project_from_dir = ForgeProjectFromDir {
+                dir: dir.clone(),
+                manifest_file_content: manifest_text,
+            };
+
+            debug!(?dir);
+            scan_directory(dir, &mut args, forge_project_from_dir, &secret_packages)
+        })();
+
+        let report = match reporter_result {
+            Ok(report) => report,
+            Err(err) => {
+                let error_message = err.to_string();
+                warn!("Could not scan due to {error_message}");
+                Report::error(error_message, vec![args.appkey.clone().unwrap_or_default()])
             }
-            Result::Err(err) => {
-                warn!("Could not scan due to {err}")
-            }
+        };
+        let report = serde_json::to_string(&report)?;
+        debug!("On the debug layer: Writing Report");
+        match &args.out {
+            Some(path) => fs::write(path, &*report)?,
+            None => println!("{report}"),
         }
     }
     Ok(())
