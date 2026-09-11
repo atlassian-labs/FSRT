@@ -34,7 +34,8 @@ use tracing_tree::HierarchicalLayer;
 use forge_analyzer::{
     checkers::{
         AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
-        PermissionChecker, PermissionVuln, SecretChecker, SecretType,
+        PermissionChecker, PermissionVuln, SecretChecker, SecretType, UnsafeEndpoint,
+        UnsafeEndpointKind,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -46,7 +47,10 @@ use crate::{
     forge_project::{ForgeProjectFromDir, ForgeProjectTrait, find_manifest_path},
     interpreter::InterpreterFactory,
 };
-use forge_loader::manifest::{self, Entrypoint};
+
+use forge_loader::manifest::{
+    self, EndpointMod, Entrypoint, Remotes, passes_system_auth, passes_user_auth,
+};
 use walkdir::WalkDir;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -409,10 +413,31 @@ fn check_remotes(remotes: &Option<Vec<manifest::Remotes>>) -> HashSet<String> {
 
     let result = content
         .iter()
-        .filter(|e| e.passes_system_auth() && !e.passes_user_auth())
+        .filter(|e| passes_system_auth(&e.auth) && !passes_user_auth(&e.auth))
         .map(|e| e.key.clone());
 
     HashSet::from_iter(result)
+}
+
+fn check_unsafe_remote_endpoints<'a>(
+    remotes: &Option<Vec<Remotes>>,
+    endpoints: &Vec<EndpointMod<'a>>,
+) -> HashSet<(UnsafeEndpointKind, String)> {
+    let endp_iter = endpoints
+        .iter()
+        .filter(|i| passes_system_auth(&i.auth))
+        .map(|i| (UnsafeEndpointKind::Endpoint, i.key.to_string()));
+
+    if let Some(remotes) = remotes {
+        let remote_iter = remotes
+            .iter()
+            .filter(|i| passes_system_auth(&i.auth))
+            .map(|i| (UnsafeEndpointKind::Remote, i.key.to_string()));
+
+        HashSet::from_iter(std::iter::chain(endp_iter, remote_iter))
+    } else {
+        HashSet::from_iter(endp_iter)
+    }
 }
 
 fn has_remote_auth(remotes: &Option<Vec<manifest::Remotes>>) -> bool {
@@ -475,6 +500,8 @@ pub(crate) fn scan_directory<'a>(
     sorted_paths.sort();
 
     let suspicious_remotes = check_remotes(&manifest.remotes);
+    let unsafe_endps = check_unsafe_remote_endpoints(&manifest.remotes, &manifest.modules.endpoint);
+
     let mut proj = project.with_files_and_sourceroot(
         Path::new("src"),
         sorted_paths,
@@ -555,6 +582,14 @@ pub(crate) fn scan_directory<'a>(
     reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
     if let Some(vuln) = runtime_policy_vuln {
         reporter.add_vulnerabilities([vuln]);
+    }
+
+    if opts.enable_aec_mode {
+        reporter.add_vulnerabilities(
+            unsafe_endps
+                .iter()
+                .map(|(kind, name)| UnsafeEndpoint::new(*kind, name)),
+        );
     }
 
     let mut secret_checker = SecretChecker::new();

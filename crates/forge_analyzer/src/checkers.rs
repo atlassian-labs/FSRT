@@ -15,10 +15,12 @@ use crate::{
     utils::{add_elements_to_intrinsic_struct, convert_lit_to_raw, translate_request_type},
     worklist::WorkList,
 };
+
 use core::fmt;
 use forge_permission_resolver::permissions_resolver::{
     PermissionHashMap, RequestType, check_url_for_permissions,
 };
+
 use forge_utils::FxHashMap;
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
@@ -834,6 +836,55 @@ impl IntoVuln for AuthNVuln {
 
 impl WithCallStack for AuthNVuln {
     fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
+}
+
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+pub enum UnsafeEndpointKind {
+    Endpoint,
+    Remote,
+}
+
+impl fmt::Display for UnsafeEndpointKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            UnsafeEndpointKind::Endpoint => "Endpoint",
+            UnsafeEndpointKind::Remote => "Remote",
+        };
+
+        f.write_str(name)
+    }
+}
+
+pub struct UnsafeEndpoint<'a> {
+    key: &'a str,
+    kind: UnsafeEndpointKind,
+}
+
+impl<'a> UnsafeEndpoint<'a> {
+    pub const DESC: &'static str = "A remote endpoint declared in this manifest passes an app system token. Remote calls that pass system tokens must also *explicitly* pass the user account ID associated with the request.";
+
+    pub fn new(kind: UnsafeEndpointKind, key: &'a str) -> Self {
+        Self { key, kind }
+    }
+}
+
+impl<'a> IntoVuln for UnsafeEndpoint<'a> {
+    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+        Vulnerability {
+            check_name: "aec-remote-auth".to_string(),
+            description: Self::DESC.to_string(),
+            recommendation: "Endpoints and remotes should omit `auth.appSystemToken: true`",
+            proof: format!(
+                "{} `{}` declares `auth.appSystemToken: true`",
+                self.kind, self.key
+            ),
+            app_key: reporter.app_key().to_string(),
+            severity: Severity::High,
+            app_name: reporter.app_name().to_string(),
+            marketplace_security_requirement: "AEC Requirement 1.10",
+            date: reporter.current_date(),
+        }
+    }
 }
 
 pub struct SecretDataflow {
