@@ -463,10 +463,30 @@ pub(crate) enum EntryKind {
     Empty,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InputCategory {
+    #[default]
+    Payload,
+    WebRequest,
+    ProductEvent,
+}
+
+/// A verified platform invocation, independent of the function's spelling.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InvocationContract {
+    ForgeFunction,
+    ResolverCallback,
+    #[default]
+    Unknown,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) struct EntryPoint {
     pub(crate) file: PathBuf,
     pub(crate) kind: EntryKind,
+    pub(crate) contract: InvocationContract,
+    pub(crate) root: Option<DefId>,
+    pub(crate) input_category: InputCategory,
 }
 
 #[derive(Debug)]
@@ -1344,10 +1364,15 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     /// Sets the current entry point for tracing/reporting purposes.
+    pub fn set_input_category(&mut self, category: InputCategory) {
+        self.entry.input_category = category;
+    }
+
     pub fn set_entry(&mut self, file: PathBuf, function: String) {
         self.entry = EntryPoint {
             file,
             kind: EntryKind::Function(function),
+            ..EntryPoint::default()
         };
     }
 
@@ -1375,6 +1400,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.entry = EntryPoint {
             file: entry_file,
             kind: EntryKind::Function(function),
+            ..EntryPoint::default()
         };
         let Err(error) = self.try_check_function(def, checker) else {
             return Ok(());
@@ -1430,15 +1456,54 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         entry_file: PathBuf,
         function: String,
     ) -> Result<(), Error> {
+        self.run_checker_with_contract(
+            def,
+            checker,
+            entry_file,
+            function,
+            InvocationContract::Unknown,
+        )
+    }
+
+    pub fn run_checker_with_contract(
+        &mut self,
+        def: DefId,
+        checker: &mut C,
+        entry_file: PathBuf,
+        function: String,
+        contract: InvocationContract,
+    ) -> Result<(), Error> {
+        let contract = if self.env.invocation_binding_is_stable(def) {
+            contract
+        } else {
+            warn!("manifest invocation binding was reassigned; using Unknown contract");
+            InvocationContract::Unknown
+        };
         self.reset_analysis_state();
         self.entry = EntryPoint {
             file: entry_file.clone(),
             kind: EntryKind::Function(function.clone()),
+            contract,
+            root: Some(
+                self.env
+                    .invocation_target(def)
+                    .unwrap_or_else(|| self.env.resolve_alias(def)),
+            ),
+            input_category: self.entry.input_category,
         };
-        let Err(error) = self.try_check_function(def, checker) else {
+        let Err(error) = self.try_check_function(
+            self.env
+                .invocation_target(def)
+                .unwrap_or_else(|| self.env.resolve_alias(def)),
+            checker,
+        ) else {
             return Ok(());
         };
-        let resolver = self.env.resolver_defs(def);
+        if !self.env.is_resolver_handler(def) {
+            warn!("manifest export is not a proven resolver handler");
+            return Err(error);
+        }
+        let resolver = self.env.verified_resolver_defs(def);
         if resolver.is_empty() {
             return Err(error);
         }
@@ -1447,6 +1512,13 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             self.entry = EntryPoint {
                 file: entry_file.clone(),
                 kind: EntryKind::Resolver(function.clone(), name.clone()),
+                contract: if contract == InvocationContract::Unknown {
+                    contract
+                } else {
+                    InvocationContract::ResolverCallback
+                },
+                root: Some(prop),
+                input_category: self.entry.input_category,
             };
             if let Err(error) = self.try_check_function(prop, checker) {
                 warn!("Resolver prop {name} failed: {error}");

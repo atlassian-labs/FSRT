@@ -272,3 +272,128 @@ fn shadowed_bindings_do_not_share_values_or_refinements() {
     assert_eq!(state.variable_with_aliases(&body, def, &field), Some(value));
     assert!(state.is_refined(&body, def, &outer));
 }
+
+#[test]
+fn input_shapes_obey_join_laws_independently_of_bounded_evidence() {
+    use crate::interp::InvocationContract;
+    let context = sources::root_argument::<NoFacts>(
+        InvocationContract::ForgeFunction,
+        1,
+        DefId::new(90),
+        DefId::new(91),
+    );
+    let payload = sources::root_argument::<NoFacts>(
+        InvocationContract::ForgeFunction,
+        0,
+        DefId::new(90),
+        DefId::new(92),
+    );
+    let leaf = context.project(&[
+        Projection::Known("principal".into()),
+        Projection::Known("accountId".into()),
+    ]);
+    let mut invalidated = context.shape;
+    if let InputShape::Known { invalid, .. } = &mut invalidated {
+        *invalid = Classification::Unknown;
+    }
+    let mut overwritten = context.shape;
+    if let InputShape::Known { invalid, .. } = &mut overwritten {
+        *invalid = Classification::Untrusted;
+    }
+    let shapes = [
+        invalidated,
+        overwritten,
+        InputShape::BOTTOM,
+        InputShape::Absent,
+        InputShape::Unknown,
+        context.shape,
+        payload.shape,
+        leaf.shape,
+    ];
+    for a in shapes {
+        assert_eq!(a.join(&InputShape::BOTTOM), a);
+        assert_eq!(a.join(&a), a);
+        for b in shapes {
+            assert_eq!(a.join(&b), b.join(&a));
+            for c in shapes {
+                assert_eq!(a.join(&b).join(&c), a.join(&b.join(&c)));
+            }
+        }
+    }
+    let mut crowded = context.clone();
+    for index in 0..32 {
+        crowded.taint.origins.insert(origin(index));
+    }
+    assert_eq!(crowded.taint.origins.iter().count(), MAX_ORIGINS);
+    assert_eq!(
+        crowded
+            .project(&[Projection::Known("installContext".into())])
+            .taint
+            .classification,
+        Classification::Trusted
+    );
+    assert_eq!(crowded.shape, context.shape);
+    assert_eq!(crowded.references, context.references);
+    assert_eq!(
+        context.join(&FlowValue::unknown()).references,
+        context.references
+    );
+    let other_leaf = context.project(&[Projection::Known("installContext".into())]);
+    assert_ne!(leaf.shape, other_leaf.shape);
+    assert_eq!(leaf.join(&other_leaf).shape, InputShape::Unknown);
+    assert_eq!(
+        leaf.join(&other_leaf)
+            .project(&[Projection::Known("accountId".into())])
+            .taint
+            .classification,
+        Classification::Unknown
+    );
+    assert_eq!(
+        context.join(&FlowValue::unknown()).shape,
+        InputShape::Absent
+    );
+    assert_eq!(
+        payload.join(&context).taint.classification,
+        Classification::Untrusted
+    );
+}
+
+#[test]
+fn input_schema_does_not_drop_computed_paths_or_trust_descendants_of_leaves() {
+    use crate::interp::InvocationContract;
+    let context = sources::root_argument::<NoFacts>(
+        InvocationContract::ForgeFunction,
+        1,
+        DefId::new(0),
+        DefId::new(1),
+    );
+    for path in [
+        vec![
+            Projection::Known("principal".into()),
+            Projection::Known("accountId".into()),
+            Projection::Known("nested".into()),
+        ],
+        vec![
+            Projection::Computed(crate::ir::Base::Var(VarId(5))),
+            Projection::Known("accountId".into()),
+        ],
+    ] {
+        assert_eq!(
+            context.project(&path).taint.classification,
+            Classification::Unknown
+        );
+    }
+    let envelope = sources::root_argument::<NoFacts>(
+        InvocationContract::ResolverCallback,
+        0,
+        DefId::new(0),
+        DefId::new(1),
+    );
+    assert_eq!(
+        envelope
+            .project(&[Projection::Computed(crate::ir::Base::Var(VarId(5)))])
+            .taint
+            .classification,
+        Classification::Untrusted
+    );
+}

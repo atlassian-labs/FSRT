@@ -1,5 +1,5 @@
 use super::{
-    Classification, FlowState, FlowValue, PolicyFacts,
+    Classification, FlowState, FlowValue, InputShape, PolicyFacts,
     semantics::*,
     sources::{FORGE_SOURCES, SourceContext, SourceDefinition},
 };
@@ -61,7 +61,7 @@ fn argument_value<'cx, P: FlowPolicy, C: Runner<'cx, State = FlowState<P::Facts>
     variable: &Variable,
     argument: DefId,
 ) -> FlowValue<P::Facts> {
-    source_value::<P>(&SourceContext {
+    let mut value = source_value::<P>(&SourceContext {
         env: interp.env(),
         body: interp.body(),
         function: def,
@@ -71,7 +71,9 @@ fn argument_value<'cx, P: FlowPolicy, C: Runner<'cx, State = FlowState<P::Facts>
         intrinsic: None,
         call: None,
     })
-    .unwrap_or_else(FlowValue::unknown)
+    .unwrap_or_else(FlowValue::unknown);
+    value.shape = InputShape::Unknown;
+    value
 }
 
 pub fn classify_variable<'cx, P: FlowPolicy, C: Runner<'cx, State = FlowState<P::Facts>>>(
@@ -104,7 +106,7 @@ fn classify_variable_base<'cx, P: FlowPolicy, C: Runner<'cx, State = FlowState<P
 ) -> FlowValue<P::Facts> {
     let state_taint = state.variable_with_aliases(interp.body(), def, variable);
     if let Some(value) = &state_taint
-        && !value.facts.is_unknown()
+        && (!value.facts.is_unknown() || value.shape.is_authoritative())
     {
         return value.clone();
     }
@@ -126,13 +128,52 @@ fn classify_variable_base<'cx, P: FlowPolicy, C: Runner<'cx, State = FlowState<P
         let result =
             definitions
                 .into_iter()
-                .fold(FlowValue::trusted(), |result, (location, rvalue)| {
+                .fold(FlowValue::BOTTOM, |result, (location, rvalue)| {
                     result.join(&classify_rvalue_inner::<P, C>(
                         interp, def, location, rvalue, state, visiting,
                     ))
                 });
         visiting.remove(&key);
         return result;
+    }
+
+    if !variable.projections.is_empty() {
+        let root = Variable::new(var);
+        let returned_fields = interp
+            .body()
+            .assignments_to(&root)
+            .filter_map(|(_, rvalue)| {
+                let Rvalue::Call(callee, _) = rvalue else {
+                    return None;
+                };
+                let (callee_def, callee_body) = interp.body().resolve_call(interp.env(), callee)?;
+                let final_state = interp.func_state(callee_def)?;
+                Some(
+                    returned_object_variables(callee_body)
+                        .into_iter()
+                        .map(|mut returned| {
+                            returned
+                                .projections
+                                .extend(variable.projections.iter().cloned());
+                            final_state
+                                .variable(callee_def, &returned)
+                                .unwrap_or_else(FlowValue::unknown)
+                        })
+                        .fold(FlowValue::BOTTOM, |left, right| left.join(&right)),
+                )
+            })
+            .reduce(|left, right| left.join(&right));
+        if let Some(value) = returned_fields {
+            visiting.remove(&key);
+            return value;
+        }
+        if interp.body().assignments_to(&root).next().is_some() {
+            let root_value = classify_variable_inner::<P, C>(interp, def, &root, state, visiting);
+            if matches!(root_value.shape, InputShape::Known { .. }) {
+                visiting.remove(&key);
+                return root_value.project(&variable.projections);
+            }
+        }
     }
 
     if let Some(kind) = interp.body().vars.get(var) {
@@ -212,7 +253,7 @@ fn join_operands<'cx, P: FlowPolicy, C: Runner<'cx, State = FlowState<P::Facts>>
 ) -> FlowValue<P::Facts> {
     operands
         .into_iter()
-        .fold(FlowValue::trusted(), |result, operand| {
+        .fold(FlowValue::BOTTOM, |result, operand| {
             result.join(&classify_operand::<P, C>(interp, def, &operand, state))
         })
 }
@@ -248,18 +289,16 @@ fn classify_rvalue_inner<'cx, P: FlowPolicy, C: Runner<'cx, State = FlowState<P:
     let mut value = match rvalue {
         Rvalue::Read(operand) | Rvalue::Unary(_, operand) => classify(operand, visiting),
         Rvalue::Bin(_, left, right) => classify(left, visiting).join(&classify(right, visiting)),
-        Rvalue::Array(elements) => elements
-            .iter()
-            .fold(FlowValue::trusted(), |value, operand| {
-                value.join(&classify(operand, visiting))
-            }),
+        Rvalue::Array(elements) => elements.iter().fold(FlowValue::BOTTOM, |value, operand| {
+            value.join(&classify(operand, visiting))
+        }),
         Rvalue::Template(template) => template
             .exprs
             .iter()
-            .fold(FlowValue::trusted(), |value, operand| {
+            .fold(FlowValue::BOTTOM, |value, operand| {
                 value.join(&classify(operand, visiting))
             }),
-        Rvalue::Phi(values) => values.iter().fold(FlowValue::trusted(), |value, (var, _)| {
+        Rvalue::Phi(values) => values.iter().fold(FlowValue::BOTTOM, |value, (var, _)| {
             value.join(&classify_variable_inner::<P, C>(
                 interp,
                 def,
@@ -286,24 +325,34 @@ fn classify_rvalue_inner<'cx, P: FlowPolicy, C: Runner<'cx, State = FlowState<P:
                     })
                     .unwrap_or_else(FlowValue::unknown)
             } else {
-                let args = operands
-                    .iter()
-                    .fold(FlowValue::trusted(), |value, operand| {
-                        value.join(&classify(operand, visiting))
-                    });
+                let args = operands.iter().fold(FlowValue::BOTTOM, |value, operand| {
+                    value.join(&classify(operand, visiting))
+                });
                 if is_numeric_builtin_call(interp, callee) {
                     // These proven JavaScript built-ins depend on their inputs;
                     // conversion itself is not an additional unknown source.
                     args
                 } else if let Some((receiver, _)) = method_receiver(callee) {
-                    classify_variable_inner::<P, C>(interp, def, &receiver, state, visiting)
-                        .join(&args)
+                    let receiver =
+                        classify_variable_inner::<P, C>(interp, def, &receiver, state, visiting);
+                    let result = receiver.join(&args);
+                    if receiver.shape.is_authoritative() {
+                        result.join(&FlowValue::unknown())
+                    } else {
+                        result
+                    }
                 } else {
                     FlowValue::unknown().join(&args)
                 }
             }
         }
     };
+    let preserves_shape = matches!(rvalue, Rvalue::Read(_) | Rvalue::Phi(_))
+        || matches!(rvalue, Rvalue::Call(callee, _) if interp.body().resolve_call(interp.env(), callee).is_some());
+    if !preserves_shape {
+        value.shape = value.shape.without_schema();
+        value.references.clear();
+    }
     if let Some(facts) = P::rvalue_facts(interp, def, location, rvalue) {
         value.facts = facts;
     }
@@ -336,6 +385,7 @@ impl<P: FlowPolicy> TaintDataflow<P> {
         for (suffix, value) in projections {
             for alias in Self::target_aliases(interp, target) {
                 let mut projected_target = alias;
+                projected_target.projections = target.projections.clone();
                 projected_target.projections.extend(suffix.iter().cloned());
                 state.insert_variable(def, &projected_target, value.clone());
             }
@@ -365,8 +415,16 @@ impl<P: FlowPolicy> TaintDataflow<P> {
         else {
             return;
         };
-        for (argument_def, operand) in callee_body.argument_defs.iter().zip(operands) {
-            let taint = classify_operand::<P, C>(interp, def, operand, state);
+        // Recursive calls must evaluate all supplied values in the caller's
+        // state before replacing any callee bindings.
+        let mut call_state = state.clone();
+        for (position, argument_def) in callee_body.argument_defs.iter().enumerate() {
+            let operand = operands.get(position).unwrap_or(&Operand::UNDEF);
+            let mut taint = classify_operand::<P, C>(interp, def, operand, state);
+            if callee_body.unsupported_arguments.contains(argument_def) {
+                taint.shape = taint.shape.without_schema();
+            }
+
             for (arg, kind) in callee_body.vars.iter_enumerated() {
                 let binding = match kind {
                     VarKind::Arg(binding)
@@ -375,19 +433,24 @@ impl<P: FlowPolicy> TaintDataflow<P> {
                     _ => None,
                 };
                 if binding == Some(argument_def) {
-                    state.insert_var(callee_def, arg, taint.clone());
+                    call_state.insert_assignment(
+                        callee_body,
+                        callee_def,
+                        &Variable::new(arg),
+                        taint.clone(),
+                    );
                     if let Operand::Var(source) = operand {
                         let projections = state.projections(def, source);
                         for (suffix, value) in projections {
                             let mut target = Variable::new(arg);
                             target.projections.extend(suffix);
-                            state.insert_variable(callee_def, &target, value);
+                            call_state.insert_variable(callee_def, &target, value);
                         }
                     }
                 }
             }
         }
-        let changed = interp.join_block_state(callee_def, STARTING_BLOCK, state);
+        let changed = interp.join_block_state(callee_def, STARTING_BLOCK, &call_state);
         self.needs_call.push((callee_def, changed));
     }
 
@@ -431,33 +494,32 @@ impl<P: FlowPolicy> TaintDataflow<P> {
         Self::insert_projections(interp, caller_def, target, projections, state);
     }
 
-    fn propagate_assignment_projections<'cx, C: Runner<'cx, State = FlowState<P::Facts>>>(
+    fn invalidate_call_inputs<'cx, C: Runner<'cx, State = FlowState<P::Facts>>>(
         &self,
         interp: &Interp<'cx, C>,
         def: DefId,
-        source: &Variable,
-        target: &Variable,
+        callee: &Operand,
+        operands: &[Operand],
         state: &mut FlowState<P::Facts>,
     ) {
-        let Base::Var(source_var) = source.base else {
-            return;
-        };
-        let mut projections = BTreeMap::<Vec<Projection>, FlowValue<P::Facts>>::new();
-        for ((owner, var, path), value) in &state.values {
-            if *owner != def
-                || *var != source_var
-                || path.len() <= source.projections.len()
-                || !path.starts_with(&source.projections)
-            {
-                continue;
+        let resolved = interp.body().resolve_call(interp.env(), callee);
+        let mut roots = Vec::new();
+        for (position, operand) in operands.iter().enumerate() {
+            let input = classify_operand::<P, C>(interp, def, operand, state);
+            if !resolved.is_some_and(|(callee, _)| {
+                input_is_read_only(interp.env(), callee, position, &mut HashSet::new())
+            }) {
+                roots.extend(input.references);
             }
-            let suffix = path[source.projections.len()..].to_vec();
-            projections
-                .entry(suffix)
-                .and_modify(|current| *current = current.join(value))
-                .or_insert_with(|| value.clone());
         }
-        Self::insert_projections(interp, def, target, projections, state);
+        if resolved.is_none()
+            && let Some((receiver, _)) = method_receiver(callee)
+        {
+            roots.extend(classify_variable::<P, C>(interp, def, &receiver, state).references);
+        }
+        for root in roots {
+            state.invalidate_input(root, None);
+        }
     }
 
     fn propagate_container_mutation<'cx, C: Runner<'cx, State = FlowState<P::Facts>>>(
@@ -483,7 +545,56 @@ impl<'cx, P: FlowPolicy> Dataflow<'cx> for TaintDataflow<P> {
     const REQUIRE_CALLEE_STATE_COVERS_CALLER: bool = false;
     const JOIN_FUNCTION_RETURN_STATES: bool = true;
 
-    fn with_interp<C: Runner<'cx, State = Self::State>>(_interp: &Interp<'cx, C>) -> Self {
+    fn with_interp<C: Runner<'cx, State = Self::State>>(interp: &Interp<'cx, C>) -> Self {
+        if let Some(root) = interp.entry().root
+            && interp.body().owner() == Some(root)
+        {
+            let body = interp.body();
+            let mut state = FlowState::BOTTOM;
+            state.reachable = true;
+            for (position, &argument) in body.argument_defs.iter().enumerate() {
+                let mut value = super::sources::root_argument::<P::Facts>(
+                    interp.entry().contract,
+                    position,
+                    root,
+                    argument,
+                );
+                if interp.entry().contract == crate::interp::InvocationContract::ForgeFunction
+                    && position == 0
+                {
+                    let source = match interp.entry().input_category {
+                        crate::interp::InputCategory::WebRequest => "http.request",
+                        crate::interp::InputCategory::ProductEvent => "forge.product.event",
+                        crate::interp::InputCategory::Payload => "entry.payload",
+                    };
+                    if let InputShape::Known { root, .. } = &mut value.shape {
+                        root.payload_source = source;
+                        value.references.clear();
+                        value.references.insert(*root);
+                    }
+                    value.taint.origins = super::Origins::EMPTY;
+                    value.taint.origins.insert(super::SourceOrigin {
+                        source,
+                        function: root,
+                        site: super::OriginSite::Argument(argument),
+                    });
+                }
+                if body.unsupported_arguments.contains(&argument) {
+                    value.shape = InputShape::Unknown;
+                    if value.taint.classification != Classification::Untrusted {
+                        value = FlowValue::unknown();
+                        value.shape = InputShape::Unknown;
+                    }
+                }
+                for (var, kind) in body.vars.iter_enumerated() {
+                    if matches!(kind, VarKind::Arg(binding) | VarKind::GlobalRef(binding) | VarKind::LocalDef(binding) if *binding == argument)
+                    {
+                        state.insert_var(root, var, value.clone());
+                    }
+                }
+            }
+            interp.join_block_state(root, STARTING_BLOCK, &state);
+        }
         Self {
             policy: std::marker::PhantomData,
             needs_call: vec![],
@@ -514,8 +625,22 @@ impl<'cx, P: FlowPolicy> Dataflow<'cx> for TaintDataflow<P> {
         mut state: Self::State,
     ) -> Self::State {
         state.reachable = true;
+        if let Inst::Assign(_, Rvalue::Intrinsic(_, operands))
+        | Inst::Expr(Rvalue::Intrinsic(_, operands)) = inst
+        {
+            let roots = operands
+                .iter()
+                .flat_map(|operand| {
+                    classify_operand::<P, C>(interp, def, operand, &state).references
+                })
+                .collect::<Vec<_>>();
+            for root in roots {
+                state.invalidate_input(root, None);
+            }
+        }
         if let Inst::Assign(target, rvalue) = inst {
             if let Rvalue::Call(callee, operands) = rvalue {
+                self.invalidate_call_inputs(interp, def, callee, operands, &mut state);
                 self.propagate_call_arguments(interp, def, callee, operands, &mut state);
                 self.propagate_container_mutation(interp, def, callee, operands, &mut state);
             }
@@ -524,17 +649,36 @@ impl<'cx, P: FlowPolicy> Dataflow<'cx> for TaintDataflow<P> {
             // that work and makes projected object assignments dominate runtime
             // on large entrypoint graphs.
             let taint = self.classify_rvalue(interp, def, loc, rvalue, &state);
+            let read_projections = match rvalue {
+                Rvalue::Read(Operand::Var(source)) => Some(state.projections(def, source)),
+                _ => None,
+            };
+            if !target.projections.is_empty() {
+                let mut receiver = target.clone();
+                let property = receiver.projections.pop().expect("projected assignment");
+                let input = classify_variable::<P, C>(interp, def, &receiver, &state);
+                let aliases = state.input_write_targets(input.shape, &property);
+                for root in input.references {
+                    state.invalidate_input(root, Some(&taint));
+                }
+                for (owner, alias) in aliases {
+                    state.insert_variable(owner, &alias, taint.clone());
+                }
+            }
             state.insert_assignment(interp.body(), def, target, taint);
             match rvalue {
                 Rvalue::Call(callee, _) => {
                     self.propagate_call_return_projections(interp, def, callee, target, &mut state);
                 }
-                Rvalue::Read(Operand::Var(source)) => {
-                    self.propagate_assignment_projections(interp, def, source, target, &mut state);
+                Rvalue::Read(_) => {
+                    if let Some(projections) = read_projections {
+                        Self::insert_projections(interp, def, target, projections, &mut state);
+                    }
                 }
                 _ => {}
             }
         } else if let Inst::Expr(Rvalue::Call(callee, operands)) = inst {
+            self.invalidate_call_inputs(interp, def, callee, operands, &mut state);
             self.propagate_call_arguments(interp, def, callee, operands, &mut state);
             self.propagate_container_mutation(interp, def, callee, operands, &mut state);
         }
@@ -608,4 +752,121 @@ impl<'cx, P: FlowPolicy> Dataflow<'cx> for TaintDataflow<P> {
             }
         }
     }
+}
+
+/// A deliberately conservative, bounded effect proof. Follow only reads and
+/// aliases of an argument. A write or an escape anywhere in its reachable local
+/// call graph rejects the proof. Cycles are allowed only if all their uses pass.
+fn input_is_read_only(
+    env: &crate::definitions::Environment,
+    def: DefId,
+    position: usize,
+    visiting: &mut HashSet<(DefId, usize)>,
+) -> bool {
+    if visiting.len() >= 128 {
+        return false;
+    }
+    if !visiting.insert((def, position)) {
+        return true;
+    }
+    let definition = env.def_ref(def);
+    let Some(body) = definition.as_body() else {
+        return false;
+    };
+    let Some(argument) = body.argument_defs.get(position) else {
+        return true;
+    };
+    let mut aliases: HashSet<VarId> = body.vars.iter_enumerated().filter_map(|(var, kind)| {
+        matches!(kind, VarKind::Arg(binding) | VarKind::GlobalRef(binding) | VarKind::LocalDef(binding) if binding == argument).then_some(var)
+    }).collect();
+    let is_alias = |variable: &Variable, aliases: &HashSet<VarId>| matches!(variable.base, Base::Var(var) if aliases.contains(&var));
+    let mut contained = aliases.clone();
+    loop {
+        let count = (aliases.len(), contained.len());
+        for (_, block) in body.iter_blocks_enumerated() {
+            for inst in block.iter() {
+                if let Inst::Assign(target, rvalue) = inst {
+                    let flows = match rvalue {
+                        Rvalue::Read(Operand::Var(source)) => {
+                            is_alias(source, &aliases)
+                                || (!source.projections.is_empty() && is_alias(source, &contained))
+                        }
+                        Rvalue::Phi(values) => values.iter().any(|(var, _)| aliases.contains(var)),
+                        Rvalue::Call(_, args) => args.iter().any(
+                            |arg| matches!(arg, Operand::Var(var) if is_alias(var, &contained)),
+                        ),
+                        _ => false,
+                    };
+                    let contains = flows
+                        || match rvalue {
+                            Rvalue::Read(Operand::Var(source)) => is_alias(source, &contained),
+                            Rvalue::Phi(values) => {
+                                values.iter().any(|(var, _)| contained.contains(var))
+                            }
+                            Rvalue::Array(args) => args.iter().any(
+                                |arg| matches!(arg, Operand::Var(var) if is_alias(var, &contained)),
+                            ),
+                            _ => false,
+                        };
+                    if let Base::Var(var) = target.base {
+                        if flows && target.projections.is_empty() {
+                            aliases.insert(var);
+                            if let Some(versions) = body.binding_variables(target) {
+                                aliases.extend(versions);
+                            }
+                        }
+                        if contains {
+                            contained.insert(var);
+                            if let Some(versions) = body.binding_variables(target) {
+                                contained.extend(versions);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (aliases.len(), contained.len()) == count {
+            break;
+        }
+    }
+    for (_, block) in body.iter_blocks_enumerated() {
+        for inst in block.iter() {
+            let rvalue = match inst {
+                Inst::Assign(target, value) => {
+                    if (!target.projections.is_empty() && is_alias(target, &aliases))
+                        || (target.projections.len() > 1 && is_alias(target, &contained))
+                    {
+                        return false;
+                    }
+                    value
+                }
+                Inst::Expr(value) => value,
+            };
+            if let Rvalue::Call(callee, args) = rvalue {
+                let resolved = body.resolve_call(env, callee);
+                if resolved.is_none()
+                    && let Some((receiver, _)) = method_receiver(callee)
+                    && is_alias(&receiver, &contained)
+                {
+                    return false;
+                }
+                for (index, arg) in args.iter().enumerate() {
+                    if matches!(arg, Operand::Var(var) if is_alias(var, &contained))
+                        && !resolved.is_some_and(|(callee, _)| {
+                            input_is_read_only(env, callee, index, visiting)
+                        })
+                    {
+                        return false;
+                    }
+                }
+            } else if let Rvalue::Intrinsic(_, args) = rvalue
+                && args
+                    .iter()
+                    .any(|arg| matches!(arg, Operand::Var(var) if is_alias(var, &contained)))
+            {
+                return false;
+            }
+        }
+    }
+    true
 }
