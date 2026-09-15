@@ -33,13 +33,42 @@ impl<F: PolicyFacts> JoinSemiLattice for FlowState<F> {
             return true;
         }
         let mut changed = false;
+        let original = self.clone();
+        for ((owner, var, path), value) in &mut self.values {
+            if !path.is_empty()
+                && value.shape.is_authoritative()
+                && other.values.contains_key(&(*owner, *var, vec![]))
+                && !other.values.contains_key(&(*owner, *var, path.clone()))
+            {
+                let mut variable = Variable::new(*var);
+                variable.projections.extend(path.iter().cloned());
+                let alternative = other
+                    .variable(*owner, &variable)
+                    .unwrap_or_else(FlowValue::unknown);
+                changed |= value.join_changed(&alternative);
+            }
+        }
         for (key, value) in &other.values {
             match self.values.entry(key.clone()) {
                 std::collections::btree_map::Entry::Occupied(mut entry) => {
                     changed |= entry.get_mut().join_changed(value);
                 }
                 std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(value.clone());
+                    let value = if key.2.is_empty()
+                        || !value.shape.is_authoritative()
+                        || !original.values.contains_key(&(key.0, key.1, vec![]))
+                    {
+                        value.clone()
+                    } else {
+                        let mut variable = Variable::new(key.1);
+                        variable.projections.extend(key.2.iter().cloned());
+                        value.join(
+                            &original
+                                .variable(key.0, &variable)
+                                .unwrap_or_else(FlowValue::unknown),
+                        )
+                    };
+                    entry.insert(value);
                     changed = true;
                 }
             }
@@ -57,6 +86,108 @@ impl<F: PolicyFacts> JoinSemiLattice for FlowState<F> {
 }
 
 impl<F: PolicyFacts> FlowState<F> {
+    pub(crate) fn input_write_targets(
+        &self,
+        receiver: super::InputShape,
+        property: &Projection,
+    ) -> Vec<(DefId, Variable)> {
+        let super::InputShape::Known {
+            root,
+            schema,
+            node,
+            invalid: super::Classification::Trusted,
+        } = receiver
+        else {
+            return vec![];
+        };
+        if !matches!(property, Projection::Known(_)) || schema.nodes[node].properties.is_empty() {
+            return vec![];
+        }
+        self.values
+            .iter()
+            .filter_map(|((owner, var, path), value)| {
+                if !path.is_empty() {
+                    return None;
+                }
+                let super::InputShape::Known {
+                    root: candidate_root,
+                    schema: candidate_schema,
+                    node: start,
+                    invalid: super::Classification::Trusted,
+                } = value.shape
+                else {
+                    return None;
+                };
+                if root != candidate_root
+                    || schema != candidate_schema
+                    || schema.nodes[start].properties.is_empty()
+                {
+                    return None;
+                }
+                let mut queue = std::collections::VecDeque::from([(start, Vec::new())]);
+                let mut seen = BTreeSet::new();
+                while let Some((current, prefix)) = queue.pop_front() {
+                    if !seen.insert(current) {
+                        continue;
+                    }
+                    if current == node {
+                        let mut variable = Variable::new(*var);
+                        variable.projections.extend(prefix);
+                        variable.projections.push(property.clone());
+                        return Some((*owner, variable));
+                    }
+                    for (name, next) in schema.nodes[current].properties {
+                        if schema.nodes[*next].reference {
+                            let mut path = prefix.clone();
+                            path.push(Projection::Known((*name).into()));
+                            queue.push_back((*next, path));
+                        }
+                    }
+                }
+                None
+            })
+            .collect()
+    }
+
+    pub(crate) fn invalidate_input(
+        &mut self,
+        root: super::InputRoot,
+        incoming: Option<&FlowValue<F>>,
+    ) {
+        let objects: BTreeSet<_> = self
+            .values
+            .iter()
+            .filter_map(|((owner, var, path), value)| {
+                (path.is_empty() && value.references.contains(&root)).then_some((*owner, *var))
+            })
+            .collect();
+        // Drop cached field overrides on actual aliases. Detached scalar copies
+        // (including scalar fields of newly constructed objects) stay snapshots.
+        self.values
+            .retain(|(owner, var, path), _| path.is_empty() || !objects.contains(&(*owner, *var)));
+        for value in self.values.values_mut() {
+            if value.references.contains(&root) {
+                if let super::InputShape::Known { invalid, .. } = &mut value.shape {
+                    *invalid = invalid.join(&super::Classification::Unknown);
+                    if let Some(incoming) = incoming {
+                        *invalid = invalid.join(&incoming.taint.classification);
+                    }
+                } else {
+                    value.shape = super::InputShape::Unknown;
+                }
+                value.taint.classification = value
+                    .taint
+                    .classification
+                    .join(&super::Classification::Unknown);
+                value.facts = F::from_classification(value.taint.classification);
+                if let Some(incoming) = incoming {
+                    value.taint = value.taint.join(&incoming.taint);
+                    value.facts = value.facts.join(&incoming.facts);
+                }
+            }
+        }
+    }
+
     pub(crate) fn key(def: DefId, variable: &Variable) -> Option<FlowVarKey> {
         let Base::Var(var) = variable.base else {
             return None;
@@ -117,12 +248,26 @@ impl<F: PolicyFacts> FlowState<F> {
         } else if let Some(key) = Self::key(def, variable) {
             self.refined.remove(&key);
         }
+        let aliases = body
+            .binding_variables(variable)
+            .map(|items| items.to_vec())
+            .unwrap_or_else(|| match variable.base {
+                Base::Var(var) => vec![var],
+                _ => vec![],
+            });
+        self.values.retain(|(owner, var, path), _| {
+            *owner != def || !aliases.contains(var) || !path.starts_with(&variable.projections)
+        });
         self.insert_variable(def, variable, value.clone());
         if let Base::Var(var) = variable.base {
             let root = (def, var, vec![]);
             self.values
                 .entry(root)
-                .and_modify(|aggregate| *aggregate = aggregate.join(&value))
+                .and_modify(|aggregate| {
+                    let shape = aggregate.shape;
+                    *aggregate = aggregate.join(&value);
+                    aggregate.shape = shape;
+                })
                 .or_insert(value);
         }
     }
@@ -132,10 +277,11 @@ impl<F: PolicyFacts> FlowState<F> {
             return None;
         };
         let projections: Vec<_> = variable.projections.iter().cloned().collect();
-        self.values
-            .get(&(def, var, projections))
-            .cloned()
-            .or_else(|| self.values.get(&(def, var, vec![])).cloned())
+        (0..=projections.len()).rev().find_map(|length| {
+            self.values
+                .get(&(def, var, projections[..length].to_vec()))
+                .map(|value| value.project(&projections[length..]))
+        })
     }
 
     pub(crate) fn exact_variable(&self, def: DefId, variable: &Variable) -> Option<FlowValue<F>> {

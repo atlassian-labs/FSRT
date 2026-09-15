@@ -138,6 +138,9 @@ struct ResolvedEntryPoint<'a> {
     path: PathBuf,
     module: ModId,
     def_id: DefId,
+    invocation_def: DefId,
+    product_events: Vec<&'a str>,
+    scheduled: bool,
     webtrigger: bool,
     invokable: bool,
     admin: bool,
@@ -517,6 +520,8 @@ pub(crate) fn scan_directory<'a>(
                 invokable: entrypoint.invokable,
                 web_trigger: entrypoint.web_trigger,
                 admin: entrypoint.admin,
+                product_events: entrypoint.product_events,
+                scheduled: entrypoint.scheduled,
             })
         });
 
@@ -617,11 +622,19 @@ pub(crate) fn scan_directory<'a>(
             // SQL source state is entrypoint-specific. A fresh interpreter prevents
             // one resolver or trigger from tainting an unrelated entrypoint.
             let mut sql_interp = interpreters.create::<SqlInjectionChecker>(false);
-            if let Err(err) = sql_interp.run_checker_isolated_resolvers(
-                func.def_id,
+            sql_interp.set_input_category(if func.webtrigger {
+                forge_analyzer::interp::InputCategory::WebRequest
+            } else if !func.product_events.is_empty() {
+                forge_analyzer::interp::InputCategory::ProductEvent
+            } else {
+                forge_analyzer::interp::InputCategory::Payload
+            });
+            if let Err(err) = sql_interp.run_checker_with_contract(
+                func.invocation_def,
                 &mut sql_checker,
                 func.path.clone(),
                 func.func_name.to_owned(),
+                forge_analyzer::interp::InvocationContract::ForgeFunction,
             ) {
                 warn!("error while running SQL injection checker: {err}");
             }

@@ -1,7 +1,7 @@
 use super::value::{Classification, OriginSite, SourceOrigin};
 use crate::{
     definitions::{DefId, Environment},
-    ir::{Base, Body, Inst, Intrinsic, Location, Operand, Projection, Rvalue, VarKind, Variable},
+    ir::{Base, Body, Inst, Intrinsic, Location, Operand, Rvalue, VarKind, Variable},
 };
 
 pub struct SourceContext<'a> {
@@ -16,7 +16,8 @@ pub struct SourceContext<'a> {
 }
 
 /// One definition owns source recognition, default trust, and its evidence label.
-/// Rules are ordered: specific platform properties precede broad input rules.
+/// Invocation entries provide labels; explicit root contracts seed their facts.
+/// Predicates recognize result sources and unresolved argument evidence.
 pub struct SourceDefinition {
     pub id: &'static str,
     pub label: &'static str,
@@ -71,76 +72,42 @@ impl SourceDefinition {
     }
 }
 
-fn context_property<'a>(context: &SourceContext<'a>) -> Option<Option<&'a str>> {
-    let (arg, variable) = context.argument?;
-    // Preserve the existing supported context-projection behavior. This is a
-    // platform source convention, not a property-name sanitizer.
-    let names = variable
-        .projections
-        .iter()
-        .filter_map(|p| match p {
-            Projection::Known(name) => Some(name.as_ref()),
-            Projection::Computed(_) => None,
-        })
-        .collect::<Vec<_>>();
-    if context.env.def_name(arg) == "context" {
-        Some(names.first().copied())
-    } else if names.first() == Some(&"context") {
-        Some(names.get(1).copied())
-    } else {
-        None
-    }
-}
-fn is_payload(context: &SourceContext<'_>) -> bool {
-    context.argument.is_some_and(|(arg, variable)| {
-        context.env.def_name(arg) == "payload"
-            || variable
-                .projections
-                .iter()
-                .any(|p| matches!(p, Projection::Known(name) if name == "payload"))
-    })
-}
-
 pub static FORGE_SOURCES: &[SourceDefinition] = &[
     SourceDefinition {
         id: "forge.context.approved",
-        label: "resolver context",
+        label: "Forge invocation context",
         classification: Classification::Trusted,
-        matches: |ctx| {
-            matches!(
-                context_property(ctx),
-                Some(Some(
-                    "installContext" | "accountId" | "license" | "jobId" | "installation"
-                ))
-            )
-        },
+        matches: |_| false,
     },
     SourceDefinition {
         id: "forge.context.unknown",
-        label: "resolver context",
+        label: "Forge invocation context",
         classification: Classification::Unknown,
-        matches: |ctx| context_property(ctx).is_some(),
+        matches: |_| false,
     },
     SourceDefinition {
         id: "forge.resolver.payload",
         label: "resolver payload",
         classification: Classification::Untrusted,
-        matches: |ctx| ctx.is_resolver && is_payload(ctx),
+        matches: |_| false,
     },
     SourceDefinition {
         id: "http.request",
         label: "HTTP request data",
         classification: Classification::Untrusted,
-        matches: |ctx| {
-            ctx.argument
-                .is_some_and(|(arg, _)| matches!(ctx.env.def_name(arg), "req" | "request"))
-        },
+        matches: |_| false,
+    },
+    SourceDefinition {
+        id: "forge.product.event",
+        label: "product event payload",
+        classification: Classification::Untrusted,
+        matches: |_| false,
     },
     SourceDefinition {
         id: "entry.payload",
         label: "entrypoint input",
         classification: Classification::Untrusted,
-        matches: is_payload,
+        matches: |_| false,
     },
     SourceDefinition {
         id: "entry.unknown",
@@ -177,3 +144,261 @@ pub static FORGE_SOURCES: &[SourceDefinition] = &[
         matches: |ctx| matches!(ctx.intrinsic, Some(Intrinsic::StorageRead)),
     },
 ];
+
+use super::{FlowValue, InputNode, InputRoot, InputSchema, InputShape, PolicyFacts};
+use crate::interp::InvocationContract;
+
+/// Only invocation discovery may request a platform seed. Helpers receive their
+/// callers' values, and unresolved invocations receive no schema guarantee.
+pub(crate) fn root_argument<F: PolicyFacts>(
+    contract: InvocationContract,
+    position: usize,
+    function: DefId,
+    argument: DefId,
+) -> FlowValue<F> {
+    let (schema, node) = match (contract, position) {
+        (InvocationContract::ForgeFunction, 0) => (&ORDINARY_INPUT, 2),
+        (InvocationContract::ForgeFunction, 1) => (&ORDINARY_INPUT, 0),
+        (InvocationContract::ResolverCallback, 0) => (&RESOLVER_INPUT, 6),
+        _ => {
+            let mut value = FlowValue::source(
+                Classification::Unknown,
+                SourceOrigin {
+                    source: "entry.unknown",
+                    function,
+                    site: OriginSite::Argument(argument),
+                },
+            );
+            value.shape = InputShape::Unknown;
+            return value;
+        }
+    };
+    let mut value = FlowValue::source(
+        schema.nodes[node].classification,
+        SourceOrigin {
+            source: schema.nodes[node].source,
+            function,
+            site: OriginSite::Argument(argument),
+        },
+    );
+    let root = InputRoot {
+        function,
+        argument,
+        payload_source: schema.nodes[node].source,
+    };
+    value.references.insert(root);
+    value.shape = InputShape::Known {
+        root,
+        schema,
+        node,
+        invalid: Classification::Trusted,
+    };
+    value
+}
+
+const APPROVED_SCALAR: InputNode = InputNode {
+    classification: Classification::Trusted,
+    properties: &[],
+    other: 1,
+    computed: 1,
+    source: "forge.context.approved",
+    reference: false,
+};
+
+static ORDINARY_INPUT: InputSchema = InputSchema {
+    name: "ORDINARY_INPUT",
+    nodes: &[
+        InputNode {
+            classification: Classification::Unknown,
+            properties: &[
+                ("installContext", 3),
+                ("installation", 4),
+                ("license", 7),
+                ("principal", 8),
+            ],
+            other: 1,
+            computed: 1,
+            source: "forge.context.unknown",
+            reference: true,
+        },
+        InputNode {
+            classification: Classification::Unknown,
+            properties: &[],
+            other: 1,
+            computed: 1,
+            source: "forge.context.unknown",
+            reference: true,
+        },
+        InputNode {
+            classification: Classification::Untrusted,
+            properties: &[],
+            other: 2,
+            computed: 2,
+            source: "entry.payload",
+            reference: true,
+        },
+        APPROVED_SCALAR,
+        InputNode {
+            classification: Classification::Unknown,
+            properties: &[("ari", 5)],
+            other: 1,
+            computed: 1,
+            source: "forge.context.unknown",
+            reference: true,
+        },
+        InputNode {
+            classification: Classification::Unknown,
+            properties: &[("installationId", 9)],
+            other: 1,
+            computed: 1,
+            source: "forge.context.unknown",
+            reference: true,
+        },
+        InputNode {
+            classification: Classification::Untrusted,
+            properties: &[("payload", 2), ("context", 0)],
+            other: 1,
+            computed: 2,
+            source: "forge.resolver.payload",
+            reference: true,
+        },
+        InputNode {
+            classification: Classification::Unknown,
+            properties: &[
+                ("active", 11),
+                ("billingPeriod", 12),
+                ("ccpEntitlementId", 13),
+                ("ccpEntitlementSlug", 14),
+                ("isEvaluation", 15),
+                ("subscriptionEndDate", 16),
+                ("supportEntitlementNumber", 17),
+                ("trialEndDate", 18),
+                ("type", 19),
+                ("isActive", 20),
+                ("capabilitySet", 21),
+            ],
+            other: 1,
+            computed: 1,
+            source: "forge.context.unknown",
+            reference: true,
+        },
+        InputNode {
+            classification: Classification::Unknown,
+            properties: &[("accountId", 10)],
+            other: 1,
+            computed: 1,
+            source: "forge.context.unknown",
+            reference: true,
+        },
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+    ],
+};
+
+static RESOLVER_INPUT: InputSchema = InputSchema {
+    name: "RESOLVER_INPUT",
+    nodes: &[
+        InputNode {
+            classification: Classification::Unknown,
+            properties: &[
+                ("installContext", 3),
+                ("installation", 4),
+                ("license", 7),
+                ("accountId", 10),
+            ],
+            other: 1,
+            computed: 1,
+            source: "forge.context.unknown",
+            reference: true,
+        },
+        InputNode {
+            classification: Classification::Unknown,
+            properties: &[],
+            other: 1,
+            computed: 1,
+            source: "forge.context.unknown",
+            reference: true,
+        },
+        InputNode {
+            classification: Classification::Untrusted,
+            properties: &[],
+            other: 2,
+            computed: 2,
+            source: "forge.resolver.payload",
+            reference: true,
+        },
+        APPROVED_SCALAR,
+        InputNode {
+            classification: Classification::Unknown,
+            properties: &[("ari", 5)],
+            other: 1,
+            computed: 1,
+            source: "forge.context.unknown",
+            reference: true,
+        },
+        InputNode {
+            classification: Classification::Unknown,
+            properties: &[("installationId", 9)],
+            other: 1,
+            computed: 1,
+            source: "forge.context.unknown",
+            reference: true,
+        },
+        InputNode {
+            classification: Classification::Untrusted,
+            properties: &[("payload", 2), ("context", 0)],
+            other: 1,
+            computed: 2,
+            source: "forge.resolver.payload",
+            reference: true,
+        },
+        InputNode {
+            classification: Classification::Unknown,
+            properties: &[
+                ("active", 11),
+                ("billingPeriod", 12),
+                ("ccpEntitlementId", 13),
+                ("ccpEntitlementSlug", 14),
+                ("isEvaluation", 15),
+                ("subscriptionEndDate", 16),
+                ("supportEntitlementNumber", 17),
+                ("trialEndDate", 18),
+                ("type", 19),
+            ],
+            other: 1,
+            computed: 1,
+            source: "forge.context.unknown",
+            reference: true,
+        },
+        InputNode {
+            classification: Classification::Unknown,
+            properties: &[],
+            other: 1,
+            computed: 1,
+            source: "forge.context.unknown",
+            reference: true,
+        },
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+        APPROVED_SCALAR,
+    ],
+};
