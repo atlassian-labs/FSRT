@@ -215,7 +215,6 @@ impl<F: PolicyFacts> FlowState<F> {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn is_refined(
         &self,
         body: &crate::ir::Body,

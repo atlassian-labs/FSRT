@@ -31,6 +31,18 @@ impl Vulnerability {
     pub fn description(&self) -> &str {
         &self.description
     }
+
+    pub fn severity(&self) -> Severity {
+        self.severity
+    }
+
+    pub fn proof(&self) -> &str {
+        &self.proof
+    }
+
+    pub fn marketplace_security_requirement(&self) -> &str {
+        self.marketplace_security_requirement
+    }
 }
 
 pub trait IntoVuln {
