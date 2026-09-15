@@ -175,6 +175,7 @@ pub trait Dataflow<'cx>: Sized {
             Rvalue::Unary(_, _) => initial_state,
             Rvalue::Bin(_, _, _) => initial_state,
             Rvalue::Read(_) => initial_state,
+            Rvalue::Array(_) => initial_state,
             Rvalue::Phi(_) => initial_state,
             Rvalue::Template(_) => initial_state,
         }
@@ -194,7 +195,13 @@ pub trait Dataflow<'cx>: Sized {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
             Inst::Assign(var, rvalue) => {
-                interp.add_value_to_definition(def, var.clone(), rvalue.clone());
+                // Array summaries are retained for opt-in flow analyses. The shared value engine historically
+                // ignored array values; inserting every aggregate here adds no
+                // precision for existing checkers and is prohibitively expensive
+                // in debug builds of bundled applications.
+                if !matches!(rvalue, Rvalue::Array(_)) {
+                    interp.add_value_to_definition(def, var.clone(), rvalue.clone());
+                }
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
         }
@@ -286,6 +293,7 @@ pub trait Runner<'cx>: Sized {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         def: DefId,
+        loc: Location,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State>;
@@ -293,9 +301,22 @@ pub trait Runner<'cx>: Sized {
     fn visit_call(
         &mut self,
         interp: &Interp<'cx, Self>,
+        caller: DefId,
         callee: &'cx Operand,
         _args: &'cx [Operand],
-        block: BasicBlockId,
+        loc: Location,
+        curr_state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        self.super_visit_call(interp, caller, callee, _args, loc, curr_state)
+    }
+
+    fn super_visit_call(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        caller: DefId,
+        callee: &'cx Operand,
+        _args: &'cx [Operand],
+        loc: Location,
         curr_state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
         let Some((callee, body)) = interp.body().resolve_call(interp.env(), callee) else {
@@ -306,7 +327,7 @@ pub trait Runner<'cx>: Sized {
         if func_state < *curr_state || !interp.checker_visit(callee) {
             return ControlFlow::Continue(curr_state.clone());
         }
-        interp.push_frame(callee, block);
+        interp.push_frame(caller, loc.block, loc.stmt as usize);
         let res = self.visit_body(interp, callee, body, curr_state);
         interp.pop_frame();
         // FIXME: Should probably join instead of relying on the caller to propogate state
@@ -335,18 +356,26 @@ pub trait Runner<'cx>: Sized {
         interp: &Interp<'cx, Self>,
         rvalue: &'cx Rvalue,
         def: DefId,
-        id: BasicBlockId,
+        loc: Location,
         curr_state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
         trace!("visiting rvalue {rvalue:?} with {curr_state:?}");
         match rvalue {
-            Rvalue::Intrinsic(intrinsic, operands) => {
-                self.visit_intrinsic(interp, intrinsic, def, curr_state, Some(operands.clone()))
+            Rvalue::Intrinsic(intrinsic, operands) => self.visit_intrinsic(
+                interp,
+                intrinsic,
+                def,
+                loc,
+                curr_state,
+                Some(operands.clone()),
+            ),
+            Rvalue::Call(callee, args) => {
+                self.visit_call(interp, def, callee, args, loc, curr_state)
             }
-            Rvalue::Call(callee, args) => self.visit_call(interp, callee, args, id, curr_state),
             Rvalue::Unary(_, _)
             | Rvalue::Bin(_, _, _)
             | Rvalue::Read(_)
+            | Rvalue::Array(_)
             | Rvalue::Phi(_)
             | Rvalue::Template(_) => ControlFlow::Continue(curr_state.clone()),
         }
@@ -362,11 +391,14 @@ pub trait Runner<'cx>: Sized {
     ) -> ControlFlow<(), Self::State> {
         interp.runner_visited.borrow_mut().insert((def, id));
         let mut curr_state = interp.block_state(def, id).join(curr_state);
-        for stmt in block {
+        for (inst_idx, stmt) in block.iter().enumerate() {
+            let loc = Location::new(id, inst_idx as u32);
             match stmt {
-                Inst::Expr(r) => curr_state = self.visit_rvalue(interp, r, def, id, &curr_state)?,
+                Inst::Expr(r) => {
+                    curr_state = self.visit_rvalue(interp, r, def, loc, &curr_state)?
+                }
                 Inst::Assign(_, r) => {
-                    curr_state = self.visit_rvalue(interp, r, def, id, &curr_state)?
+                    curr_state = self.visit_rvalue(interp, r, def, loc, &curr_state)?
                 }
             }
         }
@@ -1045,11 +1077,11 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    fn push_frame(&self, def: DefId, block: BasicBlockId) {
+    fn push_frame(&self, def: DefId, block: BasicBlockId, inst_idx: usize) {
         self.callstack.borrow_mut().push(Frame {
             calling_function: def,
             block,
-            inst_idx: 0,
+            inst_idx,
         });
     }
 

@@ -175,12 +175,13 @@ impl<'a> ForgeProjectTrait<'a> for MockForgeProject<'a> {
     fn load_file(
         &self,
         p: impl AsRef<Path>,
-        _: Arc<SourceMap>,
+        source_map: Arc<SourceMap>,
     ) -> std::io::Result<Arc<SourceFile>> {
-        self.files_name_to_source
+        let source = self
+            .files_name_to_source
             .get(p.as_ref())
-            .cloned()
-            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+        Ok(source_map.new_source_file(source.name.clone(), source.src.as_ref().clone()))
     }
 
     fn get_paths(&self) -> HashSet<PathBuf> {
