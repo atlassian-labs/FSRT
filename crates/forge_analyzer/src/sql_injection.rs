@@ -88,36 +88,25 @@ impl PolicyFacts for SqlTextSafety {
 
 fn sql_sink(env: &Environment, body: &crate::ir::Body, location: Location) -> Option<SqlSink> {
     let facts = body.call_facts(location)?;
-    let method = facts.path.iter().rev().find_map(|part| match part {
-        CallPathPart::Property(name) => Some(name.as_ref()),
-        _ => None,
-    })?;
-    let sink = match method {
-        "prepare" => SqlSink::Prepare,
-        "executeRaw" => SqlSink::ExecuteRaw,
-        "enqueue" => {
-            let imported_runner = matches!(&facts.import, Some((module, ImportKind::Named(name))) if module == "@forge/sql" && name == "migrationRunner");
-            let named_runner = facts.path.iter().any(
-                |part| matches!(part, CallPathPart::Property(name) if name == "migrationRunner"),
-            ) || facts
-                .root
-                .is_some_and(|root| env.def_name(root).contains("migrationRunner"));
-            if !imported_runner && !named_runner {
-                return None;
-            }
-            SqlSink::MigrationEnqueue
-        }
-        _ => return None,
+    // Match the actual terminal method, never an earlier known path component.
+    let CallPathPart::Property(method) = facts.path.last()? else {
+        return None;
     };
-    // Only candidate methods pay for the bounded provenance walk.
-    if facts
-        .import
-        .as_ref()
-        .is_some_and(|(module, _)| module != "@forge/sql")
-    {
+    if !matches!(method.as_ref(), "prepare" | "executeRaw" | "enqueue") {
         return None;
     }
-    (!call_has_local_receiver(env, facts)).then_some(sink)
+    let (module, kind) = env.call_import(body, location)?;
+    if module != "@forge/sql" {
+        return None;
+    }
+    match method.as_ref() {
+        "prepare" => Some(SqlSink::Prepare),
+        "executeRaw" => Some(SqlSink::ExecuteRaw),
+        "enqueue" if matches!(kind, ImportKind::Named(name) if name == "migrationRunner") => {
+            Some(SqlSink::MigrationEnqueue)
+        }
+        _ => None,
+    }
 }
 
 static SQL_SOURCES: &[SourceDefinition] = &[SourceDefinition {
@@ -938,8 +927,8 @@ impl SqlInjectionChecker {
     /// Whether any lowered call can be a SQL sink under the reporting rules.
     ///
     /// Check every body, including helpers and closures: a sink need not occur
-    /// directly in an entrypoint. This does not require resolved import provenance
-    /// and performs no taint analysis.
+    /// directly in an entrypoint. This uses the same import-provenance requirements
+    /// as reporting and performs no taint analysis.
     pub fn has_candidate_sinks(env: &Environment) -> bool {
         env.bodies().any(|body| {
             body.iter_blocks_enumerated().any(|(block, data)| {

@@ -78,10 +78,32 @@ parts without embedding AST expressions. Candidate API matching belongs to the
 scanner. Immutable receiver provenance is cached lazily only after a scanner asks
 for it. This cache contains no resolver-specific taint and survives isolation. Finalized IR assignment locations are also indexed lazily, avoiding repeated whole-body scans during propagation. Like the existing CFG caches, these indexes are analysis-time views of immutable, lowered IR.
 
+Import recovery follows finalized IR reads, destructuring projections, object
+literal fields, and agreeing assignment alternatives. This recognizes literal,
+unshadowed `require('@forge/sql')` bindings carried through wrappers such as
+`storage = { sql, migrationRunner }`, including renamed bindings and ESM values
+inside the same wrappers. Both SQL candidate gating and reporting use this lookup;
+all three SQL sink types require confirmed `@forge/sql` provenance. `enqueue`
+additionally requires the identified named export `migrationRunner`. Only a known
+terminal API method is matched; receiver names never establish a SQL sink.
+
+Recovery is deliberately flow-insensitive: all relevant writes must agree, so a
+conflicting assignment can suppress recognition even if it occurs after a call.
+An alias-component index invalidates recovered provenance for property writes
+outside literal initialization and for values passed as call arguments. Object
+spreads, accessors, methods, and computed keys make a literal opaque to this
+lookup. Dynamic module arguments, shadowed loaders, arbitrary factory returns,
+and transpiler loader wrappers are unresolved. This is bounded import recovery,
+not a general JavaScript module executor or points-to heap. Direct ESM calls use
+this same callee lookup, including namespace projections and mutation checks;
+root import facts do not bypass it. SQL sink matching does not use the separate
+local-receiver heuristic.
+
 The engine never mirrors assignments or calls into `ValueManager`. Array literals
 remain one instruction; the shared value engine continues to skip them. Constant-phi
 expansion deduplicates input alternatives but has no fixed combination cap. The
-eight-step local receiver search and cyclic alias protection remain in place.
+import recovery walk uses cyclic alias protection, a depth limit of 32, and a
+budget of 1,024 variable visits per call. The old local-receiver search is removed.
 Source and report-path limits remain eight.
 
 ## Validation

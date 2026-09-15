@@ -2640,7 +2640,11 @@ fn sql_injection_candidate_gate_uses_lowered_sink_recognition() {
         ),
         (
             "export function run(payload) { sql.executeRaw(payload.query); }",
-            true,
+            false,
+        ),
+        (
+            "export function run(payload) { sql.prepare(payload.query); }",
+            false,
         ),
         (
             "import { migrationRunner as migrations } from '@forge/sql'; export function run(payload) { migrations.enqueue('migration', payload.query); }",
@@ -2648,6 +2652,22 @@ fn sql_injection_candidate_gate_uses_lowered_sink_recognition() {
         ),
         (
             "const sql_1 = tslib_1.__importStar(require('@forge/sql')); export function run(payload) { sql_1.default.executeRaw(payload.query); }",
+            false,
+        ),
+        (
+            "const { sql } = require('@forge/sql'); let storage; storage = { sql, isForge: true }; export function run(payload) { storage.sql.prepare(payload.query); }",
+            true,
+        ),
+        (
+            "const { sql } = require('another-sql-library'); const storage = { sql }; export function run(payload) { storage.sql.prepare(payload.query); }",
+            false,
+        ),
+        (
+            "export function run(payload, require) { const { sql } = require('@forge/sql'); sql.prepare(payload.query); }",
+            false,
+        ),
+        (
+            "const { migrationRunner: migrations } = require('@forge/sql'); const storage = { migrations }; export function run(payload) { storage.migrations.enqueue('migration', payload.query); }",
             true,
         ),
         (
@@ -2677,6 +2697,253 @@ fn sql_injection_candidate_gate_uses_lowered_sink_recognition() {
             SqlInjectionChecker::has_candidate_sinks(&lowered.env),
             expected,
             "unexpected SQL candidate gate result for: {source}",
+        );
+    }
+}
+
+#[test]
+fn sql_injection_requires_provenance_for_every_sink() {
+    use forge_analyzer::sql_injection::SqlInjectionChecker;
+    use forge_permission_resolver::permissions_resolver::PermMap;
+    for (setup, call, high) in [
+        ("", "migrationRunner.enqueue('id', payload.query)", 0),
+        ("", "fake_migrationRunner.enqueue('id', payload.query)", 0),
+        ("", "client.migrationRunner.enqueue('id', payload.query)", 0),
+        (
+            "import { migrationRunner } from 'other-library';",
+            "migrationRunner.enqueue('id', payload.query)",
+            0,
+        ),
+        (
+            "import { queue as migrationRunner } from '@forge/sql';",
+            "migrationRunner.enqueue('id', payload.query)",
+            0,
+        ),
+        (
+            "import { migrationRunner as runner } from '@forge/sql';",
+            "runner.enqueue('id', payload.query)",
+            1,
+        ),
+        (
+            "import * as forge from '@forge/sql';",
+            "forge.migrationRunner.enqueue('id', payload.query)",
+            1,
+        ),
+        (
+            "const forge = require('@forge/sql');",
+            "forge.migrationRunner.enqueue('id', payload.query)",
+            1,
+        ),
+        (
+            "import { migrationRunner as runner } from '@forge/sql'; const storage = { runner };",
+            "storage.runner.enqueue('id', payload.query)",
+            1,
+        ),
+        (
+            "import sql from '@forge/sql';",
+            "sql.prepare[payload.method](payload.query)",
+            0,
+        ),
+        (
+            "import sql from '@forge/sql';",
+            "sql[payload.receiver].prepare(payload.query)",
+            0,
+        ),
+        (
+            "import sql from '@forge/sql';",
+            "sql.factory().prepare(payload.query)",
+            0,
+        ),
+        (
+            "import sql from '@forge/sql';",
+            "sql.factory().executeRaw(payload.query)",
+            0,
+        ),
+        (
+            "import { migrationRunner as runner } from '@forge/sql'; runner.enqueue = customEnqueue;",
+            "runner.enqueue('id', payload.query)",
+            0,
+        ),
+        (
+            "function factory() { return unknownClient; } const migrationRunner = factory();",
+            "migrationRunner.enqueue('id', payload.query)",
+            0,
+        ),
+    ] {
+        let source =
+            format!("// src/index.js\n{setup}\nexport function run(payload) {{ {call}; }}");
+        let project = MockForgeProject::files_from_string(&source);
+        let permissions = HashSet::new();
+        let mut perm_map = PermMap::new(&permissions);
+        let lowered = project
+            .with_files_and_sourceroot(
+                Path::new("src"),
+                project.get_paths(),
+                &[],
+                &mut perm_map,
+                &HashSet::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            SqlInjectionChecker::has_candidate_sinks(&lowered.env),
+            high > 0,
+            "{source}"
+        );
+        // Separately force reporting to run so a gate rejection cannot conceal
+        // accidental sink matching during analysis.
+        let source = format!(
+            "{source}\nimport confirmedSql from '@forge/sql';\nexport function safe() {{ confirmedSql.prepare('SELECT 1'); }}"
+        );
+        let report = scan_directory_test_with_args(
+            MockForgeProject::files_from_string(&source),
+            Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+        );
+        assert!(!report.has_errors(), "{source}: {report:#?}");
+        assert!(
+            report.contains_sql_vuln(Severity::High, high),
+            "{source}: {report:#?}"
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::Low, 0),
+            "{source}: {report:#?}"
+        );
+    }
+}
+
+#[test]
+fn sql_injection_tracks_commonjs_imports_through_storage_objects() {
+    for setup in [
+        "const { sql, migrationRunner } = require('@forge/sql'); storage = { sql, migrationRunner, isForge: true };",
+        "const { sql, migrationRunner } = require('@forge/sql'); let storage; storage = { sql, migrationRunner, isForge: true };",
+        "const { sql: db, migrationRunner: runner } = require('@forge/sql'); const storage = { sql: db, migrationRunner: runner };",
+        "const forge = require('@forge/sql'); const storage = { sql: forge.sql, migrationRunner: forge.migrationRunner };",
+        "import sql, { migrationRunner } from '@forge/sql'; const storage = { sql, migrationRunner };",
+        "const { sql, migrationRunner } = require('@forge/sql'); const backend = { sql, migrationRunner }; const storage = backend;",
+        "let storage; if (process.env.ENV_TYPE === 'forge') { const { sql, migrationRunner } = require('@forge/sql'); storage = { sql, migrationRunner, isForge: true }; } else { storage = { isForge: false }; }",
+    ] {
+        let source = format!(
+            "// src/index.js\n{setup}\nexport function run(payload) {{
+                storage.sql.prepare(payload.query);
+                storage.sql.executeRaw(payload.query);
+                storage.migrationRunner.enqueue('migration', payload.query);
+            }}"
+        );
+        let report = scan_directory_test_with_args(
+            MockForgeProject::files_from_string(&source),
+            Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::High, 3),
+            "{setup}: {report:#?}"
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::Low, 0),
+            "{setup}: {report:#?}"
+        );
+    }
+}
+
+#[test]
+fn sql_injection_tracks_function_local_commonjs_imports() {
+    let report = scan_directory_test_with_args(
+        MockForgeProject::files_from_string(
+            "// src/index.js
+            export function run(payload) {
+                const { sql, migrationRunner: migrations } = require('@forge/sql');
+                const storage = { sql, migrations };
+                storage.sql.prepare(payload.query);
+                storage.sql.executeRaw(payload.query);
+                storage.migrations.enqueue('migration', payload.query);
+                storage.sql.prepare('SELECT 1');
+            }",
+        ),
+        Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+    );
+    assert!(!report.has_errors(), "{report:#?}");
+    assert!(report.contains_sql_vuln(Severity::High, 3), "{report:#?}");
+    assert!(report.contains_sql_vuln(Severity::Low, 0), "{report:#?}");
+}
+
+#[test]
+fn sql_injection_rejects_unproven_commonjs_receivers() {
+    for setup in [
+        "const { sql } = require('another-sql-library'); const storage = { sql };",
+        "const name = '@forge/sql'; const { sql } = require(name); const storage = { sql };",
+        "function require(name) { return arbitraryClient; } const { sql } = require('@forge/sql'); const storage = { sql };",
+        "let require; const { sql } = require('@forge/sql'); const storage = { sql };",
+        "require = customLoader; const { sql } = require('@forge/sql'); const storage = { sql };",
+        "let { sql } = require('@forge/sql'); sql = otherClient; const storage = { sql };",
+        "const { sql } = require('@forge/sql'); let storage = { sql }; storage = otherStorage;",
+        "const { sql } = require('@forge/sql'); const storage = { sql }; storage.sql = otherClient;",
+        "const { sql } = require('@forge/sql'); const storage = { sql }; const alias = storage; alias.sql = otherClient;",
+        "const { sql } = require('@forge/sql'); const storage = { sql }; mutate(storage);",
+        "const { sql } = require('@forge/sql'); const storage = { sql, ...otherStorage };",
+        "const { sql } = require('@forge/sql'); const storage = { sql, get sql() { return otherClient; } };",
+        "const { sql } = require('@forge/sql'); const storage = { sql }; storage[key] = otherClient;",
+        "const { sql } = require('@forge/sql'); let storage; if (condition) storage = { sql }; else storage = { sql: otherClient };",
+    ] {
+        // Ensure reporting runs even when the uncertain calls aren't candidates.
+        let source = format!(
+            "// src/index.js\nimport confirmedSql from '@forge/sql';\n{setup}\nexport function run(payload) {{
+                confirmedSql.prepare('SELECT 1');
+                storage.sql.prepare(payload.query);
+                storage.sql.executeRaw(payload.query);
+            }}"
+        );
+        let report = scan_directory_test_with_args(
+            MockForgeProject::files_from_string(&source),
+            Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+        );
+        assert!(!report.has_errors(), "{setup}: {report:#?}");
+        assert!(
+            report.contains_sql_vuln(Severity::High, 0),
+            "{setup}: {report:#?}"
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::Low, 0),
+            "{setup}: {report:#?}"
+        );
+    }
+}
+
+#[test]
+fn sql_injection_requires_confirmed_forge_sql_imports() {
+    // Keep a confirmed safe sink in each fixture so unresolved calls are tested
+    // during reporting even when the candidate gate would otherwise skip them.
+    for (setup, receiver, high) in [
+        ("import db from '@forge/sql';", "db", 2),
+        ("import * as db from '@forge/sql';", "db", 2),
+        ("import db from 'another-sql-library';", "db", 0),
+        ("", "unresolvedClient", 0),
+        ("const db = require('@forge/sql');", "db", 2),
+        (
+            "const db = tslib_1.__importStar(require('@forge/sql'));",
+            "db.default",
+            0,
+        ),
+    ] {
+        let source = format!(
+            "// src/index.js\n\
+             import confirmedSql from '@forge/sql';\n\
+             {setup}\n\
+             export function run(payload) {{\n\
+                 confirmedSql.prepare('SELECT 1');\n\
+                 {receiver}.prepare(payload.query);\n\
+                 {receiver}.executeRaw(payload.query);\n\
+             }}"
+        );
+        let report = scan_directory_test_with_args(
+            MockForgeProject::files_from_string(&source),
+            Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+        );
+        assert!(!report.has_errors(), "{setup}: {report:#?}");
+        assert!(
+            report.contains_sql_vuln(Severity::High, high),
+            "{setup}: {report:#?}"
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::Low, 0),
+            "{setup}: {report:#?}"
         );
     }
 }
@@ -2912,7 +3179,7 @@ fn sql_injection_accepts_numeric_result_through_deep_options() {
 }
 
 #[test]
-fn sql_injection_supports_transpiled_forge_sql_imports() {
+fn sql_injection_ignores_transpiled_sql_calls_without_import_provenance() {
     let safe = MockForgeProject::files_from_string(
         "// src/index.js
         const GET_ROWS = 'SELECT * FROM example';
@@ -2933,7 +3200,10 @@ fn sql_injection_supports_transpiled_forge_sql_imports() {
         }",
     );
     let unsafe_report = scan_directory_test(unsafe_project);
-    assert!(unsafe_report.contains_sql_vuln(Severity::High, 1));
+    // The module string is present in source, but this wrapper does not retain
+    // confirmed import provenance in CallFacts, so both queries are ignored.
+    assert!(unsafe_report.contains_sql_vuln(Severity::High, 0));
+    assert!(unsafe_report.contains_sql_vuln(Severity::Low, 0));
 }
 
 #[test]

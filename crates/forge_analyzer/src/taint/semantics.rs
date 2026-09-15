@@ -1,7 +1,7 @@
 use crate::{
     definitions::{DefId, DefKind, Environment},
     interp::{Interp, Runner},
-    ir::{Base, Body, Inst, Location, Operand, Projection, Rvalue, VarId, VarKind, Variable},
+    ir::{Base, Inst, Location, Operand, Projection, Rvalue, VarId, VarKind, Variable},
 };
 use std::collections::{BTreeMap, HashSet};
 pub(crate) fn is_proven_local_array_length<'cx, C: Runner<'cx>>(
@@ -247,56 +247,4 @@ pub(crate) fn returned_object_variables(body: &crate::ir::Body) -> Vec<Variable>
         }
     }
     returned
-}
-
-pub(crate) fn originates_from_resolved_local_call(
-    env: &Environment,
-    body: &Body,
-    variable: VarId,
-    depth: usize,
-) -> bool {
-    if depth == 0 {
-        return false;
-    }
-    body.iter_blocks_enumerated().any(|(_, block)| {
-        block.iter().any(|inst| match inst {
-            Inst::Assign(
-                Variable {
-                    base: Base::Var(target),
-                    projections,
-                },
-                Rvalue::Call(callee, _),
-            ) if *target == variable && projections.is_empty() => {
-                body.resolve_call(env, callee).is_some()
-            }
-            Inst::Assign(
-                Variable {
-                    base: Base::Var(target),
-                    projections,
-                },
-                Rvalue::Read(Operand::Var(Variable {
-                    base: Base::Var(source),
-                    projections: source_projections,
-                })),
-            ) if *target == variable && projections.is_empty() && source_projections.is_empty() => {
-                originates_from_resolved_local_call(env, body, *source, depth - 1)
-            }
-            _ => false,
-        })
-    })
-}
-
-/// Cache only immutable IR provenance; no entrypoint-specific trust is stored here.
-/// Callers first identify an API candidate, avoiding whole-body walks for ordinary calls.
-pub(crate) fn call_has_local_receiver(env: &Environment, facts: &crate::ir::CallFacts) -> bool {
-    *facts.local_receiver.get_or_init(|| {
-        facts.root.is_some_and(|root| {
-            env.bodies().any(|body| {
-                body.vars.iter_enumerated().any(|(var, kind)| {
-                    matches!(kind, VarKind::GlobalRef(def) | VarKind::LocalDef(def) if *def == root)
-                        && originates_from_resolved_local_call(env, body, var, 8)
-                })
-            })
-        })
-    })
 }

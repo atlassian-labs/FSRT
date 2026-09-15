@@ -20,12 +20,21 @@ use std::{
 pub(super) struct ImmutableFacts {
     assignments: OnceCell<FxHashMap<DefId, Vec<(FuncId, Location)>>>,
     constants: RefCell<FxHashMap<DefId, bool>>,
+    pub(super) import_mutations: OnceCell<super::imports::ImportMutations>,
 }
 
 impl Environment {
     /// Index all writes to each resolved definition, including projected writes
     /// and writes in other bodies, in the same order as the original IR walk.
     fn definition_assignments(&self, def: DefId) -> impl Iterator<Item = (&Body, &Rvalue)> {
+        self.definition_writes(def)
+            .map(|(body, _, rvalue)| (body, rvalue))
+    }
+
+    pub(super) fn definition_writes(
+        &self,
+        def: DefId,
+    ) -> impl Iterator<Item = (&Body, &Variable, &Rvalue)> {
         let index = self.immutable_facts.assignments.get_or_init(|| {
             let mut index = FxHashMap::<DefId, Vec<(FuncId, Location)>>::default();
             for (function, body) in self.defs.funcs.iter_enumerated() {
@@ -58,10 +67,12 @@ impl Environment {
             .flatten()
             .map(|(function, location)| {
                 let body = &self.defs.funcs[*function];
-                (
-                    body,
-                    body.block(location.block).insts[location.stmt as usize].rvalue(),
-                )
+                let Inst::Assign(target, rvalue) =
+                    &body.block(location.block).insts[location.stmt as usize]
+                else {
+                    unreachable!("assignment index contains only writes")
+                };
+                (body, target, rvalue)
             })
     }
 
