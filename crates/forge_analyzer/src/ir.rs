@@ -90,6 +90,9 @@ pub struct CallFacts {
     pub path: Vec<CallPathPart>,
     pub root: Option<DefId>,
     pub import: Option<(Atom, crate::definitions::ImportKind)>,
+    /// Import provenance recovered through finalized IR assignments, including
+    /// CommonJS destructuring and object fields. Contains no flow-state facts.
+    pub(crate) recovered_import: OnceCell<Option<(Atom, crate::definitions::ImportKind)>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
