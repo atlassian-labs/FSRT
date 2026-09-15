@@ -215,6 +215,7 @@ pub struct Body {
     assignment_locations: OnceCell<FxHashMap<Variable, Vec<Location>>>,
     binding_var_groups: OnceCell<FxHashMap<DefId, Vec<VarId>>>,
     pub(crate) argument_defs: Vec<DefId>,
+    pub(crate) unsupported_arguments: Vec<DefId>,
     pub(crate) argument_spans: FxHashMap<DefId, Span>,
 }
 
@@ -480,6 +481,7 @@ impl Body {
             assignment_locations: OnceCell::new(),
             binding_var_groups: OnceCell::new(),
             argument_defs: Vec::new(),
+            unsupported_arguments: Vec::new(),
             argument_spans: FxHashMap::default(),
         }
     }

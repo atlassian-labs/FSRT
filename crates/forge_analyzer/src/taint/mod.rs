@@ -1,8 +1,10 @@
 //! Bounded provenance and reusable forward flow. Scanner policies own sink safety.
 mod engine;
 pub(crate) mod semantics;
+mod shape;
 pub mod sources;
 mod state;
+pub use shape::{InputNode, InputRoot, InputSchema, InputShape};
 mod value;
 pub use engine::{FlowPolicy, TaintDataflow, classify_operand, classify_variable};
 pub use state::FlowState;

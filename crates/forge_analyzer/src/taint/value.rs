@@ -147,6 +147,10 @@ pub trait PolicyFacts: JoinSemiLattice + Clone + Default + std::fmt::Debug {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FlowValue<F> {
+    pub shape: super::InputShape,
+    /// Possible input-object aliases, independent of both schema guarantees and
+    /// bounded reporting evidence. The set is finite in the analyzed program.
+    pub references: std::collections::BTreeSet<super::InputRoot>,
     pub taint: TaintValue,
     pub facts: F,
 }
@@ -154,6 +158,8 @@ pub struct FlowValue<F> {
 impl<F: PolicyFacts> FlowValue<F> {
     pub fn classified(classification: Classification) -> Self {
         Self {
+            references: std::collections::BTreeSet::new(),
+            shape: super::InputShape::Absent,
             taint: TaintValue::new(classification),
             facts: F::from_classification(classification),
         }
@@ -166,6 +172,8 @@ impl<F: PolicyFacts> FlowValue<F> {
     }
     pub fn source(classification: Classification, origin: SourceOrigin) -> Self {
         Self {
+            references: std::collections::BTreeSet::new(),
+            shape: super::InputShape::Absent,
             taint: TaintValue::source(classification, origin),
             facts: F::from_classification(classification),
         }
@@ -178,11 +186,15 @@ impl<F: PolicyFacts> Default for FlowValue<F> {
 }
 impl<F: PolicyFacts> JoinSemiLattice for FlowValue<F> {
     const BOTTOM: Self = Self {
+        references: std::collections::BTreeSet::new(),
+        shape: super::InputShape::Bottom,
         taint: TaintValue::BOTTOM,
         facts: F::BOTTOM,
     };
     fn join(&self, other: &Self) -> Self {
         Self {
+            references: self.references.union(&other.references).copied().collect(),
+            shape: self.shape.join(&other.shape),
             taint: self.taint.join(&other.taint),
             facts: self.facts.join(&other.facts),
         }
@@ -190,6 +202,9 @@ impl<F: PolicyFacts> JoinSemiLattice for FlowValue<F> {
     fn join_changed(&mut self, other: &Self) -> bool {
         let changed_taint = self.taint.join_changed(&other.taint);
         let changed_facts = self.facts.join_changed(&other.facts);
-        changed_taint || changed_facts
+        let changed_shape = self.shape.join_changed(&other.shape);
+        let old_len = self.references.len();
+        self.references.extend(&other.references);
+        changed_taint || changed_facts || changed_shape || old_len != self.references.len()
     }
 }

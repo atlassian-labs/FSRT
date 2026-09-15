@@ -120,6 +120,7 @@ impl<'a> ForgeProject<'a> {
             let (func_name, path) = entrypoint.function.into_func_path();
             let module = self.ctx.modid_from_path(&path)?;
             let def_id = self.env.module_export(module, func_name)?;
+            let invocation_def = def_id;
             // Resolve ExportAlias / ResolverHandler chains to the actual definition.
             let def_id = self.env.resolve_alias(def_id);
             Some(ResolvedEntryPoint {
@@ -127,6 +128,9 @@ impl<'a> ForgeProject<'a> {
                 path,
                 module,
                 def_id,
+                invocation_def,
+                product_events: entrypoint.product_events,
+                scheduled: entrypoint.scheduled,
                 invokable: entrypoint.invokable,
                 webtrigger: entrypoint.web_trigger,
                 admin: entrypoint.admin,

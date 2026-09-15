@@ -7,10 +7,15 @@ retain their existing behavior.
 
 ## Value and policy contract
 
-`FlowValue<F>` carries two independently joined components:
+`FlowValue<F>` carries independently joined components:
 
 - `TaintValue`: `Trusted < Unknown < Untrusted`, plus structured `SourceOrigin`s.
 - `F: PolicyFacts`: the consuming scanner's interpretation of sink safety.
+- `InputShape`: a finite policy schema, selected node/path, root identity, and
+  invalidation state. A guarantee survives a join only when both alternatives
+  support it; disagreement never manufactures a context object.
+- `references`: possible input-object identities, retained even when a join loses
+  its schema guarantee. This finite set is independent of the eight-origin cap.
 
 `Trusted` is the join identity; an absent variable is not a trusted value. An
 unreachable `FlowState::BOTTOM` differs from a reachable unknown value. Numeric
@@ -43,9 +48,12 @@ severity, remediation, and rendering remain in the scanner.
 
 The flow engine opts into joined function return states and caller-independent
 callee visitation through `Dataflow` defaults inherited by `Runner`; legacy
-engines retain their previous defaults. Use `run_checker_isolated_resolvers` for
+engines retain their previous defaults. Use `run_checker_with_contract` for proven platform
 entrypoint analysis: it resets analysis state before each entrypoint and resolver
-callback while preserving the checker that merges findings.
+callback while preserving the checker that merges findings. The compatibility
+entry method `run_checker_isolated_resolvers` uses `InvocationContract::Unknown`;
+it does not infer a contract from names. Other scanner engines retain their own
+state and interpretation.
 
 ## Propagation and compatibility
 
@@ -53,7 +61,10 @@ Assignments are strong updates. CFG edges and function summaries join values;
 branch refinements survive only if all reachable predecessors establish them.
 Exact projected values precede conservative root summaries. Assignment aliases,
 argument projections, returned objects, arrays, templates, concatenation, and phi
-nodes carry the complete value, including origins and policy facts. Callees and
+nodes carry trust, origins, and policy facts. Schema identity survives supported
+reads, aliases, destructuring, local arguments, returns, and returned-object
+fields. Computations and unresolved results do not retain a schema merely because
+their inputs had one. Callees and
 callers are revisited when their incoming state or return summaries change.
 
 Binding references and assignment versions are grouped by their resolved `DefId`
@@ -115,3 +126,104 @@ categories through calls, returned objects, destructuring, branches, and arrays,
 including the absence of unrelated or overwritten origins. They also exercise
 numeric safety mixed with unknown and unsafe SQL, resolver isolation, recursive
 convergence, and source overflow.
+
+## Forge invocation contracts
+
+The manifest loader keeps function declarations, web-trigger use, product-event
+names, and scheduled-trigger use. Export resolution supplies the definition and
+preserves the adapter binding for SQL discovery. Each analysis root carries one
+`InvocationContract`; the contract is never a permanent annotation on a function.
+
+| Contract | Root arguments |
+| --- | --- |
+| `ForgeFunction` | Position 0 is module payload (Untrusted); position 1 is ordinary context (Unknown object with approved scalar paths). |
+| `ResolverCallback` | Position 0 is a mixed request envelope. `.payload` is Untrusted and `.context` uses the resolver schema. Other positions are Unknown. |
+| `Unknown` | Every argument is Unknown until actual caller data supplies facts. |
+
+`@forge/resolver` discovery proves the imported constructor or named
+`makeResolver` API and the manifest-exported adapter. It supports inline, named,
+and imported callbacks, aliased imports, and static `makeResolver` objects (inline or bound to an identifier), methods,
+properties, and shorthand bindings. `getDefinitions()` must be connected to that
+export. Similar method names and TypeScript annotations establish no contract.
+Static callback aliases are resolved by binding identity. Dynamic keys, spreads,
+wrappers, unresolved callbacks, and mutated registration
+bindings are rejected with discovery diagnostics. They do not get name fallbacks.
+
+The taint runner seeds ordered `Body::argument_defs` before parameter binding
+instructions. Parameter spelling is only display information. Local calls,
+including recursion and calls to registered callbacks, always use the supplied
+arguments. Recursive arguments are evaluated before any callee binding changes.
+Each platform root is isolated; evidence for the same sink can still be merged.
+
+```mermaid
+flowchart TD
+  M[Manifest function and module uses] --> E[Resolve handler export and binding]
+  E --> C{Verified invocation adapter?}
+  C -->|Ordinary function| F[Argument 0 payload; argument 1 ordinary context]
+  C -->|Resolver API| R[One isolated root per callback; argument 0 envelope]
+  C -->|Unresolved| U[Unknown contract and discovery diagnostic]
+  F --> S[Seed structural facts before parameter destructuring]
+  R --> S
+  U --> S
+  S --> P[Read and project exact schema paths]
+  P --> A[Propagate through aliases, local arguments and returns]
+  A --> J[Join alternatives; retain only agreed schema guarantees]
+  A --> I[Writes and escapes invalidate affected object references]
+  J --> Q[Existing SQL safety and sink policy]
+  I --> Q
+  Q --> D[Existing finding schema and bounded source evidence]
+```
+
+## Exact context policy
+
+These paths are relative to a verified context object. Literal bracket keys are
+equivalent to named properties. Optional chaining grants no additional paths.
+
+| Scope | Approved scalar paths |
+| --- | --- |
+| Both schemas | `installContext`, `installation.ari.installationId` |
+| Ordinary only | `principal.accountId` |
+| Resolver only | `accountId` |
+| Both, under `license` | `active`, `billingPeriod`, `ccpEntitlementId`, `ccpEntitlementSlug`, `isEvaluation`, `subscriptionEndDate`, `supportEntitlementNumber`, `trialEndDate`, `type` |
+| Ordinary only, under `license` | `isActive`, `capabilitySet` |
+
+Whole context, `license`, `installation`, and `principal` objects remain Unknown.
+Unsupported descendants, `jobId`, installation-context arrays, and method results
+such as `toString()` remain Unknown. A computed context access remains Unknown;
+a computed envelope access can select payload and is therefore Untrusted.
+Payload descendants remain Untrusted regardless of property names.
+
+Unsupported parameter defaults, rest bindings, array patterns, and computed
+binding patterns do not acquire optimistic context trust. Source policy owns the
+finite schema tables in `sources.rs`; `shape.rs` only traverses and joins the
+policy-supplied graph. Neither reporting-origin truncation nor SQL numeric proofs
+can create a schema guarantee.
+
+## Mutation boundaries
+
+Root assignments replace shape and field facts. Field writes discard affected
+cached descendants and override schema defaults. Recognized writes are copied
+through supported, still-verified aliases. Other writes invalidate possible
+object references conservatively, including identities whose shape was lost at a
+join. Invalidation cannot regenerate approved leaves from a signature later.
+Detached scalar copies are snapshots, not mutable context aliases.
+
+Passing a context object to an unresolved call, method, or intrinsic invalidates
+its derived trust. Locally resolved helpers preserve a schema only when a bounded
+read-only proof succeeds across their reachable local call graph; writes and
+unknown escapes reject that proof. The proof tracks direct aliases and contained
+references, allows read-only recursion, and stops conservatively at 128 distinct
+function/parameter pairs. This is not a general heap, closure, or callback engine.
+
+An invalidated envelope still distinguishes its context view from its payload;
+invalidation removes context trust without falsely treating every context field
+as payload. Known attacker-controlled writes retain Untrusted information.
+
+Terminology: a **root** is one analyzed invocation; a **contract** specifies the
+platform-supplied arguments; a **binding** is a resolved declaration (`DefId`);
+a **projection** is one property/index access; a **schema guarantee** is evidence
+that a value denotes a particular platform object/path; an **alias** is another
+reference to an input object; an **escape** passes that reference to code whose
+effects cannot be proved; a **join** conservatively combines reachable
+alternatives; a **fixed point** is reached when further propagation changes no
+facts; an **origin** is bounded reporting evidence, not the source of schema trust.
