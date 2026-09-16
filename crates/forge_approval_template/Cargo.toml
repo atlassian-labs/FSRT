@@ -1,0 +1,18 @@
+[package]
+name = "forge_approval_template"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+forge_loader.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true

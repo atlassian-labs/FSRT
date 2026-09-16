@@ -4,6 +4,7 @@ use clap::Subcommand;
 
 use crate::{Result, forge_project::find_manifest_path};
 
+pub(crate) mod approval_template;
 pub(crate) mod invoke_extension;
 #[cfg(feature = "mint_cookie")]
 pub(crate) mod mint_cookie;
@@ -36,6 +37,9 @@ fn parse_json(value: &str) -> std::result::Result<serde_json::Value, String> {
 /// CLI subcommands.
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
+    /// Pre-fill a Marketplace app approval submission from the app manifest.
+    ApprovalTemplate(approval_template::ApprovalTemplateArgs),
+
     /// Run dynamic application security testing commands.
     Dast {
         #[command(subcommand)]
@@ -63,12 +67,14 @@ pub(crate) enum DastCommand {
 impl Command {
     pub(crate) fn diagnostic_logging_requested(&self) -> bool {
         match self {
+            Self::ApprovalTemplate(args) => args.diagnostic_logging_requested(),
             Self::Dast { command } => command.diagnostic_logging_requested(),
         }
     }
 
     pub(crate) fn run(&self) -> Result<()> {
         match self {
+            Self::ApprovalTemplate(args) => approval_template::run(args),
             Self::Dast { command } => command.run(),
         }
     }

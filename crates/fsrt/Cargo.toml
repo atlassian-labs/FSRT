@@ -19,6 +19,7 @@ mint_cookie = ["dep:thirtyfour", "dep:tokio", "dep:url"]
 argfile.workspace = true
 clap.workspace = true
 forge_analyzer.workspace = true
+forge_approval_template.workspace = true
 forge_pen_test.workspace = true
 forge_file_resolver.workspace = true
 forge_loader.workspace = true

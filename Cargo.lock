@@ -847,6 +847,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge_approval_template"
+version = "0.1.0"
+dependencies = [
+ "forge_loader",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
 name = "forge_file_resolver"
 version = "0.1.0"
 
@@ -955,6 +966,7 @@ dependencies = [
  "argfile",
  "clap",
  "forge_analyzer",
+ "forge_approval_template",
  "forge_file_resolver",
  "forge_loader",
  "forge_pen_test",
