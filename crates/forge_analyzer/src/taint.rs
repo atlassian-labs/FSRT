@@ -4,8 +4,9 @@
 //! *before* each instruction. Only positive sink locations are retained, rather
 //! than a full variable-state snapshot at every instruction. Function inputs and returns are joined to a fixed point,
 //! including loops and recursion. Values are tracked per function and variable.
-//! Object properties and external calls are conservatively treated as propagators;
-//! function summaries are context insensitive (shared across call sites).
+//! Object properties and external calls are conservatively treated as propagators
+//! unless a policy opts out; function summaries are context insensitive (shared
+//! across call sites).
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -14,13 +15,14 @@ use std::{
 };
 
 use smallvec::SmallVec;
+use swc_core::ecma::atoms::Atom;
 
 use crate::{
     definitions::{DefId, Environment},
     interp::{Dataflow, EntryKind, Interp, JoinSemiLattice, Runner},
     ir::{
-        Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Location, Operand, Rvalue,
-        STARTING_BLOCK, Successors, UnOp, VarId, VarKind,
+        Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Location, Operand,
+        Projection, Rvalue, STARTING_BLOCK, Successors, UnOp, VarId, VarKind,
     },
 };
 
@@ -72,6 +74,17 @@ pub trait TaintPolicy {
 
     /// Whether resolver request arguments are sources for this policy.
     const TAINT_RESOLVER_INPUT: bool = false;
+
+    /// Whether reading a property yields its containing object's taint. Writing
+    /// a tainted property still taints the whole object, and a method call still
+    /// inherits its receiver's taint.
+    const PROPERTY_READS_PROPAGATE: bool = true;
+
+    /// The result of an unmodelled method call, given its receiver and argument
+    /// taints. Policies recognize their sanitizers here; `None` joins them all.
+    fn method_taint(_method: &Atom, _receiver: Taint, _args: &[Taint]) -> Option<Taint> {
+        None
+    }
 }
 
 pub struct ResolverTaint;
@@ -87,6 +100,11 @@ impl TaintPolicy for ResolverTaint {
 pub struct SecretTaint;
 
 impl TaintPolicy for SecretTaint {
+    // Taint is tracked per variable, not per field, so a secret stored in one
+    // field would otherwise taint every sibling ID, URL and count. Until fields
+    // are tracked separately, only logging a whole secret-bearing value reports.
+    const PROPERTY_READS_PROPAGATE: bool = false;
+
     fn intrinsic_taint(intrinsic: &Intrinsic) -> Taint {
         if matches!(intrinsic, Intrinsic::SecretRead) {
             Taint::Yes
@@ -94,12 +112,59 @@ impl TaintPolicy for SecretTaint {
             Taint::No
         }
     }
+
+    // Splitting on or replacing the secret itself redacts it from the receiver:
+    // `text.split(secret).join('[REDACTED]')` or `url.replace(key, '***')`. The
+    // pattern never reaches the result, and the receiver is assumed to hold no
+    // other secret.
+    fn method_taint(method: &Atom, receiver: Taint, args: &[Taint]) -> Option<Taint> {
+        let remaining = if args.first() == Some(&Taint::Yes) {
+            Taint::No
+        } else {
+            receiver
+        };
+        match (&**method, args) {
+            ("split", [_, ..]) => Some(remaining),
+            ("replace" | "replaceAll", [_, replacement]) => Some(remaining.join(replacement)),
+            _ => None,
+        }
+    }
 }
 
+/// The taint of the variable underlying `operand`, ignoring its projections.
 pub fn operand_taint(state: &[Taint], operand: &Operand) -> Taint {
     match operand {
         Operand::Var(var) => var.as_var_id().map_or(Taint::No, |id| var_taint(state, id)),
         Operand::Lit(_) => Taint::No,
+    }
+}
+
+/// The taint of the value read by `operand`, including any property read.
+pub fn read_taint<P: TaintPolicy>(state: &[Taint], operand: &Operand) -> Taint {
+    match operand {
+        Operand::Var(var) if !P::PROPERTY_READS_PROPAGATE && !var.projections.is_empty() => {
+            Taint::No
+        }
+        _ => operand_taint(state, operand),
+    }
+}
+
+/// A method call inherits the taint of its receiver, not of the method itself:
+/// `secret.trim()` is tainted, while `secret.token.trim()` reads a property.
+fn receiver_taint<P: TaintPolicy>(state: &[Taint], callee: &Operand) -> Taint {
+    match callee {
+        Operand::Var(var) if !P::PROPERTY_READS_PROPAGATE && var.projections.len() > 1 => Taint::No,
+        _ => operand_taint(state, callee),
+    }
+}
+
+fn method_name(callee: &Operand) -> Option<&Atom> {
+    match callee {
+        Operand::Var(var) => match var.projections.last()? {
+            Projection::Known(name) => Some(name),
+            Projection::Computed(_) => None,
+        },
+        Operand::Lit(_) => None,
     }
 }
 
@@ -380,19 +445,18 @@ impl<'cx, P: TaintPolicy> Dataflow<'cx> for TaintDataflow<P> {
                     interp.instruction_findings.remove(&location);
                 }
                 let state = &frame.vars;
+                let read = |operand| read_taint::<P>(state, operand);
                 let taint = match inst.rvalue() {
-                    Rvalue::Read(op) => operand_taint(state, op),
-                    Rvalue::Unary(op, operand) => unary_taint(*op, operand_taint(state, operand)),
-                    Rvalue::Bin(op, left, right) => {
-                        binary_taint(*op, operand_taint(state, left), operand_taint(state, right))
-                    }
+                    Rvalue::Read(op) => read(op),
+                    Rvalue::Unary(op, operand) => unary_taint(*op, read(operand)),
+                    Rvalue::Bin(op, left, right) => binary_taint(*op, read(left), read(right)),
                     Rvalue::Phi(vars) => vars.iter().fold(Taint::No, |taint, (id, _)| {
                         taint.join(&var_taint(state, *id))
                     }),
                     Rvalue::Template(template) => template
                         .exprs
                         .iter()
-                        .fold(Taint::No, |taint, op| taint.join(&operand_taint(state, op))),
+                        .fold(Taint::No, |taint, op| taint.join(&read(op))),
                     Rvalue::Intrinsic(intrinsic, _) => P::intrinsic_taint(intrinsic),
                     Rvalue::Call(callee, args) => {
                         if let Some((callee_def, _)) = body.resolve_call(env, callee) {
@@ -406,7 +470,7 @@ impl<'cx, P: TaintPolicy> Dataflow<'cx> for TaintDataflow<P> {
                                 layout.captures_at_call(&frame, &captured),
                             );
                             for (&id, arg) in callee_layout.args.iter().zip(args) {
-                                callee_frame.vars[id.0 as usize] = operand_taint(state, arg);
+                                callee_frame.vars[id.0 as usize] = read(arg);
                             }
                             let key = (callee_def, STARTING_BLOCK);
                             let is_new = !inputs.contains_key(&key);
@@ -420,9 +484,13 @@ impl<'cx, P: TaintPolicy> Dataflow<'cx> for TaintDataflow<P> {
                         } else {
                             // Preserve data through unmodelled transformations,
                             // including methods called on a tainted receiver.
-                            args.iter().fold(operand_taint(state, callee), |taint, op| {
-                                taint.join(&operand_taint(state, op))
-                            })
+                            let receiver = receiver_taint::<P>(state, callee);
+                            let args: SmallVec<[Taint; 4]> = args.iter().map(read).collect();
+                            method_name(callee)
+                                .and_then(|method| P::method_taint(method, receiver, &args))
+                                .unwrap_or_else(|| {
+                                    args.iter().fold(receiver, |taint, arg| taint.join(arg))
+                                })
                         }
                     }
                 };

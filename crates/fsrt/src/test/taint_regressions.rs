@@ -17,13 +17,15 @@ fn prototype_pollution_found(body: &str) -> bool {
     );
     let permissions = HashSet::new();
     let mut permission_map = PermMap::new(&permissions);
-    let lowered = project.with_files_and_sourceroot(
-        Path::new("src"),
-        vec![path.clone()],
-        &[],
-        &mut permission_map,
-        &HashSet::new(),
-    );
+    let lowered = project
+        .with_files_and_sourceroot(
+            Path::new("src"),
+            vec![path.clone()],
+            &[],
+            &mut permission_map,
+            &HashSet::new(),
+        )
+        .unwrap();
     let module = lowered.ctx.modid_from_path(&path).unwrap();
     let entry = lowered.env.module_export(module, "run").unwrap();
     let factory = crate::interpreter::InterpreterFactory::new(&lowered.env, vec![], None);

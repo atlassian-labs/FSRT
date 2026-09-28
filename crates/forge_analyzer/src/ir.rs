@@ -83,9 +83,38 @@ pub enum Intrinsic {
     SecretFunction(PackageData),
     EnvRead,
     StorageRead,
-    /// A secret read from the named `kvs` export of `@forge/kvs`.
+    /// A secret read from `@forge/kvs` (`kvs.getSecret`) or the legacy
+    /// `@forge/api` storage API (`storage.getSecret`).
     SecretRead,
-    ConsoleLog,
+    ConsoleLog(ConsoleMethod),
+}
+
+/// A global `console` method whose arguments are written to the app's logs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsoleMethod {
+    Log,
+    Info,
+    Warn,
+    Error,
+    Debug,
+}
+
+impl ConsoleMethod {
+    const ALL: [Self; 5] = [Self::Log, Self::Info, Self::Warn, Self::Error, Self::Debug];
+
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|method| method.name() == name)
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Log => "log",
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+            Self::Debug => "debug",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1135,9 +1164,15 @@ impl fmt::Display for Intrinsic {
             Intrinsic::SafeCall(_) => write!(f, "safe api call"),
             Intrinsic::EnvRead => write!(f, "env read"),
             Intrinsic::StorageRead => write!(f, "forge storage read"),
-            Intrinsic::SecretRead => write!(f, "kvs secret read"),
-            Intrinsic::ConsoleLog => write!(f, "console.log"),
+            Intrinsic::SecretRead => write!(f, "secret read"),
+            Intrinsic::ConsoleLog(method) => write!(f, "{method}"),
         }
+    }
+}
+
+impl fmt::Display for ConsoleMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "console.{}", self.name())
     }
 }
 

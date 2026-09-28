@@ -62,6 +62,13 @@ enum Scanner {
     RuntimeVersion,
 }
 
+impl Scanner {
+    /// Opt-in scanners only run when selected with `--scanners`.
+    fn enabled_by_default(self) -> bool {
+        !matches!(self, Self::SecretLogging)
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
@@ -103,7 +110,8 @@ pub struct Args {
     #[arg(long)]
     cached_permissions_path: Option<PathBuf>,
 
-    /// Comma separated list of scanners to enable. Defaults to all of them.
+    /// Comma separated list of scanners to enable. Defaults to all of them except
+    /// secret-logging, which only runs when selected.
     #[arg(long, value_delimiter = ',')]
     scanners: Vec<Scanner>,
 
@@ -126,7 +134,11 @@ pub struct Args {
 
 impl Args {
     fn scanner_enabled(&self, scanner: Scanner) -> bool {
-        self.scanners.is_empty() || self.scanners.contains(&scanner)
+        if self.scanners.is_empty() {
+            scanner.enabled_by_default()
+        } else {
+            self.scanners.contains(&scanner)
+        }
     }
 }
 

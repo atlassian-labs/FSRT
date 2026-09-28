@@ -36,12 +36,15 @@ Run `fsrt --help`, `fsrt remote --help`, or `fsrt remote <COMMAND> --help` for c
 
 ### Secret logging
 
-The `secret-logging` scanner reports values returned by the named `kvs` export's
-`getSecret` method from `@forge/kvs` when they reach `console.log`. It is enabled
-by default, or can be selected on its own:
+The `secret-logging` scanner reports values returned by `getSecret` on the `kvs`
+export (named or default) of `@forge/kvs`, or on the legacy `storage` export of
+`@forge/api`, when they reach `console.log`, `console.info`, `console.warn`,
+`console.error` or `console.debug`. It is disabled by default; select it
+explicitly, alone or with other scanners:
 
 ```sh
 fsrt --scanners secret-logging ./my-forge-app
+fsrt --scanners secret,secret-logging ./my-forge-app
 ```
 
 ```js
@@ -57,27 +60,40 @@ It follows import aliases, assignments, expressions, arrays and objects,
 branches, loops, helper arguments and returns, and single-handler `.then()`
 fulfillment callbacks. It checks manifest entrypoints, resolver handlers, their
 reachable helpers, and module initializers. Ordinary `kvs.get` calls and other
-console methods are outside this rule. Captured bindings use their values at
-the helper call, and operators returning only metadata (such as `typeof`, `void`,
-boolean negation, and comparisons) clear secret taint.
+console methods (such as `console.table`) are outside this rule. Captured
+bindings use their values at the helper call, and operators returning only
+metadata (such as `typeof`, `void`, boolean negation, and comparisons) clear
+secret taint.
+
+Taint is not yet tracked per field, so this scanner treats every property read,
+index and destructured binding as clean: `console.log(secret.length)`,
+`console.log(config.id)` and `const { token } = secret` are not reported, while
+logging a whole secret, an object or array containing one, or a method result
+such as `secret.trim()` is. Splitting on or replacing the secret itself, such as
+`text.split(secret).join('[REDACTED]')` or `url.replace(secret, '***')`, redacts
+it; truncation, partial masking and encoding do not.
 
 The shared engine in `crates/forge_analyzer/src/taint.rs` separates source policies
 (`TaintPolicy`) from sink checks (`Runner::instruction_has_violation`). A new
 scanner can select `TaintDataflow<MyPolicy>`, implement that predicate, and reuse
 `visit_taint_call` for interprocedural traversal. Both this scanner and the
-existing prototype-pollution checker use that engine. The predicate sees values
-before each instruction; only matching sink locations are retained for the
-diagnostic walk after analysis converges. Variable vectors are retained at block
-boundaries, rather than copied and stored at every instruction.
+existing prototype-pollution checker use that engine. Policies can also opt out
+of property-read propagation (`PROPERTY_READS_PROPAGATE`) and model sanitizing
+methods (`method_taint`); the defaults propagate taint conservatively. The
+predicate sees values before each instruction; only matching sink locations are
+retained for the diagnostic walk after analysis converges. Variable vectors are
+retained at block boundaries, rather than copied and stored at every instruction.
 
-This is a conservative analysis: properties share their containing object's
-taint, and helper summaries combine call sites within an entrypoint. Calls to
-unresolved functions propagate argument/receiver taint. Dynamic dispatch,
+This is a conservative analysis: helper summaries combine call sites within an
+entrypoint, and calls to unresolved functions (including HTTP clients other than
+Forge `fetch` and the product request APIs) propagate argument/receiver taint, so
+a response to an authenticated request can be reported. Dynamic dispatch,
 mutation through object aliases, and callback APIs other than the modeled
 fulfillment form can still miss flows; sanitization through unresolved functions
-can produce warnings. Callee summaries do not propagate writes to outer bindings
-back to callers. Findings identify the sink function, unique IR body, and
-instruction location, not a source line or a runtime secret value.
+can produce warnings.
+Callee summaries do not propagate writes to outer bindings back to callers.
+Findings identify the sink function, unique IR body, and instruction location,
+not a source line or a runtime secret value.
 
 ## Installation
 
