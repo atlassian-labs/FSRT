@@ -11,10 +11,12 @@ use smallvec::SmallVec;
 use crate::{
     definitions::DefId,
     interp::{Checker, Interp, Runner, WithCallStack},
-    ir::{BasicBlockId, Inst, Intrinsic, Location, Operand, Rvalue},
+    ir::{BasicBlockId, ConsoleMethod, Inst, Intrinsic, Location, Operand, Rvalue},
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    taint::{SecretTaint, Taint, TaintDataflow, operand_taint, visit_taint_call},
+    taint::{SecretTaint, Taint, TaintDataflow, read_taint, visit_taint_call},
 };
+
+const SOURCES: &str = "@forge/kvs kvs.getSecret or @forge/api storage.getSecret";
 
 #[derive(Default)]
 pub struct SecretLoggingChecker {
@@ -34,11 +36,12 @@ pub struct SecretLoggingVuln {
     body: DefId,
     stack: String,
     location: Location,
+    sink: ConsoleMethod,
 }
 
 impl fmt::Display for SecretLoggingVuln {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Secret logged to console.log")
+        write!(f, "Secret logged to {}", self.sink)
     }
 }
 
@@ -56,13 +59,13 @@ impl IntoVuln for SecretLoggingVuln {
         Vulnerability {
             check_name: format!("Custom-Check-Secret-Logging-{}", hasher.finish()),
             description: format!(
-                "A value returned by kvs.getSecret is logged to console.log in {} (entry file {:?}).",
-                self.function, self.file
+                "A value returned by a Forge secret storage read is logged to {} in {} (entry file {:?}).",
+                self.sink, self.function, self.file
             ),
-            recommendation: "Remove secrets from console.log arguments. Log only non-sensitive metadata or an explicitly redacted value.",
+            recommendation: "Remove secrets from console arguments. Log only non-sensitive metadata or an explicitly redacted value.",
             proof: format!(
-                "Secret source: @forge/kvs kvs.getSecret; sink: console.log; call path: {}; IR body: {:?} ({}); IR location: {:?}.",
-                self.stack, self.body, self.function, self.location
+                "Secret source: {SOURCES}; sink: {}; call path: {}; IR body: {:?} ({}); IR location: {:?}.",
+                self.sink, self.stack, self.body, self.function, self.location
             ),
             severity: Severity::High,
             marketplace_security_requirement: "Requirement 5",
@@ -80,8 +83,8 @@ impl<'cx> Runner<'cx> for SecretLoggingChecker {
     const VISIT_GLOBALS: bool = true;
 
     fn instruction_has_violation(inst: &Inst, state: &Self::State) -> bool {
-        matches!(inst.rvalue(), Rvalue::Intrinsic(Intrinsic::ConsoleLog, args)
-            if args.iter().any(|arg| operand_taint(state, arg) == Taint::Yes))
+        matches!(inst.rvalue(), Rvalue::Intrinsic(Intrinsic::ConsoleLog(_), args)
+            if args.iter().any(|arg| read_taint::<SecretTaint>(state, arg) == Taint::Yes))
     }
 
     fn visit_intrinsic(
@@ -114,7 +117,10 @@ impl<'cx> Runner<'cx> for SecretLoggingChecker {
         inst: &'cx Inst,
         state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
-        if interp.instruction_has_finding(def, loc) && self.reported.insert((def, loc)) {
+        if let Rvalue::Intrinsic(Intrinsic::ConsoleLog(sink), _) = inst.rvalue()
+            && interp.instruction_has_finding(def, loc)
+            && self.reported.insert((def, loc))
+        {
             let entry = &interp.entry().kind;
             let mut path = vec![match entry {
                 crate::interp::EntryKind::Function(name) => name.clone(),
@@ -133,6 +139,7 @@ impl<'cx> Runner<'cx> for SecretLoggingChecker {
                 body: def,
                 stack: path.join(" -> "),
                 location: loc,
+                sink: *sink,
             });
         }
         self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)

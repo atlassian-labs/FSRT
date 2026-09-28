@@ -67,7 +67,6 @@ fn secret_logging_tracks_expressions_and_reassignment() {
         ),
         ("console.log(await kvs.get('key'));", 0),
         ("kvs.getSecret('key'); console.log('public');", 0),
-        ("console.warn(await kvs.getSecret('key'));", 0),
         ("console.log(request.payload);", 0),
         ("console.log(kvs.getSecret);", 0),
     ] {
@@ -101,6 +100,34 @@ fn secret_logging_respects_import_bindings() {
         ),
         (
             "export async function run(kvs) { console.log(await kvs.getSecret('key')); }",
+            0,
+        ),
+        (
+            "import kvs from '@forge/kvs'; export async function run() { console.log(await kvs.getSecret('key')); }",
+            1,
+        ),
+        (
+            "import store, { WhereConditions } from '@forge/kvs'; export async function run() { console.log(await store.getSecret('key')); }",
+            1,
+        ),
+        (
+            "import * as kvs from '@forge/kvs'; export async function run() { console.log(await kvs.getSecret('key')); }",
+            0,
+        ),
+        (
+            "import { storage } from '@forge/api'; export async function run() { console.log(await storage.getSecret('key')); }",
+            1,
+        ),
+        (
+            "import api, { storage as legacy } from '@forge/api'; export async function run() { console.log(await legacy.getSecret('key')); }",
+            1,
+        ),
+        (
+            "import { storage } from '@forge/api'; export async function run() { console.log(await storage.get('key')); }",
+            0,
+        ),
+        (
+            "import { storage } from 'other-package'; export async function run() { console.log(await storage.getSecret('key')); }",
             0,
         ),
         (
@@ -183,30 +210,47 @@ fn secret_logging_tracks_cross_module_helpers() {
 }
 
 #[test]
-fn secret_logging_is_enabled_by_default_and_can_be_excluded() {
+fn secret_logging_is_disabled_by_default_and_runs_when_selected() {
     let project = project(
         "// src/index.js\nimport { kvs } from '@forge/kvs'; export async function run() { console.log(await kvs.getSecret('key')); }",
     );
-    assert!(
-        scan_directory_test(project.clone())
+    let findings = |report: &Report| {
+        report
             .into_vulns()
             .iter()
-            .any(|vuln| vuln
-                .check_name()
-                .starts_with("Custom-Check-Secret-Logging-"))
-    );
-    assert!(
-        scan_directory_test_with_args(project, Args::parse_from(["fsrt", "--scanners", "secret"]))
-            .has_no_vulns()
-    );
+            .filter(|vuln| {
+                vuln.check_name()
+                    .starts_with("Custom-Check-Secret-Logging-")
+            })
+            .count()
+    };
+    assert_eq!(findings(&scan_directory_test(project.clone())), 0);
+    for (scanners, count) in [
+        ("secret", 0),
+        ("secret-logging", 1),
+        ("secret,secret-logging", 1),
+    ] {
+        let report = scan_directory_test_with_args(
+            project.clone(),
+            Args::parse_from(["fsrt", "--scanners", scanners]),
+        );
+        assert_eq!(
+            findings(&report),
+            count,
+            "--scanners {scanners}\n{report:#?}"
+        );
+    }
 }
 
 #[test]
 fn secret_logging_tracks_aggregates_and_module_initializers() {
     for functions in [
         "export async function run() { const secret = await kvs.getSecret('key'); console.log([secret]); }",
-        "export async function run() { const secret = await kvs.getSecret('key'); const { value } = { value: secret }; console.log(value); }",
-        "function log({ value }) { console.log(value); } export async function run() { log({ value: await kvs.getSecret('key') }); }",
+        "export async function run() { const secret = await kvs.getSecret('key'); console.log({ value: secret }); }",
+        "export async function run() { const config = { value: await kvs.getSecret('key') }; console.log(JSON.stringify(config)); }",
+        "export async function run() { const config = {}; config.value = await kvs.getSecret('key'); console.log(config); }",
+        "function log(value) { console.log(value); } export async function run() { log({ value: await kvs.getSecret('key') }); }",
+        "export async function run() { console.log(await Promise.all([kvs.getSecret('key'), fetchPublic()])); }",
         "console.log(kvs.getSecret('key')); export function run() {}",
     ] {
         assert_findings(
@@ -221,6 +265,7 @@ fn secret_logging_excludes_local_console_variables() {
     for functions in [
         "export async function run() { let console; console.log(await kvs.getSecret('key')); }",
         "const console = logger; export async function run() { console.log(await kvs.getSecret('key')); }",
+        "export async function run() { let console; console.warn(await kvs.getSecret('key')); }",
     ] {
         assert_findings(
             &format!("import {{ kvs }} from '@forge/kvs'; {functions}"),
@@ -298,7 +343,7 @@ fn secret_logging_uses_capture_values_at_calls() {
             0,
         ),
         (
-            "export async function run() { const {value} = {value: await kvs.getSecret('key')}; function log() { console.log(value); } log(); }",
+            "export async function run() { const value = {value: await kvs.getSecret('key')}; function log() { console.log(value); } log(); }",
             1,
         ),
         (
@@ -408,6 +453,103 @@ fn secret_logging_distinguishes_values_from_operator_metadata() {
                 "import {{ kvs }} from '@forge/kvs'; export async function run() {{ const secret = await kvs.getSecret('key'); console.log({expression}); }}"
             ),
             1,
+        );
+    }
+}
+
+#[test]
+fn secret_logging_reports_console_methods() {
+    for (method, count) in [
+        ("log", 1),
+        ("info", 1),
+        ("warn", 1),
+        ("error", 1),
+        ("debug", 1),
+        ("table", 0),
+        ("dir", 0),
+    ] {
+        let report = scan(&format!(
+            "import {{ kvs }} from '@forge/kvs'; export async function run() {{ console.{method}(await kvs.getSecret('key')); }}"
+        ));
+        let vulns = report.into_vulns();
+        assert_eq!(vulns.len(), count, "console.{method}\n{report:#?}");
+        if let [vuln] = vulns {
+            assert!(
+                vuln.description()
+                    .contains(&format!("logged to console.{method}")),
+                "{vuln:#?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn secret_logging_treats_property_reads_as_clean() {
+    for (body, count) in [
+        ("console.log(secret.length);", 0),
+        ("console.log(secret.token);", 0),
+        ("console.log(secret['token']);", 0),
+        ("console.log(secret[0]);", 0),
+        ("console.log(`token: ${secret.token}`);", 0),
+        ("console.log(secret.token.trim());", 0),
+        ("const { token } = secret; console.log(token);", 0),
+        ("const [token] = secret; console.log(token);", 0),
+        (
+            "const config = { token: secret, id: 'public' }; console.log(config.id);",
+            0,
+        ),
+        (
+            "const [value, groups] = await Promise.all([secret, fetchGroups()]); console.log(groups.length);",
+            0,
+        ),
+        (
+            "function log({ value }) { console.log(value); } log({ value: secret });",
+            0,
+        ),
+        ("console.log(secret);", 1),
+        ("console.log(secret.trim());", 1),
+        ("console.log(JSON.stringify(secret));", 1),
+        (
+            "const config = { token: secret, id: 'public' }; console.log(config);",
+            1,
+        ),
+    ] {
+        assert_findings(
+            &format!(
+                "import {{ kvs }} from '@forge/kvs'; function fetchGroups() {{}} export async function run() {{ const secret = await kvs.getSecret('key'); {body} }}"
+            ),
+            count,
+        );
+    }
+}
+
+#[test]
+fn secret_logging_recognizes_exact_secret_redaction() {
+    for (body, count) in [
+        (
+            "function redact(text, secret) { let out = String(text); if (secret) { out = out.split(secret).join('[REDACTED]'); } return out.replace(/Bearer\\s+\\S+/g, 'Bearer [REDACTED]'); } console.log(redact(body, secret));",
+            0,
+        ),
+        ("console.log(body.replaceAll(secret, '***'));", 0),
+        (
+            "const url = `https://example.com/?key=${secret.trim()}`; console.log(url.replace(secret, '***'));",
+            0,
+        ),
+        ("console.log(body.split(secret).join(secret));", 1),
+        ("console.log(body.replace('placeholder', secret));", 1),
+        ("console.log(secret.replace(body, '***'));", 1),
+        ("console.log(secret.replace(/\\s/g, ''));", 1),
+        ("console.log(secret.split(','));", 1),
+        (
+            "console.log(`${secret.substring(0, 12)}...${secret.substring(secret.length - 4)}`);",
+            1,
+        ),
+    ] {
+        assert_findings(
+            &format!(
+                "import {{ kvs }} from '@forge/kvs'; export async function run(body) {{ const secret = await kvs.getSecret('key'); {body} }}"
+            ),
+            count,
         );
     }
 }

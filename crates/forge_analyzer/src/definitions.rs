@@ -55,8 +55,8 @@ use crate::ir::VarId;
 use crate::{
     ctx::ModId,
     ir::{
-        Base, BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, RETURN_VAR,
-        Rvalue, STARTING_BLOCK, Template, Terminator, VarKind, Variable,
+        Base, BasicBlockId, Body, ConsoleMethod, Inst, Intrinsic, Literal, Operand, Projection,
+        RETURN_VAR, Rvalue, STARTING_BLOCK, Template, Terminator, VarKind, Variable,
     },
 };
 
@@ -1196,6 +1196,17 @@ impl FunctionAnalyzer<'_> {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
 
+        // `kvs` is both the named and default export of `@forge/kvs`. Legacy apps
+        // read secrets through the `storage` export of `@forge/api`.
+        fn is_secret_store(res: &Environment, def: DefId) -> bool {
+            match res.is_imported_from(def, "@forge/kvs") {
+                Some(ImportKind::Default) => true,
+                Some(ImportKind::Named(name)) => *name == *"kvs",
+                _ => matches!(res.is_imported_from(def, "@forge/api"),
+                    Some(ImportKind::Named(name)) if *name == *"storage"),
+            }
+        }
+
         fn resolve_jira_api_type(url: &str) -> Option<IntrinsicName> {
             // Pattern matching to classify, eg: api.[asApp | asUser]().requestJira(route`/rest/api/3/myself`);
             match url {
@@ -1302,20 +1313,17 @@ impl FunctionAnalyzer<'_> {
         match *callee {
             [PropPath::Def(def), PropPath::Static(ref method)]
                 if self.res.def_name(def) == "console"
-                    && *method == *"log"
                     && matches!(self.res.def_ref(def), DefKind::Undefined)
                     && !self.res.resolver.declared_bindings.contains(&def) =>
             {
-                Some(Intrinsic::ConsoleLog)
+                ConsoleMethod::from_name(method).map(Intrinsic::ConsoleLog)
             }
             [
                 PropPath::Unknown((ref name, ..)),
                 PropPath::Static(ref method),
-            ] if *name == *"console" && *method == *"log" => Some(Intrinsic::ConsoleLog),
+            ] if *name == *"console" => ConsoleMethod::from_name(method).map(Intrinsic::ConsoleLog),
             [PropPath::Def(def), PropPath::Static(ref method)]
-                if *method == *"getSecret"
-                    && matches!(self.res.is_imported_from(def, "@forge/kvs"),
-                        Some(ImportKind::Named(name)) if *name == *"kvs") =>
+                if *method == *"getSecret" && is_secret_store(self.res, def) =>
             {
                 Some(Intrinsic::SecretRead)
             }
