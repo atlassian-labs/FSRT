@@ -27,6 +27,10 @@ Commands:
     -V, --version                           Print version information
     --verbose                               Print diagnostics to stderr
     --check-permissions                     Runs the permission checker
+    --scanners <SCANNERS>                   Comma separated list of scanners to enable. Defaults to all of
+                                            them, except `secret-storage`, which must be named explicitly
+                                            (or enabled with CHECK_SECRET_STORAGE=1) because its findings
+                                            over-report and are meant for manual triage
     --cached-permissions                    Uses cached swagger permissions to avoid redownloading them
     --cached-permissions-path <LOCATION>    Uses the designated cache location, otherwise selects ~/.cache dir
     --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir
