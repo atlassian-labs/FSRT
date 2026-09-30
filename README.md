@@ -65,24 +65,43 @@ bindings use their values at the helper call, and operators returning only
 metadata (such as `typeof`, `void`, boolean negation, and comparisons) clear
 secret taint.
 
-Taint is not yet tracked per field, so this scanner treats every property read,
-index and destructured binding as clean: `console.log(secret.length)`,
+By default (`--secret-logging-version v0`), this scanner treats every property
+read, index and destructured binding as clean: `console.log(secret.length)`,
 `console.log(config.id)` and `const { token } = secret` are not reported, while
 logging a whole secret, an object or array containing one, or a method result
 such as `secret.trim()` is. Splitting on or replacing the secret itself, such as
 `text.split(secret).join('[REDACTED]')` or `url.replace(secret, '***')`, redacts
 it; truncation, partial masking and encoding do not.
 
-The shared engine in `crates/forge_analyzer/src/taint.rs` separates source policies
-(`TaintPolicy`) from sink checks (`Runner::instruction_has_violation`). A new
-scanner can select `TaintDataflow<MyPolicy>`, implement that predicate, and reuse
+`--secret-logging-version v1` tracks those reads instead. A property written
+through a known path keeps its own taint, so reading `password` from
+`{ host: secret.host, password: 'literal' }` is clean, while reading `host` from
+`{ host: secret }` is reported. Any other property read from a secret stays
+tracked, but is reported only when the last property name ends with a secret
+suffix: `secret[account].password` and `const { apiToken } = secret.config` are
+reported, while logging `secret[account]` or `secret.host` is not. Names compare
+case-insensitively after removing `_` and `-`, and the longest matching suffix
+decides, so the excluded `pagetoken` wins over `token` in `nextPageToken`.
+`--secret-logging-suffixes` and `--secret-logging-excluded-suffixes` replace the
+defaults listed by `fsrt --help`:
+
+```sh
+fsrt --scanners secret-logging --secret-logging-version v1 ./my-forge-app
+fsrt --scanners secret-logging --secret-logging-version v1 \
+  --secret-logging-suffixes password,secret,apikey ./my-forge-app
+```
+
+The shared engine in `crates/forge_analyzer/src/taint.rs` propagates taint for a
+scanner's `TaintPolicy`: its sources, property reads (`property_taint`, and
+`tracks_fields` for written properties), sanitizing methods (`method_taint`) and
+sink predicate (`is_violation`). A runner selects `TaintDataflow<MyPolicy>`,
+passes its configured policy from `Runner::dataflow`, and can reuse
 `visit_taint_call` for interprocedural traversal. Both this scanner and the
-existing prototype-pollution checker use that engine. Policies can also opt out
-of property-read propagation (`PROPERTY_READS_PROPAGATE`) and model sanitizing
-methods (`method_taint`); the defaults propagate taint conservatively. The
-predicate sees values before each instruction; only matching sink locations are
-retained for the diagnostic walk after analysis converges. Variable vectors are
-retained at block boundaries, rather than copied and stored at every instruction.
+existing prototype-pollution checker use that engine; the defaults propagate
+taint conservatively. The predicate sees values before each instruction; only
+matching sink locations are retained for the diagnostic walk after analysis
+converges. Variable vectors are retained at block boundaries, rather than copied
+and stored at every instruction.
 
 This is a conservative analysis: helper summaries combine call sites within an
 entrypoint, and calls to unresolved functions (including HTTP clients other than

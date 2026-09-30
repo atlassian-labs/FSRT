@@ -1,19 +1,21 @@
 //! Reusable, forward may-taint analysis over the lowered IR.
 //!
-//! Policies define sources; runners evaluate their sink predicate on the state
-//! *before* each instruction. Only positive sink locations are retained, rather
-//! than a full variable-state snapshot at every instruction. Function inputs and returns are joined to a fixed point,
-//! including loops and recursion. Values are tracked per function and variable.
-//! Object properties and external calls are conservatively treated as propagators
-//! unless a policy opts out; function summaries are context insensitive (shared
-//! across call sites).
+//! Policies define sources, property-read propagation and sinks. A policy's sink
+//! predicate sees the state *before* each instruction. Only positive sink locations
+//! are retained, rather than a full variable-state snapshot at every instruction.
+//! Function inputs and returns are joined to a fixed point, including loops and
+//! recursion. Values are tracked per function and variable and, for policies that
+//! opt in, per known property path. Object properties and external calls are
+//! conservatively treated as propagators unless a policy opts out; function
+//! summaries are context insensitive (shared across call sites).
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    marker::PhantomData,
-    ops::ControlFlow,
+    ops::{Bound, ControlFlow},
+    rc::Rc,
 };
 
+use itertools::Itertools;
 use smallvec::SmallVec;
 use swc_core::ecma::atoms::Atom;
 
@@ -30,6 +32,7 @@ use crate::{
 pub enum Taint {
     #[default]
     No,
+    /// May carry a source. Each policy's sink decides whether it reports this.
     Unknown,
     /// A known source always survives a join with an unknown value.
     Yes,
@@ -68,93 +71,55 @@ impl<D: JoinSemiLattice + Clone> JoinSemiLattice for Vec<D> {
     }
 }
 
-/// Add sources for another scanner without duplicating the propagation engine.
-pub trait TaintPolicy {
-    fn intrinsic_taint(intrinsic: &Intrinsic) -> Taint;
-
+/// Add sources and sinks for another scanner without duplicating the propagation
+/// engine. A runner passes its configured policy to `TaintDataflow::new` from
+/// `Runner::dataflow`.
+pub trait TaintPolicy: Sized {
     /// Whether resolver request arguments are sources for this policy.
     const TAINT_RESOLVER_INPUT: bool = false;
 
-    /// Whether reading a property yields its containing object's taint. Writing
-    /// a tainted property still taints the whole object, and a method call still
-    /// inherits its receiver's taint.
-    const PROPERTY_READS_PROPAGATE: bool = true;
+    fn intrinsic_taint(&self, intrinsic: &Intrinsic) -> Taint;
+
+    /// Whether `inst` is a sink reached by a reportable value.
+    fn is_violation(&self, inst: &Inst, values: &TaintReader<'_, Self>) -> bool;
+
+    /// Whether writes through known property paths are tracked, so that reading a
+    /// written property yields that property's own taint.
+    fn tracks_fields(&self) -> bool {
+        false
+    }
+
+    /// The taint of reading an untracked property from a value with taint `base`.
+    /// Only the last property of a chain is passed (`None` for a computed key);
+    /// `base` is the taint of the nearest tracked value before it, and a clean
+    /// `base` must stay clean. Writing a tainted property still taints the whole
+    /// object, and a method call still inherits its receiver's taint.
+    fn property_taint(&self, base: Taint, _name: Option<&str>) -> Taint {
+        base
+    }
 
     /// The result of an unmodelled method call, given its receiver and argument
     /// taints. Policies recognize their sanitizers here; `None` joins them all.
-    fn method_taint(_method: &Atom, _receiver: Taint, _args: &[Taint]) -> Option<Taint> {
+    fn method_taint(&self, _method: &Atom, _receiver: Taint, _args: &[Taint]) -> Option<Taint> {
         None
     }
 }
 
-pub struct ResolverTaint;
-
-impl TaintPolicy for ResolverTaint {
-    const TAINT_RESOLVER_INPUT: bool = true;
-
-    fn intrinsic_taint(_intrinsic: &Intrinsic) -> Taint {
-        Taint::No
-    }
+/// Reads the state before an instruction the same way propagation does.
+pub struct TaintReader<'a, P> {
+    dataflow: &'a TaintDataflow<P>,
+    frame: &'a FrameState,
 }
 
-pub struct SecretTaint;
-
-impl TaintPolicy for SecretTaint {
-    // Taint is tracked per variable, not per field, so a secret stored in one
-    // field would otherwise taint every sibling ID, URL and count. Until fields
-    // are tracked separately, only logging a whole secret-bearing value reports.
-    const PROPERTY_READS_PROPAGATE: bool = false;
-
-    fn intrinsic_taint(intrinsic: &Intrinsic) -> Taint {
-        if matches!(intrinsic, Intrinsic::SecretRead) {
-            Taint::Yes
-        } else {
-            Taint::No
-        }
+impl<P: TaintPolicy> TaintReader<'_, P> {
+    /// The taint of the value read by `operand`, including any property read.
+    pub fn operand(&self, operand: &Operand) -> Taint {
+        self.dataflow.read(self.frame, operand)
     }
 
-    // Splitting on or replacing the secret itself redacts it from the receiver:
-    // `text.split(secret).join('[REDACTED]')` or `url.replace(key, '***')`. The
-    // pattern never reaches the result, and the receiver is assumed to hold no
-    // other secret.
-    fn method_taint(method: &Atom, receiver: Taint, args: &[Taint]) -> Option<Taint> {
-        let remaining = if args.first() == Some(&Taint::Yes) {
-            Taint::No
-        } else {
-            receiver
-        };
-        match (&**method, args) {
-            ("split", [_, ..]) => Some(remaining),
-            ("replace" | "replaceAll", [_, replacement]) => Some(remaining.join(replacement)),
-            _ => None,
-        }
-    }
-}
-
-/// The taint of the variable underlying `operand`, ignoring its projections.
-pub fn operand_taint(state: &[Taint], operand: &Operand) -> Taint {
-    match operand {
-        Operand::Var(var) => var.as_var_id().map_or(Taint::No, |id| var_taint(state, id)),
-        Operand::Lit(_) => Taint::No,
-    }
-}
-
-/// The taint of the value read by `operand`, including any property read.
-pub fn read_taint<P: TaintPolicy>(state: &[Taint], operand: &Operand) -> Taint {
-    match operand {
-        Operand::Var(var) if !P::PROPERTY_READS_PROPAGATE && !var.projections.is_empty() => {
-            Taint::No
-        }
-        _ => operand_taint(state, operand),
-    }
-}
-
-/// A method call inherits the taint of its receiver, not of the method itself:
-/// `secret.trim()` is tainted, while `secret.token.trim()` reads a property.
-fn receiver_taint<P: TaintPolicy>(state: &[Taint], callee: &Operand) -> Taint {
-    match callee {
-        Operand::Var(var) if !P::PROPERTY_READS_PROPAGATE && var.projections.len() > 1 => Taint::No,
-        _ => operand_taint(state, callee),
+    /// The taint of a variable itself, ignoring its properties.
+    pub fn var(&self, id: VarId) -> Taint {
+        var_taint(&self.frame.vars, id)
     }
 }
 
@@ -211,7 +176,15 @@ pub fn visit_taint_call<'cx, C: Runner<'cx, State = Vec<Taint>>>(
     ControlFlow::Continue(state.to_vec())
 }
 
-pub struct TaintDataflow<P = ResolverTaint>(PhantomData<P>);
+pub struct TaintDataflow<P> {
+    policy: P,
+}
+
+impl<P> TaintDataflow<P> {
+    pub fn new(policy: P) -> Self {
+        Self { policy }
+    }
+}
 
 #[derive(Default)]
 struct Queue {
@@ -233,36 +206,89 @@ impl Queue {
     }
 }
 
-// Block inputs retain ordinary variable vectors. Captures also carry bindings
-// through helpers that do not themselves read them (but call a closure that does).
-#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
-struct FrameState {
-    vars: Vec<Taint>,
-    captures: BTreeMap<DefId, Taint>,
+/// Known property names along a path, such as `["auth", "password"]`.
+type FieldPath = SmallVec<[Atom; 2]>;
+
+/// Taints of properties written through a known path. A path absent here reads
+/// from its nearest tracked prefix, or from the variable itself.
+type FieldMap = BTreeMap<FieldPath, Taint>;
+
+/// Frames share tracked properties until one of them writes.
+type Fields = Rc<FieldMap>;
+
+/// Deeper writes are summarized by their prefix, which bounds self-referential
+/// writes such as `node.next = node` in a loop.
+const MAX_FIELD_DEPTH: usize = 4;
+
+fn known_prefix(projections: &[Projection]) -> FieldPath {
+    projections
+        .iter()
+        .map_while(|projection| match projection {
+            Projection::Known(name) => Some(name.clone()),
+            Projection::Computed(_) => None,
+        })
+        .collect()
 }
 
-impl JoinSemiLattice for FrameState {
-    const BOTTOM: Self = Self {
-        vars: Vec::new(),
-        captures: BTreeMap::new(),
-    };
+/// A value's taint, with the taints of its tracked properties.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Tracked {
+    taint: Taint,
+    fields: Option<Fields>,
+}
 
-    fn join_changed(&mut self, other: &Self) -> bool {
-        let mut changed = self.vars.join_changed(&other.vars);
-        for (&binding, taint) in &other.captures {
-            changed |= self
-                .captures
-                .entry(binding)
-                .or_default()
-                .join_changed(taint);
+impl From<Taint> for Tracked {
+    fn from(taint: Taint) -> Self {
+        Self {
+            taint,
+            fields: None,
         }
-        changed
+    }
+}
+
+// Block inputs retain ordinary variable vectors, plus tracked properties for
+// policies that opt in. Captures also carry bindings through helpers that do not
+// themselves read them (but call a closure that does).
+#[derive(Clone, Default)]
+struct FrameState {
+    vars: Vec<Taint>,
+    /// Indexed like `vars`, and empty until a property is tracked.
+    fields: Vec<Option<Fields>>,
+    captures: BTreeMap<DefId, Tracked>,
+}
+
+impl FrameState {
+    fn fields(&self, id: VarId) -> Option<&Fields> {
+        self.fields.get(id.0 as usize)?.as_ref()
     }
 
-    fn join(&self, other: &Self) -> Self {
-        let mut result = self.clone();
-        result.join_changed(other);
-        result
+    fn set_fields(&mut self, id: VarId, fields: Option<Fields>) {
+        let index = id.0 as usize;
+        match fields.filter(|fields| !fields.is_empty()) {
+            Some(fields) => {
+                if self.fields.len() <= index {
+                    self.fields.resize(self.vars.len().max(index + 1), None);
+                }
+                self.fields[index] = Some(fields);
+            }
+            None => {
+                if let Some(slot) = self.fields.get_mut(index) {
+                    *slot = None;
+                }
+            }
+        }
+    }
+
+    fn value(&self, id: VarId) -> Tracked {
+        Tracked {
+            taint: var_taint(&self.vars, id),
+            fields: self.fields(id).cloned(),
+        }
+    }
+
+    fn set(&mut self, id: VarId, value: Tracked) {
+        self.vars[id.0 as usize] = value.taint;
+        self.set_fields(id, value.fields);
     }
 }
 
@@ -289,34 +315,38 @@ impl Bindings {
         &self,
         env: &Environment,
         def: DefId,
-        mut captures: BTreeMap<DefId, Taint>,
+        mut captures: BTreeMap<DefId, Tracked>,
     ) -> FrameState {
         // Recursive calls get fresh locals; only outer bindings are inherited.
         captures.retain(|binding, _| env.binding_owner(*binding) != Some(def));
-        let mut vars = vec![Taint::No; env.def_ref(def).expect_body().vars.len()];
+        let mut frame = FrameState {
+            vars: vec![Taint::No; env.def_ref(def).expect_body().vars.len()],
+            ..FrameState::default()
+        };
         for (binding, ids) in &self.aliases {
-            if let Some(&taint) = captures.get(binding) {
-                for id in ids {
-                    vars[id.0 as usize] = taint;
+            if let Some(value) = captures.get(binding) {
+                for &id in ids {
+                    frame.set(id, value.clone());
                 }
             }
         }
-        FrameState { vars, captures }
+        frame.captures = captures;
+        frame
     }
 
     fn captures_at_call(
         &self,
         state: &FrameState,
         captured: &BTreeSet<DefId>,
-    ) -> BTreeMap<DefId, Taint> {
+    ) -> BTreeMap<DefId, Tracked> {
         let mut captures = state.captures.clone();
         for (binding, ids) in &self.aliases {
             if captured.contains(binding) {
-                let taint = var_taint(&state.vars, ids[0]);
-                if taint == Taint::No {
+                let value = state.value(ids[0]);
+                if value.taint == Taint::No {
                     captures.remove(binding);
                 } else {
-                    captures.insert(*binding, taint);
+                    captures.insert(*binding, value);
                 }
             }
         }
@@ -363,11 +393,223 @@ fn binary_taint(op: BinOp, left: Taint, right: Taint) -> Taint {
     }
 }
 
-impl<'cx, P: TaintPolicy> Dataflow<'cx> for TaintDataflow<P> {
+impl<P: TaintPolicy> TaintDataflow<P> {
+    /// The taint of an untracked property chain read from a value with taint `base`.
+    fn project(&self, base: Taint, rest: &[Projection]) -> Taint {
+        match rest.last() {
+            None => base,
+            Some(Projection::Known(name)) => self.policy.property_taint(base, Some(name)),
+            Some(Projection::Computed(_)) => self.policy.property_taint(base, None),
+        }
+    }
+
+    /// The taint of reading `projections` from a variable, starting from the
+    /// nearest tracked property on the path.
+    fn read_path(&self, root: Taint, fields: Option<&Fields>, projections: &[Projection]) -> Taint {
+        if let Some(fields) = fields {
+            let known = known_prefix(projections);
+            for len in (1..=known.len()).rev() {
+                if let Some(&taint) = fields.get(&known[..len]) {
+                    return self.project(taint, &projections[len..]);
+                }
+            }
+        }
+        self.project(root, projections)
+    }
+
+    /// `read_path` for a path of known property names.
+    fn read_field(&self, root: Taint, fields: &FieldMap, path: &[Atom]) -> Taint {
+        let (base, rest) = (1..=path.len())
+            .rev()
+            .find_map(|len| Some((*fields.get(&path[..len])?, &path[len..])))
+            .unwrap_or((root, path));
+        rest.last()
+            .map_or(base, |name| self.policy.property_taint(base, Some(name)))
+    }
+
+    fn read(&self, frame: &FrameState, operand: &Operand) -> Taint {
+        match operand {
+            Operand::Var(var) => var.as_var_id().map_or(Taint::No, |id| {
+                self.read_path(
+                    var_taint(&frame.vars, id),
+                    frame.fields(id),
+                    &var.projections,
+                )
+            }),
+            Operand::Lit(_) => Taint::No,
+        }
+    }
+
+    /// A method call inherits the taint of its receiver, not of the method itself:
+    /// `secret.trim()` reads `secret`, while `secret.token.trim()` reads `secret.token`.
+    fn receiver_taint(&self, frame: &FrameState, callee: &Operand) -> Taint {
+        if let Operand::Var(var) = callee
+            && let Some(id) = var.as_var_id()
+            && let Some((_, receiver)) = var.projections.split_last()
+        {
+            self.read_path(var_taint(&frame.vars, id), frame.fields(id), receiver)
+        } else {
+            self.read(frame, callee)
+        }
+    }
+
+    /// The value read by `operand`, keeping the tracked properties of a copied
+    /// variable or known property.
+    fn value(&self, frame: &FrameState, operand: &Operand) -> Tracked {
+        let taint = self.read(frame, operand);
+        let mut fields = None;
+        if let Operand::Var(var) = operand
+            && let Some(id) = var.as_var_id()
+            && let Some(source) = frame.fields(id)
+        {
+            let prefix = known_prefix(&var.projections);
+            if var.projections.is_empty() {
+                fields = Some(source.clone());
+            } else if prefix.len() == var.projections.len() {
+                let copied: FieldMap = source
+                    .range::<[Atom], _>((Bound::Excluded(&prefix[..]), Bound::Unbounded))
+                    .take_while(|(path, _)| path.starts_with(&prefix))
+                    .map(|(path, &taint)| (FieldPath::from(&path[prefix.len()..]), taint))
+                    .collect();
+                fields = (!copied.is_empty()).then(|| Rc::new(copied));
+            }
+        }
+        Tracked { taint, fields }
+    }
+
+    /// Writes `value` to a variable or one of its properties.
+    fn assign(
+        &self,
+        frame: &mut FrameState,
+        id: VarId,
+        projections: &[Projection],
+        value: Tracked,
+    ) {
+        if projections.is_empty() {
+            frame.set(id, value);
+            return;
+        }
+        // The object now holds the value, so reading it whole includes it.
+        frame.vars[id.0 as usize].join_changed(&value.taint);
+        if !self.policy.tracks_fields() {
+            return;
+        }
+        let mut path = known_prefix(projections);
+        let exact = path.len() == projections.len() && path.len() <= MAX_FIELD_DEPTH;
+        path.truncate(MAX_FIELD_DEPTH);
+        // Take the map out of the frame so an unshared one is updated in place.
+        let mut tracked = frame
+            .fields
+            .get_mut(id.0 as usize)
+            .and_then(Option::take)
+            .unwrap_or_default();
+        let fields = Rc::make_mut(&mut tracked);
+        // Properties containing the written one now hold its value too.
+        for len in 1..path.len() {
+            if let Some(taint) = fields.get_mut(&path[..len]) {
+                taint.join_changed(&value.taint);
+            }
+        }
+        if exact {
+            fields.retain(|field, _| !field.starts_with(&path));
+            for (field, &taint) in value.fields.iter().flat_map(|fields| fields.iter()) {
+                if path.len() + field.len() <= MAX_FIELD_DEPTH {
+                    fields.insert(path.iter().chain(field).cloned().collect(), taint);
+                }
+            }
+            fields.insert(path, value.taint);
+        } else {
+            // A computed key may overwrite any property under the known prefix.
+            for (field, taint) in fields.iter_mut() {
+                if field.starts_with(&path) {
+                    taint.join_changed(&value.taint);
+                }
+            }
+        }
+        frame.set_fields(id, Some(tracked));
+    }
+
+    /// Joins tracked properties. A path tracked on only one side is joined with
+    /// what the other side reads there, so tracking never lowers a read.
+    fn join_fields(
+        &self,
+        into: &mut Option<Fields>,
+        into_root: Taint,
+        from: Option<&Fields>,
+        from_root: Taint,
+    ) -> bool {
+        match (&*into, from) {
+            (None, None) => return false,
+            (Some(current), Some(from)) if Rc::ptr_eq(current, from) => return false,
+            // A clean value reads as clean everywhere, so `from` stands as is.
+            (None, Some(from)) if into_root == Taint::No => {
+                *into = Some(from.clone());
+                return true;
+            }
+            _ => {}
+        }
+        let empty = FieldMap::new();
+        let current = into.as_deref().unwrap_or(&empty);
+        let other = from.map_or(&empty, |from| &**from);
+        let joined: Vec<(FieldPath, Taint)> = current
+            .keys()
+            .merge(other.keys())
+            .dedup()
+            .filter_map(|path| {
+                let taint = self
+                    .read_field(into_root, current, path)
+                    .join(&self.read_field(from_root, other, path));
+                (current.get(path) != Some(&taint)).then(|| (path.clone(), taint))
+            })
+            .collect();
+        if joined.is_empty() {
+            return false;
+        }
+        Rc::make_mut(into.get_or_insert_default()).extend(joined);
+        true
+    }
+
+    fn join_tracked(&self, into: &mut Tracked, from: &Tracked) -> bool {
+        let fields = self.join_fields(
+            &mut into.fields,
+            into.taint,
+            from.fields.as_ref(),
+            from.taint,
+        );
+        into.taint.join_changed(&from.taint) || fields
+    }
+
+    fn join_frames(&self, into: &mut FrameState, from: &FrameState) -> bool {
+        let mut changed = false;
+        for index in 0..into.fields.len().max(from.fields.len()) {
+            let id = VarId::from(index);
+            let other = from.fields(id);
+            let same = match (into.fields(id), other) {
+                (None, None) => true,
+                (Some(left), Some(right)) => Rc::ptr_eq(left, right),
+                _ => false,
+            };
+            if same {
+                continue;
+            }
+            let into_root = var_taint(&into.vars, id);
+            let mut fields = into.fields.get_mut(index).and_then(Option::take);
+            changed |= self.join_fields(&mut fields, into_root, other, var_taint(&from.vars, id));
+            into.set_fields(id, fields);
+        }
+        changed |= into.vars.join_changed(&from.vars);
+        for (&binding, value) in &from.captures {
+            changed |= self.join_tracked(into.captures.entry(binding).or_default(), value);
+        }
+        changed
+    }
+}
+
+impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
     type State = Vec<Taint>;
 
     fn with_interp<C: Runner<'cx, State = Self::State>>(_interp: &Interp<'cx, C>) -> Self {
-        Self(PhantomData)
+        Self::new(P::default())
     }
 
     fn transfer_intrinsic<C: Runner<'cx, State = Self::State>>(
@@ -390,9 +632,9 @@ impl<'cx, P: TaintPolicy> Dataflow<'cx> for TaintDataflow<P> {
     ) -> bool {
         let env = interp.env();
         let mut inputs = BTreeMap::<(DefId, BasicBlockId), FrameState>::new();
-        let mut returns = BTreeMap::<DefId, Vec<Taint>>::new();
+        let mut returns = BTreeMap::<DefId, Tracked>::new();
         let mut callers = BTreeMap::<DefId, BTreeSet<(DefId, BasicBlockId)>>::new();
-        let mut globals = BTreeMap::<DefId, Taint>::new();
+        let mut globals = BTreeMap::<DefId, Tracked>::new();
         let mut queue = Queue::default();
         interp.instruction_findings.clear();
 
@@ -415,7 +657,7 @@ impl<'cx, P: TaintPolicy> Dataflow<'cx> for TaintDataflow<P> {
         if interp.call_uncalled {
             roots.extend(env.get_all_functions_and_closures());
         }
-        let root_frame = |def, globals: &BTreeMap<DefId, Taint>| {
+        let root_frame = |def, globals: &BTreeMap<DefId, Tracked>| {
             let mut initial = bindings[&def].frame(env, def, globals.clone());
             if def == entry
                 && P::TAINT_RESOLVER_INPUT
@@ -439,25 +681,36 @@ impl<'cx, P: TaintPolicy> Dataflow<'cx> for TaintDataflow<P> {
 
             for (idx, inst) in block.iter().enumerate() {
                 let location = (def, Location::new(bb, idx as u32));
-                if C::instruction_has_violation(inst, &frame.vars) {
+                let values = TaintReader {
+                    dataflow: self,
+                    frame: &frame,
+                };
+                if self.policy.is_violation(inst, &values) {
                     interp.instruction_findings.insert(location);
                 } else {
                     interp.instruction_findings.remove(&location);
                 }
-                let state = &frame.vars;
-                let read = |operand| read_taint::<P>(state, operand);
-                let taint = match inst.rvalue() {
-                    Rvalue::Read(op) => read(op),
-                    Rvalue::Unary(op, operand) => unary_taint(*op, read(operand)),
-                    Rvalue::Bin(op, left, right) => binary_taint(*op, read(left), read(right)),
-                    Rvalue::Phi(vars) => vars.iter().fold(Taint::No, |taint, (id, _)| {
-                        taint.join(&var_taint(state, *id))
-                    }),
+                let read = |operand| self.read(&frame, operand);
+                let value: Tracked = match inst.rvalue() {
+                    Rvalue::Read(op) => self.value(&frame, op),
+                    Rvalue::Unary(op, operand) => unary_taint(*op, read(operand)).into(),
+                    Rvalue::Bin(op, left, right) => {
+                        binary_taint(*op, read(left), read(right)).into()
+                    }
+                    Rvalue::Phi(vars) => {
+                        vars.iter().fold(Tracked::default(), |mut value, (id, _)| {
+                            self.join_tracked(&mut value, &frame.value(*id));
+                            value
+                        })
+                    }
                     Rvalue::Template(template) => template
                         .exprs
                         .iter()
-                        .fold(Taint::No, |taint, op| taint.join(&read(op))),
-                    Rvalue::Intrinsic(intrinsic, _) => P::intrinsic_taint(intrinsic),
+                        .fold(Taint::No, |taint, op| taint.join(&read(op)))
+                        .into(),
+                    Rvalue::Intrinsic(intrinsic, _) => {
+                        self.policy.intrinsic_taint(intrinsic).into()
+                    }
                     Rvalue::Call(callee, args) => {
                         if let Some((callee_def, _)) = body.resolve_call(env, callee) {
                             callers.entry(callee_def).or_default().insert((def, bb));
@@ -470,44 +723,42 @@ impl<'cx, P: TaintPolicy> Dataflow<'cx> for TaintDataflow<P> {
                                 layout.captures_at_call(&frame, &captured),
                             );
                             for (&id, arg) in callee_layout.args.iter().zip(args) {
-                                callee_frame.vars[id.0 as usize] = read(arg);
+                                callee_frame.set(id, self.value(&frame, arg));
                             }
                             let key = (callee_def, STARTING_BLOCK);
                             let is_new = !inputs.contains_key(&key);
-                            if inputs.entry(key).or_default().join_changed(&callee_frame) || is_new
+                            if self.join_frames(inputs.entry(key).or_default(), &callee_frame)
+                                || is_new
                             {
                                 queue.push(key);
                             }
-                            returns
-                                .get(&callee_def)
-                                .map_or(Taint::No, |state| var_taint(state, VarId(0)))
+                            returns.get(&callee_def).cloned().unwrap_or_default()
                         } else {
                             // Preserve data through unmodelled transformations,
                             // including methods called on a tainted receiver.
-                            let receiver = receiver_taint::<P>(state, callee);
+                            let receiver = self.receiver_taint(&frame, callee);
                             let args: SmallVec<[Taint; 4]> = args.iter().map(read).collect();
                             method_name(callee)
-                                .and_then(|method| P::method_taint(method, receiver, &args))
+                                .and_then(|method| {
+                                    self.policy.method_taint(method, receiver, &args)
+                                })
                                 .unwrap_or_else(|| {
                                     args.iter().fold(receiver, |taint, arg| taint.join(arg))
                                 })
+                                .into()
                         }
                     }
                 };
                 if let Inst::Assign(var, _) = inst
                     && let Base::Var(id) = var.base
                 {
-                    let state = &mut frame.vars;
-                    if var.projections.is_empty() {
-                        state[id.0 as usize] = taint;
-                    } else {
-                        state[id.0 as usize].join_changed(&taint);
-                    }
+                    self.assign(&mut frame, id, &var.projections, value);
                     if let Some(var_def) = variable_def(&body.vars[id]) {
                         // Index aliases once per body instead of scanning all
                         // variables at every assignment.
+                        let value = frame.value(id);
                         for &alias in &layout.aliases[&var_def] {
-                            state[alias.0 as usize] = state[id.0 as usize];
+                            frame.set(alias, value.clone());
                         }
                     }
                 }
@@ -515,19 +766,16 @@ impl<'cx, P: TaintPolicy> Dataflow<'cx> for TaintDataflow<P> {
 
             let successors: SmallVec<[BasicBlockId; 2]> = match block.successors() {
                 Successors::Return => {
-                    let return_taint = body
+                    let returned = body
                         .vars
                         .iter_enumerated()
                         .filter(|(_, kind)| matches!(kind, VarKind::Ret))
-                        .fold(Taint::No, |taint, (id, _)| {
-                            taint.join(&var_taint(&frame.vars, id))
+                        .fold(Tracked::default(), |mut value, (id, _)| {
+                            self.join_tracked(&mut value, &frame.value(id));
+                            value
                         });
                     let is_new = !returns.contains_key(&def);
-                    if (returns
-                        .entry(def)
-                        .or_default()
-                        .join_changed(&vec![return_taint])
-                        || is_new)
+                    if (self.join_tracked(returns.entry(def).or_default(), &returned) || is_new)
                         && let Some(dependents) = callers.get(&def)
                     {
                         for &key in dependents {
@@ -542,17 +790,17 @@ impl<'cx, P: TaintPolicy> Dataflow<'cx> for TaintDataflow<P> {
                             if captured.contains(&binding)
                                 && env.binding_owner(binding) == Some(def)
                             {
-                                changed |= globals
-                                    .entry(binding)
-                                    .or_default()
-                                    .join_changed(&var_taint(&frame.vars, ids[0]));
+                                changed |= self.join_tracked(
+                                    globals.entry(binding).or_default(),
+                                    &frame.value(ids[0]),
+                                );
                             }
                         }
                         if changed {
                             for &root in &roots {
                                 let initial = root_frame(root, &globals);
                                 let key = (root, STARTING_BLOCK);
-                                if inputs.entry(key).or_default().join_changed(&initial) {
+                                if self.join_frames(inputs.entry(key).or_default(), &initial) {
                                     queue.push(key);
                                 }
                             }
@@ -566,7 +814,7 @@ impl<'cx, P: TaintPolicy> Dataflow<'cx> for TaintDataflow<P> {
             for succ in successors {
                 let key = (def, succ);
                 let is_new = !inputs.contains_key(&key);
-                if inputs.entry(key).or_default().join_changed(&frame) || is_new {
+                if self.join_frames(inputs.entry(key).or_default(), &frame) || is_new {
                     queue.push(key);
                 }
             }
@@ -577,7 +825,11 @@ impl<'cx, P: TaintPolicy> Dataflow<'cx> for TaintDataflow<P> {
                 .map(|(key, frame)| (key, frame.vars))
                 .collect(),
         );
-        interp.replace_func_states(returns);
+        interp.replace_func_states(
+            returns
+                .into_iter()
+                .map(|(def, value)| (def, vec![value.taint])),
+        );
         true
     }
 }
