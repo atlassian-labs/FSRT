@@ -32,9 +32,13 @@ use time::{Date, Month, OffsetDateTime};
 use tracing::{debug, info, warn};
 
 mod secret_logging;
-pub use secret_logging::{SecretLoggingChecker, SecretLoggingVuln};
+pub use secret_logging::{
+    DEFAULT_EXCLUDED_SECRET_SUFFIXES, DEFAULT_SECRET_SUFFIXES, PropertyReads, SecretLoggingChecker,
+    SecretLoggingVuln, SecretSuffixes,
+};
 
 pub use crate::taint::{Taint, TaintDataflow};
+use crate::taint::{TaintPolicy, TaintReader};
 
 pub struct AuthorizeDataflow {
     needs_call: Vec<DefId>,
@@ -174,20 +178,32 @@ impl JoinSemiLattice for PrototypePollutionState {
     }
 }
 
-impl<'cx> Runner<'cx> for PrototypePollutionChecker {
-    type State = Vec<Taint>;
+/// Resolver arguments are sources; a write through two tainted computed keys,
+/// such as `target[key][prop] = value`, is the sink.
+#[derive(Default)]
+pub struct PrototypePollutionTaint;
 
-    type Dataflow = TaintDataflow;
+impl TaintPolicy for PrototypePollutionTaint {
+    const TAINT_RESOLVER_INPUT: bool = true;
 
-    const NAME: &'static str = "PrototypePollution";
+    fn intrinsic_taint(&self, _intrinsic: &Intrinsic) -> Taint {
+        Taint::No
+    }
 
-    fn instruction_has_violation(inst: &Inst, state: &Self::State) -> bool {
+    fn is_violation(&self, inst: &Inst, values: &TaintReader<'_, Self>) -> bool {
         matches!(inst, Inst::Assign(l, _)
             if matches!(&*l.projections,
                 [Projection::Computed(Base::Var(first)), Projection::Computed(Base::Var(second)), ..]
-                if state.get(first.0 as usize) == Some(&Taint::Yes)
-                    && state.get(second.0 as usize) == Some(&Taint::Yes)))
+                if values.var(*first) == Taint::Yes && values.var(*second) == Taint::Yes))
     }
+}
+
+impl<'cx> Runner<'cx> for PrototypePollutionChecker {
+    type State = Vec<Taint>;
+
+    type Dataflow = TaintDataflow<PrototypePollutionTaint>;
+
+    const NAME: &'static str = "PrototypePollution";
 
     fn visit_intrinsic(
         &mut self,

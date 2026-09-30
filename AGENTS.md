@@ -25,7 +25,7 @@ Run commands from the repository root with a Rust toolchain supporting edition 2
 
 ## Coding Style & Naming Conventions
 
-Follow existing Rust style and rustfmt output, using four-space indentation. Use `snake_case` for modules, functions, and variables; `PascalCase` for types; and `SCREAMING_SNAKE_CASE` for constants. Keep CLI handling in `fsrt` and reusable analysis logic in the supporting crates. Shared dependencies and lint settings live in the root `Cargo.toml`.
+Follow existing Rust style and rustfmt output, using four-space indentation. Use `snake_case` for modules, functions, and variables; `PascalCase` for types; and `SCREAMING_SNAKE_CASE` for constants. Keep CLI handling in `fsrt` and reusable analysis logic in the supporting crates. Put scanner-specific flags in a flattened `clap::Args` group, prefixed with the scanner's name (see `SecretLoggingArgs`), so `--help` lists them under that scanner's heading. Shared dependencies and lint settings live in the root `Cargo.toml`.
 
 ## Testing Guidelines
 

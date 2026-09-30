@@ -7,16 +7,24 @@ fn project(source: &str) -> MockForgeProject<'_> {
 }
 
 fn scan(source: &str) -> Report {
+    scan_with(source, &[])
+}
+
+fn scan_with(source: &str, options: &[&str]) -> Report {
     let mut project = project("// src/index.js\n");
     project.add_file("src/index.js", source);
-    scan_directory_test_with_args(
-        project,
-        Args::parse_from(["fsrt", "--scanners", "secret-logging"]),
-    )
+    let args = ["fsrt", "--scanners", "secret-logging"]
+        .into_iter()
+        .chain(options.iter().copied());
+    scan_directory_test_with_args(project, Args::parse_from(args))
 }
 
 fn assert_findings(source: &str, count: usize) {
-    let report = scan(source);
+    assert_findings_with(source, &[], count);
+}
+
+fn assert_findings_with(source: &str, options: &[&str], count: usize) {
+    let report = scan_with(source, options);
     assert!(!report.has_errors());
     assert_eq!(
         report.into_vulns().len(),
@@ -552,4 +560,88 @@ fn secret_logging_recognizes_exact_secret_redaction() {
             count,
         );
     }
+}
+
+const V1: &[&str] = &["--secret-logging-version", "v1"];
+
+fn assert_v1_findings(body: &str, count: usize) {
+    assert_findings_with(
+        &format!(
+            "import {{ kvs }} from '@forge/kvs'; function pick(value) {{ return value.creds; }} export async function run(key) {{ const secret = await kvs.getSecret('key'); {body} }}"
+        ),
+        V1,
+        count,
+    );
+}
+
+#[test]
+fn secret_logging_v1_reports_property_reads_by_last_name() {
+    for body in [
+        "console.log(secret[key].password);",
+        "const account = secret.accounts[key]; console.log(account.auth.password.trim());",
+        "const { password } = secret.accounts[key]; console.log(password);",
+        "console.log(`auth=${secret.config.apiToken}`);",
+        "console.log(pick(secret).client_secret);",
+        "const config = secret.config; function log() { console.log(config.password); } log();",
+        "console.log(JSON.parse(secret.config).password);",
+        "console.log({ password: secret.password });",
+        "console.log(secret);",
+    ] {
+        assert_v1_findings(body, 1);
+    }
+
+    for body in [
+        "console.log(secret[key]);",
+        "console.log(secret.accounts[key].auth);",
+        "console.log(JSON.stringify(secret[key]));",
+        "console.log({ host: secret.host });",
+        "console.log(secret.password.length);",
+        "console.log(secret.password.value);",
+        "console.log(secret.nextPageToken);",
+        "const user = { password: key }; console.log(user.password);",
+    ] {
+        assert_v1_findings(body, 0);
+    }
+}
+
+#[test]
+fn secret_logging_v1_tracks_written_properties() {
+    for body in [
+        "const config = { host: secret.host, password: 'literal' }; console.log(config.password);",
+        "const config = { auth: { user: secret.user, password: 'literal' } }; console.log(config.auth.password);",
+        "function log(config) { console.log(config.password); } log({ host: secret.host, password: 'literal' });",
+        "function make(value) { return { host: value.host, password: 'literal' }; } console.log(make(secret).password);",
+        "const config = { host: secret.host, password: 'literal' }; function log() { console.log(config.password); } log();",
+        "const config = {}; config.password = secret.password; config.password = 'literal'; console.log(config.password);",
+        "const config = { host: secret.host, password: 'literal' }; const alias = config; console.log(alias.password);",
+    ] {
+        assert_v1_findings(body, 0);
+    }
+
+    for body in [
+        "const config = { host: secret }; console.log(config.host);",
+        "const config = { host: 'public' }; if (key) { config.host = secret; } console.log(config.host);",
+        "const config = { host: 'public' }; config[key] = secret; console.log(config.host);",
+        "function log({ value }) { console.log(value); } log({ value: secret });",
+        "const config = { auth: { password: secret.password } }; console.log(config.auth);",
+    ] {
+        assert_v1_findings(body, 1);
+    }
+}
+
+#[test]
+fn secret_logging_v1_uses_configured_suffixes() {
+    let source = |read: &str| {
+        format!(
+            "import {{ kvs }} from '@forge/kvs'; export async function run() {{ const secret = await kvs.getSecret('key'); console.log(secret.{read}); }}"
+        )
+    };
+    let suffixes = [V1, &["--secret-logging-suffixes", "credential"]].concat();
+    assert_findings_with(&source("dbCredential"), &suffixes, 1);
+    assert_findings_with(&source("password"), &suffixes, 0);
+
+    let excluded = [V1, &["--secret-logging-excluded-suffixes", "access_token"]].concat();
+    assert_findings_with(&source("accessToken"), &excluded, 0);
+    assert_findings_with(&source("refresh_token"), &excluded, 1);
+    assert_findings_with(&source("nextPageToken"), &excluded, 1);
 }

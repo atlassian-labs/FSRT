@@ -6,7 +6,7 @@ mod interpreter;
 #[cfg(test)]
 mod test;
 
-use clap::{Parser, ValueEnum, ValueHint};
+use clap::{CommandFactory, Parser, ValueEnum, ValueHint, error::ErrorKind};
 use forge_permission_resolver::{permissions_cache::CacheConfig, permissions_resolver::PermMap};
 use glob::glob;
 use std::{
@@ -33,8 +33,10 @@ use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
     checkers::{
-        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
-        PermissionChecker, PermissionVuln, SecretChecker, SecretLoggingChecker, SecretType,
+        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, DEFAULT_EXCLUDED_SECRET_SUFFIXES,
+        DEFAULT_SECRET_SUFFIXES, ForgeRuntimeVersionPolicyChecker, PermissionChecker,
+        PermissionVuln, PropertyReads, SecretChecker, SecretLoggingChecker, SecretSuffixes,
+        SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -66,6 +68,61 @@ impl Scanner {
     /// Opt-in scanners only run when selected with `--scanners`.
     fn enabled_by_default(self) -> bool {
         !matches!(self, Self::SecretLogging)
+    }
+}
+
+/// Options for one scanner are a flattened group: each flag is prefixed with the
+/// scanner's name, and `--help` lists the group under its own heading.
+#[derive(clap::Args, Debug)]
+#[command(next_help_heading = "Secret logging (--scanners secret-logging)")]
+struct SecretLoggingArgs {
+    /// How property reads of a secret are treated. v0 treats them as clean. v1
+    /// gives written properties their own taint, and reports another property
+    /// read from a secret only when its last property name matches a suffix.
+    #[arg(
+        id = "secret_logging_version",
+        long = "secret-logging-version",
+        value_name = "VERSION",
+        value_enum,
+        default_value_t = SecretLoggingVersion::V0
+    )]
+    version: SecretLoggingVersion,
+
+    /// v1: comma separated property-name suffixes that mark a secret, compared
+    /// case-insensitively after removing `_` and `-`.
+    #[arg(
+        long = "secret-logging-suffixes",
+        value_name = "SUFFIXES",
+        value_delimiter = ',',
+        default_values = DEFAULT_SECRET_SUFFIXES
+    )]
+    suffixes: Vec<String>,
+
+    /// v1: comma separated suffixes that never mark a secret. The longest
+    /// matching suffix decides.
+    #[arg(
+        long = "secret-logging-excluded-suffixes",
+        value_name = "SUFFIXES",
+        value_delimiter = ',',
+        default_values = DEFAULT_EXCLUDED_SECRET_SUFFIXES
+    )]
+    excluded_suffixes: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum SecretLoggingVersion {
+    V0,
+    V1,
+}
+
+impl SecretLoggingArgs {
+    fn property_reads(&self) -> PropertyReads {
+        match self.version {
+            SecretLoggingVersion::V0 => PropertyReads::Clean,
+            SecretLoggingVersion::V1 => {
+                PropertyReads::Named(SecretSuffixes::new(&self.suffixes, &self.excluded_suffixes))
+            }
+        }
     }
 }
 
@@ -130,6 +187,9 @@ pub struct Args {
 
     #[arg(long)]
     enable_aec_mode: bool,
+
+    #[command(flatten)]
+    secret_logging: SecretLoggingArgs,
 }
 
 impl Args {
@@ -574,7 +634,8 @@ pub(crate) fn scan_directory<'a>(
     }
 
     let mut secret_checker = SecretChecker::new();
-    let mut secret_logging_checker = SecretLoggingChecker::default();
+    let mut secret_logging_checker =
+        SecretLoggingChecker::new(opts.secret_logging.property_reads());
     let mut auth_header_checker = AuthHeaderChecker::new();
 
     if run_secret_scanner
@@ -837,6 +898,16 @@ fn select_env_filter(configured: Option<EnvFilter>, diagnostics_requested: bool)
 fn main() -> Result<()> {
     let args = argfile::expand_args(argfile::parse_fromfile, argfile::PREFIX)?;
     let mut args = Args::parse_from(args);
+    if args.secret_logging.version != SecretLoggingVersion::V0
+        && !args.scanner_enabled(Scanner::SecretLogging)
+    {
+        Args::command()
+            .error(
+                ErrorKind::ArgumentConflict,
+                "--secret-logging-version only applies with --scanners secret-logging",
+            )
+            .exit();
+    }
 
     let diagnostics_requested = args.verbose
         || args

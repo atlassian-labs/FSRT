@@ -7,24 +7,169 @@ use std::{
 };
 
 use smallvec::SmallVec;
+use swc_core::ecma::atoms::Atom;
 
 use crate::{
     definitions::DefId,
-    interp::{Checker, Interp, Runner, WithCallStack},
+    interp::{Checker, Interp, JoinSemiLattice, Runner, WithCallStack},
     ir::{BasicBlockId, ConsoleMethod, Inst, Intrinsic, Location, Operand, Rvalue},
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    taint::{SecretTaint, Taint, TaintDataflow, read_taint, visit_taint_call},
+    taint::{Taint, TaintDataflow, TaintPolicy, TaintReader, visit_taint_call},
 };
 
 const SOURCES: &str = "@forge/kvs kvs.getSecret or @forge/api storage.getSecret";
+
+/// Property-name suffixes that mark a secret.
+pub const DEFAULT_SECRET_SUFFIXES: &[&str] = &[
+    "password",
+    "passwd",
+    "pwd",
+    "secret",
+    "token",
+    "apikey",
+    "privatekey",
+];
+
+/// Suffixes that never mark a secret, such as pagination cursors.
+pub const DEFAULT_EXCLUDED_SECRET_SUFFIXES: &[&str] = &["pagetoken"];
+
+/// Names compare after lowercasing and removing `_` and `-`, so `api_key`,
+/// `apiKey` and `API-KEY` are the same name.
+fn normalize(name: &str) -> String {
+    name.chars()
+        .filter(|c| !matches!(c, '_' | '-'))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Property-name suffixes that mark a secret. The longest matching suffix
+/// decides, so an excluded `pagetoken` wins over `token` in `nextPageToken`.
+#[derive(Clone, Debug)]
+pub struct SecretSuffixes {
+    /// Normalized suffixes, longest first, each marking a secret or not.
+    suffixes: Vec<(String, bool)>,
+}
+
+impl SecretSuffixes {
+    pub fn new(
+        secret: impl IntoIterator<Item = impl AsRef<str>>,
+        excluded: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> Self {
+        let mut suffixes: Vec<_> = excluded
+            .into_iter()
+            .map(|suffix| (normalize(suffix.as_ref()), false))
+            .chain(
+                secret
+                    .into_iter()
+                    .map(|suffix| (normalize(suffix.as_ref()), true)),
+            )
+            .filter(|(suffix, _)| !suffix.is_empty())
+            .collect();
+        // A stable sort keeps an exclusion ahead of the same secret suffix.
+        suffixes.sort_by_key(|(suffix, _)| std::cmp::Reverse(suffix.len()));
+        Self { suffixes }
+    }
+
+    pub fn matches(&self, name: &str) -> bool {
+        let name = normalize(name);
+        self.suffixes
+            .iter()
+            .find(|(suffix, _)| name.ends_with(suffix.as_str()))
+            .is_some_and(|&(_, secret)| secret)
+    }
+}
+
+impl Default for SecretSuffixes {
+    fn default() -> Self {
+        Self::new(DEFAULT_SECRET_SUFFIXES, DEFAULT_EXCLUDED_SECRET_SUFFIXES)
+    }
+}
+
+/// How reading a property of a secret is treated.
+#[derive(Clone, Debug, Default)]
+pub enum PropertyReads {
+    /// v0: property reads, indexes and destructured bindings are clean.
+    #[default]
+    Clean,
+    /// v1: a written property keeps its own taint. Other properties read from a
+    /// secret stay tracked, but only report when the last property name matches
+    /// a secret suffix, as in `secret[account].password`.
+    Named(SecretSuffixes),
+}
+
+/// Values returned by Forge secret storage reads are sources, and console
+/// arguments are sinks.
+#[derive(Clone, Debug, Default)]
+pub struct SecretTaint {
+    property_reads: PropertyReads,
+}
+
+impl TaintPolicy for SecretTaint {
+    fn intrinsic_taint(&self, intrinsic: &Intrinsic) -> Taint {
+        if matches!(intrinsic, Intrinsic::SecretRead) {
+            Taint::Yes
+        } else {
+            Taint::No
+        }
+    }
+
+    fn is_violation(&self, inst: &Inst, values: &TaintReader<'_, Self>) -> bool {
+        matches!(inst.rvalue(), Rvalue::Intrinsic(Intrinsic::ConsoleLog(_), args)
+            if args.iter().any(|arg| values.operand(arg) == Taint::Yes))
+    }
+
+    fn tracks_fields(&self) -> bool {
+        matches!(self.property_reads, PropertyReads::Named(_))
+    }
+
+    fn property_taint(&self, base: Taint, name: Option<&str>) -> Taint {
+        match &self.property_reads {
+            // Without field tracking, a secret stored in one field would taint
+            // every sibling ID, URL and count, so only whole values report.
+            PropertyReads::Clean => Taint::No,
+            PropertyReads::Named(_) if base == Taint::No => Taint::No,
+            PropertyReads::Named(suffixes) if name.is_some_and(|name| suffixes.matches(name)) => {
+                Taint::Yes
+            }
+            // Apps also keep ordinary settings in secret storage: keep tracking
+            // the value, but only a secret-named property reports.
+            PropertyReads::Named(_) => Taint::Unknown,
+        }
+    }
+
+    // Splitting on or replacing the secret itself redacts it from the receiver:
+    // `text.split(secret).join('[REDACTED]')` or `url.replace(key, '***')`. The
+    // pattern never reaches the result, and the receiver is assumed to hold no
+    // other secret.
+    fn method_taint(&self, method: &Atom, receiver: Taint, args: &[Taint]) -> Option<Taint> {
+        let remaining = if args.first() == Some(&Taint::Yes) {
+            Taint::No
+        } else {
+            receiver
+        };
+        match (&**method, args) {
+            ("split", [_, ..]) => Some(remaining),
+            ("replace" | "replaceAll", [_, replacement]) => Some(remaining.join(replacement)),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct SecretLoggingChecker {
     vulns: Vec<SecretLoggingVuln>,
     reported: HashSet<(DefId, Location)>,
+    policy: SecretTaint,
 }
 
 impl SecretLoggingChecker {
+    pub fn new(property_reads: PropertyReads) -> Self {
+        Self {
+            policy: SecretTaint { property_reads },
+            ..Self::default()
+        }
+    }
+
     pub fn into_vulns(self) -> impl IntoIterator<Item = SecretLoggingVuln> {
         self.vulns
     }
@@ -82,9 +227,8 @@ impl<'cx> Runner<'cx> for SecretLoggingChecker {
     const NAME: &'static str = "SecretLogging";
     const VISIT_GLOBALS: bool = true;
 
-    fn instruction_has_violation(inst: &Inst, state: &Self::State) -> bool {
-        matches!(inst.rvalue(), Rvalue::Intrinsic(Intrinsic::ConsoleLog(_), args)
-            if args.iter().any(|arg| read_taint::<SecretTaint>(state, arg) == Taint::Yes))
+    fn dataflow(&self, _interp: &Interp<'cx, Self>) -> Self::Dataflow {
+        TaintDataflow::new(self.policy.clone())
     }
 
     fn visit_intrinsic(
@@ -148,4 +292,38 @@ impl<'cx> Runner<'cx> for SecretLoggingChecker {
 
 impl Checker<'_> for SecretLoggingChecker {
     type Vuln = SecretLoggingVuln;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_suffixes_match_normalized_names_by_longest_suffix() {
+        let suffixes = SecretSuffixes::default();
+        for name in [
+            "password",
+            "dbPassword",
+            "client_secret",
+            "API-KEY",
+            "accessToken",
+            "privateKey",
+        ] {
+            assert!(suffixes.matches(name), "{name}");
+        }
+        for name in [
+            "host",
+            "tokenType",
+            "nextPageToken",
+            "page_token",
+            "issueKey",
+        ] {
+            assert!(!suffixes.matches(name), "{name}");
+        }
+
+        // An exclusion wins a tie, and empty entries match nothing.
+        let suffixes = SecretSuffixes::new(["token", ""], ["token"]);
+        assert!(!suffixes.matches("token"));
+        assert!(!suffixes.matches("host"));
+    }
 }

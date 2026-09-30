@@ -288,11 +288,10 @@ pub trait Runner<'cx>: Sized {
 
     const NAME: &'static str = "Runner";
 
-    /// Evaluate a value-sensitive sink against the state before its instruction.
-    /// Dataflow retains only matching locations for the later diagnostic walk;
-    /// unrelated instructions never retain copies of the full variable state.
-    fn instruction_has_violation(_inst: &Inst, _state: &Self::State) -> bool {
-        false
+    /// Build this runner's dataflow. Override it to pass runner configuration,
+    /// such as a taint policy, to the analysis.
+    fn dataflow(&self, interp: &Interp<'cx, Self>) -> Self::Dataflow {
+        Self::Dataflow::with_interp(interp)
     }
 
     fn visit_intrinsic(
@@ -1481,8 +1480,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         Some(reaching)
     }
 
-    fn run(&mut self, func_def: DefId) {
-        let mut dataflow = C::Dataflow::with_interp(self);
+    fn run(&mut self, func_def: DefId, checker: &C) {
+        let mut dataflow = checker.dataflow(self);
         if dataflow.analyze(self, func_def) {
             return;
         }
@@ -1606,7 +1605,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             Error::NotAFunction(name.to_owned())
         })?;
         self.set_body(body);
-        self.run(resolved_def);
+        self.run(resolved_def, checker);
         if C::VISIT_GLOBALS {
             for &global in &self.env.global {
                 let global_body = self.env.def_ref(global).expect_body();
