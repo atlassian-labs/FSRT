@@ -172,6 +172,13 @@ pub struct Body {
     pub blocks: TiVec<BasicBlockId, BasicBlock>,
     pub vars: TiVec<VarId, VarKind>,
     pub values: FxHashMap<DefId, Value>,
+    /// The function's parameters in declaration order.
+    ///
+    /// A simple identifier parameter is registered as [`DefKind::Arg`] but never
+    /// gets a [`VarKind::Arg`] variable, so its position is not otherwise
+    /// recoverable. Recorded separately to keep existing variable kinds — which
+    /// the interpreter's argument binding depends on — unchanged.
+    pub params: Vec<DefId>,
     ident_to_local: FxHashMap<Id, VarId>,
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     pub class_instantiations: HashMap<DefId, DefId>,
@@ -360,6 +367,7 @@ impl Body {
             }]
             .into(),
             values: FxHashMap::default(),
+            params: Vec::new(),
             class_instantiations: Default::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),

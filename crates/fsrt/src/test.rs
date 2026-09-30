@@ -3187,6 +3187,243 @@ fn set_secret_in_shared_admin_resolver() {
     );
 }
 
+// A secret keyed by the caller's own account id is a per-user credential: the
+// caller can only ever reach their own. Non-admin access to it is how the
+// pattern is meant to work, so it is not reported. This was the single largest
+// source of false positives when the scan was run across the Marketplace.
+#[test]
+fn secret_keyed_by_caller_account_id_is_not_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('saveToken', async ({ payload, context }) => {
+            const accountId = context.accountId;
+            await storage.setSecret(`user-token:${accountId}`, payload.token);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(0));
+}
+
+// The per-user key still has to be recognised when it is built several calls
+// away from the resolver, which is the shape that actually occurs: the account
+// id is threaded through helpers as a parameter and interpolated there.
+#[test]
+fn secret_keyed_by_account_id_through_helpers_is_not_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        async function readCachedEmail(accountId) {
+            return await storage.getSecret(`email-cache:${accountId}`);
+        }
+
+        async function loadProfile(id) {
+            return await readCachedEmail(id);
+        }
+
+        resolver.define('getProfile', async ({ context }) => {
+            return await loadProfile(context.accountId);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(0));
+}
+
+// An account id the *caller supplies* is not the caller's own identity. Keying a
+// secret on it lets any user read or overwrite another user's secret, so this
+// must still report — it is an IDOR, and suppressing it would turn the fix for
+// the per-user false positive into a missed vulnerability.
+#[test]
+fn secret_keyed_by_payload_account_id_is_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('readToken', async ({ payload }) => {
+            return await storage.getSecret(`user-token:${payload.accountId}`);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(1));
+}
+
+// A key scoped to a resource rather than to a user is shared by everyone who can
+// reach the resolver, so it stays reported even though it is not a constant.
+#[test]
+fn secret_keyed_by_project_id_is_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('saveAgentKey', async ({ payload, context }) => {
+            const projectId = payload.projectId;
+            await storage.setSecret(`agent-api-key:${projectId}`, payload.apiKey);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(1));
+}
+
+// A key that mixes the caller's identity with a caller-supplied value is not a
+// per-user key: the caller still chooses part of it. Suppression requires that
+// nothing untrusted contributes.
+#[test]
+fn secret_keyed_by_account_id_and_payload_is_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('saveScoped', async ({ payload, context }) => {
+            const key = `${payload.scope}:${context.accountId}`;
+            await storage.setSecret(key, payload.token);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(1));
+}
+
 // One `requireAdmin()` helper shared by every resolver property is the canonical
 // Forge idiom. Each property must be credited with the authorization the helper
 // performs, not just the first one to reach it.

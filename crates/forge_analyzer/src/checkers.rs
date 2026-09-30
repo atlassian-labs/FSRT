@@ -8,11 +8,14 @@ use crate::{
         WithCallStack,
     },
     ir::{
-        Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
+        Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Literal, Location, Operand,
         Projection, Rvalue, StorageAccess, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    utils::{add_elements_to_intrinsic_struct, convert_lit_to_raw, translate_request_type},
+    utils::{
+        add_elements_to_intrinsic_struct, convert_lit_to_raw, get_defid_from_varkind,
+        translate_request_type,
+    },
     worklist::WorkList,
 };
 use core::fmt;
@@ -613,6 +616,183 @@ fn unambiguous_literal<'cx, C: Runner<'cx>>(
     values.pop().filter(|_| values.is_empty())
 }
 
+/// Projection or parameter names that mark a value as the caller's own identity,
+/// or as attacker-controlled.
+const CONTEXT_NAMES: &[&str] = &["context"];
+const IDENTITY_NAMES: &[&str] = &["accountId", "accountID"];
+const UNTRUSTED_NAMES: &[&str] = &["payload", "body", "queryParameters"];
+
+/// Names gathered while tracing a secret key back to where its parts come from.
+#[derive(Default)]
+struct KeyOrigin {
+    context: bool,
+    identity: bool,
+    untrusted: bool,
+}
+
+impl KeyOrigin {
+    fn observe(&mut self, name: &str) {
+        self.context |= CONTEXT_NAMES.contains(&name);
+        self.identity |= IDENTITY_NAMES.contains(&name);
+        self.untrusted |= UNTRUSTED_NAMES.contains(&name);
+    }
+
+    /// The key identifies the calling user and nothing else.
+    fn is_caller_identity(&self) -> bool {
+        self.context && self.identity && !self.untrusted
+    }
+}
+
+/// Whether a secret key is derived from the calling user's own account id, e.g.
+/// ``storage.getSecret(`user-token:${context.accountId}`)``.
+///
+/// A resolver that reads or writes a secret keyed by the caller's own account id
+/// only ever touches that caller's own secret, so reaching it without an
+/// authorization check is not an exposure — it is how per-user credentials are
+/// meant to work, and it was the single largest source of false positives when
+/// this scan was run across the Marketplace.
+///
+/// Keys built from anything else stay reported. `payload.accountId` especially:
+/// an account id the caller supplies is an IDOR, not a per-user secret, which is
+/// why an untrusted name anywhere in the key cancels the suppression.
+///
+/// The walk is deliberately one-sided. It suppresses only on positive evidence,
+/// and gives up — leaving the finding reported — when the budget runs out or the
+/// key cannot be traced.
+fn derives_from_caller_identity<'cx, C: Runner<'cx>>(
+    interp: &Interp<'cx, C>,
+    def: DefId,
+    operand: &Operand,
+) -> bool {
+    // Safety valve only. The visited set already bounds the walk to the distinct
+    // (function, variable) pairs the key reaches, but a helper called from dozens
+    // of resolvers fans out at every hop, so the budget has to allow for that.
+    const MAX_STEPS: usize = 4096;
+
+    let mut origin = KeyOrigin::default();
+    let mut steps = 0usize;
+    let mut seen = HashSet::new();
+    let mut work = vec![(def, operand.clone())];
+
+    while let Some((def, operand)) = work.pop() {
+        steps += 1;
+        if steps > MAX_STEPS {
+            return false;
+        }
+        let Operand::Var(var) = &operand else {
+            continue;
+        };
+        for projection in &var.projections {
+            if let Projection::Known(name) = projection {
+                origin.observe(name);
+            }
+        }
+        let Base::Var(varid) = var.base else {
+            continue;
+        };
+        if !seen.insert((def, varid)) {
+            continue;
+        }
+        let Some(&body) = interp.env().def_ref(def).as_body() else {
+            continue;
+        };
+        let Some(varkind) = body.vars.get(varid) else {
+            continue;
+        };
+        let var_def = get_defid_from_varkind(varkind);
+        if let Some(name) = var_def.map(|d| interp.env().def_name(d)) {
+            // Worth recording even for a parameter: a destructured `({ context })`
+            // carries the identity in its name rather than in a projection.
+            origin.observe(name);
+        }
+        // A parameter's value comes from whatever the callers passed in that
+        // position, so continue from every call site of this function.
+        if let Some(param) = var_def.and_then(|d| body.params.iter().position(|p| *p == d)) {
+            for &(caller, loc) in interp.called_from(def) {
+                if let Some(&caller_body) = interp.env().def_ref(caller).as_body()
+                    && let Some(args) = call_arguments(caller_body, loc)
+                    && let Some(arg) = args.get(param)
+                {
+                    work.push((caller, arg.clone()));
+                }
+            }
+            continue;
+        }
+        // Otherwise follow every assignment to this variable.
+        for rvalue in assignments_to(body, varid) {
+            match rvalue {
+                Rvalue::Read(op) | Rvalue::Unary(_, op) => work.push((def, op.clone())),
+                Rvalue::Bin(_, lhs, rhs) => {
+                    work.push((def, lhs.clone()));
+                    work.push((def, rhs.clone()));
+                }
+                Rvalue::Template(template) => {
+                    for op in &template.exprs {
+                        work.push((def, op.clone()));
+                    }
+                }
+                Rvalue::Phi(alternatives) => {
+                    for (alt, _) in alternatives {
+                        work.push((def, Operand::Var(Variable::from(*alt))));
+                    }
+                }
+                // The value is a callee's return, so continue from what the callee
+                // returns. Its parameters are picked up by the call-site lookup
+                // above.
+                Rvalue::Call(callee, _) => {
+                    if let Some((callee_def, callee_body)) = body.resolve_call(interp.env(), callee)
+                    {
+                        for returned in returned_operands(callee_body) {
+                            work.push((callee_def, returned.clone()));
+                        }
+                    }
+                }
+                Rvalue::Intrinsic(..) => {}
+            }
+        }
+    }
+    origin.is_caller_identity()
+}
+
+/// Every rvalue assigned to `varid` as a whole.
+fn assignments_to(body: &Body, varid: VarId) -> impl Iterator<Item = &Rvalue> {
+    body.blocks.iter().flat_map(move |block| {
+        block.insts.iter().filter_map(move |inst| match inst {
+            Inst::Assign(place, rvalue)
+                if place.base == Base::Var(varid) && place.projections.is_empty() =>
+            {
+                Some(rvalue)
+            }
+            _ => None,
+        })
+    })
+}
+
+/// The operands assigned to the return variable of a function body.
+fn returned_operands(body: &Body) -> impl Iterator<Item = &Operand> {
+    body.vars
+        .iter_enumerated()
+        .filter(|(_, kind)| matches!(kind, VarKind::Ret))
+        .flat_map(move |(varid, _)| {
+            assignments_to(body, varid).filter_map(|rvalue| match rvalue {
+                Rvalue::Read(op) => Some(op),
+                _ => None,
+            })
+        })
+}
+
+/// The arguments of the call instruction at a location.
+fn call_arguments(body: &Body, loc: Location) -> Option<&[Operand]> {
+    let inst = body.blocks.get(loc.block)?.insts.get(loc.stmt as usize)?;
+    match inst {
+        Inst::Assign(_, Rvalue::Call(_, args))
+        | Inst::Expr(Rvalue::Call(_, args))
+        | Inst::Assign(_, Rvalue::Intrinsic(_, args))
+        | Inst::Expr(Rvalue::Intrinsic(_, args)) => Some(args),
+        _ => None,
+    }
+}
+
 /// Reports Forge secret storage calls (`storage.setSecret` / `storage.getSecret`
 /// and their `@forge/kvs` equivalents) that are reachable from an app entry point
 /// without any authorization check in between.
@@ -873,17 +1053,24 @@ impl<'cx> Runner<'cx> for SecretStorageChecker {
                 // unambiguously — reporting one alternative of several would be
                 // misleading, e.g. for a helper called with a different key per
                 // call site.
-                let key = operands
-                    .as_deref()
-                    .and_then(|ops| ops.first())
-                    .and_then(|op| unambiguous_literal(interp, def, op));
+                let callstack = interp.callstack();
+                let key_operand = operands.as_deref().and_then(|ops| ops.first());
+                // A secret keyed by the caller's own account id is per-user, not
+                // an exposure, so it is not reported.
+                if let Some(op) = key_operand
+                    && derives_from_caller_identity(interp, def, op)
+                {
+                    debug!("secret key derives from the caller's account id; not reporting");
+                    return ControlFlow::Continue(*state);
+                }
+                let key = key_operand.and_then(|op| unambiguous_literal(interp, def, op));
                 info!("Found an unauthorized secret storage call!");
                 self.vulns.push(SecretStorageVuln::new(
                     def,
                     access,
                     self.modules.clone(),
                     key,
-                    interp.callstack(),
+                    callstack,
                     interp.env(),
                     interp.entry(),
                 ));

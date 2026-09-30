@@ -1023,7 +1023,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    fn called_from(&self, def: DefId) -> &[(DefId, Location)] {
+    pub(crate) fn called_from(&self, def: DefId) -> &[(DefId, Location)] {
         self.call_graph.called_from.get(&def).map_or(&[], |v| v)
     }
 

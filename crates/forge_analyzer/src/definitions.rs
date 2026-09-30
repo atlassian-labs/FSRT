@@ -2585,6 +2585,9 @@ impl Visit for ArgDefiner<'_> {
                     .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
                 self.res.add_parent(defid, self.func);
                 self.res.add_parent(defid, self.func);
+                // No `VarKind::Arg` variable is created for a plain identifier
+                // parameter, so record its position here or it is lost.
+                self.body.params.push(defid);
                 continue;
             } else {
                 //FIXME: clean up unnecessary allocations
@@ -2594,6 +2597,7 @@ impl Visit for ArgDefiner<'_> {
                 (defid, id)
             };
             let var_id = self.body.add_arg(defid, id);
+            self.body.params.push(defid);
             // FIXME: use clone_from once we specialize
             self.current_arg = Variable::new(var_id);
             self.visit_pat(pat);
