@@ -682,11 +682,14 @@ pub(crate) fn scan_directory<'a>(
         // so that both its sinks and its authorization checks are accounted for.
         secret_storage_interp.set_isolate_entries(true);
 
+        // One checker across every entry point, so that a helper reached from many
+        // resolvers is reported once rather than once per path.
+        let mut checker = SecretStorageChecker::new();
         for func in &proj.funcs {
             if !func.shared_admin_resolver {
                 continue;
             }
-            let mut checker = SecretStorageChecker::new(func.modules.clone());
+            checker.set_entry_modules(func.modules.clone());
             debug!(
                 "checking secret storage in {:?} at {:?}",
                 func.func_name, &func.path
@@ -699,8 +702,8 @@ pub(crate) fn scan_directory<'a>(
             ) {
                 warn!("error while running secret storage checker: {err}");
             }
-            reporter.add_vulnerabilities(checker.into_vulns());
         }
+        reporter.add_vulnerabilities(checker.into_vulns());
     }
 
     // Optional full-function auth-header scan. When enabled, scan all function and

@@ -73,7 +73,7 @@ pub enum Terminator {
 /// A Forge storage access (`@forge/api`'s `storage`, `@forge/kvs`'s `kvs`).
 /// Kept as one intrinsic with properties so that every storage function is
 /// modelled the same way.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StorageAccess {
     /// Reads the secret store (`getSecret`) or writes it (`setSecret`), as
     /// opposed to ordinary app storage.

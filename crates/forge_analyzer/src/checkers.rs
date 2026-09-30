@@ -28,6 +28,7 @@ use std::{
     cmp::max,
     collections::HashMap,
     collections::HashSet,
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
     iter::{self, zip},
     mem,
     ops::ControlFlow,
@@ -621,55 +622,81 @@ fn unambiguous_literal<'cx, C: Runner<'cx>>(
 /// for manual triage, which is why the scan is off by default behind
 /// `--check-secret-storage`.
 pub struct SecretStorageChecker {
-    /// Manifest keys of the modules exposing this entry point, named in the report.
+    /// Manifest keys of the modules exposing the entry point currently being
+    /// walked. Set before each `run_checker` call, since one checker spans every
+    /// entry point so that findings can be grouped across them.
     modules: Vec<&'static str>,
     vulns: Vec<SecretStorageVuln>,
 }
 
 impl SecretStorageChecker {
-    pub fn new(modules: Vec<&'static str>) -> Self {
+    pub fn new() -> Self {
         Self {
-            modules,
+            modules: vec![],
             vulns: vec![],
         }
     }
 
-    /// Returns the findings, dropping duplicates that arise when the same call
-    /// site is reached through more than one path.
+    /// Names the modules that expose the entry point about to be walked.
+    pub fn set_entry_modules(&mut self, modules: Vec<&'static str>) {
+        self.modules = modules;
+    }
+
+    /// Returns one finding per secret storage call site, rather than one per path
+    /// that reaches it.
     ///
-    /// Findings are keyed partly on the secret name, so calls that resolve to the
-    /// same name — or to no name at all — collapse into one. When a helper is
-    /// called with a different key per call site the key resolves to whichever
-    /// caller the dataflow bound last, so one finding stands in for all of them.
+    /// A single shared helper is typically reachable from every resolver on the
+    /// entry point, so reporting per path turns one call site into dozens of rows
+    /// that all need the same triage decision. Grouping on the call site instead
+    /// collapses them, and the merged finding names the entry points that reach it
+    /// so nothing is lost.
+    ///
+    /// Sites are identified by (containing function, access kind, resolved key).
+    /// Two calls in one function that read the same key are indistinguishable to a
+    /// triager, so collapsing them is intended.
     pub fn into_vulns(self) -> impl IntoIterator<Item = SecretStorageVuln> {
-        let mut seen = HashSet::new();
-        self.vulns
-            .into_iter()
-            .filter(move |vuln| {
-                seen.insert((
-                    vuln.entry_func.clone(),
-                    vuln.stack.clone(),
-                    vuln.access,
-                    vuln.key.clone(),
-                ))
-            })
-            .collect::<Vec<_>>()
+        let mut grouped: BTreeMap<(DefId, StorageAccess, Option<String>), SecretStorageVuln> =
+            BTreeMap::new();
+        for vuln in self.vulns {
+            match grouped.entry((vuln.sink, vuln.access, vuln.key.clone())) {
+                Entry::Vacant(slot) => {
+                    slot.insert(vuln);
+                }
+                Entry::Occupied(mut slot) => slot.get_mut().merge(vuln),
+            }
+        }
+        grouped.into_values().collect::<Vec<_>>()
+    }
+}
+
+impl Default for SecretStorageChecker {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[derive(Debug)]
 pub struct SecretStorageVuln {
+    /// The function containing the secret storage call. Findings are grouped on it,
+    /// so a helper reached from many resolvers is reported once.
+    sink: DefId,
+    /// Name of `sink`, kept for the report and for a path-independent check name.
+    sink_name: String,
+    /// Shortest call path to the sink, used as the representative proof.
     stack: String,
-    entry_func: String,
+    /// Every entry point that reaches this sink, ordered for a stable report.
+    entry_funcs: BTreeSet<String>,
     file: PathBuf,
     access: StorageAccess,
-    modules: Vec<&'static str>,
+    /// Union of the modules exposing the entry points that reach this sink.
+    modules: BTreeSet<&'static str>,
     /// The secret key, when it resolves to a literal.
     key: Option<String>,
 }
 
 impl SecretStorageVuln {
     fn new(
+        sink: DefId,
         access: StorageAccess,
         modules: Vec<&'static str>,
         key: Option<String>,
@@ -697,12 +724,27 @@ impl SecretStorageVuln {
         )
         .collect();
         Self {
+            sink,
+            sink_name: env.def_name(sink).to_owned(),
             stack,
-            entry_func,
+            entry_funcs: BTreeSet::from([entry_func]),
             file,
             access,
-            modules,
+            modules: modules.into_iter().collect(),
             key,
+        }
+    }
+
+    /// Folds another path to the same call site into this finding, keeping the
+    /// shortest path as the proof. Ties break on the path itself so the report does
+    /// not depend on visit order.
+    fn merge(&mut self, other: Self) {
+        self.entry_funcs.extend(other.entry_funcs);
+        self.modules.extend(other.modules);
+        let shorter = (other.stack.len(), &other.stack) < (self.stack.len(), &self.stack);
+        if shorter {
+            self.stack = other.stack;
+            self.file = other.file;
         }
     }
 
@@ -710,6 +752,22 @@ impl SecretStorageVuln {
         match self.access {
             StorageAccess { write: true, .. } => "setSecret",
             _ => "getSecret",
+        }
+    }
+
+    /// The entry points that reach this sink, abbreviated for the report.
+    fn entry_summary(&self) -> String {
+        const SHOWN: usize = 3;
+        let shown = self
+            .entry_funcs
+            .iter()
+            .take(SHOWN)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        match self.entry_funcs.len().saturating_sub(SHOWN) {
+            0 => shown,
+            rest => format!("{shown} and {rest} more"),
         }
     }
 }
@@ -725,13 +783,16 @@ impl IntoVuln for SecretStorageVuln {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
+        // Identify the finding by its call site, not by the path taken to reach it.
+        // Paths change whenever the app adds a module or a resolver property, and a
+        // check name that moves with them would look like a new vulnerability each
+        // time.
         let mut hasher = DefaultHasher::new();
         self.file
             .iter()
             .skip_while(|comp| *comp != "src")
             .for_each(|comp| comp.hash(&mut hasher));
-        self.entry_func.hash(&mut hasher);
-        self.stack.hash(&mut hasher);
+        self.sink_name.hash(&mut hasher);
         self.api_name().hash(&mut hasher);
         self.key.hash(&mut hasher);
 
@@ -740,16 +801,24 @@ impl IntoVuln for SecretStorageVuln {
             .as_deref()
             .map(|key| format!(" for the secret {key:?}"))
             .unwrap_or_default();
+        let reached_by = match self.entry_funcs.len() {
+            1 => format!("is reachable from {}", self.entry_summary()),
+            n => format!(
+                "is reachable from {n} entry points ({})",
+                self.entry_summary()
+            ),
+        };
 
         Vulnerability {
             check_name: format!("Custom-Check-Secret-Storage-{}", hasher.finish()),
             description: format!(
-                "Forge secret storage call {}(){} is reachable from {} in {:?} with no authorization check. The resolver is exposed by {}: an admin page module shares it with a module any authenticated user can reach, so the platform's admin-only restriction on that resolver no longer applies and every function on it can be called by any user.",
+                "Forge secret storage call {}(){} in {} {} in {:?} with no authorization check. The resolver is exposed by {}: an admin page module shares it with a module any authenticated user can reach, so the platform's admin-only restriction on that resolver no longer applies and every function on it can be called by any user.",
                 self.api_name(),
                 key,
-                self.entry_func,
+                self.sink_name,
+                reached_by,
                 self.file,
-                self.modules.join(" and "),
+                Itertools::intersperse(self.modules.iter().copied(), " and ").collect::<String>(),
             ),
             recommendation: "Define a separate resolver for the admin module so that its functions are not reachable from other modules, and authorize the caller before reading or writing app secrets via the authorize API _https://developer.atlassian.com/platform/forge/runtime-reference/authorize-api/_.",
             proof: format!(
@@ -810,6 +879,7 @@ impl<'cx> Runner<'cx> for SecretStorageChecker {
                     .and_then(|op| unambiguous_literal(interp, def, op));
                 info!("Found an unauthorized secret storage call!");
                 self.vulns.push(SecretStorageVuln::new(
+                    def,
                     access,
                     self.modules.clone(),
                     key,

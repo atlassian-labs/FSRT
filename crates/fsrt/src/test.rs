@@ -3246,10 +3246,11 @@ fn shared_authorization_helper_clears_every_resolver_prop() {
     assert!(scan_result.contains_vulns(0));
 }
 
-// Conversely, a sink helper shared by several properties is an exposure through
-// each of them, so each is reported.
+// A sink helper shared by several properties is an exposure through each of them,
+// but it is one call site and one triage decision, so it reports once and names
+// every entry point that reaches it.
 #[test]
-fn shared_sink_helper_reported_for_every_resolver_prop() {
+fn shared_sink_helper_reported_once_naming_every_entry_point() {
     let test_forge_project = MockForgeProject::files_from_string(
         "// src/index.js
         import Resolver from '@forge/resolver';
@@ -3290,8 +3291,32 @@ fn shared_sink_helper_reported_for_every_resolver_prop() {
     );
 
     let scan_result = scan_with_secret_storage(test_forge_project);
-    assert!(scan_result.contains_secret_storage_vuln(2));
-    assert!(scan_result.contains_vulns(2));
+    assert!(scan_result.contains_secret_storage_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+
+    // Grouping must not lose the exposure: both properties are named.
+    let description = scan_result
+        .into_vulns()
+        .iter()
+        .find(|vuln| {
+            vuln.check_name()
+                .starts_with("Custom-Check-Secret-Storage-")
+        })
+        .expect("a secret storage finding")
+        .description()
+        .to_owned();
+    assert!(
+        description.contains("2 entry points"),
+        "expected both entry points to be counted: {description}"
+    );
+    assert!(
+        description.contains("handler.saveA") && description.contains("handler.saveB"),
+        "expected both entry points to be named: {description}"
+    );
+    assert!(
+        description.contains("saveToken"),
+        "expected the finding to name the function holding the call: {description}"
+    );
 }
 
 // `api.storage.getSecret` on a default import is deliberately left unclassified:
