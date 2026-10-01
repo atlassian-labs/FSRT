@@ -1,5 +1,5 @@
 [package]
-name = "forge_pen_test"
+name = "forge_client"
 authors.workspace = true
 version.workspace = true
 edition.workspace = true

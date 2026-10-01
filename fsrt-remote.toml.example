@@ -6,6 +6,11 @@ site = "https://your-site.atlassian.net"
 # Context ARI owner, such as "jira" or "confluence".
 product = "jira"
 
+# Optional Forge app ID. Set this to target a deployed app without a local
+# manifest. Accepts a bare "{uuid}" or a full "ari:cloud:ecosystem::app/{uuid}"
+# ARI. The --app-id CLI argument overrides this value.
+# app_id = "ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986"
+
 # Used only to disambiguate when multiple app installations are returned.
 # Without an override, FSRT prefers "production", then "default", then the first result.
 # If multiple installations match, FSRT uses the first result.
@@ -16,7 +21,7 @@ product = "jira"
 [auth]
 raw_cookie_file = "./session-cookie.txt"
 
-# Optional settings for `cargo run -p fsrt --features mint_cookie -- dast mint-cookie`.
+# Optional settings for `cargo run -p fsrt --features mint_cookie -- remote mint-cookie`.
 # The password is read only from ATL_PASSWORD and is never stored in this file.
 [cookie]
 username = "tester@example.atlassian.net"

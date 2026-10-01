@@ -1,4 +1,4 @@
-//! Reusable Forge penetration-testing client.
+//! Reusable client for interacting with deployed Forge apps.
 
 use std::cell::RefCell;
 
@@ -10,7 +10,7 @@ use url::Url;
 use crate::app_config::{AppConfig, ExtensionConfig};
 use crate::fsrt_remote_config::FsrtRemoteConfig;
 use crate::mint_common::{
-    GraphqlHeaders, GraphqlRequest, JwtValidity, PenTestError, build_cookie_header,
+    ForgeClientError, GraphqlHeaders, GraphqlRequest, JwtValidity, build_cookie_header,
     decode_jwt_payload, fetch_cloud_id, post_graphql,
 };
 
@@ -134,20 +134,20 @@ struct DeployedExtension {
     extension_type_key: String,
 }
 
-/// Reusable client for Forge penetration-testing operations.
+/// Reusable client for deployed Forge app operations.
 ///
 /// Reuses authentication, one [`Agent`], and a deployment snapshot.
-pub struct ForgePenTester {
+pub struct ForgeClient {
     config: AppConfig,
     agent: Agent,
     site: Url,
     cached_fct_jwt: RefCell<String>,
 }
 
-impl ForgePenTester {
+impl ForgeClient {
     /// Validates configuration for `app_id` and fetches a deployment snapshot.
     /// Reconstruct the client to observe a newer deployment.
-    pub fn new(app_id: &str, file_config: FsrtRemoteConfig) -> Result<Self, PenTestError> {
+    pub fn new(app_id: &str, file_config: FsrtRemoteConfig) -> Result<Self, ForgeClientError> {
         let FsrtRemoteConfig {
             site,
             auth,
@@ -232,11 +232,11 @@ impl ForgePenTester {
     /// Sends a GraphQL mutation and returns its required, generic data object.
     ///
     /// A non-empty top-level `errors` list is returned unchanged in
-    /// [`PenTestError::GraphqlRejected`].
+    /// [`ForgeClientError::GraphqlRejected`].
     pub fn post_graphql_mutation<V, T>(
         &self,
         request: &GraphqlRequest<V>,
-    ) -> Result<T, PenTestError>
+    ) -> Result<T, ForgeClientError>
     where
         V: serde::Serialize,
         T: serde::de::DeserializeOwned,
@@ -252,7 +252,7 @@ fn resolve_app_config(
     context_id: &str,
     app_id: &str,
     environment: EnvironmentSelection,
-) -> Result<AppConfig, PenTestError> {
+) -> Result<AppConfig, ForgeClientError> {
     let app = data
         .ecosystem
         .apps_installed_in_contexts
@@ -260,7 +260,7 @@ fn resolve_app_config(
         .into_iter()
         .map(|edge| edge.node)
         .find(|app| app.id == app_id)
-        .ok_or_else(|| PenTestError::AppNotInstalled {
+        .ok_or_else(|| ForgeClientError::AppNotInstalled {
             app_id: app_id.to_string(),
             context_id: context_id.to_string(),
         })?;
@@ -268,11 +268,11 @@ fn resolve_app_config(
     let app_id_bare = app
         .id
         .strip_prefix("ari:cloud:ecosystem::app/")
-        .ok_or_else(|| PenTestError::InvalidAppId {
+        .ok_or_else(|| ForgeClientError::InvalidAppId {
             app_id: app.id.clone(),
         })?;
     if installations.is_empty() {
-        return Err(PenTestError::NoInstallations {
+        return Err(ForgeClientError::NoInstallations {
             app_id: app_id.to_string(),
             context_id: context_id.to_string(),
         });
@@ -300,7 +300,7 @@ fn resolve_app_config(
             Some(key) => installations
                 .into_iter()
                 .find(|installation| installation.app_environment.key == key)
-                .ok_or_else(|| PenTestError::EnvironmentNotFound {
+                .ok_or_else(|| ForgeClientError::EnvironmentNotFound {
                     environment_key: key.to_string(),
                     app_id: app_id.to_string(),
                 })?,
@@ -367,8 +367,8 @@ mod tests {
         format!("{header}.{payload}.{}", URL_SAFE_NO_PAD.encode("signature"))
     }
 
-    fn tester() -> ForgePenTester {
-        ForgePenTester {
+    fn client() -> ForgeClient {
+        ForgeClient {
             config: AppConfig {
                 context_id: CONTEXT_ID.into(),
                 app_version: "1.0.0".into(),
@@ -434,7 +434,7 @@ mod tests {
     fn resolve(
         installations: &[(&str, &str)],
         environment: EnvironmentSelection,
-    ) -> Result<AppConfig, PenTestError> {
+    ) -> Result<AppConfig, ForgeClientError> {
         let installations = installations
             .iter()
             .map(|&(id, environment)| installation(id, environment))
@@ -487,14 +487,14 @@ mod tests {
         );
         assert!(!APPS_QUERY.contains("$filters"));
 
-        let mut tester = tester();
-        tester.config = resolve(
+        let mut client = client();
+        client.config = resolve(
             &[("installation-1", "production")],
             EnvironmentSelection::Automatic,
         )
         .unwrap();
         let context = serde_json::json!({ "fakebanana": true });
-        let request = tester
+        let request = client
             .mint_fct_request("installation-1-module", &context)
             .unwrap();
 
@@ -520,8 +520,8 @@ mod tests {
             })
         );
         assert!(matches!(
-            tester.mint_fct_request("installation-1-module", &serde_json::json!([])),
-            Err(PenTestError::InvalidFctContext)
+            client.mint_fct_request("installation-1-module", &serde_json::json!([])),
+            Err(ForgeClientError::InvalidFctContext)
         ));
     }
 
@@ -546,37 +546,37 @@ mod tests {
 
         assert!(matches!(
             resolve(&[], Automatic),
-            Err(PenTestError::NoInstallations { .. })
+            Err(ForgeClientError::NoInstallations { .. })
         ));
         assert!(matches!(
             resolve(
                 &[("production", "production"), ("default", "default")],
                 Key("staging".into())
             ),
-            Err(PenTestError::EnvironmentNotFound { .. })
+            Err(ForgeClientError::EnvironmentNotFound { .. })
         ));
     }
 
     #[test]
     fn cached_fct_returns_valid_tokens_and_reports_other_states() {
-        let tester = tester();
+        let client = client();
         let valid = jwt(now() + 60);
-        tester.cached_fct_jwt.borrow_mut().clone_from(&valid);
-        assert_eq!(tester.cached_fct_jwt().unwrap(), valid);
+        client.cached_fct_jwt.borrow_mut().clone_from(&valid);
+        assert_eq!(client.cached_fct_jwt().unwrap(), valid);
 
         for (jwt, expected) in [
             (String::new(), JwtValidity::Invalid),
             (jwt(now() - 60), JwtValidity::Expired),
             ("not-a-jwt".into(), JwtValidity::Invalid),
         ] {
-            tester.cached_fct_jwt.borrow_mut().clone_from(&jwt);
-            assert_eq!(tester.cached_fct_jwt(), Err(expected));
+            client.cached_fct_jwt.borrow_mut().clone_from(&jwt);
+            assert_eq!(client.cached_fct_jwt(), Err(expected));
         }
     }
 
     #[test]
     fn builds_fit_request_without_changing_the_fct() {
-        let request = tester()
+        let request = client()
             .mint_fit_request(" fct ", "not-declared-in-manifest")
             .unwrap();
 
@@ -599,25 +599,25 @@ mod tests {
 
     #[test]
     fn failed_fit_mint_preserves_the_error_and_reports_deployed_remotes() {
-        let mut tester = tester();
-        tester.agent = response_agent(200, r#"{"errors":[{"message":"unknown remote"}]}"#);
-        tester.config.extensions.extend([
+        let mut client = client();
+        client.agent = response_agent(200, r#"{"errors":[{"message":"unknown remote"}]}"#);
+        client.config.extensions.extend([
             deployed_extension("remote-b", "core:remote"),
             deployed_extension("panel", "jira:issuePanel"),
             deployed_extension("remote-a", "core:remote"),
         ]);
 
-        let error = tester
+        let error = client
             .mint_fit("not-declared-in-manifest", "provided-fct")
             .unwrap_err();
         let display = error.to_string();
-        let PenTestError::FitMintFailed { source, available } = error else {
+        let ForgeClientError::FitMintFailed { source, available } = error else {
             panic!("unexpected error variant")
         };
 
         assert!(matches!(
             source.as_ref(),
-            PenTestError::GraphqlRejected { errors, .. }
+            ForgeClientError::GraphqlRejected { errors, .. }
                 if errors.first().and_then(|error| error.message.as_deref())
                     == Some("unknown remote")
         ));

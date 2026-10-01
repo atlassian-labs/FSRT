@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use tracing::{debug, info};
 
-use crate::{ForgePenTester, GraphqlRequest, PenTestError};
+use crate::{ForgeClient, ForgeClientError, GraphqlRequest};
 
 const FIT_MUTATION: &str = r#"mutation SignInvocationTokenForUI($input: SignInvocationTokenForUIInput!) {
   signInvocationTokenForUI(input: $input) {
@@ -33,15 +33,15 @@ struct ForgeInvocationToken {
     jwt: String,
 }
 
-impl ForgePenTester {
+impl ForgeClient {
     /// Constructs the exact GraphQL request used to mint a FIT.
     pub fn mint_fit_request(
         &self,
         fct: &str,
         remote_key: &str,
-    ) -> Result<GraphqlRequest<serde_json::Value>, PenTestError> {
+    ) -> Result<GraphqlRequest<serde_json::Value>, ForgeClientError> {
         if fct.trim().is_empty() {
-            return Err(PenTestError::EmptySuppliedFct);
+            return Err(ForgeClientError::EmptySuppliedFct);
         }
 
         Ok(GraphqlRequest {
@@ -57,7 +57,7 @@ impl ForgePenTester {
     }
 
     /// Mints a FIT for a Forge remote using the supplied FCT.
-    pub fn mint_fit(&self, remote_key: &str, fct: &str) -> Result<String, PenTestError> {
+    pub fn mint_fit(&self, remote_key: &str, fct: &str) -> Result<String, ForgeClientError> {
         let request = self.mint_fit_request(fct, remote_key)?;
         let mut variables = request.variables.clone();
         variables["input"]["forgeContextToken"] = REDACTED_FCT.into();
@@ -72,9 +72,9 @@ impl ForgePenTester {
             data.result
                 .and_then(|result| result.token)
                 .map(|token| token.jwt)
-                .ok_or(PenTestError::MissingFitToken)
+                .ok_or(ForgeClientError::MissingFitToken)
         })()
-        .map_err(|source| PenTestError::FitMintFailed {
+        .map_err(|source| ForgeClientError::FitMintFailed {
             source: Box::new(source),
             available: self.config().remote_keys(),
         })?;

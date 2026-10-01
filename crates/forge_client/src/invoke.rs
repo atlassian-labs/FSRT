@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use tracing::info;
 
-use crate::{ForgePenTester, GraphqlErrorObject, GraphqlRequest, PenTestError};
+use crate::{ForgeClient, ForgeClientError, GraphqlErrorObject, GraphqlRequest};
 
 const INVOKE_MUTATION: &str = r#"mutation InvokeExtension($input: InvokeExtensionInput!) {
   invokeExtension(input: $input) {
@@ -48,7 +48,7 @@ impl InvocationOutcome {
     }
 }
 
-impl ForgePenTester {
+impl ForgeClient {
     /// Constructs the exact GraphQL request used to invoke a deployed module.
     pub fn invoke_extension_request(
         &self,
@@ -58,14 +58,14 @@ impl ForgePenTester {
         extension_payload: Option<&JsonValue>,
         ctx: &JsonValue,
         context_token: &str,
-    ) -> Result<GraphqlRequest<JsonValue>, PenTestError> {
+    ) -> Result<GraphqlRequest<JsonValue>, ForgeClientError> {
         if context_token.trim().is_empty() {
-            return Err(PenTestError::EmptySuppliedFct);
+            return Err(ForgeClientError::EmptySuppliedFct);
         }
         let extension = self.config().extension_for_module_key(module_key)?;
         let function_key = function_key.map(|key| key.strip_prefix("resolver.").unwrap_or(key));
         if entry_point == Some(RESOLVER_ENTRY_POINT) && function_key.is_none() {
-            return Err(PenTestError::InvocationFailed(
+            return Err(ForgeClientError::InvocationFailed(
                 "resolver function key must not be empty".to_string(),
             ));
         }
@@ -85,7 +85,7 @@ impl ForgePenTester {
                 .unwrap_or_else(|| serde_json::json!({})),
         };
         let payload_object = payload.as_object_mut().ok_or_else(|| {
-            PenTestError::InvocationFailed(
+            ForgeClientError::InvocationFailed(
                 "non-resolver invocation payload must be a JSON object".to_string(),
             )
         })?;
@@ -128,7 +128,7 @@ impl ForgePenTester {
         extension_payload: Option<&JsonValue>,
         ctx: &JsonValue,
         context_token: &str,
-    ) -> Result<InvocationOutcome, PenTestError> {
+    ) -> Result<InvocationOutcome, ForgeClientError> {
         let request = self.invoke_extension_request(
             module_key,
             entry_point,
@@ -145,7 +145,7 @@ impl ForgePenTester {
         );
         let data: InvokeData = self.post_graphql_mutation(&request)?;
         let result = data.result.ok_or_else(|| {
-            PenTestError::InvocationFailed("response missing data.invokeExtension".to_string())
+            ForgeClientError::InvocationFailed("response missing data.invokeExtension".to_string())
         })?;
         let errors = result.errors.unwrap_or_default();
         if !result.success || !errors.is_empty() {
@@ -153,7 +153,7 @@ impl ForgePenTester {
                 .into_iter()
                 .filter_map(|error| error.message)
                 .collect::<Vec<_>>();
-            return Err(PenTestError::InvocationFailed(if messages.is_empty() {
+            return Err(ForgeClientError::InvocationFailed(if messages.is_empty() {
                 "server returned an unsuccessful result without an error message".to_string()
             } else {
                 messages.join("; ")

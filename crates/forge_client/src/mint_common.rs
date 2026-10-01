@@ -34,9 +34,9 @@ pub struct GraphqlErrorObject {
     pub message: Option<String>,
 }
 
-/// Errors produced by Forge penetration-testing operations.
+/// Errors produced by Forge app client operations.
 #[derive(Debug, thiserror::Error)]
-pub enum PenTestError {
+pub enum ForgeClientError {
     #[error("could not read {kind} file '{path}'")]
     FileRead {
         kind: &'static str,
@@ -151,7 +151,7 @@ pub enum PenTestError {
     #[error("FIT minting failed: {source}; possible remotes: {available:?}")]
     FitMintFailed {
         #[source]
-        source: Box<PenTestError>,
+        source: Box<ForgeClientError>,
         available: Vec<String>,
     },
 
@@ -210,9 +210,12 @@ pub(crate) struct GraphqlHeaders {
 }
 
 impl GraphqlHeaders {
-    pub(crate) fn new(cookie_header: String, graphql_endpoint: &Url) -> Result<Self, PenTestError> {
+    pub(crate) fn new(
+        cookie_header: String,
+        graphql_endpoint: &Url,
+    ) -> Result<Self, ForgeClientError> {
         let cookie = HeaderValue::from_str(&cookie_header)
-            .map_err(|source| PenTestError::InvalidCookieHeader { source })?;
+            .map_err(|source| ForgeClientError::InvalidCookieHeader { source })?;
         Ok(Self {
             cookie,
             graphql_endpoint: graphql_endpoint.as_str().to_string(),
@@ -236,8 +239,8 @@ impl Middleware for GraphqlHeaders {
     }
 }
 
-pub(crate) fn build_cookie_header(raw_cookie_file: &str) -> Result<String, PenTestError> {
-    let raw = fs::read_to_string(raw_cookie_file).map_err(|source| PenTestError::FileRead {
+pub(crate) fn build_cookie_header(raw_cookie_file: &str) -> Result<String, ForgeClientError> {
+    let raw = fs::read_to_string(raw_cookie_file).map_err(|source| ForgeClientError::FileRead {
         kind: "session cookie",
         path: PathBuf::from(raw_cookie_file),
         source,
@@ -246,7 +249,7 @@ pub(crate) fn build_cookie_header(raw_cookie_file: &str) -> Result<String, PenTe
 
     match cookie_expiry(raw)? {
         CookieExpiry::Expired(seconds_ago) => {
-            return Err(PenTestError::CookieExpired { seconds_ago });
+            return Err(ForgeClientError::CookieExpired { seconds_ago });
         }
         CookieExpiry::Valid(seconds_remaining) => info!(
             expires_in = %format_duration(seconds_remaining),
@@ -302,7 +305,7 @@ fn format_duration(seconds: i64) -> String {
     }
 }
 
-fn cookie_expiry(raw_cookie: &str) -> Result<CookieExpiry, PenTestError> {
+fn cookie_expiry(raw_cookie: &str) -> Result<CookieExpiry, ForgeClientError> {
     let token = raw_cookie
         .split(';')
         .find_map(|pair| {
@@ -314,10 +317,10 @@ fn cookie_expiry(raw_cookie: &str) -> Result<CookieExpiry, PenTestError> {
             let token = raw_cookie.trim();
             (!token.contains('=') && token.split('.').count() == 3).then_some(token)
         })
-        .ok_or(PenTestError::MissingSessionCookie)?;
+        .ok_or(ForgeClientError::MissingSessionCookie)?;
     let exp = decode_jwt_payload(token)
         .and_then(|payload| payload.get("exp")?.as_i64())
-        .ok_or(PenTestError::InvalidSessionCookie)?;
+        .ok_or(ForgeClientError::InvalidSessionCookie)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
@@ -329,30 +332,30 @@ fn cookie_expiry(raw_cookie: &str) -> Result<CookieExpiry, PenTestError> {
     }
 }
 
-pub(crate) fn fetch_cloud_id(agent: &ureq::Agent, site: &Url) -> Result<String, PenTestError> {
+pub(crate) fn fetch_cloud_id(agent: &ureq::Agent, site: &Url) -> Result<String, ForgeClientError> {
     let mut url = site.clone();
     url.set_path("/_edge/tenant_info");
     let mut response =
         agent
             .get(url.as_str())
             .call()
-            .map_err(|source| PenTestError::TenantInfoRequest {
+            .map_err(|source| ForgeClientError::TenantInfoRequest {
                 url: url.clone(),
                 source: Box::new(source),
             })?;
     let status = response.status().as_u16();
     let body = response.body_mut().read_to_string().map_err(|source| {
-        PenTestError::TenantInfoResponse {
+        ForgeClientError::TenantInfoResponse {
             url: url.clone(),
             source: Box::new(source),
         }
     })?;
     if status >= 400 {
-        return Err(PenTestError::TenantInfoStatus { url, status, body });
+        return Err(ForgeClientError::TenantInfoStatus { url, status, body });
     }
 
     let info: TenantInfo = serde_json::from_str(&body)
-        .map_err(|source| PenTestError::TenantInfoInvalidJson { url, body, source })?;
+        .map_err(|source| ForgeClientError::TenantInfoInvalidJson { url, body, source })?;
     Ok(info.cloud_id)
 }
 
@@ -360,7 +363,7 @@ pub(crate) fn post_graphql<V, T>(
     agent: &ureq::Agent,
     graphql_endpoint: &Url,
     request: &GraphqlRequest<V>,
-) -> Result<T, PenTestError>
+) -> Result<T, ForgeClientError>
 where
     V: Serialize,
     T: DeserializeOwned,
@@ -369,21 +372,19 @@ where
     let mut response = agent
         .post(graphql_endpoint.as_str())
         .send_json(request)
-        .map_err(|source| PenTestError::GraphqlRequest {
+        .map_err(|source| ForgeClientError::GraphqlRequest {
             operation_name: operation_name.clone(),
             source: Box::new(source),
         })?;
     let status = response.status().as_u16();
-    let body =
-        response
-            .body_mut()
-            .read_to_string()
-            .map_err(|source| PenTestError::GraphqlResponse {
-                operation_name: operation_name.clone(),
-                source: Box::new(source),
-            })?;
+    let body = response.body_mut().read_to_string().map_err(|source| {
+        ForgeClientError::GraphqlResponse {
+            operation_name: operation_name.clone(),
+            source: Box::new(source),
+        }
+    })?;
     if status >= 400 {
-        return Err(PenTestError::GraphqlHttpStatus {
+        return Err(ForgeClientError::GraphqlHttpStatus {
             operation_name,
             status,
             body,
@@ -392,7 +393,7 @@ where
 
     let response: serde_json::Value = serde_json::from_str(&body).map_err(|source| {
         warn!(%operation_name, response_body = %body, "GraphQL response was not valid JSON");
-        PenTestError::GraphqlInvalidJson {
+        ForgeClientError::GraphqlInvalidJson {
             operation_name: operation_name.clone(),
             body: body.clone(),
             source,
@@ -401,26 +402,27 @@ where
     if let Some(errors) = response.get("errors").filter(|errors| !errors.is_null()) {
         let errors: Vec<GraphqlErrorObject> =
             serde_json::from_value(errors.clone()).map_err(|source| {
-                PenTestError::GraphqlInvalidJson {
+                ForgeClientError::GraphqlInvalidJson {
                     operation_name: operation_name.clone(),
                     body: body.clone(),
                     source,
                 }
             })?;
         if !errors.is_empty() {
-            return Err(PenTestError::GraphqlRejected {
+            return Err(ForgeClientError::GraphqlRejected {
                 operation_name,
                 errors,
             });
         }
     }
 
-    let response: GraphqlData<T> =
-        serde_json::from_value(response).map_err(|source| PenTestError::GraphqlInvalidJson {
+    let response: GraphqlData<T> = serde_json::from_value(response).map_err(|source| {
+        ForgeClientError::GraphqlInvalidJson {
             operation_name,
             body,
             source,
-        })?;
+        }
+    })?;
     Ok(response.data)
 }
 
@@ -548,7 +550,7 @@ mod tests {
         )
         .unwrap_err();
 
-        let PenTestError::GraphqlRejected { errors, .. } = error else {
+        let ForgeClientError::GraphqlRejected { errors, .. } = error else {
             panic!("unexpected error variant")
         };
         assert_eq!(errors.len(), 3);
@@ -559,7 +561,7 @@ mod tests {
 
     #[test]
     fn graphql_error_display_uses_structured_fields() {
-        let error = PenTestError::GraphqlRejected {
+        let error = ForgeClientError::GraphqlRejected {
             operation_name: "MutationUnderTest".into(),
             errors: vec![GraphqlErrorObject {
                 message: Some("denied".into()),
@@ -586,7 +588,7 @@ mod tests {
                     &test_graphql_endpoint(),
                     &request()
                 ),
-                Err(PenTestError::GraphqlInvalidJson { .. })
+                Err(ForgeClientError::GraphqlInvalidJson { .. })
             ));
         }
     }
@@ -601,7 +603,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             error,
-            PenTestError::GraphqlHttpStatus {
+            ForgeClientError::GraphqlHttpStatus {
                 status: 503,
                 body,
                 ..

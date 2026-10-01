@@ -38,7 +38,8 @@ pub(crate) struct InvokeExtensionArgs {
     #[arg(long)]
     fct: Option<String>,
 
-    /// Forge app ID. Does not require a local manifest.
+    /// Forge app ID as a bare `{uuid}` or `ari:cloud:ecosystem::app/{uuid}` ARI.
+    /// Overrides `app_id` in the config file; does not require a local manifest.
     #[arg(long, value_name = "APP_ID", conflicts_with = "app_dir")]
     app_id: Option<String>,
 
@@ -62,15 +63,19 @@ impl InvokeExtensionArgs {
 }
 
 pub(super) fn run(args: &InvokeExtensionArgs) -> Result<()> {
-    let app_id = resolve_app_id(args.app_id.as_deref(), args.app_dir.as_deref())?;
     let module_key = args.module_key.as_str();
 
-    let config = forge_pen_test::FsrtRemoteConfig::from_path(&args.config)?;
-    let tester = forge_pen_test::ForgePenTester::new(&app_id, config)?;
+    let config = forge_client::FsrtRemoteConfig::from_path(&args.config)?;
+    let app_id = resolve_app_id(
+        args.app_id.as_deref(),
+        config.app_id.as_deref(),
+        args.app_dir.as_deref(),
+    )?;
+    let client = forge_client::ForgeClient::new(&app_id, config)?;
     let ctx = args.ctx.clone().unwrap_or_else(|| serde_json::json!({}));
 
     if args.dry_run {
-        let request = tester.invoke_extension_request(
+        let request = client.invoke_extension_request(
             module_key,
             args.entrypoint.as_deref(),
             args.function.as_deref(),
@@ -84,11 +89,11 @@ pub(super) fn run(args: &InvokeExtensionArgs) -> Result<()> {
 
     let (context_token, fct_source) = match args.fct.as_deref() {
         Some(fct) => (fct.to_string(), "supplied"),
-        None => (tester.mint_fct(module_key, &ctx)?, "minted"),
+        None => (client.mint_fct(module_key, &ctx)?, "minted"),
     };
     info!(fct_source, "selected FCT for extension invocation");
 
-    let outcome = tester.invoke_extension(
+    let outcome = client.invoke_extension(
         module_key,
         args.entrypoint.as_deref(),
         args.function.as_deref(),

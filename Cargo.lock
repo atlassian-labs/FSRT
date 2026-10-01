@@ -865,7 +865,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "forge_pen_test"
+name = "forge_client"
 version = "0.1.0"
 dependencies = [
  "base64",
@@ -957,7 +957,7 @@ dependencies = [
  "forge_analyzer",
  "forge_file_resolver",
  "forge_loader",
- "forge_pen_test",
+ "forge_client",
  "forge_permission_resolver",
  "glob",
  "graphql-parser",

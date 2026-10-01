@@ -10,7 +10,7 @@ workspace = true
 
 [features]
 graphql_schema = []
-# Browser-based session-cookie harvesting, opt in.
+# Browser-based session-cookie login, opt in.
 mint_cookie = ["dep:thirtyfour", "dep:tokio", "dep:url"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -19,7 +19,7 @@ mint_cookie = ["dep:thirtyfour", "dep:tokio", "dep:url"]
 argfile.workspace = true
 clap.workspace = true
 forge_analyzer.workspace = true
-forge_pen_test.workspace = true
+forge_client.workspace = true
 forge_file_resolver.workspace = true
 forge_loader.workspace = true
 forge_permission_resolver.workspace = true

@@ -38,7 +38,8 @@ pub(crate) struct MintFitArgs {
     #[arg(long, conflicts_with_all = ["module_key", "ctx"])]
     fct: Option<String>,
 
-    /// Forge app ID. Does not require a local manifest.
+    /// Forge app ID as a bare `{uuid}` or `ari:cloud:ecosystem::app/{uuid}` ARI.
+    /// Overrides `app_id` in the config file; does not require a local manifest.
     #[arg(long, value_name = "APP_ID", conflicts_with = "app_dir")]
     app_id: Option<String>,
 
@@ -62,24 +63,28 @@ impl MintFitArgs {
 }
 
 pub(super) fn run(args: &MintFitArgs) -> Result<()> {
-    let app_id = resolve_app_id(args.app_id.as_deref(), args.app_dir.as_deref())?;
-    let config = forge_pen_test::FsrtRemoteConfig::from_path(&args.config)?;
-    let tester = forge_pen_test::ForgePenTester::new(&app_id, config)?;
+    let config = forge_client::FsrtRemoteConfig::from_path(&args.config)?;
+    let app_id = resolve_app_id(
+        args.app_id.as_deref(),
+        config.app_id.as_deref(),
+        args.app_dir.as_deref(),
+    )?;
+    let client = forge_client::ForgeClient::new(&app_id, config)?;
     if args.dry_run {
-        let request = tester.mint_fit_request(REDACTED_FCT, &args.remote_key)?;
+        let request = client.mint_fit_request(REDACTED_FCT, &args.remote_key)?;
         println!("variables={:#}", request.variables);
         return Ok(());
     }
 
     let fct = if let Some(module_key) = args.module_key.as_deref() {
         let ctx = args.ctx.clone().unwrap_or_else(|| serde_json::json!({}));
-        tester.mint_fct(module_key, &ctx)?
+        client.mint_fct(module_key, &ctx)?
     } else {
         args.fct
             .clone()
             .expect("clap requires either MODULE_KEY or an existing FCT")
     };
-    let token = tester.mint_fit(&args.remote_key, &fct)?;
+    let token = client.mint_fit(&args.remote_key, &fct)?;
     println!("{token}");
 
     Ok(())

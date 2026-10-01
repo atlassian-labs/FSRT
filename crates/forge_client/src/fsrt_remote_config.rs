@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 use serde::{Deserialize, Deserializer, de::Error as _};
 use url::Url;
 
-use crate::mint_common::PenTestError;
+use crate::mint_common::ForgeClientError;
 
 /// Untrusted configuration loaded from `fsrt-remote.toml`.
 #[derive(Debug, Deserialize)]
@@ -18,7 +18,7 @@ pub struct FsrtRemoteConfig {
     /// Session-cookie file configuration.
     pub auth: AuthConfig,
 
-    /// Optional settings used when harvesting a session cookie with a browser.
+    /// Optional settings used when saving a session cookie after browser login.
     pub cookie: Option<CookieConfig>,
 
     /// Context ARI owner.
@@ -26,6 +26,11 @@ pub struct FsrtRemoteConfig {
 
     /// Optional Forge environment preference used when multiple installations are found.
     pub environment_key: Option<String>,
+
+    /// Optional Forge app ID, as either a bare `{uuid}` or a full
+    /// `ari:cloud:ecosystem::app/{uuid}` ARI. Lets FSRT target a deployed app
+    /// without reading a local manifest. Overridden by the `--app-id` CLI argument.
+    pub app_id: Option<String>,
 }
 
 /// Session-cookie file configuration.
@@ -36,7 +41,7 @@ pub struct AuthConfig {
     pub raw_cookie_file: String,
 }
 
-/// Browser-login settings for `fsrt dast mint-cookie`.
+/// Browser-login settings for `fsrt remote mint-cookie`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CookieConfig {
@@ -52,14 +57,14 @@ pub struct CookieConfig {
 
 impl FsrtRemoteConfig {
     /// Loads untrusted configuration from a TOML file.
-    pub fn from_path(config_path: &Path) -> Result<Self, PenTestError> {
+    pub fn from_path(config_path: &Path) -> Result<Self, ForgeClientError> {
         let contents =
-            fs::read_to_string(config_path).map_err(|source| PenTestError::FileRead {
+            fs::read_to_string(config_path).map_err(|source| ForgeClientError::FileRead {
                 kind: "config",
                 path: config_path.to_path_buf(),
                 source,
             })?;
-        toml::from_str(&contents).map_err(|source| PenTestError::ConfigParse {
+        toml::from_str(&contents).map_err(|source| ForgeClientError::ConfigParse {
             path: config_path.to_path_buf(),
             source,
         })

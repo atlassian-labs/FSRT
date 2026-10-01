@@ -1,4 +1,4 @@
-//! Browser-backed harvesting of the `tenant.session.token` cookie.
+//! Browser login to save the `tenant.session.token` cookie.
 //!
 //! This module is compiled only with the `mint_cookie` feature because it needs
 //! an async WebDriver client. The rest of FSRT remains synchronous.
@@ -17,7 +17,7 @@ const LOGIN_URL: &str = "https://id.atlassian.com/login";
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_VERIFY_WAIT_SECS: u64 = 120;
 
-/// Harvest an Atlassian session cookie via a browser login.
+/// Save an Atlassian session cookie via a browser login.
 #[derive(Args, Debug)]
 pub(crate) struct MintCookieArgs {
     /// Path to `fsrt-remote.toml`.
@@ -29,7 +29,7 @@ pub(crate) struct MintCookieArgs {
     headed: bool,
 }
 
-struct HarvestConfig {
+struct CookieLoginConfig {
     username: String,
     password: String,
     site_url: String,
@@ -46,10 +46,10 @@ impl MintCookieArgs {
 }
 
 pub(super) fn run(args: &MintCookieArgs) -> Result<()> {
-    let config = forge_pen_test::FsrtRemoteConfig::from_path(&args.config)?;
+    let config = forge_client::FsrtRemoteConfig::from_path(&args.config)?;
     let cookie = config.cookie.as_ref().ok_or_else(|| {
         std::io::Error::other(
-            "session-cookie harvesting requires a [cookie] section with username in fsrt-remote.toml",
+            "session-cookie login requires a [cookie] section with username in fsrt-remote.toml",
         )
     })?;
     let password = std::env::var("ATL_PASSWORD").map_err(|_| {
@@ -61,7 +61,7 @@ pub(super) fn run(args: &MintCookieArgs) -> Result<()> {
         return Err(std::io::Error::other("ATL_PASSWORD is set but empty").into());
     }
 
-    let harvest = HarvestConfig {
+    let login = CookieLoginConfig {
         username: cookie.username.clone(),
         password,
         site_url: config.site.to_string(),
@@ -73,12 +73,12 @@ pub(super) fn run(args: &MintCookieArgs) -> Result<()> {
         ),
     };
 
-    eprintln!("Harvesting a session cookie for {}", harvest.site_url);
+    eprintln!("Signing in to save a session cookie for {}", login.site_url);
     tokio::runtime::Runtime::new()?.block_on(async {
-        let output = harvest.output.clone();
-        let driver = build_driver(&harvest).await?;
+        let output = login.output.clone();
+        let driver = build_driver(&login).await?;
         let value = driver
-            .run_and_quit(async move |driver| run_flow(&driver, &harvest).await)
+            .run_and_quit(async move |driver| run_flow(&driver, &login).await)
             .await?;
         std::fs::write(&output, format!("{COOKIE_NAME}={value}"))?;
         #[cfg(unix)]
@@ -92,7 +92,7 @@ pub(super) fn run(args: &MintCookieArgs) -> Result<()> {
     })
 }
 
-async fn build_driver(config: &HarvestConfig) -> Result<WebDriver> {
+async fn build_driver(config: &CookieLoginConfig) -> Result<WebDriver> {
     let mut capabilities = ChromeCapabilities::new();
     if !config.headed {
         capabilities.add_arg("--headless=new")?;
@@ -103,7 +103,7 @@ async fn build_driver(config: &HarvestConfig) -> Result<WebDriver> {
     Ok(driver)
 }
 
-async fn run_flow(driver: &WebDriver, config: &HarvestConfig) -> Result<String> {
+async fn run_flow(driver: &WebDriver, config: &CookieLoginConfig) -> Result<String> {
     let mut login_url = Url::parse(LOGIN_URL)?;
     login_url
         .query_pairs_mut()

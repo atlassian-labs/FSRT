@@ -16,7 +16,7 @@ Arguments:
   [DIRS]...  The directory to scan. Assumes there is a `manifest.yaml` file in the top level directory, and that the source code is located in `src/`
 
 Commands:
-  dast  Run pentesting commands
+  remote  Interact with deployed Forge apps
 
   Options:
     -d, --debug
@@ -32,7 +32,7 @@ Commands:
     --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir
 ```
 
-Run `fsrt --help`, `fsrt dast --help`, or `fsrt dast <COMMAND> --help` for current options.
+Run `fsrt --help`, `fsrt remote --help`, or `fsrt remote <COMMAND> --help` for current options.
 
 ## Installation
 
@@ -62,15 +62,22 @@ cargo install --git https://github.com/atlassian-labs/FSRT --locked
 
 ## Commands
 
+`remote` interacts with deployed Forge apps: it creates Forge Context Tokens (FCTs) and
+Forge Invocation Tokens (FITs), invokes extensions, and optionally saves a session cookie
+through browser login. It uses the configured Atlassian account and app installation.
+
 ```text
-fsrt dast mint-fct <MODULE_KEY> [OPTIONS]
-fsrt dast mint-fit <REMOTE_KEY> (--module <MODULE_KEY> | --fct <FCT>) [OPTIONS]
-fsrt dast invoke-extension [FUNCTION] <MODULE_KEY> [--entrypoint <ENTRYPOINT>] [--fct <FCT>] [OPTIONS]
-fsrt dast mint-cookie [--config <PATH>] [--headed]
+fsrt remote mint-fct <MODULE_KEY> [OPTIONS]
+fsrt remote mint-fit <REMOTE_KEY> (--module <MODULE_KEY> | --fct <FCT>) [OPTIONS]
+fsrt remote invoke-extension [FUNCTION] <MODULE_KEY> [--entrypoint <ENTRYPOINT>] [--fct <FCT>] [OPTIONS]
+fsrt remote mint-cookie [--config <PATH>] [--headed]
 ```
 
-The FCT, FIT, and extension-invocation commands accept either `--app-id <APP_ID>` to identify the app directly or
-`--app-dir <DIR>` to read the app ID from its manifest. They also use a TOML
+The FCT, FIT, and extension-invocation commands resolve the app ID with the following precedence: the
+`--app-id <APP_ID>` CLI argument, then `app_id` in the config file, then the `app.id` read from an app
+manifest (via `--app-dir <DIR>`, defaulting to the current directory). Supplying the ID by CLI or config
+skips the manifest entirely, so a deployed app can be accessed without a local checkout. The ID may be a
+bare `{uuid}` or a full `ari:cloud:ecosystem::app/{uuid}` ARI. These commands also use a TOML
 configuration file; see [`fsrt-remote.toml.example`](fsrt-remote.toml.example).
 
 `mint-fct` mints an FCT for a deployed module. Pass `--ctx '<JSON>'` to populate the
@@ -93,16 +100,16 @@ invocation context.
 By default, live mint commands print only the token, while `invoke-extension` prints the
 backend response. `--dry-run` queries metadata without signing tokens or invoking the
 extension and prints redacted request variables. `--verbose` prints live diagnostics to
-stderr. Run `fsrt dast <COMMAND> --help` for all options.
+stderr. Run `fsrt remote <COMMAND> --help` for all options.
 
-### Harvest a session cookie
+### Save a session cookie
 
 `mint-cookie` opens Chrome, signs in to the configured Atlassian site, and stores the
 resulting `tenant.session.token` in `auth.raw_cookie_file`. It is intentionally opt-in:
 
 ```sh
 export ATL_PASSWORD='your-account-password'
-cargo run -p fsrt --features mint_cookie -- dast mint-cookie --headed
+cargo run -p fsrt --features mint_cookie -- remote mint-cookie --headed
 ```
 
 Set `[cookie].username` in `fsrt-remote.toml`; `--headed` opens a browser window for MFA,

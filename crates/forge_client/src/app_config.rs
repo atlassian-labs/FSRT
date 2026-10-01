@@ -2,7 +2,7 @@
 
 use tracing::warn;
 
-use crate::mint_common::PenTestError;
+use crate::mint_common::ForgeClientError;
 
 /// A deployed Forge extension available for FCT minting.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +55,7 @@ impl AppConfig {
         &self.app_version
     }
 
-    /// Returns all deployed extensions captured during tester construction.
+    /// Returns all deployed extensions captured during client construction.
     pub fn extensions(&self) -> &[ExtensionConfig] {
         &self.extensions
     }
@@ -78,13 +78,13 @@ impl AppConfig {
     pub fn extension_for_module_key(
         &self,
         module_key: &str,
-    ) -> Result<&ExtensionConfig, PenTestError> {
+    ) -> Result<&ExtensionConfig, ForgeClientError> {
         let mut matches = self
             .extensions
             .iter()
             .filter(|extension| extension.module_key == module_key);
         let Some(first) = matches.next() else {
-            return Err(PenTestError::ModuleKeyNotFound {
+            return Err(ForgeClientError::ModuleKeyNotFound {
                 module_key: module_key.to_string(),
                 available: self
                     .extensions

@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use tracing::{debug, info};
 
-use crate::{ForgePenTester, GraphqlErrorObject, GraphqlRequest, PenTestError};
+use crate::{ForgeClient, ForgeClientError, GraphqlErrorObject, GraphqlRequest};
 
 const FCT_MUTATION: &str = r#"mutation SignForgeContextToken($input: GlobalAppSignForgeContextTokensInput!) {
   globalApp_signForgeContextTokens(input: $input) {
@@ -37,15 +37,15 @@ struct ForgeContextToken {
     jwt: String,
 }
 
-impl ForgePenTester {
+impl ForgeClient {
     /// Constructs the exact GraphQL request that `mint_fct` will send.
     pub fn mint_fct_request(
         &self,
         module_key: &str,
         ctx: &serde_json::Value,
-    ) -> Result<GraphqlRequest<serde_json::Value>, PenTestError> {
+    ) -> Result<GraphqlRequest<serde_json::Value>, ForgeClientError> {
         if !ctx.is_object() {
-            return Err(PenTestError::InvalidFctContext);
+            return Err(ForgeClientError::InvalidFctContext);
         }
         let extension = self.config().extension_for_module_key(module_key)?;
         info!(
@@ -78,7 +78,7 @@ impl ForgePenTester {
         &self,
         module_key: &str,
         ctx: &serde_json::Value,
-    ) -> Result<String, PenTestError> {
+    ) -> Result<String, ForgeClientError> {
         let request = self.mint_fct_request(module_key, ctx)?;
         let variables = format!("{:#}", request.variables);
         info!(variables = %variables, "FCT GraphQL variables");
@@ -89,14 +89,14 @@ impl ForgePenTester {
             tokens,
         } = data.result;
         if !success || !errors.is_empty() {
-            return Err(PenTestError::MintRejected { success, errors });
+            return Err(ForgeClientError::MintRejected { success, errors });
         }
 
         let jwt = tokens
             .into_iter()
             .next()
             .map(|token| token.jwt)
-            .ok_or(PenTestError::MissingFctToken)?;
+            .ok_or(ForgeClientError::MissingFctToken)?;
         self.replace_cached_fct_jwt(&jwt);
         debug!("successfully minted Forge Context Token");
         Ok(jwt)
