@@ -945,7 +945,10 @@ impl<'a> ForgeModules<'a> {
         }
 
         for valid in workflow_validator {
-            valid.common_keys.append_functions(&mut invokable_functions);
+            // Only the resolver is user-invokable; the function runs workflow validation.
+            if let Some(resolver) = valid.common_keys.resolver {
+                invokable_functions.extend(resolver.function);
+            }
         }
 
         // Rovo Module Functions
@@ -1340,6 +1343,59 @@ mod tests {
                 web_trigger: false,
                 admin: false
             })
+        );
+    }
+
+    #[test]
+    fn test_workflow_validator_only_resolver_is_invokable() {
+        let yaml = r#"
+app:
+  id: my-app
+modules:
+  jira:workflowValidator:
+    - key: validator-with-resolver
+      function: validator
+      resolver:
+        function: resolver
+    - key: validator-without-resolver
+      function: standalone-validator
+    - key: validator-shared-with-panel
+      function: shared-handler
+    - key: validator-with-remote-resolver
+      function: remote-validator
+      resolver:
+        endpoint: remote-endpoint
+  jira:issuePanel:
+    - key: panel
+      function: shared-handler
+  function:
+    - key: validator
+      handler: index.validate
+    - key: resolver
+      handler: index.resolve
+    - key: standalone-validator
+      handler: index.standalone
+    - key: shared-handler
+      handler: index.shared
+    - key: remote-validator
+      handler: index.remote
+"#;
+        let manifest: ForgeManifest<'_> = serde_yaml::from_str(yaml).unwrap();
+        let functions: Vec<_> = manifest
+            .modules
+            .into_analyzable_functions()
+            .map(|entrypoint| (entrypoint.function.key, entrypoint.invokable))
+            .collect();
+
+        assert_eq!(
+            functions,
+            vec![
+                ("validator", false),
+                ("resolver", true),
+                ("standalone-validator", false),
+                ("shared-handler", true),
+                ("remote-validator", false),
+            ]
         );
     }
 
