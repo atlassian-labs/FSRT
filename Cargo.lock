@@ -847,6 +847,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge_client"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.12",
+ "toml",
+ "tracing",
+ "ureq",
+ "url",
+]
+
+[[package]]
 name = "forge_file_resolver"
 version = "0.1.0"
 
@@ -862,21 +877,6 @@ dependencies = [
  "serde_yaml",
  "thiserror 2.0.12",
  "tracing",
-]
-
-[[package]]
-name = "forge_client"
-version = "0.1.0"
-dependencies = [
- "base64",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.12",
- "toml",
- "tracing",
- "ureq",
- "url",
 ]
 
 [[package]]
@@ -955,9 +955,9 @@ dependencies = [
  "argfile",
  "clap",
  "forge_analyzer",
+ "forge_client",
  "forge_file_resolver",
  "forge_loader",
- "forge_client",
  "forge_permission_resolver",
  "glob",
  "graphql-parser",
@@ -1990,7 +1990,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
 dependencies = [
  "phf_shared",
- "rand 0.8.5",
+ "rand 0.8.8",
 ]
 
 [[package]]
@@ -2191,9 +2191,9 @@ checksum = "ce082a9940a7ace2ad4a8b7d0b1eac6aa378895f18be598230c5f2284ac05426"
 
 [[package]]
 name = "rand"
-version = "0.8.5"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
+checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
 dependencies = [
  "rand_core 0.6.4",
 ]
