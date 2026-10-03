@@ -98,9 +98,11 @@ pub trait TaintPolicy: Sized {
         base
     }
 
-    /// The result of an unmodelled method call, given its receiver and argument
-    /// taints. Policies recognize their sanitizers here; `None` joins them all.
-    fn method_taint(&self, _method: &Atom, _receiver: Taint, _args: &[Taint]) -> Option<Taint> {
+    /// The result of an unmodelled call, given its receiver and argument taints.
+    /// `method` is the last property name for a method call, or the bound name
+    /// for a bare call to a global or imported binding. Policies recognize their
+    /// sanitizers and known non-propagating calls here; `None` joins them all.
+    fn method_taint(&self, _method: &str, _receiver: Taint, _args: &[Taint]) -> Option<Taint> {
         None
     }
 }
@@ -123,7 +125,7 @@ impl<P: TaintPolicy> TaintReader<'_, P> {
     }
 }
 
-fn method_name(callee: &Operand) -> Option<&Atom> {
+fn method_name(callee: &Operand) -> Option<&str> {
     match callee {
         Operand::Var(var) => match var.projections.last()? {
             Projection::Known(name) => Some(name),
@@ -131,6 +133,27 @@ fn method_name(callee: &Operand) -> Option<&Atom> {
         },
         Operand::Lit(_) => None,
     }
+}
+
+/// The name a policy's `method_taint` sees for an unresolved call: the last
+/// property name for a method call (`obj.method()`), or the bound name for a
+/// bare call to a global or imported binding (`fetch()`), since both shapes
+/// can equally be a well-known function a policy wants to recognize.
+fn callee_name<'cx>(
+    env: &'cx Environment,
+    body: &'cx Body,
+    callee: &'cx Operand,
+) -> Option<&'cx str> {
+    method_name(callee).or_else(|| {
+        let Operand::Var(var) = callee else {
+            return None;
+        };
+        if !var.projections.is_empty() {
+            return None;
+        }
+        let def = variable_def(&body.vars[var.as_var_id()?])?;
+        Some(env.def_name(def))
+    })
 }
 
 fn var_taint(state: &[Taint], id: VarId) -> Taint {
@@ -738,7 +761,7 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                             // including methods called on a tainted receiver.
                             let receiver = self.receiver_taint(&frame, callee);
                             let args: SmallVec<[Taint; 4]> = args.iter().map(read).collect();
-                            method_name(callee)
+                            callee_name(env, body, callee)
                                 .and_then(|method| {
                                     self.policy.method_taint(method, receiver, &args)
                                 })
