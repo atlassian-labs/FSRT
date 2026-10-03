@@ -7,7 +7,6 @@ use std::{
 };
 
 use smallvec::SmallVec;
-use swc_core::ecma::atoms::Atom;
 
 use crate::{
     definitions::DefId,
@@ -137,19 +136,33 @@ impl TaintPolicy for SecretTaint {
         }
     }
 
-    // Splitting on or replacing the secret itself redacts it from the receiver:
-    // `text.split(secret).join('[REDACTED]')` or `url.replace(key, '***')`. The
-    // pattern never reaches the result, and the receiver is assumed to hold no
-    // other secret.
-    fn method_taint(&self, method: &Atom, receiver: Taint, args: &[Taint]) -> Option<Taint> {
+    fn method_taint(&self, method: &str, receiver: Taint, args: &[Taint]) -> Option<Taint> {
+        // Splitting on or replacing the secret itself redacts it from the
+        // receiver: `text.split(secret).join('[REDACTED]')` or
+        // `url.replace(key, '***')`. The pattern never reaches the result, and
+        // the receiver is assumed to hold no other secret.
         let remaining = if args.first() == Some(&Taint::Yes) {
             Taint::No
         } else {
             receiver
         };
-        match (&**method, args) {
+        match (method, args) {
             ("split", [_, ..]) => Some(remaining),
             ("replace" | "replaceAll", [_, replacement]) => Some(remaining.join(replacement)),
+            // An outbound call's return value is a response, never a verbatim
+            // copy of the request that carried the secret: `fetch`/`forgeFetch`
+            // (bare, imported, or `@forge/api`'s wrapper) and the `@forge/api`
+            // request helpers all report their own result, not their inputs.
+            (
+                "fetch" | "forgeFetch" | "invokeRemote" | "requestJira" | "requestConfluence"
+                | "requestBitbucket" | "requestGraph",
+                _,
+            ) => Some(Taint::No),
+            // `Object.keys()` returns property names, never the values; a
+            // one-way digest/signature doesn't disclose its input.
+            ("keys" | "sign" | "digest", _) => Some(Taint::No),
+            // `Boolean(secret)` and friends coerce to a flag, not the value.
+            ("Boolean", _) => Some(Taint::No),
             _ => None,
         }
     }

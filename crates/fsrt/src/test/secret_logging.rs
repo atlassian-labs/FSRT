@@ -562,6 +562,34 @@ fn secret_logging_recognizes_exact_secret_redaction() {
     }
 }
 
+#[test]
+fn secret_logging_drops_taint_for_known_non_propagating_calls() {
+    for (body, count) in [
+        // A bare call to a known global, not just a method call, is recognized.
+        ("console.log(Object.keys(secret));", 0),
+        ("console.log(Boolean(secret));", 0),
+        (
+            "const r = await fetch('https://example.com', { headers: { Authorization: secret } }); console.log(r);",
+            0,
+        ),
+        // A method call on a locally declared (not global) receiver is still
+        // recognized by name alone.
+        (
+            "const api = {}; const r = await api.invokeRemote('app', { headers: { Authorization: secret } }); console.log(r);",
+            0,
+        ),
+        // The call's own arguments stay reportable; only its result is clean.
+        ("console.log({ headers: { Authorization: secret } });", 1),
+    ] {
+        assert_findings(
+            &format!(
+                "import {{ kvs }} from '@forge/kvs'; export async function run() {{ const secret = await kvs.getSecret('key'); {body} }}"
+            ),
+            count,
+        );
+    }
+}
+
 const V1: &[&str] = &["--secret-logging-version", "v1"];
 
 fn assert_v1_findings(body: &str, count: usize) {
