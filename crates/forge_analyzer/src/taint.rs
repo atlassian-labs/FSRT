@@ -98,6 +98,17 @@ pub trait TaintPolicy: Sized {
         base
     }
 
+    /// Override result propagation for policy-specific operator semantics.
+    fn binary_taint(&self, op: BinOp, left: Taint, right: Taint) -> Taint {
+        binary_taint(op, left, right)
+    }
+
+    /// Classify a call rooted at an undeclared global binding. The full
+    /// projection path prevents unrelated methods from matching a builtin.
+    fn global_call_taint(&self, _name: &str, _path: &[Projection]) -> Option<Taint> {
+        None
+    }
+
     /// The result of an unmodelled call, given its receiver and argument taints.
     /// `method` is the last property name for a method call, or the bound name
     /// for a bare call to a global or imported binding. Policies recognize their
@@ -384,7 +395,7 @@ fn unary_taint(op: UnOp, taint: Taint) -> Taint {
     }
 }
 
-fn binary_taint(op: BinOp, left: Taint, right: Taint) -> Taint {
+pub(crate) fn binary_taint(op: BinOp, left: Taint, right: Taint) -> Taint {
     match op {
         // These operators return only boolean metadata, never either value.
         BinOp::Lt
@@ -717,9 +728,10 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                 let value: Tracked = match inst.rvalue() {
                     Rvalue::Read(op) => self.value(&frame, op),
                     Rvalue::Unary(op, operand) => unary_taint(*op, read(operand)).into(),
-                    Rvalue::Bin(op, left, right) => {
-                        binary_taint(*op, read(left), read(right)).into()
-                    }
+                    Rvalue::Bin(op, left, right) => self
+                        .policy
+                        .binary_taint(*op, read(left), read(right))
+                        .into(),
                     Rvalue::Phi(vars) => {
                         vars.iter().fold(Tracked::default(), |mut value, (id, _)| {
                             self.join_tracked(&mut value, &frame.value(*id));
@@ -761,9 +773,22 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                             // including methods called on a tainted receiver.
                             let receiver = self.receiver_taint(&frame, callee);
                             let args: SmallVec<[Taint; 4]> = args.iter().map(read).collect();
-                            callee_name(env, body, callee)
-                                .and_then(|method| {
-                                    self.policy.method_taint(method, receiver, &args)
+                            let global_result = match callee {
+                                Operand::Var(var) => var
+                                    .as_var_id()
+                                    .and_then(|id| variable_def(&body.vars[id]))
+                                    .filter(|&def| env.is_undeclared_global(def))
+                                    .and_then(|def| {
+                                        self.policy
+                                            .global_call_taint(env.def_name(def), &var.projections)
+                                    }),
+                                Operand::Lit(_) => None,
+                            };
+                            global_result
+                                .or_else(|| {
+                                    callee_name(env, body, callee).and_then(|method| {
+                                        self.policy.method_taint(method, receiver, &args)
+                                    })
                                 })
                                 .unwrap_or_else(|| {
                                     args.iter().fold(receiver, |taint, arg| taint.join(arg))

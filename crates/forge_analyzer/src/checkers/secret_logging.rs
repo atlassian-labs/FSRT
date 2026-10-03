@@ -11,7 +11,9 @@ use smallvec::SmallVec;
 use crate::{
     definitions::DefId,
     interp::{Checker, Interp, JoinSemiLattice, Runner, WithCallStack},
-    ir::{BasicBlockId, ConsoleMethod, Inst, Intrinsic, Location, Operand, Rvalue},
+    ir::{
+        BasicBlockId, BinOp, ConsoleMethod, Inst, Intrinsic, Location, Operand, Projection, Rvalue,
+    },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     taint::{Taint, TaintDataflow, TaintPolicy, TaintReader, visit_taint_call},
 };
@@ -136,6 +138,25 @@ impl TaintPolicy for SecretTaint {
         }
     }
 
+    fn binary_taint(&self, op: BinOp, left: Taint, right: Taint) -> Taint {
+        // A falsy left operand of && discloses only absence (e.g. an empty
+        // string); a truthy secret is discarded in favor of the right operand.
+        // || and ?? can return the secret itself and must retain its taint.
+        if op == BinOp::And {
+            right
+        } else {
+            crate::taint::binary_taint(op, left, right)
+        }
+    }
+
+    fn global_call_taint(&self, name: &str, path: &[Projection]) -> Option<Taint> {
+        match (name, path) {
+            ("Boolean", []) => Some(Taint::No),
+            ("Object", [Projection::Known(method)]) if method == "keys" => Some(Taint::No),
+            _ => None,
+        }
+    }
+
     fn method_taint(&self, method: &str, receiver: Taint, args: &[Taint]) -> Option<Taint> {
         // Splitting on or replacing the secret itself redacts it from the
         // receiver: `text.split(secret).join('[REDACTED]')` or
@@ -158,11 +179,8 @@ impl TaintPolicy for SecretTaint {
                 | "requestBitbucket" | "requestGraph",
                 _,
             ) => Some(Taint::No),
-            // `Object.keys()` returns property names, never the values; a
-            // one-way digest/signature doesn't disclose its input.
-            ("keys" | "sign" | "digest", _) => Some(Taint::No),
-            // `Boolean(secret)` and friends coerce to a flag, not the value.
-            ("Boolean", _) => Some(Taint::No),
+            // A one-way digest/signature doesn't disclose its input.
+            ("sign" | "digest", _) => Some(Taint::No),
             _ => None,
         }
     }

@@ -2251,10 +2251,9 @@ impl FunctionAnalyzer<'_> {
             }
             Expr::Ident(id) => {
                 let id = id.to_id();
-                let Some(def) = self.res.sym_to_id(id.clone(), self.module) else {
-                    warn!("3 unknown symbol: {}", id.0);
-                    return Literal::Undef.into();
-                };
+                // Preserve unresolved globals as named references so policies
+                // can classify builtins such as Boolean during call analysis.
+                let def = self.res.get_or_insert_sym(id, self.module);
                 let var = self.body.get_or_insert_global(def);
                 Operand::with_var(var)
             }
@@ -4332,6 +4331,11 @@ impl Environment {
     }
 
     #[inline]
+    pub fn is_undeclared_global(&self, def: DefId) -> bool {
+        matches!(self.def_ref(def), DefKind::Undefined)
+            && !self.resolver.declared_bindings.contains(&def)
+    }
+
     pub fn def_name(&self, def: DefId) -> &str {
         &self.resolver.names[def]
     }

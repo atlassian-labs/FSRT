@@ -439,7 +439,6 @@ fn secret_logging_distinguishes_values_from_operator_metadata() {
     for expression in [
         "secret + 'suffix'",
         "secret || 'fallback'",
-        "secret && 'fallback'",
         "secret ?? 'fallback'",
         "+secret",
         "-secret",
@@ -462,6 +461,31 @@ fn secret_logging_distinguishes_values_from_operator_metadata() {
             ),
             1,
         );
+    }
+}
+
+#[test]
+fn secret_logging_logical_presence_checks_do_not_disclose_values() {
+    for (expression, count) in [
+        ("secret && 'present'", 0),
+        ("secret && true", 0),
+        ("(secret && 'present') || 'missing'", 0),
+        ("Boolean(secret) || false", 0),
+        ("secret || 'fallback'", 1),
+        ("flag && secret", 1),
+        ("flag || secret", 1),
+        ("secret ?? 'fallback'", 1),
+        ("secret && secret", 1),
+    ] {
+        for options in [&[][..], &["--secret-logging-version", "v1"][..]] {
+            assert_findings_with(
+                &format!(
+                    "import {{ kvs }} from '@forge/kvs'; export async function run(flag) {{ const secret = await kvs.getSecret('key'); console.log({expression}); }}"
+                ),
+                options,
+                count,
+            );
+        }
     }
 }
 
@@ -587,6 +611,44 @@ fn secret_logging_drops_taint_for_known_non_propagating_calls() {
             ),
             count,
         );
+    }
+}
+
+#[test]
+fn secret_logging_builtin_rules_respect_bindings_and_receiver() {
+    for (setup, expression, count) in [
+        ("", "Boolean(secret)", 0),
+        ("", "Object.keys(secret)", 0),
+        ("", "Object['keys'](secret)", 0),
+        ("", "Object.values(secret)", 1),
+        ("", "Object.entries(secret)", 1),
+        ("", "String(secret)", 1),
+        ("", "JSON.stringify(secret)", 1),
+        ("", "unknownGlobal(secret)", 1),
+        (
+            "function Boolean(value) { return value; }",
+            "Boolean(secret)",
+            1,
+        ),
+        (
+            "const Object = { keys(value) { return value; } };",
+            "Object.keys(secret)",
+            1,
+        ),
+        ("const other = {};", "other.keys(secret)", 1),
+        ("const other = {};", "other.Boolean(secret)", 1),
+        ("let Boolean;", "Boolean(secret)", 1),
+        ("let Object;", "Object.keys(secret)", 1),
+    ] {
+        for options in [&[][..], &["--secret-logging-version", "v1"][..]] {
+            assert_findings_with(
+                &format!(
+                    "import {{ kvs }} from '@forge/kvs'; {setup} export async function run() {{ const secret = await kvs.getSecret('key'); console.log({expression}); }}"
+                ),
+                options,
+                count,
+            );
+        }
     }
 }
 
