@@ -7,7 +7,10 @@
 use super::*;
 
 fn assert_execution_findings(project: &str, expected: usize) {
-    let report = scan_directory_test(MockForgeProject::files_from_string(project));
+    let report = scan_directory_test_with_args(
+        MockForgeProject::files_from_string(project),
+        Args::parse_from(["fsrt", "--scanners", "arbitrary-code-execution"]),
+    );
     assert!(!report.has_errors(), "{report:#?}");
     let findings: Vec<_> = report
         .into_vulns()
@@ -18,6 +21,40 @@ fn assert_execution_findings(project: &str, expected: usize) {
         })
         .collect();
     assert_eq!(findings.len(), expected, "{project}\n{report:#?}");
+}
+
+#[test]
+fn arbitrary_code_execution_requires_explicit_selection() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        eval(fetch('/code'));
+        export function run(input) { eval(input.source); }",
+    );
+    for (options, expected) in [
+        (vec!["fsrt"], 0),
+        (vec!["fsrt", "--scanners", "secret-logging"], 0),
+        (vec!["fsrt", "--scanners", "arbitrary-code-execution"], 2),
+        (
+            vec![
+                "fsrt",
+                "--scanners",
+                "secret-logging,arbitrary-code-execution",
+            ],
+            2,
+        ),
+    ] {
+        let report = scan_directory_test_with_args(project.clone(), Args::parse_from(&options));
+        assert!(!report.has_errors(), "{options:?}: {report:#?}");
+        assert!(
+            report.contains_arbitrary_code_execution_vuln(expected),
+            "{options:?}: {report:#?}"
+        );
+        assert_eq!(
+            report.into_vulns().len(),
+            expected,
+            "{options:?}: {report:#?}"
+        );
+    }
 }
 
 #[test]

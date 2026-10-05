@@ -34,6 +34,17 @@ Commands:
 
 Run `fsrt --help`, `fsrt remote --help`, or `fsrt remote <COMMAND> --help` for current options.
 
+### Arbitrary code execution
+
+The `arbitrary-code-execution` scanner checks dynamic inputs to execution sinks
+such as `eval`, `new Function`, and child-process APIs. It is disabled by default;
+select it explicitly, alone or with other scanners:
+
+```bash
+fsrt --scanners arbitrary-code-execution ./my-forge-app
+fsrt --scanners secret,arbitrary-code-execution ./my-forge-app
+```
+
 ### Secret logging
 
 The `secret-logging` scanner reports values returned by `getSecret` on the `kvs`
