@@ -295,7 +295,7 @@ fn scanners_parse_as_typed_list() {
     let args = Args::try_parse_from([
         "fsrt",
         "--scanners",
-        "secret,auth-header,secret-logging",
+        "secret,auth-header,secret-logging,arbitrary-code-execution",
         "--scanners",
         "authentication",
     ])
@@ -307,6 +307,7 @@ fn scanners_parse_as_typed_list() {
             Scanner::Secret,
             Scanner::AuthHeader,
             Scanner::SecretLogging,
+            Scanner::ArbitraryCodeExecution,
             Scanner::Authentication,
         ]
     );
@@ -324,6 +325,7 @@ fn scanners_help_lists_possible_values() {
         "permission",
         "secret",
         "secret-logging",
+        "arbitrary-code-execution",
     ] {
         assert!(help.contains(scanner), "help omitted scanner {scanner}");
     }
@@ -630,7 +632,10 @@ fn arbitrary_code_execution_dynamic_inputs() {
         }",
     );
 
-    let scan_result = scan_directory_test(test_forge_project);
+    let scan_result = scan_directory_test_with_args(
+        test_forge_project,
+        Args::parse_from(["fsrt", "--scanners", "arbitrary-code-execution"]),
+    );
     assert!(scan_result.contains_arbitrary_code_execution_vuln(10));
     assert!(scan_result.contains_vulns(10));
 }
@@ -648,7 +653,10 @@ fn arbitrary_code_execution_commonjs_and_computed_member() {
         }",
     );
 
-    let scan_result = scan_directory_test(test_forge_project);
+    let scan_result = scan_directory_test_with_args(
+        test_forge_project,
+        Args::parse_from(["fsrt", "--scanners", "arbitrary-code-execution"]),
+    );
     assert!(scan_result.contains_arbitrary_code_execution_vuln(3));
     assert!(scan_result.contains_vulns(3));
 }
@@ -672,7 +680,10 @@ fn arbitrary_code_execution_ignores_static_inputs_and_unrelated_methods() {
         }",
     );
 
-    let scan_result = scan_directory_test(test_forge_project);
+    let scan_result = scan_directory_test_with_args(
+        test_forge_project,
+        Args::parse_from(["fsrt", "--scanners", "arbitrary-code-execution"]),
+    );
     assert!(scan_result.has_no_vulns());
 }
 
