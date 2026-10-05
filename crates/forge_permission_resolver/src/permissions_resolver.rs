@@ -38,12 +38,7 @@ struct Endpoint {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RequestDetails {
-    #[serde(
-        rename(
-            deserialize = "x-atlassian-oauth2-scopes",
-        ),
-        default
-    )]
+    #[serde(rename(deserialize = "x-atlassian-oauth2-scopes",), default)]
     permission: Vec<PermissionData>,
 
     // For parsing Jira Software as that swagger doesn't follow "x-atlassian-oauth2-scopes" scope style
