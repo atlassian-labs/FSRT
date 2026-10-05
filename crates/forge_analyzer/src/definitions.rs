@@ -2229,6 +2229,26 @@ impl FunctionAnalyzer<'_> {
             Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
             Expr::New(NewExpr { callee, args, .. }) => {
                 if let Expr::Ident(ident) = &**callee {
+                    let def = self.res.get_or_insert_sym(ident.to_id(), self.module);
+                    let constructor = match ident.sym.as_ref() {
+                        "Function" if self.res.is_undeclared_global(def) => Some("new Function"),
+                        // Preserve the original scanner's named AsyncFunction convention.
+                        "AsyncFunction" => Some("new AsyncFunction"),
+                        _ => None,
+                    };
+                    if let Some(name) = constructor {
+                        let args = args
+                            .as_deref()
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|arg| self.lower_expr(&arg.expr, None))
+                            .collect();
+                        return Operand::with_var(self.body.push_tmp(
+                            self.block,
+                            Rvalue::Intrinsic(Intrinsic::CodeConstructor(name), args),
+                            parent,
+                        ));
+                    }
                     // remove the clone
                     return self.lower_call(
                         CalleeRef::Expr(callee),
@@ -2839,7 +2859,11 @@ impl Visit for LocalDefiner<'_> {
 
     fn visit_decl(&mut self, n: &Decl) {
         match n {
-            Decl::Class(_) => {}
+            Decl::Class(ClassDecl { ident, .. }) => {
+                let def = self.res.get_or_insert_sym(ident.to_id(), self.module);
+                self.res.resolver.declared_bindings.insert(def);
+                ident.visit_with(self);
+            }
             Decl::Fn(FnDecl { ident, .. }) => {
                 ident.visit_with(self);
             }

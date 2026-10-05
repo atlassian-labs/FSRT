@@ -77,6 +77,9 @@ impl<D: JoinSemiLattice + Clone> JoinSemiLattice for Vec<D> {
 pub trait TaintPolicy: Sized {
     /// Whether resolver request arguments are sources for this policy.
     const TAINT_RESOLVER_INPUT: bool = false;
+    /// Seed every formal argument of the current Forge entrypoint, including
+    /// non-resolver functions such as events and queue consumers.
+    const TAINT_ENTRYPOINT_INPUTS: bool = false;
 
     fn intrinsic_taint(&self, intrinsic: &Intrinsic) -> Taint;
 
@@ -122,6 +125,8 @@ pub trait TaintPolicy: Sized {
 pub struct TaintReader<'a, P> {
     dataflow: &'a TaintDataflow<P>,
     frame: &'a FrameState,
+    pub env: &'a Environment,
+    pub body: &'a Body,
 }
 
 impl<P: TaintPolicy> TaintReader<'_, P> {
@@ -693,6 +698,11 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
         }
         let root_frame = |def, globals: &BTreeMap<DefId, Tracked>| {
             let mut initial = bindings[&def].frame(env, def, globals.clone());
+            if def == entry && P::TAINT_ENTRYPOINT_INPUTS {
+                for &id in &bindings[&def].args {
+                    initial.vars[id.0 as usize] = Taint::Yes;
+                }
+            }
             if def == entry
                 && P::TAINT_RESOLVER_INPUT
                 && matches!(interp.entry.kind, EntryKind::Resolver(..))
@@ -718,6 +728,8 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                 let values = TaintReader {
                     dataflow: self,
                     frame: &frame,
+                    env,
+                    body,
                 };
                 if self.policy.is_violation(inst, &values) {
                     interp.instruction_findings.insert(location);
@@ -742,6 +754,12 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                         .exprs
                         .iter()
                         .fold(Taint::No, |taint, op| taint.join(&read(op)))
+                        .into(),
+                    // Constructors previously lowered as ordinary calls. Keep
+                    // argument propagation for policies such as secret logging.
+                    Rvalue::Intrinsic(Intrinsic::CodeConstructor(_), args) => args
+                        .iter()
+                        .fold(Taint::No, |taint, arg| taint.join(&read(arg)))
                         .into(),
                     Rvalue::Intrinsic(intrinsic, _) => {
                         self.policy.intrinsic_taint(intrinsic).into()

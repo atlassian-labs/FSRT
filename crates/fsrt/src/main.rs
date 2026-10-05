@@ -32,6 +32,7 @@ use tracing_subscriber::{EnvFilter, prelude::*};
 use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
+    arbitrary_code_execution::ArbitraryCodeExecutionChecker,
     checkers::{
         AuthHeaderChecker, AuthZChecker, AuthenticateChecker, DEFAULT_EXCLUDED_SECRET_SUFFIXES,
         DEFAULT_SECRET_SUFFIXES, ForgeRuntimeVersionPolicyChecker, PermissionChecker,
@@ -653,6 +654,10 @@ pub(crate) fn scan_directory<'a>(
     let mut secret_logging_checker =
         SecretLoggingChecker::new(opts.secret_logging.property_reads());
     let mut auth_header_checker = AuthHeaderChecker::new();
+    let mut arbitrary_code_execution_checker = ArbitraryCodeExecutionChecker::new();
+
+    let mut arbitrary_code_execution_interp =
+        interpreters.create::<ArbitraryCodeExecutionChecker>(false);
 
     if run_secret_scanner
         && let Some(providers) = &manifest.providers
@@ -668,6 +673,14 @@ pub(crate) fn scan_directory<'a>(
     }
 
     for func in &proj.funcs {
+        if let Err(err) = arbitrary_code_execution_interp.run_checker(
+            func.def_id,
+            &mut arbitrary_code_execution_checker,
+            func.path.clone(),
+            func.func_name.to_owned(),
+        ) {
+            warn!("error while running arbitrary code execution checker: {err}");
+        }
         if let Some(interp) = &mut secret_logging_interp
             && let Err(err) = interp.run_checker(
                 func.def_id,
@@ -766,6 +779,7 @@ pub(crate) fn scan_directory<'a>(
     reporter.add_vulnerabilities(secret_checker.into_vulns());
     reporter.add_vulnerabilities(secret_logging_checker.into_vulns());
     reporter.add_vulnerabilities(auth_header_checker.into_vulns());
+    reporter.add_vulnerabilities(arbitrary_code_execution_checker.into_vulns());
 
     if !run_permission_scanner {
         return Ok(reporter.into_report());
