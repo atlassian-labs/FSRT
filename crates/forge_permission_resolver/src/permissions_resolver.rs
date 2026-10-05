@@ -41,7 +41,6 @@ struct RequestDetails {
     #[serde(
         rename(
             deserialize = "x-atlassian-oauth2-scopes",
-            deserialize = "x-atlassian-oauth2-scopes"
         ),
         default
     )]
