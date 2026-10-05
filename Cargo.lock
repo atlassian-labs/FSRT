@@ -847,6 +847,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge_client"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.12",
+ "toml",
+ "tracing",
+ "ureq",
+ "url",
+]
+
+[[package]]
 name = "forge_file_resolver"
 version = "0.1.0"
 
@@ -862,21 +877,6 @@ dependencies = [
  "serde_yaml",
  "thiserror 2.0.12",
  "tracing",
-]
-
-[[package]]
-name = "forge_client"
-version = "0.1.0"
-dependencies = [
- "base64",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.12",
- "toml",
- "tracing",
- "ureq",
- "url",
 ]
 
 [[package]]
@@ -955,9 +955,9 @@ dependencies = [
  "argfile",
  "clap",
  "forge_analyzer",
+ "forge_client",
  "forge_file_resolver",
  "forge_loader",
- "forge_client",
  "forge_permission_resolver",
  "glob",
  "graphql-parser",
