@@ -88,6 +88,8 @@ pub enum Intrinsic {
     /// `@forge/api` storage API (`storage.getSecret`).
     SecretRead,
     ConsoleLog(ConsoleMethod),
+    /// A recognized dynamic-code constructor. Calls are classified from IR bindings.
+    CodeConstructor(&'static str),
 }
 
 /// A global `console` method whose arguments are written to the app's logs.
@@ -1239,6 +1241,7 @@ impl fmt::Display for Intrinsic {
             Intrinsic::StorageRead => write!(f, "forge storage read"),
             Intrinsic::SecretRead => write!(f, "secret read"),
             Intrinsic::ConsoleLog(method) => write!(f, "{method}"),
+            Intrinsic::CodeConstructor(name) => write!(f, "{name}"),
         }
     }
 }

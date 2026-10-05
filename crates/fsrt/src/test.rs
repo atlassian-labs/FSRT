@@ -13,6 +13,7 @@ use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceFile, SourceMap};
 use time::{Date, Month};
 
+mod arbitrary_code_execution;
 mod captured_values;
 mod legacy_callbacks;
 mod secret_logging;
@@ -37,6 +38,8 @@ trait ReportExt {
     fn contains_api_token_vuln(&self, expected_len: usize) -> bool;
 
     fn contains_container_token_vuln(&self, expected_len: usize) -> bool;
+
+    fn contains_arbitrary_code_execution_vuln(&self, expected_len: usize) -> bool;
 }
 
 impl ReportExt for Report {
@@ -68,6 +71,18 @@ impl ReportExt for Report {
         self.into_vulns()
             .iter()
             .filter(|vuln| vuln.check_name() == "ATLASSIAN_CONTAINER_TOKEN")
+            .count()
+            == expected_len
+    }
+
+    #[inline]
+    fn contains_arbitrary_code_execution_vuln(&self, expected_len: usize) -> bool {
+        self.into_vulns()
+            .iter()
+            .filter(|vuln| {
+                vuln.check_name()
+                    .starts_with("Custom-Check-Arbitrary-Code-Execution-")
+            })
             .count()
             == expected_len
     }
@@ -591,6 +606,74 @@ fn forge_runtime_version_policy_ignores_unrecognized_runtime_names() {
         ForgeRuntimeVersionPolicyChecker::check_at(Some("sandbox"), date(2026, Month::May, 1),)
             .is_none()
     );
+}
+
+#[test]
+fn arbitrary_code_execution_dynamic_inputs() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import * as childProcess from 'node:child_process';
+        import { exec as runCommand, spawnSync } from 'child_process';
+        const { execFile, execSync, execFileSync, fork } = require('node:child_process');
+
+        export function run(input) {
+            eval(input);
+            new Function(input);
+            new AsyncFunction(input);
+            runCommand(input);
+            childProcess.spawn(input);
+            spawnSync(input);
+            execFile(input);
+            execSync(input);
+            execFileSync(input);
+            fork(input);
+        }",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_arbitrary_code_execution_vuln(10));
+    assert!(scan_result.contains_vulns(10));
+}
+
+#[test]
+fn arbitrary_code_execution_commonjs_and_computed_member() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        const childProcess = require('child_process');
+
+        export function run(input) {
+            childProcess['exec'](input.command);
+            require('node:child_process').spawn(input.command, input.args);
+            globalThis.eval(input.source);
+        }",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_arbitrary_code_execution_vuln(3));
+    assert!(scan_result.contains_vulns(3));
+}
+
+#[test]
+fn arbitrary_code_execution_ignores_static_inputs_and_unrelated_methods() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import { exec, spawn } from 'node:child_process';
+        const body = 'return ' + '1';
+        const command = `printf ok`;
+
+        export function run(input) {
+            eval('1');
+            new Function('value', body);
+            new AsyncFunction(`return 1`);
+            exec(command);
+            spawn('printf', ['ok']);
+            const localRunner = { spawn(value) { return value; } };
+            localRunner.spawn(input);
+        }",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.has_no_vulns());
 }
 
 #[test]
