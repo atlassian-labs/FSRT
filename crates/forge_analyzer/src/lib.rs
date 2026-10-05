@@ -1,3 +1,4 @@
+pub mod arbitrary_code_execution;
 pub mod checkers;
 pub mod ctx;
 pub mod definitions;
