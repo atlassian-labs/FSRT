@@ -2562,6 +2562,9 @@ impl FunctionAnalyzer<'_> {
             if let Pat::Ident(id) = &decl.name {
                 let id = id.to_id();
                 let def = self.res.get_or_insert_sym(id, self.module);
+                if var.kind == swc_core::ecma::ast::VarDeclKind::Const {
+                    self.body.const_bindings.insert(def);
+                }
                 let opnd = decl
                     .init
                     .as_deref()
@@ -4143,6 +4146,13 @@ impl Environment {
     #[inline]
     pub fn bodies_mut(&mut self) -> impl Iterator<Item = &mut Body> + '_ {
         self.defs.funcs.iter_mut()
+    }
+
+    /// Simplify obvious boolean branches after scanning for hardcoded secrets.
+    pub fn simplify_constant_branches(&mut self) {
+        for body in self.bodies_mut() {
+            body.simplify_constant_branches();
+        }
     }
 
     #[inline]

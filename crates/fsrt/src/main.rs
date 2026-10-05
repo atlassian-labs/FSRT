@@ -602,6 +602,24 @@ pub(crate) fn scan_directory<'a>(
         std::process::exit(0);
     }
 
+    // Hardcoded credentials remain findings even in trivially unreachable code.
+    let mut secret_checker = SecretChecker::new();
+    if run_secret_scanner {
+        let interpreters = InterpreterFactory::new(&proj.env, permissions_declared.clone(), None);
+        let mut interp = interpreters.create::<SecretChecker>(true);
+        for func in &proj.funcs {
+            if let Err(err) = interp.run_checker(
+                func.def_id,
+                &mut secret_checker,
+                func.path.clone(),
+                func.func_name.to_owned(),
+            ) {
+                warn!("error while running secret checker: {err}");
+            }
+        }
+    }
+    proj.env.simplify_constant_branches();
+
     let permission_cache = run_permission_checker.then(|| {
         CacheConfig::new(
             !opts.no_cache
@@ -618,7 +636,6 @@ pub(crate) fn scan_directory<'a>(
         run_authorization_scanner.then(|| interpreters.create::<AuthZChecker>(true));
     let mut authn_interp =
         run_authentication_scanner.then(|| interpreters.create::<AuthenticateChecker>(true));
-    let mut secret_interp = run_secret_scanner.then(|| interpreters.create::<SecretChecker>(true));
     let mut secret_logging_interp =
         run_secret_logging_scanner.then(|| interpreters.create::<SecretLoggingChecker>(false));
     // Auth-header checks handle uncalled bodies separately in the full-function pass.
@@ -633,7 +650,6 @@ pub(crate) fn scan_directory<'a>(
         reporter.add_vulnerabilities([vuln]);
     }
 
-    let mut secret_checker = SecretChecker::new();
     let mut secret_logging_checker =
         SecretLoggingChecker::new(opts.secret_logging.property_reads());
     let mut auth_header_checker = AuthHeaderChecker::new();
@@ -672,17 +688,6 @@ pub(crate) fn scan_directory<'a>(
             ) {
                 warn!("error while running permission checker: {err}");
             }
-        }
-
-        if let Some(interp) = &mut secret_interp
-            && let Err(err) = interp.run_checker(
-                func.def_id,
-                &mut secret_checker,
-                func.path.clone(),
-                func.func_name.to_owned(),
-            )
-        {
-            warn!("error while running secret checker: {err}");
         }
 
         if let Some(interp) = &mut auth_header_interp

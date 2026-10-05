@@ -15,6 +15,7 @@ use std::num::NonZeroUsize;
 use std::slice;
 
 use forge_utils::FxHashMap;
+use forge_utils::FxHashSet;
 use forge_utils::create_newtype;
 use itertools::Itertools;
 use petgraph::algo::dominators;
@@ -180,6 +181,7 @@ pub struct Body {
     ident_to_local: FxHashMap<Id, VarId>,
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     pub class_instantiations: HashMap<DefId, DefId>,
+    pub(crate) const_bindings: FxHashSet<DefId>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
     pub dominator_tree: OnceCell<DomTree>,
     pub blockbuilders: TiVec<BasicBlockId, BasicBlockBuilder>,
@@ -352,6 +354,76 @@ const N: usize = 100000;
 const M: usize = 500000;
 
 impl Body {
+    /// Fold only boolean literals and const copies established in the same block.
+    /// Keep mutable bindings, other expressions and cross-block values conservative.
+    pub(crate) fn simplify_constant_branches(&mut self) {
+        let mut changed = false;
+        for block in &mut self.blocks {
+            let mut constants = FxHashMap::default();
+            let read_bool = |op: &Operand, constants: &FxHashMap<VarId, bool>| match op {
+                Operand::Lit(Literal::Bool(value)) => Some(*value),
+                Operand::Var(var) if var.projections.is_empty() => {
+                    var.as_var_id().and_then(|id| constants.get(&id).copied())
+                }
+                _ => None,
+            };
+            for inst in &block.insts {
+                if let Inst::Assign(var, value) = inst
+                    && let Some(id) = var.as_var_id()
+                {
+                    let value = match value {
+                        Rvalue::Read(op) if var.projections.is_empty() => read_bool(op, &constants),
+                        _ => None,
+                    };
+                    constants.remove(&id);
+                    let stable = match self.vars[id] {
+                        VarKind::LocalDef(def) | VarKind::GlobalRef(def) => {
+                            self.const_bindings.contains(&def)
+                        }
+                        VarKind::Temp { .. } => true,
+                        _ => false,
+                    };
+                    if stable && let Some(value) = value {
+                        constants.insert(id, value);
+                    }
+                }
+            }
+            if let Terminator::If { cond, cons, alt } = &block.term
+                && let Some(value) = read_bool(cond, &constants)
+            {
+                block.term = Terminator::Goto(if value { *cons } else { *alt });
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+
+        let mut reachable = vec![false; self.blocks.len()];
+        let mut pending = vec![STARTING_BLOCK];
+        while let Some(id) = pending.pop() {
+            if std::mem::replace(&mut reachable[id.0 as usize], true) {
+                continue;
+            }
+            match &self.blocks[id].term {
+                Terminator::Ret | Terminator::Throw => {}
+                Terminator::Goto(next) => pending.push(*next),
+                Terminator::If { cons, alt, .. } => pending.extend([*cons, *alt]),
+                Terminator::Switch { targets, .. } => pending.extend(&targets.branch),
+            }
+        }
+        // Legacy dataflow visits every block, including disconnected ones. Clear
+        // their instructions and outgoing edges without renumbering live blocks.
+        for (id, block) in self.blocks.iter_mut_enumerated() {
+            if !reachable[id.0 as usize] {
+                block.insts.clear();
+                block.term = Terminator::Ret;
+            }
+        }
+        self.predecessors.take();
+        self.dominator_tree.take();
+    }
+
     #[inline]
     fn new() -> Self {
         let local_vars = vec![VarKind::Ret].into();
@@ -366,6 +438,7 @@ impl Body {
             .into(),
             values: FxHashMap::default(),
             class_instantiations: Default::default(),
+            const_bindings: Default::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
             predecessors: Default::default(),

@@ -38,6 +38,74 @@ fn assert_findings_with(source: &str, options: &[&str], count: usize) {
 }
 
 #[test]
+fn secret_logging_skips_trivial_constant_branches() {
+    for (body, count) in [
+        ("if (false) console.log(secret);", 0),
+        ("if (true) {} else console.log(secret);", 0),
+        (
+            "const disabled = false; if (disabled) console.log(secret);",
+            0,
+        ),
+        (
+            "const disabled = false; const alias = disabled; if (alias) console.log(secret);",
+            0,
+        ),
+        ("if (false) { if (flag) console.log(secret); }", 0),
+        (
+            "if (flag) { if (false) console.log(secret); } console.log(secret);",
+            1,
+        ),
+        ("if (false) {} console.log(secret);", 1),
+        ("if (true) console.log(secret);", 1),
+        ("const enabled = true; if (enabled) console.log(secret);", 1),
+        ("if (flag) console.log(secret);", 1),
+        (
+            "let enabled = false; enabled = true; if (enabled) console.log(secret);",
+            1,
+        ),
+        (
+            "let enabled = false; enabled++; if (enabled) console.log(secret);",
+            1,
+        ),
+        (
+            "let enabled = false; if (flag) enabled = true; if (enabled) console.log(secret);",
+            1,
+        ),
+        (
+            "let enabled = false; function enable() { enabled = true; } enable(); if (enabled) console.log(secret);",
+            1,
+        ),
+        (
+            "const options = {enabled: false}; options.enabled = true; if (options.enabled) console.log(secret);",
+            1,
+        ),
+    ] {
+        assert_findings(
+            &format!(
+                "import {{ kvs }} from '@forge/kvs'; export async function run(flag) {{ const secret = await kvs.getSecret('key'); {body} }}"
+            ),
+            count,
+        );
+    }
+}
+
+#[test]
+fn secret_logging_skips_sources_and_calls_in_trivial_constant_branches() {
+    for body in [
+        "let value = 'public'; if (false) value = await kvs.getSecret('key'); console.log(value);",
+        "const value = false ? await kvs.getSecret('key') : 'public'; console.log(value);",
+        "function log(value) { console.log(value); } if (false) log(await kvs.getSecret('key'));",
+    ] {
+        assert_findings(
+            &format!(
+                "import {{ kvs }} from '@forge/kvs'; export async function run() {{ {body} }}"
+            ),
+            0,
+        );
+    }
+}
+
+#[test]
 fn secret_logging_tracks_expressions_and_reassignment() {
     for (body, count) in [
         ("console.log(await kvs.getSecret('key'));", 1),

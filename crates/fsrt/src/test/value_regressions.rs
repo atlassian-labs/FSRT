@@ -7,6 +7,28 @@ fn scan(source: &str, scanner: &str) -> Report {
 }
 
 #[test]
+fn constant_branches_do_not_supply_auth_headers_to_live_fetches() {
+    for (condition, expected) in [("false", 0), ("request.flag", 1)] {
+        let source = format!(
+            "import {{fetch}} from '@forge/api';
+            export function run(request) {{
+                const headers = {{Authorization: request.publicHeader}};
+                if ({condition}) {{
+                    headers.Authorization = 'Basic ' + process.env.API_TOKEN;
+                }}
+                fetch('https://api.atlassian.com/rest/api/3/issue', {{headers}});
+            }}"
+        );
+        let report = scan(&source, "auth-header");
+        assert!(!report.has_errors());
+        assert!(
+            report.contains_api_token_vuln(expected),
+            "{source}\n{report:#?}"
+        );
+    }
+}
+
+#[test]
 fn captured_headers_respect_property_reassignment() {
     let source = "import {fetch} from '@forge/api';
         export function run(request) {

@@ -315,6 +315,45 @@ fn scanners_help_lists_possible_values() {
 }
 
 #[test]
+fn constant_branches_preserve_only_hardcoded_secret_findings() {
+    for condition in ["false", "disabled"] {
+        let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+        project.add_file(
+            "src/index.js",
+            &format!(
+                "import {{ fetch }} from '@forge/api';
+                import {{ kvs }} from '@forge/kvs';
+                export async function run() {{
+                    const API_KEY = 'hard coded';
+                    const secret = await kvs.getSecret('key');
+                    const disabled = false;
+                    if ({condition}) {{
+                        console.log(secret);
+                        fetch('https://example.com', {{headers: {{authorization: API_KEY}}}});
+                        fetch('https://api.atlassian.com/rest/api/3/issue', {{
+                            headers: {{Authorization: 'Basic ' + process.env.API_TOKEN}}
+                        }});
+                    }}
+                }}"
+            ),
+        );
+        for (scanners, expected) in [
+            ("secret", 1),
+            ("secret,secret-logging,auth-header", 1),
+            ("secret-logging,auth-header", 0),
+        ] {
+            let report = scan_directory_test_with_args(
+                project.clone(),
+                Args::parse_from(["fsrt", "--scanners", scanners]),
+            );
+            assert!(!report.has_errors());
+            assert!(report.contains_secret_vuln(expected), "{report:#?}");
+            assert_eq!(report.into_vulns().len(), expected, "{report:#?}");
+        }
+    }
+}
+
+#[test]
 fn scanners_only_run_selected_checks() {
     let test_forge_project = MockForgeProject::files_from_string(
         "// src/index.tsx
