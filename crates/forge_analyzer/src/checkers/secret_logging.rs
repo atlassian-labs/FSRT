@@ -1,12 +1,15 @@
 use std::{
-    collections::HashSet,
+    cell::RefCell,
+    collections::{BTreeSet, HashSet},
     fmt,
     hash::{Hash, Hasher},
     ops::ControlFlow,
     path::PathBuf,
+    rc::Rc,
 };
 
 use smallvec::SmallVec;
+use tracing::warn;
 
 use crate::{
     definitions::DefId,
@@ -15,7 +18,7 @@ use crate::{
         BasicBlockId, BinOp, ConsoleMethod, Inst, Intrinsic, Location, Operand, Projection, Rvalue,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    taint::{Taint, TaintDataflow, TaintPolicy, TaintReader, visit_taint_call},
+    taint::{Taint, TaintDataflow, TaintPolicy, TaintReader, UnresolvedCall, visit_taint_call},
 };
 
 const SOURCES: &str = "@forge/kvs kvs.getSecret or @forge/api storage.getSecret";
@@ -30,6 +33,10 @@ pub const DEFAULT_SECRET_SUFFIXES: &[&str] = &[
     "apikey",
     "privatekey",
 ];
+
+/// The most characters of a secret a substring can show and still count as
+/// partial masking, such as a key's last 4 characters or its public prefix.
+const MAX_PARTIAL_MASK_CHARS: f64 = 12.0;
 
 /// Suffixes that never mark a secret, such as pagination cursors.
 pub const DEFAULT_EXCLUDED_SECRET_SUFFIXES: &[&str] = &["pagetoken"];
@@ -103,6 +110,8 @@ pub enum PropertyReads {
 #[derive(Clone, Debug, Default)]
 pub struct SecretTaint {
     property_reads: PropertyReads,
+    /// Partial masks already warned about, shared by every entrypoint's copy.
+    masked: Rc<RefCell<BTreeSet<(DefId, Location)>>>,
 }
 
 impl TaintPolicy for SecretTaint {
@@ -157,7 +166,25 @@ impl TaintPolicy for SecretTaint {
         }
     }
 
-    fn method_taint(&self, method: &str, receiver: Taint, args: &[Taint]) -> Option<Taint> {
+    fn method_taint(&self, call: &UnresolvedCall<'_>) -> Option<Taint> {
+        // Partial masking, such as `${key.slice(0, 4)}...${key.slice(-4)}`, shows
+        // a few characters of a secret. Treat it as redaction for now, but warn,
+        // since it still discloses part of the secret.
+        if let Some(len) = call
+            .max_substring_len()
+            .filter(|&len| len <= MAX_PARTIAL_MASK_CHARS)
+        {
+            if call.receiver == Taint::Yes && self.masked.borrow_mut().insert(call.site()) {
+                let (_, location) = call.site();
+                warn!(
+                    "{}: treating `{}` of a secret as partial masking (at most {len} characters) at {location:?}",
+                    call.function(),
+                    call.method,
+                );
+            }
+            return Some(Taint::No);
+        }
+        let (method, receiver, args) = (call.method, call.receiver, call.args);
         // Splitting on or replacing the secret itself redacts it from the
         // receiver: `text.split(secret).join('[REDACTED]')` or
         // `url.replace(key, '***')`. The pattern never reaches the result, and
@@ -196,7 +223,10 @@ pub struct SecretLoggingChecker {
 impl SecretLoggingChecker {
     pub fn new(property_reads: PropertyReads) -> Self {
         Self {
-            policy: SecretTaint { property_reads },
+            policy: SecretTaint {
+                property_reads,
+                ..SecretTaint::default()
+            },
             ..Self::default()
         }
     }
