@@ -71,7 +71,12 @@ read, index and destructured binding as clean: `console.log(secret.length)`,
 logging a whole secret, an object or array containing one, or a method result
 such as `secret.trim()` is. Splitting on or replacing the secret itself, such as
 `text.split(secret).join('[REDACTED]')` or `url.replace(secret, '***')`, redacts
-it; truncation, partial masking and encoding do not.
+it. For now, so does partial masking: a `slice`, `substring` or `substr` of at
+most 12 characters, bounded by literals or the string's own `length` (such as
+`key.slice(-4)`, `key.substring(0, 12)` or `key.substring(key.length - 4)`), is
+treated as clean and logged as a warning (visible with `FORGE_LOG=warn` or
+`--verbose`). Longer or unbounded substrings such as `key.slice(7)`, other
+truncation, and encoding are still reported.
 
 `--secret-logging-version v1` tracks those reads instead. A property written
 through a known path keeps its own taint, so reading `password` from
@@ -90,6 +95,16 @@ fsrt --scanners secret-logging --secret-logging-version v1 ./my-forge-app
 fsrt --scanners secret-logging --secret-logging-version v1 \
   --secret-logging-suffixes password,secret,apikey ./my-forge-app
 ```
+
+lodash's `omit`, `pick` and `get` select properties when their paths are string
+or array literals. They are recognized when imported from `lodash` or `lodash-es`
+(by name, default or namespace import) or from a per-method package such as
+`lodash/omit` or `lodash.omit`. Under v1, `omit({ url, token: secret }, ['token'])`
+and `get(config, 'url')` are clean, while `pick(config, ['token'])` is reported.
+A secret read whole has no tracked properties, so `omit(secret, ['password'])` is
+still reported. Under v0, `pick` and `get` read properties and are clean, and
+`omit` keeps its argument's taint. `lodash/fp`, `require('lodash')` and other
+libraries' `omit` propagate like any other unresolved call.
 
 The shared engine in `crates/forge_analyzer/src/taint.rs` propagates taint for a
 scanner's `TaintPolicy`: its sources, property reads (`property_taint`, and

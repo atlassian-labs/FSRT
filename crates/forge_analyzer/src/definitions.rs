@@ -4478,6 +4478,14 @@ impl Environment {
         }
     }
 
+    /// The module and import form of a binding imported from an unresolved package.
+    pub fn foreign_import(&self, def: DefId) -> Option<(&str, &ImportKind)> {
+        match self.def_ref(def) {
+            DefKind::Foreign(f) => Some((&f.module_name, &f.kind)),
+            _ => None,
+        }
+    }
+
     pub fn is_expr_imported_from(&self, n: &Expr, module: ModId) -> Option<&ImportKind> {
         if let Expr::Call(CallExpr {
             callee: Callee::Expr(expr),

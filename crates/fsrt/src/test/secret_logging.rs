@@ -640,10 +640,47 @@ fn secret_logging_recognizes_exact_secret_redaction() {
         ("console.log(secret.replace(body, '***'));", 1),
         ("console.log(secret.replace(/\\s/g, ''));", 1),
         ("console.log(secret.split(','));", 1),
+    ] {
+        assert_findings(
+            &format!(
+                "import {{ kvs }} from '@forge/kvs'; export async function run(body) {{ const secret = await kvs.getSecret('key'); {body} }}"
+            ),
+            count,
+        );
+    }
+}
+
+#[test]
+fn secret_logging_treats_partial_masking_as_sanitizing() {
+    for (body, count) in [
         (
             "console.log(`${secret.substring(0, 12)}...${secret.substring(secret.length - 4)}`);",
-            1,
+            0,
         ),
+        ("console.log(`...${secret.slice(-6)}`);", 0),
+        ("console.log(secret.slice(0, 4), secret.slice(-6, -2));", 0),
+        ("console.log(secret.substr(-4), secret.substr(2, 4));", 0),
+        ("console.log(secret.slice(secret.length - 4));", 0),
+        (
+            "console.log(secret.substring(secret.length - 4, secret.length));",
+            0,
+        ),
+        ("console.log(secret.substring(4, 0));", 0),
+        // A redaction helper whose replacement is itself a partial mask.
+        (
+            "function mask(url) { return `...${url.slice(-6)}`; } function scrub(text, url) { return text.split(url).join(mask(url)); } console.log(mask(secret), scrub(body, secret));",
+            0,
+        ),
+        // Stripping a prefix, truncating, or showing more than a few characters
+        // still discloses the secret.
+        ("console.log(secret.slice(7));", 1),
+        ("console.log(secret.substring(7));", 1),
+        ("console.log(secret.substr(7));", 1),
+        ("console.log(secret.slice(0, -4));", 1),
+        ("console.log(secret.slice(0, 64));", 1),
+        ("console.log(secret.slice());", 1),
+        ("console.log(secret.slice(-body));", 1),
+        ("console.log(secret.slice(body.length - 4));", 1),
     ] {
         assert_findings(
             &format!(
@@ -802,4 +839,47 @@ fn secret_logging_v1_uses_configured_suffixes() {
     assert_findings_with(&source("accessToken"), &excluded, 0);
     assert_findings_with(&source("refresh_token"), &excluded, 1);
     assert_findings_with(&source("nextPageToken"), &excluded, 1);
+}
+
+#[test]
+fn secret_logging_selects_properties_through_lodash() {
+    let imports = "import _ from 'lodash'; import * as L from 'lodash-es'; import { omit as _omit, pick, get } from 'lodash-es'; import omit from 'lodash/omit'; import omitOne from 'lodash.omit'; import { omit as fpOmit } from 'lodash/fp'; import { omit as ramdaOmit } from 'ramda';";
+    let source = |expression: &str| {
+        format!(
+            "import {{ kvs }} from '@forge/kvs'; {imports} export async function run(keys) {{ const secret = await kvs.getSecret('key'); const location = {{ url: keys.url, customToken: secret }}; console.log(JSON.stringify({expression})); }}"
+        )
+    };
+    for (expression, count) in [
+        ("_omit(location, ['customToken'])", 0),
+        ("_.omit(location, 'customToken')", 0),
+        ("L.omit(location, ['url', 'customToken'])", 0),
+        ("omit(location, ['customToken'])", 0),
+        ("omitOne(location, 'customToken')", 0),
+        ("_omit(location, ['url'])", 1),
+        ("_omit(location, keys)", 1),
+        ("_omit(location)", 1),
+        // A secret read whole has no tracked properties to remove.
+        ("_omit(secret, ['password'])", 1),
+        ("pick(location, ['url'])", 0),
+        ("_.pick(location, 'customToken')", 1),
+        ("get(location, 'url')", 0),
+        ("get(location, ['customToken'])", 1),
+        ("_.get(location, 'url', secret)", 1),
+        ("get(secret, 'config.host')", 0),
+        ("get(secret, 'config.password')", 1),
+        // Other libraries and lodash/fp's argument order are not modeled.
+        ("fpOmit(location, ['customToken'])", 1),
+        ("ramdaOmit(location, ['customToken'])", 1),
+    ] {
+        assert_findings_with(&source(expression), V1, count);
+    }
+
+    // v0 tracks no properties to remove, and treats property reads as clean.
+    for (expression, count) in [
+        ("_omit(location, ['customToken'])", 1),
+        ("pick(location, ['customToken'])", 0),
+        ("get(secret, 'config.password')", 0),
+    ] {
+        assert_findings(&source(expression), count);
+    }
 }

@@ -7,7 +7,8 @@
 //! recursion. Values are tracked per function and variable and, for policies that
 //! opt in, per known property path. Object properties and external calls are
 //! conservatively treated as propagators unless a policy opts out; function
-//! summaries are context insensitive (shared across call sites).
+//! summaries are context insensitive (shared across call sites). lodash's
+//! `omit`, `pick` and `get` with literal paths select properties instead.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -20,10 +21,10 @@ use smallvec::SmallVec;
 use swc_core::ecma::atoms::Atom;
 
 use crate::{
-    definitions::{DefId, Environment},
+    definitions::{DefId, Environment, ImportKind},
     interp::{Dataflow, EntryKind, Interp, JoinSemiLattice, Runner},
     ir::{
-        Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Location, Operand,
+        Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Literal, Location, Operand,
         Projection, Rvalue, STARTING_BLOCK, Successors, UnOp, VarId, VarKind,
     },
 };
@@ -110,11 +111,144 @@ pub trait TaintPolicy: Sized {
     }
 
     /// The result of an unmodelled call, given its receiver and argument taints.
-    /// `method` is the last property name for a method call, or the bound name
-    /// for a bare call to a global or imported binding. Policies recognize their
-    /// sanitizers and known non-propagating calls here; `None` joins them all.
-    fn method_taint(&self, _method: &str, _receiver: Taint, _args: &[Taint]) -> Option<Taint> {
+    /// Policies recognize their sanitizers and known non-propagating calls here;
+    /// `None` joins them all.
+    fn method_taint(&self, _call: &UnresolvedCall<'_>) -> Option<Taint> {
         None
+    }
+}
+
+/// An unmodelled call, as `TaintPolicy::method_taint` sees it.
+pub struct UnresolvedCall<'a> {
+    /// The last property name for a method call, or the bound name for a bare
+    /// call to a global or imported binding.
+    pub method: &'a str,
+    pub receiver: Taint,
+    pub args: &'a [Taint],
+    callee: &'a Operand,
+    operands: &'a [Operand],
+    env: &'a Environment,
+    body: &'a Body,
+    layout: &'a Bindings,
+    def: DefId,
+    location: Location,
+}
+
+/// A string index, counted from the start or back from the end.
+#[derive(Clone, Copy)]
+enum Index {
+    Start(f64),
+    End(f64),
+}
+
+impl Index {
+    /// `slice` and `substr` count a negative index back from the end.
+    fn signed(self) -> Self {
+        match self {
+            Self::Start(index) if index < 0.0 => Self::End(-index),
+            index => index,
+        }
+    }
+}
+
+impl UnresolvedCall<'_> {
+    /// The calling function and the call's location in it.
+    pub fn site(&self) -> (DefId, Location) {
+        (self.def, self.location)
+    }
+
+    pub fn function(&self) -> &str {
+        self.env.def_name(self.def)
+    }
+
+    /// The most characters a `slice`, `substring` or `substr` method call can
+    /// return, when its bounds are literals or offsets from the receiver's own
+    /// `length`: `key.slice(-4)` and `key.substring(key.length - 4)` return at
+    /// most 4, while `key.slice(7)` is unbounded. Arrays share `slice`.
+    pub fn max_substring_len(&self) -> Option<f64> {
+        let Operand::Var(callee) = self.callee else {
+            return None;
+        };
+        let (Projection::Known(method), receiver) = callee.projections.split_last()? else {
+            return None;
+        };
+        // A missing start returns the whole string; a missing end is the end.
+        let start = self.index(callee.base, receiver, self.operands.first()?)?;
+        let end = || match self.operands.get(1) {
+            Some(operand) => self.index(callee.base, receiver, operand),
+            None => Some(Index::End(0.0)),
+        };
+        let len = match &**method {
+            "slice" => match (start.signed(), end()?.signed()) {
+                (Index::End(start), Index::End(end)) => (start - end).max(0.0),
+                (Index::End(start), Index::Start(_)) => start,
+                (Index::Start(start), Index::Start(end)) => (end - start).max(0.0),
+                (Index::Start(_), Index::End(_)) => return None,
+            },
+            // `substring` clamps negative indexes to 0 and swaps reversed bounds.
+            "substring" => match (start, end()?) {
+                (Index::Start(start), Index::Start(end)) => (end.max(0.0) - start.max(0.0)).abs(),
+                (Index::End(start), Index::End(end)) => (start - end).abs(),
+                _ => return None,
+            },
+            "substr" => match self.operands.get(1) {
+                Some(len) => self.number(len)?.max(0.0),
+                None => match start.signed() {
+                    Index::End(start) => start,
+                    Index::Start(_) => return None,
+                },
+            },
+            _ => return None,
+        };
+        len.is_finite().then_some(len)
+    }
+
+    /// A literal index, or the receiver's `length` less a literal.
+    fn index(&self, base: Base, receiver: &[Projection], operand: &Operand) -> Option<Index> {
+        let is_length = |operand: &Operand| {
+            matches!(operand, Operand::Var(var)
+            if self.same_binding(var.base, base)
+                && var.projections.split_last().is_some_and(|(last, rest)| {
+                    matches!(last, Projection::Known(name) if *name == *"length")
+                        && rest == receiver
+                }))
+        };
+        if let Some(index) = self.number(operand) {
+            return Some(Index::Start(index));
+        }
+        if is_length(operand) {
+            return Some(Index::End(0.0));
+        }
+        match self.layout.definition(self.body, operand)? {
+            Rvalue::Bin(BinOp::Sub, length, offset) if is_length(length) => self
+                .number(offset)
+                .filter(|&offset| offset >= 0.0)
+                .map(Index::End),
+            _ => None,
+        }
+    }
+
+    fn number(&self, operand: &Operand) -> Option<f64> {
+        match operand {
+            Operand::Lit(Literal::Number(n)) => Some(*n).filter(|n| n.is_finite()),
+            Operand::Lit(_) => None,
+            Operand::Var(_) => match self.layout.definition(self.body, operand)? {
+                Rvalue::Unary(UnOp::Neg, operand) => self.number(operand).map(|n| -n),
+                Rvalue::Read(operand) => self.number(operand),
+                _ => None,
+            },
+        }
+    }
+
+    fn same_binding(&self, left: Base, right: Base) -> bool {
+        match (left, right) {
+            (Base::Var(left), Base::Var(right)) => {
+                left == right
+                    || variable_def(&self.body.vars[left])
+                        .is_some_and(|def| variable_def(&self.body.vars[right]) == Some(def))
+            }
+            _ => false,
+        }
     }
 }
 
@@ -264,6 +398,16 @@ fn known_prefix(projections: &[Projection]) -> FieldPath {
         .collect()
 }
 
+/// The tracked properties under `prefix`, keyed relative to it.
+fn fields_under(source: &FieldMap, prefix: &[Atom]) -> Option<Fields> {
+    let copied: FieldMap = source
+        .range::<[Atom], _>((Bound::Excluded(prefix), Bound::Unbounded))
+        .take_while(|(path, _)| path.starts_with(prefix))
+        .map(|(path, &taint)| (FieldPath::from(&path[prefix.len()..]), taint))
+        .collect();
+    (!copied.is_empty()).then(|| Rc::new(copied))
+}
+
 /// A value's taint, with the taints of its tracked properties.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Tracked {
@@ -329,6 +473,13 @@ impl FrameState {
 struct Bindings {
     aliases: BTreeMap<DefId, SmallVec<[VarId; 2]>>,
     args: Vec<VarId>,
+    /// The location of each temporary's only whole assignment, so literal
+    /// arguments such as `-4` can be read back out of the IR.
+    temps: BTreeMap<VarId, Option<Location>>,
+    /// Array literals of strings, such as `['token']`, which lower to index
+    /// writes like `%a["0"] = "token"` to a fresh local that is never assigned
+    /// whole. `None` once any other write is seen.
+    strings: BTreeMap<VarId, Option<SmallVec<[Atom; 2]>>>,
 }
 
 impl Bindings {
@@ -339,9 +490,103 @@ impl Bindings {
                 aliases.entry(binding).or_default().push(id);
             }
         }
+        let mut temps = BTreeMap::new();
+        let mut strings = BTreeMap::<_, Option<SmallVec<_>>>::new();
+        for (bb, block) in body.iter_blocks_enumerated() {
+            for (idx, inst) in block.iter().enumerate() {
+                let Inst::Assign(var, rvalue) = inst else {
+                    continue;
+                };
+                let Base::Var(id) = var.base else {
+                    continue;
+                };
+                let temp = matches!(body.vars[id], VarKind::Temp { .. });
+                if !temp && !matches!(body.vars[id], VarKind::LocalDef(_)) {
+                    continue;
+                }
+                match (&*var.projections, rvalue) {
+                    ([], _) => {
+                        if temp {
+                            temps
+                                .entry(id)
+                                .and_modify(|location| *location = None)
+                                .or_insert(Some(Location::new(bb, idx as u32)));
+                        }
+                        strings.insert(id, None);
+                    }
+                    (
+                        [Projection::Known(index)],
+                        Rvalue::Read(Operand::Lit(Literal::Str(element))),
+                    ) if index.parse::<usize>().is_ok() => {
+                        if let Some(elements) =
+                            strings.entry(id).or_insert_with(|| Some(SmallVec::new()))
+                        {
+                            elements.push(element.clone());
+                        }
+                    }
+                    _ => {
+                        strings.insert(id, None);
+                    }
+                }
+            }
+        }
         Self {
             aliases,
             args: argument_vars(body).map(|(id, _)| id).collect(),
+            temps,
+            strings,
+        }
+    }
+
+    /// The value assigned to a temporary read whole by `operand`.
+    fn definition<'b>(&self, body: &'b Body, operand: &Operand) -> Option<&'b Rvalue> {
+        let Operand::Var(var) = operand else {
+            return None;
+        };
+        if !var.projections.is_empty() {
+            return None;
+        }
+        let location = (*self.temps.get(&var.as_var_id()?)?)?;
+        Some(body.block(location.block).insts[location.stmt as usize].rvalue())
+    }
+
+    /// The elements of an array literal of strings read whole by `operand`.
+    fn strings(&self, operand: &Operand) -> Option<&[Atom]> {
+        let Operand::Var(var) = operand else {
+            return None;
+        };
+        if !var.projections.is_empty() {
+            return None;
+        }
+        self.strings.get(&var.as_var_id()?)?.as_deref()
+    }
+
+    /// lodash path arguments: each a dotted string such as `'auth.token'`, or an
+    /// array literal of them. `None` for any other argument, or a path deeper
+    /// than tracked properties.
+    fn lodash_paths(&self, operands: &[Operand]) -> Option<Vec<FieldPath>> {
+        let mut paths = Vec::new();
+        for operand in operands {
+            match operand {
+                Operand::Lit(Literal::Str(path)) => paths.push(lodash_path(path)?),
+                _ => {
+                    for path in self.strings(operand)? {
+                        paths.push(lodash_path(path)?);
+                    }
+                }
+            }
+        }
+        paths
+            .iter()
+            .all(|path| path.len() <= MAX_FIELD_DEPTH)
+            .then_some(paths)
+    }
+
+    /// `get`'s path: a dotted string, or an array literal of property names.
+    fn lodash_get_path(&self, operand: &Operand) -> Option<FieldPath> {
+        match operand {
+            Operand::Lit(Literal::Str(path)) => lodash_path(path),
+            _ => Some(self.strings(operand)?.iter().cloned().collect()),
         }
     }
 
@@ -385,6 +630,41 @@ impl Bindings {
             }
         }
         captures
+    }
+}
+
+/// A dotted lodash path such as `'auth.token'`. Bracketed indexes are not parsed.
+fn lodash_path(path: &str) -> Option<FieldPath> {
+    if path.contains(['[', ']']) {
+        return None;
+    }
+    path.split('.')
+        .map(|name| (!name.is_empty()).then(|| Atom::from(name)))
+        .collect()
+}
+
+/// The lodash function `callee` names: imported by name or through the default
+/// or namespace import of `lodash` or `lodash-es`, or as the default import of a
+/// per-method package such as `lodash/omit` or `lodash.omit`. `lodash/fp`
+/// reorders arguments, so it never matches.
+fn lodash_function<'cx>(
+    env: &'cx Environment,
+    body: &Body,
+    callee: &'cx Operand,
+) -> Option<&'cx str> {
+    let Operand::Var(var) = callee else {
+        return None;
+    };
+    let def = variable_def(&body.vars[var.as_var_id()?])?;
+    let (module, import) = env.foreign_import(def)?;
+    let whole = matches!(module, "lodash" | "lodash-es");
+    match (import, &*var.projections) {
+        (ImportKind::Named(name), []) if whole => Some(name),
+        (ImportKind::Default | ImportKind::Star, [Projection::Known(name)]) if whole => Some(name),
+        (ImportKind::Default, []) => ["lodash/", "lodash-es/", "lodash."]
+            .into_iter()
+            .find_map(|prefix| module.strip_prefix(prefix)),
+        _ => None,
     }
 }
 
@@ -500,15 +780,111 @@ impl<P: TaintPolicy> TaintDataflow<P> {
             if var.projections.is_empty() {
                 fields = Some(source.clone());
             } else if prefix.len() == var.projections.len() {
-                let copied: FieldMap = source
-                    .range::<[Atom], _>((Bound::Excluded(&prefix[..]), Bound::Unbounded))
-                    .take_while(|(path, _)| path.starts_with(&prefix))
-                    .map(|(path, &taint)| (FieldPath::from(&path[prefix.len()..]), taint))
-                    .collect();
-                fields = (!copied.is_empty()).then(|| Rc::new(copied));
+                fields = fields_under(source, &prefix);
             }
         }
         Tracked { taint, fields }
+    }
+
+    /// The value at a known path within `object`, as a property read sees it.
+    fn subtree(&self, object: &Tracked, path: &[Atom]) -> Tracked {
+        let empty = FieldMap::new();
+        let fields = object.fields.as_deref().unwrap_or(&empty);
+        Tracked {
+            taint: self.read_field(object.taint, fields, path),
+            fields: fields_under(fields, path),
+        }
+    }
+
+    /// lodash's `omit`, `pick` and `get` with literal paths select properties,
+    /// rather than propagating the whole object like other unresolved calls.
+    fn lodash_call(
+        &self,
+        env: &Environment,
+        body: &Body,
+        layout: &Bindings,
+        frame: &FrameState,
+        callee: &Operand,
+        args: &[Operand],
+    ) -> Option<Tracked> {
+        let function = lodash_function(env, body, callee)?;
+        let (object, rest) = args.split_first()?;
+        let object = self.value(frame, object);
+        match function {
+            "omit" => Some(self.omit(object, &layout.lodash_paths(rest)?)),
+            "pick" => Some(self.pick(&object, &layout.lodash_paths(rest)?)),
+            "get" => {
+                let (path, default) = rest.split_first()?;
+                let mut value = self.subtree(&object, &layout.lodash_get_path(path)?);
+                if let Some(default) = default.first() {
+                    self.join_tracked(&mut value, &self.value(frame, default));
+                }
+                Some(value)
+            }
+            _ => None,
+        }
+    }
+
+    /// `object` without the properties under `paths`. When tracked properties
+    /// account for all of the object's taint, as for an object literal, the rest
+    /// reads like its remaining and untracked properties. Otherwise, such as for
+    /// a secret read whole, the remaining properties are unknown and keep it.
+    fn omit(&self, object: Tracked, paths: &[FieldPath]) -> Tracked {
+        let Some(fields) = &object.fields else {
+            return object;
+        };
+        let remaining: FieldMap = fields
+            .iter()
+            .filter(|(field, _)| !paths.iter().any(|path| field.starts_with(path)))
+            .map(|(field, &taint)| (field.clone(), taint))
+            .collect();
+        if remaining.len() == fields.len() {
+            return object;
+        }
+        let tracked = fields
+            .values()
+            .fold(Taint::No, |taint, field| taint.join(field));
+        let taint = if object.taint <= tracked {
+            remaining.values().fold(
+                self.policy.property_taint(object.taint, None),
+                |taint, field| taint.join(field),
+            )
+        } else {
+            object.taint
+        };
+        Tracked {
+            taint,
+            fields: (!remaining.is_empty()).then(|| Rc::new(remaining)),
+        }
+    }
+
+    /// A new object holding only the properties under `paths`.
+    fn pick(&self, object: &Tracked, paths: &[FieldPath]) -> Tracked {
+        let mut picked = Tracked::default();
+        let mut fields = FieldMap::new();
+        for path in paths {
+            let value = self.subtree(object, path);
+            picked.taint.join_changed(&value.taint);
+            if !self.policy.tracks_fields() {
+                continue;
+            }
+            for len in 1..=path.len() {
+                fields
+                    .entry(path[..len].into())
+                    .or_default()
+                    .join_changed(&value.taint);
+            }
+            for (field, taint) in value.fields.iter().flat_map(|fields| fields.iter()) {
+                if path.len() + field.len() <= MAX_FIELD_DEPTH {
+                    fields
+                        .entry(path.iter().chain(field).cloned().collect())
+                        .or_default()
+                        .join_changed(taint);
+                }
+            }
+        }
+        picked.fields = (!fields.is_empty()).then(|| Rc::new(fields));
+        picked
     }
 
     /// Writes `value` to a variable or one of its properties.
@@ -768,11 +1144,15 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                                 queue.push(key);
                             }
                             returns.get(&callee_def).cloned().unwrap_or_default()
+                        } else if let Some(value) =
+                            self.lodash_call(env, body, layout, &frame, callee, args)
+                        {
+                            value
                         } else {
                             // Preserve data through unmodelled transformations,
                             // including methods called on a tainted receiver.
                             let receiver = self.receiver_taint(&frame, callee);
-                            let args: SmallVec<[Taint; 4]> = args.iter().map(read).collect();
+                            let taints: SmallVec<[Taint; 4]> = args.iter().map(read).collect();
                             let global_result = match callee {
                                 Operand::Var(var) => var
                                     .as_var_id()
@@ -787,11 +1167,22 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                             global_result
                                 .or_else(|| {
                                     callee_name(env, body, callee).and_then(|method| {
-                                        self.policy.method_taint(method, receiver, &args)
+                                        self.policy.method_taint(&UnresolvedCall {
+                                            method,
+                                            receiver,
+                                            args: &taints,
+                                            callee,
+                                            operands: args,
+                                            env,
+                                            body,
+                                            layout,
+                                            def,
+                                            location: location.1,
+                                        })
                                     })
                                 })
                                 .unwrap_or_else(|| {
-                                    args.iter().fold(receiver, |taint, arg| taint.join(arg))
+                                    taints.iter().fold(receiver, |taint, arg| taint.join(arg))
                                 })
                                 .into()
                         }
