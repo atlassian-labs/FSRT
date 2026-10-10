@@ -37,8 +37,8 @@ pub use secret_logging::{
     SecretLoggingVuln, SecretSuffixes,
 };
 
+use crate::taint::{FlowValue, TaintPolicy, TaintReader};
 pub use crate::taint::{Taint, TaintDataflow};
-use crate::taint::{TaintPolicy, TaintReader};
 
 pub struct AuthorizeDataflow {
     needs_call: Vec<DefId>,
@@ -184,17 +184,18 @@ impl JoinSemiLattice for PrototypePollutionState {
 pub struct PrototypePollutionTaint;
 
 impl TaintPolicy for PrototypePollutionTaint {
+    type Facts = Taint;
     const TAINT_RESOLVER_INPUT: bool = true;
 
-    fn intrinsic_taint(&self, _intrinsic: &Intrinsic) -> Taint {
-        Taint::No
+    fn intrinsic_value(&self, _intrinsic: &Intrinsic) -> FlowValue<Taint> {
+        FlowValue::default()
     }
 
     fn is_violation(&self, inst: &Inst, values: &TaintReader<'_, Self>) -> bool {
         matches!(inst, Inst::Assign(l, _)
             if matches!(&*l.projections,
                 [Projection::Computed(Base::Var(first)), Projection::Computed(Base::Var(second)), ..]
-                if values.var(*first) == Taint::Yes && values.var(*second) == Taint::Yes))
+                if values.var(*first).facts == Taint::Yes && values.var(*second).facts == Taint::Yes))
     }
 }
 

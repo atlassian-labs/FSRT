@@ -18,7 +18,10 @@ use crate::{
         BasicBlockId, BinOp, ConsoleMethod, Inst, Intrinsic, Location, Operand, Projection, Rvalue,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    taint::{Taint, TaintDataflow, TaintPolicy, TaintReader, UnresolvedCall, visit_taint_call},
+    taint::{
+        FlowFacts, FlowValue, Taint, TaintDataflow, TaintPolicy, TaintReader, UnresolvedCall,
+        visit_taint_call,
+    },
 };
 
 const SOURCES: &str = "@forge/kvs kvs.getSecret or @forge/api storage.getSecret";
@@ -114,59 +117,120 @@ pub struct SecretTaint {
     masked: Rc<RefCell<BTreeSet<(DefId, Location)>>>,
 }
 
+/// Possible exposure classes, kept independently from source provenance.
+/// A singleton Secret is a definite secret pattern; Public | Secret is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SecretFacts(u8);
+
+impl SecretFacts {
+    fn classes(self) -> impl Iterator<Item = Taint> {
+        [Taint::No, Taint::Unknown, Taint::Yes]
+            .into_iter()
+            .filter(move |class| self.0 & (1 << *class as u8) != 0)
+    }
+    fn reports(self) -> bool {
+        self.0 & 4 != 0
+    }
+    fn definite_secret(self) -> bool {
+        self.0 == 4
+    }
+}
+
+impl JoinSemiLattice for SecretFacts {
+    const BOTTOM: Self = Self(0);
+    fn join(&self, other: &Self) -> Self {
+        Self(self.0 | other.0)
+    }
+    fn join_changed(&mut self, other: &Self) -> bool {
+        let next = self.join(other);
+        let changed = *self != next;
+        *self = next;
+        changed
+    }
+}
+
+impl FlowFacts for SecretFacts {
+    fn from_taint(taint: Taint) -> Self {
+        Self(1 << taint as u8)
+    }
+    fn combine(&self, other: &Self) -> Self {
+        self.classes()
+            .flat_map(|left| other.classes().map(move |right| left.join(&right)))
+            .fold(Self::BOTTOM, |facts, class| {
+                facts.join(&Self::from_taint(class))
+            })
+    }
+}
+
+type SecretValue = FlowValue<SecretFacts>;
+
 impl TaintPolicy for SecretTaint {
-    fn intrinsic_taint(&self, intrinsic: &Intrinsic) -> Taint {
+    type Facts = SecretFacts;
+
+    fn intrinsic_value(&self, intrinsic: &Intrinsic) -> SecretValue {
         if matches!(intrinsic, Intrinsic::SecretRead) {
-            Taint::Yes
+            FlowValue::from_taint(Taint::Yes)
         } else {
-            Taint::No
+            FlowValue::default()
         }
     }
 
     fn is_violation(&self, inst: &Inst, values: &TaintReader<'_, Self>) -> bool {
         matches!(inst.rvalue(), Rvalue::Intrinsic(Intrinsic::ConsoleLog(_), args)
-            if args.iter().any(|arg| values.operand(arg) == Taint::Yes))
+            if args.iter().any(|arg| values.operand(arg).facts.reports()))
     }
 
     fn tracks_fields(&self) -> bool {
         matches!(self.property_reads, PropertyReads::Named(_))
     }
 
-    fn property_taint(&self, base: Taint, name: Option<&str>) -> Taint {
-        match &self.property_reads {
-            // Without field tracking, a secret stored in one field would taint
-            // every sibling ID, URL and count, so only whole values report.
-            PropertyReads::Clean => Taint::No,
-            PropertyReads::Named(_) if base == Taint::No => Taint::No,
-            PropertyReads::Named(suffixes) if name.is_some_and(|name| suffixes.matches(name)) => {
-                Taint::Yes
-            }
-            // Apps also keep ordinary settings in secret storage: keep tracking
-            // the value, but only a secret-named property reports.
-            PropertyReads::Named(_) => Taint::Unknown,
-        }
+    fn property_value(&self, base: SecretValue, name: Option<&str>) -> SecretValue {
+        let facts = base
+            .facts
+            .classes()
+            .map(|class| match &self.property_reads {
+                PropertyReads::Clean => Taint::No,
+                PropertyReads::Named(_) if class == Taint::No => Taint::No,
+                PropertyReads::Named(suffixes)
+                    if name.is_some_and(|name| suffixes.matches(name)) =>
+                {
+                    Taint::Yes
+                }
+                PropertyReads::Named(_) => Taint::Unknown,
+            })
+            .fold(SecretFacts::BOTTOM, |facts, class| {
+                facts.join(&SecretFacts::from_taint(class))
+            });
+        base.with_facts(facts)
     }
 
-    fn binary_taint(&self, op: BinOp, left: Taint, right: Taint) -> Taint {
-        // A falsy left operand of && discloses only absence (e.g. an empty
-        // string); a truthy secret is discarded in favor of the right operand.
-        // || and ?? can return the secret itself and must retain its taint.
+    fn binary_value(&self, op: BinOp, left: SecretValue, right: SecretValue) -> SecretValue {
+        // A falsy && operand discloses only absence, not its secret contents.
         if op == BinOp::And {
-            right
+            let mut result = right;
+            result.provenance = result.provenance.join(&left.provenance);
+            result
+        } else if matches!(op, BinOp::Or | BinOp::NullishCoalesce) {
+            left.join(&right)
+        } else if crate::taint::binary_taint(op, Taint::Yes, Taint::Yes) == Taint::No {
+            left.combine(&right)
+                .with_facts(SecretFacts::from_taint(Taint::No))
         } else {
-            crate::taint::binary_taint(op, left, right)
+            left.combine(&right)
         }
     }
 
-    fn global_call_taint(&self, name: &str, path: &[Projection]) -> Option<Taint> {
+    fn global_call_value(&self, name: &str, path: &[Projection]) -> Option<SecretValue> {
         match (name, path) {
-            ("Boolean", []) => Some(Taint::No),
-            ("Object", [Projection::Known(method)]) if method == "keys" => Some(Taint::No),
+            ("Boolean", []) => Some(FlowValue::default()),
+            ("Object", [Projection::Known(method)]) if method == "keys" => {
+                Some(FlowValue::default())
+            }
             _ => None,
         }
     }
 
-    fn method_taint(&self, call: &UnresolvedCall<'_>) -> Option<Taint> {
+    fn method_value(&self, call: &UnresolvedCall<'_, SecretFacts>) -> Option<SecretValue> {
         // Partial masking, such as `${key.slice(0, 4)}...${key.slice(-4)}`, shows
         // a few characters of a secret. Treat it as redaction for now, but warn,
         // since it still discloses part of the secret.
@@ -174,7 +238,7 @@ impl TaintPolicy for SecretTaint {
             .max_substring_len()
             .filter(|&len| len <= MAX_PARTIAL_MASK_CHARS)
         {
-            if call.receiver == Taint::Yes && self.masked.borrow_mut().insert(call.site()) {
+            if call.receiver.facts.reports() && self.masked.borrow_mut().insert(call.site()) {
                 let (_, location) = call.site();
                 warn!(
                     "{}: treating `{}` of a secret as partial masking (at most {len} characters) at {location:?}",
@@ -182,21 +246,24 @@ impl TaintPolicy for SecretTaint {
                     call.method,
                 );
             }
-            return Some(Taint::No);
+            return Some(FlowValue::default());
         }
-        let (method, receiver, args) = (call.method, call.receiver, call.args);
+        let (method, receiver, args) = (call.method, &call.receiver, call.args);
         // Splitting on or replacing the secret itself redacts it from the
         // receiver: `text.split(secret).join('[REDACTED]')` or
         // `url.replace(key, '***')`. The pattern never reaches the result, and
         // the receiver is assumed to hold no other secret.
-        let remaining = if args.first() == Some(&Taint::Yes) {
-            Taint::No
+        let remaining = if args
+            .first()
+            .is_some_and(|value| value.facts.definite_secret())
+        {
+            receiver.with_facts(SecretFacts::from_taint(Taint::No))
         } else {
-            receiver
+            receiver.clone()
         };
         match (method, args) {
             ("split", [_, ..]) => Some(remaining),
-            ("replace" | "replaceAll", [_, replacement]) => Some(remaining.join(replacement)),
+            ("replace" | "replaceAll", [_, replacement]) => Some(remaining.combine(replacement)),
             // An outbound call's return value is a response, never a verbatim
             // copy of the request that carried the secret: `fetch`/`forgeFetch`
             // (bare, imported, or `@forge/api`'s wrapper) and the `@forge/api`
@@ -205,9 +272,9 @@ impl TaintPolicy for SecretTaint {
                 "fetch" | "forgeFetch" | "invokeRemote" | "requestJira" | "requestConfluence"
                 | "requestBitbucket" | "requestGraph",
                 _,
-            ) => Some(Taint::No),
+            ) => Some(FlowValue::default()),
             // A one-way digest/signature doesn't disclose its input.
-            ("sign" | "digest", _) => Some(Taint::No),
+            ("sign" | "digest", _) => Some(FlowValue::default()),
             _ => None,
         }
     }
@@ -358,6 +425,26 @@ impl Checker<'_> for SecretLoggingChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exposure_joins_preserve_alternatives_and_composition_is_distributive() {
+        let public = SecretFacts::from_taint(Taint::No);
+        let secret = SecretFacts::from_taint(Taint::Yes);
+        assert!(public.join(&secret).reports());
+        assert!(!public.join(&secret).definite_secret());
+        assert!(public.combine(&secret).definite_secret());
+        for a in (0..8).map(SecretFacts) {
+            assert_eq!(a.join(&SecretFacts::BOTTOM), a);
+            assert_eq!(a.join(&a), a);
+            for b in (0..8).map(SecretFacts) {
+                assert_eq!(a.join(&b), b.join(&a));
+                for c in (0..8).map(SecretFacts) {
+                    assert_eq!(a.join(&b).join(&c), a.join(&b.join(&c)));
+                    assert_eq!(a.combine(&b.join(&c)), a.combine(&b).join(&a.combine(&c)));
+                }
+            }
+        }
+    }
 
     #[test]
     fn secret_suffixes_match_normalized_names_by_longest_suffix() {

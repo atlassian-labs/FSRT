@@ -923,9 +923,158 @@ fn reporting_functions(report: &Report) -> Vec<String> {
 fn secret_logging_keeps_helper_returns_per_call_site() {
     let report = scan_with(SHARED_CLONE_HELPER, V1);
     assert!(!report.has_errors());
-    assert_eq!(
-        reporting_functions(&report),
-        ["logHeaders"],
-        "{report:#?}"
+    assert_eq!(reporting_functions(&report), ["logHeaders"], "{report:#?}");
+}
+
+#[test]
+fn secret_logging_keeps_helper_fields_and_captures_per_call() {
+    for body in [
+        "function select(o) { return o.value; }
+         const a = select({value: 'public', password: secret});
+         const b = select({value: secret, password: 'public'});
+         console.log(a); console.log(b);",
+        "let value = {value: 'public', password: secret};
+         function select() { return value.value; }
+         function pass() { return select(); }
+         console.log(pass());
+         value = {value: secret, password: 'public'};
+         console.log(pass());",
+    ] {
+        assert_v1_findings(body, 1);
+    }
+}
+
+#[test]
+fn secret_logging_waits_for_returning_values_before_classifying_redaction() {
+    for source in [
+        "function read() { return kvs.getSecret('key'); }
+         function scrub() { const secret = kvs.getSecret('key'); return secret.replace(read(), '***'); }
+         export function run() { console.log(scrub()); }",
+        "function deep() { return kvs.getSecret('key'); }
+         function read() { return deep(); }
+         function scrub(text, pattern) { return text.replace(pattern, '***'); }
+         function wrapper() { const secret = kvs.getSecret('key'); return scrub(secret, read()); }
+         export function run() { console.log(wrapper()); }",
+        "function read() { return kvs.getSecret('key'); }
+         const secret = read();
+         const scrubbed = secret.replace(read(), '***');
+         export function run() { console.log(scrubbed); }",
+    ] {
+        assert_findings_with(&format!("import {{ kvs }} from '@forge/kvs'; {source}"), V1, 0);
+    }
+}
+
+#[test]
+fn secret_logging_requires_redaction_on_every_alternative() {
+    for (body, count) in [
+        (
+            "const pattern = flag ? secret : 'public'; console.log(secret.replace(pattern, '***'));",
+            1,
+        ),
+        (
+            "let pattern = secret; if (flag) { pattern = 'public'; } console.log(secret.replace(pattern, '***'));",
+            1,
+        ),
+        (
+            "const pattern = flag ? secret : secret.trim(); console.log(secret.replace(pattern, '***'));",
+            0,
+        ),
+        (
+            "const pattern = `${secret}public`; console.log(secret.replace(pattern, '***'));",
+            0,
+        ),
+        (
+            "const pattern = flag ? secret : 'public'; const value = secret.replace(pattern, '***'); function copy(x) { return x; } console.log(copy(value));",
+            1,
+        ),
+    ] {
+        assert_v1_findings(body, count);
+    }
+}
+
+#[test]
+fn secret_logging_context_overflow_preserves_unsafe_and_clean_calls() {
+    // Distinct field shapes exceed the context budget without relying on its
+    // precise size. Merging a public pattern with secret patterns must not
+    // establish a definite redaction guarantee.
+    let mut body =
+        String::from("function scrub(o) { return o.value.replace(o.pattern, '***'); }\n");
+    for index in 0..32 {
+        use std::fmt::Write;
+        writeln!(
+            body,
+            "scrub({{value: secret, pattern: secret, field{index}: secret}});"
+        )
+        .unwrap();
+    }
+    body.push_str(
+        "console.log(scrub({value: secret, pattern: 'public'}));
+                   console.log(scrub({value: 'public', pattern: 'public'}));",
+    );
+    assert_v1_findings(&body, 1);
+}
+
+#[test]
+fn secret_logging_distinguishes_no_return_from_a_clean_return() {
+    for (body, count) in [
+        (
+            "function forever() { return forever(); } forever(); console.log(secret);",
+            0,
+        ),
+        ("function clean() {} clean(); console.log(secret);", 1),
+        (
+            "function recurse(x) { if (flag) { return recurse(x); } return x; } console.log(recurse('public')); console.log(recurse(secret));",
+            1,
+        ),
+        (
+            "function first(x) { if (flag) { return second(x); } return x; } function second(x) { return first(x); } console.log(first('public')); console.log(first(secret));",
+            1,
+        ),
+    ] {
+        assert_v1_findings(body, count);
+    }
+}
+
+#[test]
+fn secret_logging_resolves_module_initializer_dependencies() {
+    let project = project(
+        "// src/index.js\nimport { secret } from './secret';\nconst copy = secret;\nexport function run() { console.log(copy); }\n// src/secret.js\nimport { kvs } from '@forge/kvs';\nfunction read() { return kvs.getSecret('key'); }\nexport const secret = read();",
+    );
+    let report = scan_directory_test_with_args(
+        project,
+        Args::parse_from(["fsrt", "--scanners", "secret-logging"]),
+    );
+    assert!(!report.has_errors());
+    assert_eq!(report.into_vulns().len(), 1, "{report:#?}");
+}
+
+#[test]
+fn secret_logging_preserves_sources_when_recursive_fields_are_bounded() {
+    for body in [
+        "console.log({a: {b: {c: {d: {value: secret}}}}});",
+        "function wrap(value) { return {next: value}; }
+         let value = {value: secret};
+         while (flag) { value = wrap(value); }
+         console.log(value);",
+    ] {
+        assert_v1_findings(body, 1);
+    }
+}
+
+#[test]
+fn secret_logging_revisits_earlier_calls_when_a_suspended_caller_gets_new_facts() {
+    assert_findings_with(
+        "import { kvs } from '@forge/kvs';
+         function deep() { return kvs.getSecret('key'); }
+         function source(flag) { if (flag) { return deep(); } return 'public'; }
+         function inner() { return 'public'; }
+         function waitForHelper() { return inner(); }
+         export function run(flag) {
+             const value = source(flag);
+             waitForHelper();
+             console.log(value);
+         }",
+        V1,
+        1,
     );
 }
