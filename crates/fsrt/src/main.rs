@@ -541,7 +541,27 @@ pub(crate) fn scan_directory<'a>(
         .iter()
         .map(|s| s.as_str())
         .collect::<HashSet<_>>();
-    let mut perm_map = PermMap::new(&permset);
+    // FIXME: Find Custom UI path instead
+    // Dumping exits before any scanner runs.
+    let run_permission_scanner = opts.dump_ir.is_none()
+        && opts.dump_dt.is_none()
+        && opts.scanner_enabled(Scanner::Permission)
+        && manifest.resources.is_empty();
+    // Only the permission scanner needs the Swagger specs, which may require a download.
+    let permission_cache = run_permission_scanner.then(|| {
+        CacheConfig::new(
+            !opts.no_cache
+                && !std::env::var("FSRT_CACHE").is_ok_and(|value| {
+                    let value = value.trim();
+                    value == "0" || value.eq_ignore_ascii_case("false")
+                }),
+            opts.cached_permissions_path.clone(),
+        )
+    });
+    let mut perm_map = permission_cache
+        .as_ref()
+        .map(|config| PermMap::new(&permset, config))
+        .unwrap_or_default();
     let contains_remote_auth_token = has_remote_auth(&manifest.remotes);
 
     let mut sorted_paths: Vec<PathBuf> = paths.iter().cloned().collect();
@@ -566,9 +586,6 @@ pub(crate) fn scan_directory<'a>(
         warn!("Unable to scan due to transpiled async");
         Err(Error::TranspiledAsyncError)?;
     }
-    // FIXME: Find Custom UI path instead
-    let run_permission_scanner =
-        opts.scanner_enabled(Scanner::Permission) && manifest.resources.is_empty();
     let run_permission_checker = run_permission_scanner && !contains_remote_auth_token;
     let run_authentication_scanner = opts.scanner_enabled(Scanner::Authentication);
     let run_authorization_scanner = opts.scanner_enabled(Scanner::Authorization);
@@ -620,18 +637,11 @@ pub(crate) fn scan_directory<'a>(
     }
     proj.env.simplify_constant_branches();
 
-    let permission_cache = run_permission_checker.then(|| {
-        CacheConfig::new(
-            !opts.no_cache
-                && !std::env::var("FSRT_CACHE").is_ok_and(|value| {
-                    let value = value.trim();
-                    value == "0" || value.eq_ignore_ascii_case("false")
-                }),
-            opts.cached_permissions_path.clone(),
-        )
-    });
-    let interpreters =
-        InterpreterFactory::new(&proj.env, permissions_declared, permission_cache.as_ref());
+    let interpreters = InterpreterFactory::new(
+        &proj.env,
+        permissions_declared,
+        permission_cache.as_ref().filter(|_| run_permission_checker),
+    );
     let mut authz_interp =
         run_authorization_scanner.then(|| interpreters.create::<AuthZChecker>(true));
     let mut authn_interp =

@@ -15,8 +15,7 @@ fn prototype_pollution_found(body: &str) -> bool {
              export const run = resolver.getDefinitions();"
         ),
     );
-    let permissions = HashSet::new();
-    let mut permission_map = PermMap::new(&permissions);
+    let mut permission_map = PermMap::default();
     let lowered = project
         .with_files_and_sourceroot(
             Path::new("src"),

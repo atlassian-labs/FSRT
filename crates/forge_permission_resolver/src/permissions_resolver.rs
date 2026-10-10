@@ -147,8 +147,8 @@ impl RequestDetails {
 }
 
 impl PermMap {
-    pub fn new(scopes: &HashSet<&str>) -> Self {
-        let permissions_cache = PermissionsCache::default();
+    pub fn new(scopes: &HashSet<&str>, config: &CacheConfig) -> Self {
+        let permissions_cache = PermissionsCache::new(config.clone());
         let jira_software = permissions_cache.service_api(Service::JiraSoftware);
         let jira_service_management = permissions_cache.service_api(Service::JiraServiceManagement);
         let jira = permissions_cache.service_api(Service::Jira);
