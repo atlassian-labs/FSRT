@@ -883,3 +883,49 @@ fn secret_logging_selects_properties_through_lodash() {
         assert_findings(&source(expression), count);
     }
 }
+
+/// Function summaries are shared across
+/// call sites, so the connection copy taints the payload copy too, and so does
+/// every log of the payload, even one made before the secret is read.
+const SHARED_CLONE_HELPER: &str = "import { kvs } from '@forge/kvs';
+const cloneObject = (obj) => JSON.parse(JSON.stringify(obj));
+const printErrorString = (requestId, context, errorMessage) => {
+  console.error(JSON.stringify({ requestId, context, errorMessage }));
+};
+const logHeaders = (request) => {
+  console.log('headers', { Authorization: `Basic ${request.password}` });
+};
+const process = async (config, context) => {
+  console.log(JSON.stringify(context));
+  const secret = await kvs.getSecret(config.id);
+  const secretClone = cloneObject(secret);
+  logHeaders({ password: secret.auth.password });
+  printErrorString(context.requestId, context, 'request failed');
+};
+export async function run(payload) {
+  const event = cloneObject(payload);
+  await process(JSON.parse(event.config), event);
+}";
+
+/// The functions that log a secret, in report order.
+fn reporting_functions(report: &Report) -> Vec<String> {
+    report
+        .into_vulns()
+        .iter()
+        .filter_map(|vuln| {
+            let (description, _) = vuln.description().rsplit_once(" (entry file")?;
+            Some(description.rsplit_once(" in ")?.1.to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn secret_logging_keeps_helper_returns_per_call_site() {
+    let report = scan_with(SHARED_CLONE_HELPER, V1);
+    assert!(!report.has_errors());
+    assert_eq!(
+        reporting_functions(&report),
+        ["logHeaders"],
+        "{report:#?}"
+    );
+}
