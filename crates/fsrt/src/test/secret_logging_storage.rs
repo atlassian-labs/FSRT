@@ -50,3 +50,20 @@ fn secret_logging_tracks_sparse_sinks_in_large_straight_line_body() {
     assert!(!report.has_errors());
     assert_eq!(report.into_vulns().len(), 1, "{report:#?}");
 }
+
+#[test]
+fn secret_logging_reaches_late_sinks_after_many_distinct_helpers() {
+    use std::fmt::Write;
+    let mut source = String::from("import { kvs } from '@forge/kvs';\n");
+    for id in 0..1_000 {
+        writeln!(source, "function helper{id}(value) {{ return value; }}").unwrap();
+    }
+    source.push_str("export function run() {\nlet value = kvs.getSecret('key');\n");
+    for id in 0..1_000 {
+        writeln!(source, "value = helper{id}(value);").unwrap();
+    }
+    source.push_str("console.log(value);\n}\n");
+    let report = scan(&source);
+    assert!(!report.has_errors());
+    assert_eq!(report.into_vulns().len(), 1, "{report:#?}");
+}
