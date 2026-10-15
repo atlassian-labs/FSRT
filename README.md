@@ -71,6 +71,10 @@ dependency; other catches and all finally blocks remain conservative. JSX/framew
 output is not fully modeled and retains existing findings. The exemption
 makes no claim about authorization of other actions or returned storage data.
 
+A helper exempted in one handler is retried in later handlers until an operation
+on its call path is reported. This prevents internal use from hiding later
+exposure while preserving the shared-helper reporting limit.
+
 Each GET candidate receives a fresh taint analysis for its selected handler.
 Helper summaries combine call sites within that handler, so some internal reads
 can remain reportable. Debug diagnostics record `internal-get`, the entrypoint,

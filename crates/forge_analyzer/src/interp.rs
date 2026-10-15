@@ -770,6 +770,18 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         (*self.callstack.borrow()).clone()
     }
 
+    /// Retry only checks whose earlier root-specific exemption cannot be reused.
+    /// Dataflow state and the visitation history of reported helpers stay intact.
+    pub(crate) fn retry_checker_functions(&self, defs: impl IntoIterator<Item = DefId>) {
+        let defs: FxHashSet<_> = defs.into_iter().collect();
+        self.checker_visited
+            .borrow_mut()
+            .retain(|def| !defs.contains(def));
+        self.runner_visited
+            .borrow_mut()
+            .retain(|(def, _)| !defs.contains(def));
+    }
+
     #[inline]
     pub(crate) fn checker_visit(&self, def: DefId) -> bool {
         self.checker_visited.borrow_mut().insert(def)

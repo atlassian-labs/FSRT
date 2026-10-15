@@ -513,3 +513,28 @@ fn authorization_storage_predicates_propagate_returned_data_without_mutating_inp
         1,
     );
 }
+
+#[test]
+fn authorization_shared_internal_get_does_not_hide_later_exposure() {
+    for wrapper in ["return read();", "return wrap();"] {
+        let report = scan_source(&format!(
+            "import api, {{route}} from '@forge/api';
+import Resolver from '@forge/resolver';
+const resolver = new Resolver();
+async function read() {{ return {GET}; }}
+async function wrap() {{ return read(); }}
+resolver.define('internal', async () => {{ await wrap(); return true; }});
+resolver.define('exposed', async () => {{ {wrapper} }});
+resolver.define('alsoExposed', async () => {{ return read(); }});
+export const run = resolver.getDefinitions();"
+        ));
+        assert!(report.contains_authz_vuln(1), "{report:#?}");
+        assert!(
+            report.into_vulns()[0]
+                .description()
+                .contains("handler.exposed")
+                || report.into_vulns()[0].description().contains("run.exposed"),
+            "{report:#?}"
+        );
+    }
+}

@@ -73,7 +73,8 @@ impl<'cx> Runner<'cx> for ResponseRunner {
 
 pub struct AuthZChecker {
     vulns: Vec<AuthZVuln>,
-    seen: HashSet<(String, DefId, Location)>,
+    seen: HashSet<(DefId, DefId, Location)>,
+    exempt_helpers: HashSet<DefId>,
     root: Option<DefId>,
     check_remotes: bool,
 }
@@ -83,6 +84,7 @@ impl AuthZChecker {
         Self {
             vulns: vec![],
             seen: HashSet::new(),
+            exempt_helpers: HashSet::new(),
             root: None,
             check_remotes,
         }
@@ -106,7 +108,7 @@ impl AuthZChecker {
             def,
             loc,
         );
-        if !self.seen.insert((vuln.entry_func.clone(), def, loc)) {
+        if !self.seen.insert((self.root.unwrap_or(def), def, loc)) {
             return;
         }
         if interp.body().rest_gets.contains(&loc)
@@ -123,8 +125,24 @@ impl AuthZChecker {
             debug!(entrypoint = %vuln.entry_func, ?def, ?loc, observed = observed.get(), returned = ?flow.analyzed_return(), "authorization-get-analysis");
             if observed.get() && flow.analyzed_return() == Some(Taint::No) {
                 debug!(entrypoint = %vuln.entry_func, ?def, ?loc, "internal-get");
+                if def != root {
+                    // This exemption is specific to the current root. Retry
+                    // the helper and its callers at a later root until an
+                    // operation on that call path is actually reported.
+                    self.exempt_helpers.insert(def);
+                    self.exempt_helpers.extend(
+                        interp
+                            .callstack()
+                            .iter()
+                            .map(|frame| frame.calling_function),
+                    );
+                }
                 return;
             }
+        }
+        self.exempt_helpers.remove(&def);
+        for frame in interp.callstack() {
+            self.exempt_helpers.remove(&frame.calling_function);
         }
         self.vulns.push(vuln);
     }
@@ -257,6 +275,9 @@ impl<'cx> Runner<'cx> for AuthZChecker {
     ) -> ControlFlow<(), Self::State> {
         if interp.callstack().is_empty() {
             self.root = Some(def);
+            if !self.exempt_helpers.is_empty() {
+                interp.retry_checker_functions(self.exempt_helpers.iter().copied());
+            }
         }
         let old_body = interp.body();
         interp.set_body(body);
