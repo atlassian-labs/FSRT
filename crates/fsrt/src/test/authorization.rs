@@ -2,7 +2,7 @@ use super::*;
 
 fn scan(body: &str) -> Report {
     scan_source(&format!(
-        "import api, {{route, storage}} from '@forge/api';\nexport async function run(payload) {{ {body} }}"
+        "import api, {{route, storage, WhereConditions}} from '@forge/api';\nexport async function run(payload) {{ {body} }}"
     ))
 }
 
@@ -345,4 +345,171 @@ fn authorization_retains_unsupported_aggregate_dependencies() {
     ] {
         check(&format!("const response = {GET}; {tail}"), 1);
     }
+}
+
+#[test]
+fn authorization_local_mutations_preserve_return_exposure() {
+    for (tail, expected) in [
+        ("const out = {}; out.data = response; return true;", 0),
+        ("const out = {}; out.data = response; return out;", 1),
+        (
+            "const out = {data:'clean'}; const alias = out; alias.data = response; return out.data;",
+            1,
+        ),
+        (
+            "const out = {data:'clean'}; const alias = out; alias.data = response; return true;",
+            0,
+        ),
+        (
+            "const out = {data:{}}; const alias = out.data; alias.value = response; return out;",
+            1,
+        ),
+        (
+            "const out = {data:{}}; const alias = out.data; alias.value = response; return true;",
+            0,
+        ),
+        (
+            "const data = payload.data; data.id = response.id; await storage.set('key', {...data}); return 'saved';",
+            0,
+        ),
+        (
+            "const data = payload.data; data.id = response.id; return payload;",
+            1,
+        ),
+        ("response.flag = true; return true;", 0),
+        (
+            "const out = {}; if (payload.test) out.data = response; return out;",
+            1,
+        ),
+    ] {
+        check(&format!("const response = {GET}; {tail}"), expected);
+    }
+}
+
+#[test]
+fn authorization_retains_mutations_across_helper_boundaries() {
+    for helper in [
+        "function fill(out, value) { out.data = value; }",
+        "function fill(out, value) { const alias = out; alias.data = value; }",
+        "function fill(out, value) { unknown(out, value); }",
+        "function fill(out, value) { const alias = out; unknown(alias, value); }",
+    ] {
+        let report = scan_source(&format!(
+            "import api, {{route}} from '@forge/api'; {helper}\nexport async function run() {{ const response = {GET}; const out = {{data:'clean'}}; fill(out, response); return out.data; }}"
+        ));
+        assert!(report.contains_authz_vuln(1), "{report:#?}");
+    }
+    check(
+        &format!(
+            "const response = {GET}; const out = {{}}; function fill() {{ const alias = out; alias.data = response; }} fill(); return out;"
+        ),
+        1,
+    );
+}
+
+#[test]
+fn authorization_storage_builders_are_response_boundaries() {
+    for operation in [
+        "storage.entity('items').set(response.id, {...response})",
+        "storage.entity('items').get(response.id)",
+        "storage.entity('items').query().index('by-id').where(response.id).cursor(payload.cursor).getMany()",
+        "storage.query().where(response.id).limit(10).getMany()",
+    ] {
+        check(
+            &format!("const response = {GET}; return await {operation};"),
+            0,
+        );
+        check(
+            &format!(
+                "try {{ const response = {GET}; const data = payload.data; data.id = response.id; await {operation}; return 'saved'; }} catch (e) {{ throw e; }}"
+            ),
+            0,
+        );
+    }
+    for import in [
+        "import {kvs as store} from '@forge/kvs';",
+        "import store from '@forge/kvs';",
+        "import {storage as store} from '@forge/api';",
+    ] {
+        let report = scan_source(&format!(
+            "import api, {{route}} from '@forge/api'; {import} export async function run() {{ const response = {GET}; return await store.entity('items').query().index('by-id').where(response.id).getMany(); }}"
+        ));
+        assert!(report.contains_authz_vuln(0), "{report:#?}");
+    }
+}
+
+#[test]
+fn authorization_storage_names_alone_do_not_prove_boundaries() {
+    for operation in [
+        "payload.storage.entity('items').query().where(response.id).getMany()",
+        "storage.unknownBuilder(response).getMany()",
+        "storage.entity('items')[payload.method](response)",
+        "storage.entity('items').get(response.id).then(value => response)",
+    ] {
+        check(
+            &format!("const response = {GET}; return await {operation};"),
+            1,
+        );
+    }
+    let report = scan_source(&format!(
+        "import api, {{route}} from '@forge/api'; import {{notStorage as storage}} from '@forge/kvs'; export async function run() {{ const response = {GET}; return storage.entity('items').get(response.id); }}"
+    ));
+    assert!(report.contains_authz_vuln(1), "{report:#?}");
+}
+
+// Minimized from bdq.rs addSign and bdq.fsm GetIssueVisits in the scanned corpus.
+#[test]
+fn authorization_bdq_internal_ids_do_not_disclose_product_responses() {
+    let report = scan_source(
+        "import api, {route, storage} from '@forge/api';
+import Resolver from '@forge/resolver';
+const resolver = new Resolver();
+resolver.define('addSign', async ({context, payload}) => {
+    try {
+        const data = payload.signData;
+        const issue = await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.request.key}`).then(res => res.json());
+        const desk = await api.asApp().requestJira(route`/rest/servicedeskapi/servicedesk/${context.extension.portal.id}`).then(res => res.json());
+        data.projectid = Number(desk.projectId);
+        data.issueid = Number(issue.id);
+        await storage.entity('signs').set(data.id, {...data});
+        return 'Signature Added';
+    } catch (e) { throw e; }
+});
+export const run = resolver.getDefinitions();",
+    );
+    assert!(report.contains_authz_vuln(0), "{report:#?}");
+    check(
+        &format!(
+            "const issue = {GET}.then(res => res.json()); const id = Number(issue.id); let allResults = []; let nextCursor = null; try {{ do {{ const {{results, nextCursor: currentCursor}} = await storage.entity('visits').query().index('by-issueid').where(WhereConditions.equalsTo(id)).cursor(nextCursor).getMany(); allResults = allResults.concat(results); nextCursor = currentCursor; }} while (nextCursor); return allResults; }} catch (e) {{ throw e; }}"
+        ),
+        0,
+    );
+}
+
+#[test]
+fn authorization_storage_predicates_propagate_returned_data_without_mutating_inputs() {
+    check(
+        &format!(
+            "const response = {GET}; const predicate = WhereConditions.equalsTo(response.id); return predicate;"
+        ),
+        1,
+    );
+    check(
+        &format!(
+            "const response = {GET}; const predicate = WhereConditions.equalsTo(response.id); return true;"
+        ),
+        0,
+    );
+    check(
+        &format!(
+            "const response = {GET}; const out = {{}}; WhereConditions.unknownMethod(out, response); return out;"
+        ),
+        1,
+    );
+    check(
+        &format!(
+            "const response = {GET}; const out = {{}}; payload.WhereConditions.equalsTo(out, response); return out;"
+        ),
+        1,
+    );
 }

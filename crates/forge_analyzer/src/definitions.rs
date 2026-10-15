@@ -1003,6 +1003,48 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
     classifier.kind
 }
 
+/// Preserve import provenance through the storage builder chain. A local
+/// object with similarly named methods, a dynamic method, or an unknown factory
+/// must keep ordinary propagation. Storage selection keys do not turn stored
+/// results into copies of a product GET response.
+fn proven_storage_call(env: &Environment, path: &[PropPath]) -> bool {
+    let [PropPath::Def(def), builders @ .., PropPath::Static(method)] = path else {
+        return false;
+    };
+    let storage = matches!(env.is_imported_from(*def, "@forge/api"),
+        Some(ImportKind::Named(name)) if name == "storage")
+        || matches!(
+            env.is_imported_from(*def, "@forge/kvs"),
+            Some(ImportKind::Default)
+        )
+        || matches!(env.is_imported_from(*def, "@forge/kvs"),
+            Some(ImportKind::Named(name)) if name == "kvs");
+    storage
+        && builders.iter().all(|step| {
+            matches!(step, PropPath::MemberCall(name)
+            if matches!(name.as_ref(), "entity" | "query" | "index" | "where"
+                | "andFilter" | "cursor" | "limit"))
+        })
+        && matches!(
+            method.as_ref(),
+            "entity"
+                | "query"
+                | "index"
+                | "where"
+                | "andFilter"
+                | "cursor"
+                | "limit"
+                | "get"
+                | "getMany"
+                | "getOne"
+                | "set"
+                | "delete"
+                | "getSecret"
+                | "setSecret"
+                | "deleteSecret"
+        )
+}
+
 /// Deliberately narrow: dynamic options, computed keys, accessors and spreads
 /// cannot prove the effective method. Duplicate literal methods use JS's last write.
 fn proven_get_options(args: &[ExprOrSpread]) -> bool {
@@ -1908,6 +1950,24 @@ impl FunctionAnalyzer<'_> {
                 if matches!(method.as_ref(), "requestJira" | "requestConfluence" | "requestBitbucket")));
         if is_rest && proven_get_options(args) {
             self.body.rest_gets.insert(crate::ir::Location::new(
+                self.block,
+                self.body.blockbuilders[self.block].insts.len() as u32,
+            ));
+        }
+        if let [PropPath::Def(def), PropPath::Static(method)] = props.as_slice()
+            && method == "equalsTo"
+            && ["@forge/api", "@forge/kvs"].iter().any(|package| {
+                matches!(self.res.is_imported_from(*def, package),
+                    Some(ImportKind::Named(name)) if name == "WhereConditions")
+            })
+        {
+            self.body.pure_calls.insert(crate::ir::Location::new(
+                self.block,
+                self.body.blockbuilders[self.block].insts.len() as u32,
+            ));
+        }
+        if proven_storage_call(self.res, &props) {
+            self.body.storage_calls.insert(crate::ir::Location::new(
                 self.block,
                 self.body.blockbuilders[self.block].insts.len() as u32,
             ));

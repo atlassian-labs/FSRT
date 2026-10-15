@@ -60,7 +60,11 @@ response-dependent control flow alone does not taint an otherwise constant retur
 Only omitted options or inline object options with an unambiguous GET/default
 method qualify. Dynamic options, computed keys, potentially overriding spreads,
 non-GET methods, GraphQL, Compass and remotes retain the existing eligibility
-rules. Unsupported callbacks, capture writes, alias mutations and exception flows
+rules. Local property writes conservatively propagate through possible aliases;
+helper parameter and captured-object effects remain unsupported. Imported Forge
+storage builder chains are boundaries, including GET-derived selection keys.
+Imported `WhereConditions.equalsTo` preserves result taint without mutating inputs.
+Unsupported callbacks, capture writes, helper mutations and exception flows
 that may obscure returned data conservatively retain findings. A catch whose only
 action is rethrowing its caught value or returning a literal adds no return
 dependency; other catches and all finally blocks remain conservative. JSX/framework

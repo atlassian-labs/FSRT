@@ -29,6 +29,14 @@ impl TaintPolicy for ResponsePolicy {
         }
     }
 
+    fn call_taint_at(&self, body: &Body, loc: Location) -> Option<Taint> {
+        body.storage_calls.contains(&loc).then_some(Taint::No)
+    }
+
+    fn call_is_pure(&self, body: &Body, loc: Location) -> bool {
+        body.pure_calls.contains(&loc)
+    }
+
     fn is_violation(&self, _: &Inst, _: &TaintReader<'_, Self>) -> bool {
         false
     }
@@ -112,6 +120,7 @@ impl AuthZChecker {
                 observed: observed.clone(),
             });
             flow.analyze(&mut isolated, root);
+            debug!(entrypoint = %vuln.entry_func, ?def, ?loc, observed = observed.get(), returned = ?flow.analyzed_return(), "authorization-get-analysis");
             if observed.get() && flow.analyzed_return() == Some(Taint::No) {
                 debug!(entrypoint = %vuln.entry_func, ?def, ?loc, "internal-get");
                 return;
