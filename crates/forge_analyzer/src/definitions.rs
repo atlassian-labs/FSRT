@@ -1038,6 +1038,51 @@ fn proven_get_options(args: &[ExprOrSpread]) -> bool {
     method.is_none_or(|method| method.eq_ignore_ascii_case("GET"))
 }
 
+/// Catch bodies are omitted by lowering. They cannot add normal-return data
+/// when their only action is rethrowing the caught value or returning a literal.
+/// Fallthrough catches are unsafe: an exception can bypass a clean overwrite.
+fn catch_has_no_return_dependencies(stmt: &TryStmt) -> bool {
+    if stmt.finalizer.is_some() {
+        return false;
+    }
+    let Some(handler) = &stmt.handler else {
+        return false;
+    };
+    match handler.body.stmts.as_slice() {
+        [Stmt::Throw(ThrowStmt { arg, .. })] => {
+            matches!((&handler.param, &**arg),
+                (Some(Pat::Ident(caught)), Expr::Ident(thrown))
+                    if caught.id.to_id() == thrown.to_id())
+        }
+        [Stmt::Return(ReturnStmt { arg, .. })] => {
+            arg.as_ref().is_none_or(|value| literal_return(value, 0))
+        }
+        _ => false,
+    }
+}
+
+fn literal_return(expr: &Expr, depth: usize) -> bool {
+    if depth >= 32 {
+        return false;
+    }
+    match expr {
+        Expr::Lit(_) => true,
+        Expr::Paren(value) => literal_return(&value.expr, depth + 1),
+        Expr::Array(array) => array.elems.iter().all(|element| {
+            element.as_ref().is_none_or(|element| {
+                element.spread.is_none() && literal_return(&element.expr, depth + 1)
+            })
+        }),
+        Expr::Object(object) => object.props.iter().all(|property| {
+            matches!(property, PropOrSpread::Prop(property)
+                if matches!(&**property, Prop::KeyValue(property)
+                    if !matches!(property.key, PropName::Computed(_))
+                        && literal_return(&property.value, depth + 1)))
+        }),
+        _ => false,
+    }
+}
+
 impl FunctionAnalyzer<'_> {
     fn new<'cx>(
         env: &'cx mut Environment,
@@ -2525,7 +2570,9 @@ impl FunctionAnalyzer<'_> {
                 self.body.set_terminator(self.block, Terminator::Throw);
             }
             Stmt::Try(stmt) => {
-                self.body.opaque_taint_blocks.insert(self.block);
+                if !catch_has_no_return_dependencies(stmt) {
+                    self.body.opaque_taint_blocks.insert(self.block);
+                }
                 let TryStmt {
                     block: BlockStmt { stmts, .. },
                     handler,

@@ -61,7 +61,9 @@ Only omitted options or inline object options with an unambiguous GET/default
 method qualify. Dynamic options, computed keys, potentially overriding spreads,
 non-GET methods, GraphQL, Compass and remotes retain the existing eligibility
 rules. Unsupported callbacks, capture writes, alias mutations and exception flows
-that may obscure returned data conservatively retain findings. JSX/framework
+that may obscure returned data conservatively retain findings. A catch whose only
+action is rethrowing its caught value or returning a literal adds no return
+dependency; other catches and all finally blocks remain conservative. JSX/framework
 output is not fully modeled and retains existing findings. The exemption
 makes no claim about authorization of other actions or returned storage data.
 

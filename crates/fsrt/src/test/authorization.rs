@@ -265,3 +265,50 @@ resolver.define('second', () => { api.asApp().requestJira(route`/rest/api/3/issu
 export const run = resolver.getDefinitions();");
     assert!(report.contains_authz_vuln(2), "{report:#?}");
 }
+
+#[test]
+fn authorization_internal_gets_with_terminal_literal_or_rethrow_catches() {
+    for catch in [
+        "throw e;",
+        "return;",
+        "return null;",
+        "return {ok:false, data:[1, true]};",
+    ] {
+        check(
+            &format!(
+                "try {{ const response = {GET}; internalAction(response.id); return true; }} catch (e) {{ {catch} }}"
+            ),
+            0,
+        );
+        check(
+            &format!("try {{ const response = {GET}; return response; }} catch (e) {{ {catch} }}"),
+            1,
+        );
+    }
+}
+
+#[test]
+fn authorization_retains_unresolved_exception_dependencies() {
+    for body in [
+        format!("const response = {GET}; try {{ return true; }} catch (e) {{ return e.message; }}"),
+        format!(
+            "const response = {GET}; try {{ return true; }} catch (e) {{ return {{response}}; }}"
+        ),
+        format!(
+            "let response = {GET}; try {{ mayThrow(); response = 'clean'; }} catch (e) {{}} return response;"
+        ),
+        format!("const response = {GET}; try {{ return true; }} catch (e) {{ throw response; }}"),
+        format!("const response = {GET}; try {{ return true; }} catch (e) {{ log(e); throw e; }}"),
+        format!(
+            "const response = {GET}; try {{ internalAction(response); }} catch (e) {{ throw e; }} finally {{ return response; }}"
+        ),
+        format!(
+            "const response = {GET}; try {{ return true; }} catch (e) {{ return {{[response.id]:true}}; }}"
+        ),
+        format!(
+            "const response = {GET}; try {{ return true; }} catch (e) {{ return {{...response}}; }}"
+        ),
+    ] {
+        check(&body, 1);
+    }
+}
