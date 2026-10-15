@@ -15,6 +15,7 @@ use time::{Date, Month};
 
 mod captured_values;
 mod legacy_callbacks;
+mod native_fetch;
 mod secret_logging;
 mod secret_logging_storage;
 mod taint_regressions;

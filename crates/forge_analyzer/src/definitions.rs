@@ -733,6 +733,23 @@ enum PropPath {
     Computed(Id),
 }
 
+impl PropPath {
+    /// Materializing an undeclared global must not change its native identity.
+    /// Declared bindings and imports are resolved by their own semantics.
+    fn undeclared_global_name<'a>(&'a self, env: &'a Environment) -> Option<&'a str> {
+        match self {
+            Self::Unknown((name, _)) => Some(name.as_ref()),
+            Self::Def(def) if env.is_undeclared_global(*def) => Some(env.def_name(*def)),
+            _ => None,
+        }
+    }
+}
+
+fn is_supported_native_fetch(callee: &[PropPath], env: &Environment) -> bool {
+    matches!(callee, [root]
+        if matches!(root.undeclared_global_name(env), Some("fetch" | "forgeFetch")))
+}
+
 fn normalize_callee_expr(
     callee: CalleeRef<'_>,
     res_table: &Environment,
@@ -1388,9 +1405,7 @@ impl FunctionAnalyzer<'_> {
             {
                 Some(Intrinsic::SecretRead)
             }
-            [PropPath::Unknown((ref name, ..))] if *name == *"fetch" || *name == *"forgeFetch" => {
-                Some(Intrinsic::Fetch)
-            }
+            _ if is_supported_native_fetch(callee, self.res) => Some(Intrinsic::Fetch),
             [
                 PropPath::Expr(ref n @ Some(ref expr)),
                 PropPath::Static(ref last),
