@@ -538,3 +538,61 @@ export const run = resolver.getDefinitions();"
         );
     }
 }
+
+#[test]
+fn authorization_public_reference_get_is_operation_scoped() {
+    check(
+        "return api.asApp().requestJira(route`/rest/api/3/jql/autocompletedata`);",
+        0,
+    );
+    check(
+        "return api.asApp().requestJira(route`/rest/api/3/jql/autocompletedata`, {method:'GET', headers:{Accept:'application/json'}});",
+        0,
+    );
+    for tail in [
+        "return api.asApp().requestJira(route`/rest/api/3/issue/ABC-1`);",
+        "return api.asApp().requestJira(route`/rest/api/3/issue/ABC-1`, {method:'PUT'});",
+    ] {
+        check(
+            &format!(
+                "await api.asApp().requestJira(route`/rest/api/3/jql/autocompletedata`); {tail}"
+            ),
+            1,
+        );
+    }
+    for options in ["{method:'POST'}", "options", "{...payload.options}"] {
+        check(
+            &format!(
+                "return api.asApp().requestJira(route`/rest/api/3/jql/autocompletedata`, {options});"
+            ),
+            1,
+        );
+    }
+    for path in [
+        "/rest/api/3/jql/autocompletedata/suggestions",
+        "/rest/api/3/jql/autocompletedata?fieldName=secret",
+        "/rest/api/3/jql/${payload.operation}",
+        "/rest/api/3/field",
+    ] {
+        check(
+            &format!("return api.asApp().requestJira(route`{path}`);"),
+            1,
+        );
+    }
+    check(
+        "return api.asApp().requestConfluence(route`/rest/api/3/jql/autocompletedata`);",
+        1,
+    );
+}
+
+#[test]
+fn authorization_public_reference_get_requires_known_route_tag() {
+    let aliased = scan_source(
+        "import api, {route as path} from '@forge/api'; export async function run() { return api.asApp().requestJira(path`/rest/api/3/jql/autocompletedata`); }",
+    );
+    assert!(aliased.contains_authz_vuln(0), "{aliased:#?}");
+    let shadowed = scan_source(
+        "import api from '@forge/api'; export async function run(route) { return api.asApp().requestJira(route`/rest/api/3/jql/autocompletedata`); }",
+    );
+    assert!(shadowed.contains_authz_vuln(1), "{shadowed:#?}");
+}

@@ -111,6 +111,10 @@ impl AuthZChecker {
         if !self.seen.insert((self.root.unwrap_or(def), def, loc)) {
             return;
         }
+        if interp.body().public_authz_gets.contains(&loc) {
+            debug!(entrypoint = %vuln.entry_func, ?def, ?loc, "public-reference-get");
+            return;
+        }
         if interp.body().rest_gets.contains(&loc)
             && let Some(root) = self.root
         {

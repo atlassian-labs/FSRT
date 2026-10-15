@@ -1045,6 +1045,23 @@ fn proven_storage_call(env: &Environment, path: &[PropPath]) -> bool {
         )
 }
 
+/// Jira's GET autocomplete reference endpoint has no parameters, permits
+/// anonymous access and requires no permission. This applies to this exact
+/// operation, not other JQL operations or a handler's later requests.
+/// https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-jql/#api-rest-api-3-jql-autocompletedata-get
+fn public_jira_reference_route(env: &Environment, module: ModId, expr: &Expr) -> bool {
+    let Expr::TaggedTpl(template) = expr else {
+        return false;
+    };
+    let tag = normalize_callee_expr(template.tag.as_ref().into(), env, module);
+    matches!(tag.as_slice(), [PropPath::Def(def)]
+        if matches!(env.is_imported_from(*def, "@forge/api"),
+            Some(ImportKind::Named(name)) if name == "route"))
+        && template.tpl.exprs.is_empty()
+        && matches!(template.tpl.quasis.as_slice(), [text]
+            if text.raw == "/rest/api/3/jql/autocompletedata")
+}
+
 /// Deliberately narrow: dynamic options, computed keys, accessors and spreads
 /// cannot prove the effective method. Duplicate literal methods use JS's last write.
 fn proven_get_options(args: &[ExprOrSpread]) -> bool {
@@ -1949,10 +1966,24 @@ impl FunctionAnalyzer<'_> {
             && matches!(props.last(), Some(PropPath::Static(method))
                 if matches!(method.as_ref(), "requestJira" | "requestConfluence" | "requestBitbucket")));
         if is_rest && proven_get_options(args) {
-            self.body.rest_gets.insert(crate::ir::Location::new(
+            let location = crate::ir::Location::new(
                 self.block,
                 self.body.blockbuilders[self.block].insts.len() as u32,
-            ));
+            );
+            self.body.rest_gets.insert(location);
+            if matches!(
+                &intrinsic,
+                Some(Intrinsic::ApiCall(
+                    IntrinsicName::RequestJiraAny
+                        | IntrinsicName::RequestJira
+                        | IntrinsicName::RequestJiraSoftware
+                        | IntrinsicName::RequestJiraServiceManagement
+                ))
+            ) && first_arg
+                .is_some_and(|path| public_jira_reference_route(self.res, self.module, path))
+            {
+                self.body.public_authz_gets.insert(location);
+            }
         }
         if let [PropPath::Def(def), PropPath::Static(method)] = props.as_slice()
             && method == "equalsTo"

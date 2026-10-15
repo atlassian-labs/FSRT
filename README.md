@@ -75,6 +75,12 @@ A helper exempted in one handler is retried in later handlers until an operation
 on its call path is reported. This prevents internal use from hiding later
 exposure while preserving the shared-helper reporting limit.
 
+The exact Jira GET `/rest/api/3/jql/autocompletedata` is also exempt because its
+[API contract](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-jql/#api-rest-api-3-jql-autocompletedata-get)
+allows anonymous access without permissions. This requires a static imported
+`route` tag and a proven GET; it does not authorize later operations. Other JQL
+operations, query variants, dynamic routes and unknown methods remain eligible.
+
 Each GET candidate receives a fresh taint analysis for its selected handler.
 Helper summaries combine call sites within that handler, so some internal reads
 can remain reportable. Debug diagnostics record `internal-get`, the entrypoint,

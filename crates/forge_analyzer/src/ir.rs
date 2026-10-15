@@ -184,6 +184,8 @@ pub struct Body {
     pub(crate) const_bindings: FxHashSet<DefId>,
     /// Calls proven to be REST GETs while the original options syntax is available.
     pub(crate) rest_gets: BTreeSet<Location>,
+    /// Exact GET operations whose reference data requires no caller permission.
+    pub(crate) public_authz_gets: BTreeSet<Location>,
     /// Calls rooted in imported Forge storage through known builder methods.
     pub(crate) storage_calls: BTreeSet<Location>,
     /// Import-proven non-mutating calls; their returned data still propagates.
@@ -450,6 +452,7 @@ impl Body {
             class_instantiations: Default::default(),
             const_bindings: Default::default(),
             rest_gets: Default::default(),
+            public_authz_gets: Default::default(),
             storage_calls: Default::default(),
             pure_calls: Default::default(),
             opaque_taint_blocks: Default::default(),
