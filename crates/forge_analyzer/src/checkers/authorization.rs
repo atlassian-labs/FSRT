@@ -126,7 +126,7 @@ impl AuthZChecker {
                 observed: observed.clone(),
             });
             flow.analyze(&mut isolated, root);
-            debug!(entrypoint = %vuln.entry_func, ?def, ?loc, observed = observed.get(), returned = ?flow.analyzed_return(), "authorization-get-analysis");
+            debug!(entrypoint = %vuln.entry_func, ?def, ?loc, observed = observed.get(), returned = ?flow.analyzed_return(), modeled_return = ?isolated.func_state(root), "authorization-get-analysis");
             if observed.get() && flow.analyzed_return() == Some(Taint::No) {
                 debug!(entrypoint = %vuln.entry_func, ?def, ?loc, "internal-get");
                 if def != root {
