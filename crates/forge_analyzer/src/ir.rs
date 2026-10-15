@@ -182,6 +182,12 @@ pub struct Body {
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     pub class_instantiations: HashMap<DefId, DefId>,
     pub(crate) const_bindings: FxHashSet<DefId>,
+    /// Calls proven to be REST GETs while the original options syntax is available.
+    pub(crate) rest_gets: BTreeSet<Location>,
+    /// Lowering loses callback/exception semantics in these blocks.
+    pub(crate) opaque_taint_blocks: BTreeSet<BasicBlockId>,
+    /// Explicit property mutations (distinct from object literal construction).
+    pub(crate) taint_mutations: BTreeSet<Location>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
     pub dominator_tree: OnceCell<DomTree>,
     pub blockbuilders: TiVec<BasicBlockId, BasicBlockBuilder>,
@@ -439,6 +445,9 @@ impl Body {
             values: FxHashMap::default(),
             class_instantiations: Default::default(),
             const_bindings: Default::default(),
+            rest_gets: Default::default(),
+            opaque_taint_blocks: Default::default(),
+            taint_mutations: Default::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
             predecessors: Default::default(),

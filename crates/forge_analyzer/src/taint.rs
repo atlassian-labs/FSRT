@@ -80,6 +80,18 @@ pub trait TaintPolicy: Sized {
 
     fn intrinsic_taint(&self, intrinsic: &Intrinsic) -> Taint;
 
+    /// Select an individual source instruction without changing other policies.
+    fn intrinsic_taint_at(&self, _def: DefId, _loc: Location, intrinsic: &Intrinsic) -> Taint {
+        self.intrinsic_taint(intrinsic)
+    }
+
+    fn unary_taint(&self, op: UnOp, value: Taint) -> Taint {
+        unary_taint(op, value)
+    }
+
+    /// Suppression policies must retain uncertainty about unsupported effects.
+    const CHECK_COMPLETENESS: bool = false;
+
     /// Whether `inst` is a sink reached by a reportable value.
     fn is_violation(&self, inst: &Inst, values: &TaintReader<'_, Self>) -> bool;
 
@@ -212,11 +224,15 @@ pub fn visit_taint_call<'cx, C: Runner<'cx, State = Vec<Taint>>>(
 
 pub struct TaintDataflow<P> {
     policy: P,
+    return_taint: Option<Taint>,
 }
 
 impl<P> TaintDataflow<P> {
     pub fn new(policy: P) -> Self {
-        Self { policy }
+        Self {
+            policy,
+            return_taint: None,
+        }
     }
 }
 
@@ -428,6 +444,12 @@ pub(crate) fn binary_taint(op: BinOp, left: Taint, right: Taint) -> Taint {
 }
 
 impl<P: TaintPolicy> TaintDataflow<P> {
+    /// Selected root's joined return, available after analysis. Unknown includes
+    /// unsupported effects for policies opting into completeness checks.
+    pub fn analyzed_return(&self) -> Option<Taint> {
+        self.return_taint
+    }
+
     /// The taint of an untracked property chain read from a value with taint `base`.
     fn project(&self, base: Taint, rest: &[Projection]) -> Taint {
         match rest.last() {
@@ -670,6 +692,8 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
         let mut callers = BTreeMap::<DefId, BTreeSet<(DefId, BasicBlockId)>>::new();
         let mut globals = BTreeMap::<DefId, Tracked>::new();
         let mut queue = Queue::default();
+        let mut complete = true;
+        self.return_taint = None;
         interp.instruction_findings.clear();
 
         let bindings: BTreeMap<_, _> = env
@@ -711,6 +735,11 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
             let body = env.def_ref(def).expect_body();
             let block = body.block(bb);
             let mut frame = inputs[&(def, bb)].clone();
+            let mut tainted_block = frame.vars.iter().any(|value| *value != Taint::No)
+                || frame
+                    .captures
+                    .values()
+                    .any(|value| value.taint != Taint::No);
             let layout = &bindings[&def];
 
             for (idx, inst) in block.iter().enumerate() {
@@ -727,7 +756,9 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                 let read = |operand| self.read(&frame, operand);
                 let value: Tracked = match inst.rvalue() {
                     Rvalue::Read(op) => self.value(&frame, op),
-                    Rvalue::Unary(op, operand) => unary_taint(*op, read(operand)).into(),
+                    Rvalue::Unary(op, operand) => {
+                        self.policy.unary_taint(*op, read(operand)).into()
+                    }
                     Rvalue::Bin(op, left, right) => self
                         .policy
                         .binary_taint(*op, read(left), read(right))
@@ -743,9 +774,10 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                         .iter()
                         .fold(Taint::No, |taint, op| taint.join(&read(op)))
                         .into(),
-                    Rvalue::Intrinsic(intrinsic, _) => {
-                        self.policy.intrinsic_taint(intrinsic).into()
-                    }
+                    Rvalue::Intrinsic(intrinsic, _) => self
+                        .policy
+                        .intrinsic_taint_at(def, location.1, intrinsic)
+                        .into(),
                     Rvalue::Call(callee, args) => {
                         if let Some((callee_def, _)) = body.resolve_call(env, callee) {
                             callers.entry(callee_def).or_default().insert((def, bb));
@@ -772,7 +804,43 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                             // Preserve data through unmodelled transformations,
                             // including methods called on a tainted receiver.
                             let receiver = self.receiver_taint(&frame, callee);
+                            if P::CHECK_COMPLETENESS
+                                && args.iter().any(|arg| body.resolve_call(env, arg).is_some())
+                            {
+                                complete = false;
+                            }
+                            let operands = args;
                             let args: SmallVec<[Taint; 4]> = args.iter().map(read).collect();
+                            let storage_call = match callee {
+                                Operand::Var(var) => var.as_var_id()
+                                    .and_then(|id| variable_def(&body.vars[id]))
+                                    .is_some_and(|binding| {
+                                        matches!(env.is_imported_from(binding, "@forge/api"),
+                                            Some(crate::definitions::ImportKind::Named(name)) if name == "storage")
+                                        || env.is_imported_from(binding, "@forge/kvs").is_some()
+                                    }),
+                                _ => false,
+                            };
+                            if P::CHECK_COMPLETENESS
+                                && !storage_call
+                                && matches!(
+                                    callee_name(env, body, callee),
+                                    Some(
+                                        "push"
+                                            | "unshift"
+                                            | "splice"
+                                            | "set"
+                                            | "assign"
+                                            | "defineProperty"
+                                    )
+                                )
+                                && args
+                                    .iter()
+                                    .chain(std::iter::once(&receiver))
+                                    .any(|value| *value != Taint::No)
+                            {
+                                complete = false;
+                            }
                             let global_result = match callee {
                                 Operand::Var(var) => var
                                     .as_var_id()
@@ -784,7 +852,7 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                                     }),
                                 Operand::Lit(_) => None,
                             };
-                            global_result
+                            let result = global_result
                                 .or_else(|| {
                                     callee_name(env, body, callee).and_then(|method| {
                                         self.policy.method_taint(method, receiver, &args)
@@ -792,14 +860,95 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                                 })
                                 .unwrap_or_else(|| {
                                     args.iter().fold(receiver, |taint, arg| taint.join(arg))
-                                })
-                                .into()
+                                });
+                            // An unresolved function may write a derived value into
+                            // its receiver or an argument object. Track that possible
+                            // effect without treating an unrelated constant return as
+                            // disclosure. Recognized storage operations are boundaries.
+                            if P::CHECK_COMPLETENESS && !storage_call {
+                                let effect =
+                                    args.iter().fold(receiver, |value, arg| value.join(arg));
+                                if effect != Taint::No {
+                                    let mut targets: BTreeSet<_> = operands
+                                        .iter()
+                                        .filter_map(|arg| match arg {
+                                            Operand::Var(var) => var.as_var_id(),
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    if let Operand::Var(var) = callee
+                                        && !var.projections.is_empty()
+                                        && let Some(id) = var.as_var_id()
+                                    {
+                                        targets.insert(id);
+                                    }
+                                    // Unknown writes can affect other local references
+                                    // to an argument object. Overapproximate copies,
+                                    // including contained references; this is not a
+                                    // general heap model or a strong alias update.
+                                    loop {
+                                        let before = targets.len();
+                                        for block in body.iter_block_keys() {
+                                            for inst in body.block(block).iter() {
+                                                if let Inst::Assign(
+                                                    target,
+                                                    Rvalue::Read(Operand::Var(source)),
+                                                ) = inst
+                                                    && source.projections.is_empty()
+                                                    && let (Some(target), Some(source)) =
+                                                        (target.as_var_id(), source.as_var_id())
+                                                    && (targets.contains(&target)
+                                                        || targets.contains(&source))
+                                                {
+                                                    targets.extend([target, source]);
+                                                }
+                                            }
+                                        }
+                                        let versions = targets
+                                            .iter()
+                                            .flat_map(|id| {
+                                                variable_def(&body.vars[*id])
+                                                    .and_then(|binding| {
+                                                        layout.aliases.get(&binding)
+                                                    })
+                                                    .into_iter()
+                                                    .flatten()
+                                                    .copied()
+                                            })
+                                            .collect::<Vec<_>>();
+                                        targets.extend(versions);
+                                        if targets.len() == before {
+                                            break;
+                                        }
+                                    }
+                                    for id in targets {
+                                        let mut value = frame.value(id);
+                                        value.taint = value.taint.join(&effect);
+                                        value.fields = None;
+                                        frame.set(id, value);
+                                    }
+                                }
+                            }
+                            result.into()
                         }
                     }
                 };
+                tainted_block |= value.taint != Taint::No;
                 if let Inst::Assign(var, _) = inst
                     && let Base::Var(id) = var.base
                 {
+                    if P::CHECK_COMPLETENESS {
+                        let tainted = value.taint != Taint::No;
+                        let outer_write = variable_def(&body.vars[id])
+                            .and_then(|binding| env.binding_owner(binding))
+                            .is_some_and(|owner| owner != def);
+                        if (outer_write && tainted)
+                            || (body.taint_mutations.contains(&location.1)
+                                && (tainted || frame.value(id).taint != Taint::No))
+                        {
+                            complete = false;
+                        }
+                    }
                     self.assign(&mut frame, id, &var.projections, value);
                     if let Some(var_def) = variable_def(&body.vars[id]) {
                         // Index aliases once per body instead of scanning all
@@ -812,6 +961,12 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                 }
             }
 
+            if P::CHECK_COMPLETENESS
+                && body.opaque_taint_blocks.contains(&bb)
+                && (!global_bodies.contains(&def) || tainted_block)
+            {
+                complete = false;
+            }
             let successors: SmallVec<[BasicBlockId; 2]> = match block.successors() {
                 Successors::Return => {
                     let returned = body
@@ -873,6 +1028,13 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                 .map(|(key, frame)| (key, frame.vars))
                 .collect(),
         );
+        self.return_taint = returns.get(&entry).map(|value| {
+            if complete {
+                value.taint
+            } else {
+                Taint::Unknown
+            }
+        });
         interp.replace_func_states(
             returns
                 .into_iter()

@@ -1003,6 +1003,41 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
     classifier.kind
 }
 
+/// Deliberately narrow: dynamic options, computed keys, accessors and spreads
+/// cannot prove the effective method. Duplicate literal methods use JS's last write.
+fn proven_get_options(args: &[ExprOrSpread]) -> bool {
+    if args.iter().any(|arg| arg.spread.is_some()) || args.len() > 2 {
+        return false;
+    }
+    let Some(options) = args.get(1) else {
+        return true;
+    };
+    let Expr::Object(options) = &*options.expr else {
+        return false;
+    };
+    let mut method = None;
+    for property in &options.props {
+        let PropOrSpread::Prop(property) = property else {
+            return false;
+        };
+        let Prop::KeyValue(property) = &**property else {
+            return false;
+        };
+        let name = match &property.key {
+            PropName::Ident(name) => name.sym.as_ref(),
+            PropName::Str(name) => name.value.as_ref(),
+            _ => return false,
+        };
+        if name == "method" {
+            let Expr::Lit(Lit::Str(value)) = &*property.value else {
+                return false;
+            };
+            method = Some(value.value.as_ref());
+        }
+    }
+    method.is_none_or(|method| method.eq_ignore_ascii_case("GET"))
+}
+
 impl FunctionAnalyzer<'_> {
     fn new<'cx>(
         env: &'cx mut Environment,
@@ -1736,6 +1771,29 @@ impl FunctionAnalyzer<'_> {
             return Operand::with_var(self.body.push_tmp(self.block, call, None));
         }
         let props = normalize_callee_expr(callee, self.res, self.module);
+        if args
+            .iter()
+            .any(|arg| matches!(&*arg.expr, Expr::Arrow(_) | Expr::Fn(_)))
+            || [
+                "then",
+                "catch",
+                "finally",
+                "map",
+                "filter",
+                "forEach",
+                "foreach",
+                "reduce",
+                "reduceRight",
+                "flatMap",
+                "some",
+                "every",
+                "find",
+            ]
+            .iter()
+            .any(|method| calls_method(callee, method))
+        {
+            self.body.opaque_taint_blocks.insert(self.block);
+        }
         if let Some(&PropPath::Def(id)) = props.first()
             && (self.res.is_imported_from(id, "@forge/ui").is_some_and(|imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect")) || calls_method(callee, "then")
                 || calls_method(callee, "map")
@@ -1790,6 +1848,25 @@ impl FunctionAnalyzer<'_> {
         };
         let first_arg = args.first().map(|expr| &*expr.expr);
         let intrinsic = self.as_intrinsic(&props, first_arg);
+        let is_rest = matches!(
+            &intrinsic,
+            Some(Intrinsic::ApiCall(
+                IntrinsicName::RequestJiraAny
+                    | IntrinsicName::RequestJiraSoftware
+                    | IntrinsicName::RequestJiraServiceManagement
+                    | IntrinsicName::RequestJira
+                    | IntrinsicName::RequestConfluence
+                    | IntrinsicName::RequestBitbucket
+            ))
+        ) || (matches!(&intrinsic, Some(Intrinsic::ApiCustomField))
+            && matches!(props.last(), Some(PropPath::Static(method))
+                if matches!(method.as_ref(), "requestJira" | "requestConfluence" | "requestBitbucket")));
+        if is_rest && proven_get_options(args) {
+            self.body.rest_gets.insert(crate::ir::Location::new(
+                self.block,
+                self.body.blockbuilders[self.block].insts.len() as u32,
+            ));
+        }
         let call = match intrinsic {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
@@ -1963,6 +2040,8 @@ impl FunctionAnalyzer<'_> {
     }
 
     fn lower_jsx_elem(&mut self, n: &JSXElement) -> Operand {
+        // JSX attributes and framework output are not a complete value-flow model.
+        self.body.opaque_taint_blocks.insert(self.block);
         let args = n
             .children
             .iter()
@@ -2152,6 +2231,10 @@ impl FunctionAnalyzer<'_> {
                         SimpleAssignTarget::Member(MemberExpr { obj, prop, .. }) => {
                             let lval = self.lower_member(obj, prop);
                             let lval = self.body.coerce_to_lval(self.block, lval, None);
+                            self.body.taint_mutations.insert(crate::ir::Location::new(
+                                self.block,
+                                self.body.blockbuilders[self.block].insts.len() as u32,
+                            ));
                             self.push_curr_inst(Inst::Assign(lval, Rvalue::Read(rhs.clone())));
                         }
                         SimpleAssignTarget::SuperProp(_) => {
@@ -2436,11 +2519,13 @@ impl FunctionAnalyzer<'_> {
                 self.lower_switch(stmt);
             }
             Stmt::Throw(ThrowStmt { arg, .. }) => {
+                self.body.opaque_taint_blocks.insert(self.block);
                 let opnd = self.lower_expr(arg, None);
                 self.body.push_expr(self.block, Rvalue::Read(opnd));
                 self.body.set_terminator(self.block, Terminator::Throw);
             }
             Stmt::Try(stmt) => {
+                self.body.opaque_taint_blocks.insert(self.block);
                 let TryStmt {
                     block: BlockStmt { stmts, .. },
                     handler,
