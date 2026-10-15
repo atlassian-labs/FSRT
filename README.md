@@ -65,7 +65,10 @@ helper parameter and captured-object effects remain unsupported. Imported Forge
 storage builder chains are boundaries, including GET-derived selection keys.
 Imported `WhereConditions.equalsTo` preserves result taint without mutating inputs.
 Unsupported callbacks, capture writes, helper mutations and exception flows
-that may obscure returned data conservatively retain findings. A catch whose only
+that may obscure returned data conservatively retain findings. Unsupported lowering
+in the selected entry's reachable call graph or in source-tainted initialization
+still retains findings; unrelated initialization-only JSX does not affect that
+entry's return analysis. A catch whose only
 action is rethrowing its caught value or returning a literal adds no return
 dependency; other catches and all finally blocks remain conservative. JSX/framework
 output is not fully modeled and retains existing findings. The exemption

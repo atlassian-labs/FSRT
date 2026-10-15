@@ -763,6 +763,31 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
             })
             .collect();
         let global_bodies: BTreeSet<_> = env.global.iter().copied().collect();
+        // Module initializers are analyzed alongside the selected entry so their
+        // captured globals can flow into it. They must not, however, make an
+        // unrelated function's unsupported lowering poison this entry's result.
+        // Over-approximate call reachability using the same resolver as dataflow.
+        let mut entry_reachable = BTreeSet::new();
+        let mut reach_queue = VecDeque::new();
+        if P::CHECK_COMPLETENESS {
+            entry_reachable.insert(entry);
+            reach_queue.push_back(entry);
+        }
+        while let Some(def) = reach_queue.pop_front() {
+            let Some(body) = env.def_ref(def).as_body().copied() else {
+                continue;
+            };
+            for (_, block) in body.iter_blocks_enumerated() {
+                for inst in block.iter() {
+                    if let Rvalue::Call(callee, _) = inst.rvalue()
+                        && let Some((callee, _)) = body.resolve_call(env, callee)
+                        && entry_reachable.insert(callee)
+                    {
+                        reach_queue.push_back(callee);
+                    }
+                }
+            }
+        }
         let mut roots = env.global.clone();
         roots.push(entry);
         if interp.call_uncalled {
@@ -864,6 +889,10 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                             // including methods called on a tainted receiver.
                             let receiver = self.receiver_taint(&frame, callee);
                             if P::CHECK_COMPLETENESS
+                                && (entry_reachable.contains(&def)
+                                    || tainted_block
+                                    || receiver != Taint::No
+                                    || args.iter().any(|arg| read(arg) != Taint::No))
                                 && args.iter().any(|arg| body.resolve_call(env, arg).is_some())
                             {
                                 tracing::debug!(function = %env.def_name(def), ?bb, reason = "higher-order call", "incomplete-taint-analysis");
@@ -1009,7 +1038,7 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
 
             if P::CHECK_COMPLETENESS
                 && body.opaque_taint_blocks.contains(&bb)
-                && (!global_bodies.contains(&def) || tainted_block)
+                && (entry_reachable.contains(&def) || tainted_block)
             {
                 tracing::debug!(function = %env.def_name(def), ?bb, reason = "unsupported lowering", "incomplete-taint-analysis");
                 complete = false;

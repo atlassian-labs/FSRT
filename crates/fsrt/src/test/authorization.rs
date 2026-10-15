@@ -62,6 +62,20 @@ fn authorization_get_return_flows() {
 }
 
 #[test]
+fn authorization_ignores_unrelated_initializer_lowering_but_keeps_reachable_jsx() {
+    let report = scan_source(&format!(
+        "import api, {{route}} from '@forge/api';\nexport const AdminConfigPage = () => <div />;\nexport const adminRender = <AdminConfigPage />;\nexport async function run(payload) {{ const ignored = {GET}; return true; }}"
+    ));
+    assert!(!report.has_errors(), "{report:#?}");
+    assert!(report.contains_authz_vuln(0), "{report:#?}");
+
+    let reachable = scan_source(&format!(
+        "import api, {{route}} from '@forge/api';\nexport async function run(payload) {{ const response = {GET}; return render(response); }}\nfunction render(value) {{ return <div>{{value}}</div>; }}"
+    ));
+    assert!(reachable.contains_authz_vuln(1), "{reachable:#?}");
+}
+
+#[test]
 fn authorization_does_not_stop_at_an_internal_get() {
     let report = scan(&format!(
         "const ignored = {GET};\napi.asApp().requestJira(route`/rest/api/3/issue/ABC-2`, {{method:'POST'}});\nreturn {GET};"
