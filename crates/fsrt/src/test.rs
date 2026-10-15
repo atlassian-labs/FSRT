@@ -14,6 +14,7 @@ use swc_core::common::{FileName, SourceFile, SourceMap};
 use time::{Date, Month};
 
 mod captured_values;
+mod commonjs_secrets;
 mod legacy_callbacks;
 mod native_fetch;
 mod secret_logging;
