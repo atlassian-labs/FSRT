@@ -656,6 +656,7 @@ pub(crate) fn scan_directory<'a>(
 
     let mut reporter = Reporter::new();
     reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
+    let mut reported_authorization_findings = HashSet::new();
     if let Some(vuln) = runtime_policy_vuln {
         reporter.add_vulnerabilities([vuln]);
     }
@@ -726,7 +727,10 @@ pub(crate) fn scan_directory<'a>(
                         func.func_name, func.path,
                     );
                 }
-                reporter.add_vulnerabilities(checker.into_vulns());
+                reporter.add_authorization_vulnerabilities(
+                    checker.into_vulns(),
+                    &mut reported_authorization_findings,
+                );
             }
         } else if func.webtrigger
             && let Some(interp) = &mut authn_interp

@@ -13,6 +13,8 @@ use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceFile, SourceMap};
 use time::{Date, Month};
 
+mod authorization;
+mod authorization_dedup;
 mod captured_values;
 mod legacy_callbacks;
 mod secret_logging;
@@ -387,7 +389,7 @@ fn scanners_keep_findings_independent() {
 
         export function run() {
             AES.encrypt('plaintext', 'hardcoded-key');
-            api.asApp().requestJira(route`/rest/api/3/issue`);
+            api.asApp().requestJira(route`/rest/api/3/issue`, {method: 'POST'});
             fetch('api.atlassian.com/rest/api/3/issue', {
                 headers: { Authorization: 'Basic ' + process.env.API_TOKEN }
             });
@@ -1466,7 +1468,7 @@ fn api_route_authz_vuln() {
         import api, { route } from '@forge/api';
 
         export async function routeHandler() {
-            await api.asApp().requestJira(route`/rest/api/3/issue`);
+            await api.asApp().requestJira(route`/rest/api/3/issue`, {method: 'POST'});
             return { statusCode: 200, body: '{}' };
         }
 

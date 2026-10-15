@@ -182,6 +182,18 @@ pub struct Body {
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     pub class_instantiations: HashMap<DefId, DefId>,
     pub(crate) const_bindings: FxHashSet<DefId>,
+    /// Calls proven to be REST GETs while the original options syntax is available.
+    pub(crate) rest_gets: BTreeSet<Location>,
+    /// Exact GET operations whose reference data requires no caller permission.
+    pub(crate) public_authz_gets: BTreeSet<Location>,
+    /// Calls rooted in imported Forge storage through known builder methods.
+    pub(crate) storage_calls: BTreeSet<Location>,
+    /// Import-proven non-mutating calls; their returned data still propagates.
+    pub(crate) pure_calls: BTreeSet<Location>,
+    /// Lowering loses callback/exception semantics in these blocks.
+    pub(crate) opaque_taint_blocks: BTreeSet<BasicBlockId>,
+    /// Explicit property mutations (distinct from object literal construction).
+    pub(crate) taint_mutations: BTreeSet<Location>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
     pub dominator_tree: OnceCell<DomTree>,
     pub blockbuilders: TiVec<BasicBlockId, BasicBlockBuilder>,
@@ -439,6 +451,12 @@ impl Body {
             values: FxHashMap::default(),
             class_instantiations: Default::default(),
             const_bindings: Default::default(),
+            rest_gets: Default::default(),
+            public_authz_gets: Default::default(),
+            storage_calls: Default::default(),
+            pure_calls: Default::default(),
+            opaque_taint_blocks: Default::default(),
+            taint_mutations: Default::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
             predecessors: Default::default(),

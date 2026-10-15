@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashSet;
 use time::{Date, OffsetDateTime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -95,6 +96,27 @@ impl Reporter {
         self.vulns.reserve(vuln_reports.size_hint().0);
         for vuln in vuln_reports {
             self.vulns.push(vuln.into_vuln(self));
+        }
+    }
+
+    /// Add authorization findings while suppressing identical finding identities
+    /// already emitted during this app scan. Other scanners use the unchanged
+    /// `add_vulnerabilities` path.
+    pub fn add_authorization_vulnerabilities(
+        &mut self,
+        vuln_reports: impl IntoIterator<Item = impl IntoVuln>,
+        seen: &mut HashSet<(String, String, String)>,
+    ) {
+        for vuln in vuln_reports {
+            let vuln = vuln.into_vuln(self);
+            let identity = (
+                vuln.check_name.clone(),
+                vuln.proof.clone(),
+                vuln.description.clone(),
+            );
+            if seen.insert(identity) {
+                self.vulns.push(vuln);
+            }
         }
     }
 

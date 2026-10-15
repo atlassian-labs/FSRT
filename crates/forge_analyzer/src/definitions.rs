@@ -1003,6 +1003,145 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
     classifier.kind
 }
 
+/// Preserve import provenance through the storage builder chain. A local
+/// object with similarly named methods, a dynamic method, or an unknown factory
+/// must keep ordinary propagation. Storage selection keys do not turn stored
+/// results into copies of a product GET response.
+fn proven_storage_call(env: &Environment, path: &[PropPath]) -> bool {
+    let [PropPath::Def(def), builders @ .., PropPath::Static(method)] = path else {
+        return false;
+    };
+    let storage = matches!(env.is_imported_from(*def, "@forge/api"),
+        Some(ImportKind::Named(name)) if name == "storage")
+        || matches!(
+            env.is_imported_from(*def, "@forge/kvs"),
+            Some(ImportKind::Default)
+        )
+        || matches!(env.is_imported_from(*def, "@forge/kvs"),
+            Some(ImportKind::Named(name)) if name == "kvs");
+    storage
+        && builders.iter().all(|step| {
+            matches!(step, PropPath::MemberCall(name)
+            if matches!(name.as_ref(), "entity" | "query" | "index" | "where"
+                | "andFilter" | "cursor" | "limit"))
+        })
+        && matches!(
+            method.as_ref(),
+            "entity"
+                | "query"
+                | "index"
+                | "where"
+                | "andFilter"
+                | "cursor"
+                | "limit"
+                | "get"
+                | "getMany"
+                | "getOne"
+                | "set"
+                | "delete"
+                | "getSecret"
+                | "setSecret"
+                | "deleteSecret"
+        )
+}
+
+/// Jira's GET autocomplete reference endpoint has no parameters, permits
+/// anonymous access and requires no permission. This applies to this exact
+/// operation, not other JQL operations or a handler's later requests.
+/// https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-jql/#api-rest-api-3-jql-autocompletedata-get
+fn public_jira_reference_route(env: &Environment, module: ModId, expr: &Expr) -> bool {
+    let Expr::TaggedTpl(template) = expr else {
+        return false;
+    };
+    let tag = normalize_callee_expr(template.tag.as_ref().into(), env, module);
+    matches!(tag.as_slice(), [PropPath::Def(def)]
+        if matches!(env.is_imported_from(*def, "@forge/api"),
+            Some(ImportKind::Named(name)) if name == "route"))
+        && template.tpl.exprs.is_empty()
+        && matches!(template.tpl.quasis.as_slice(), [text]
+            if text.raw == "/rest/api/3/jql/autocompletedata")
+}
+
+/// Deliberately narrow: dynamic options, computed keys, accessors and spreads
+/// cannot prove the effective method. Duplicate literal methods use JS's last write.
+fn proven_get_options(args: &[ExprOrSpread]) -> bool {
+    if args.iter().any(|arg| arg.spread.is_some()) || args.len() > 2 {
+        return false;
+    }
+    let Some(options) = args.get(1) else {
+        return true;
+    };
+    let Expr::Object(options) = &*options.expr else {
+        return false;
+    };
+    let mut method = None;
+    for property in &options.props {
+        let PropOrSpread::Prop(property) = property else {
+            return false;
+        };
+        let Prop::KeyValue(property) = &**property else {
+            return false;
+        };
+        let name = match &property.key {
+            PropName::Ident(name) => name.sym.as_ref(),
+            PropName::Str(name) => name.value.as_ref(),
+            _ => return false,
+        };
+        if name == "method" {
+            let Expr::Lit(Lit::Str(value)) = &*property.value else {
+                return false;
+            };
+            method = Some(value.value.as_ref());
+        }
+    }
+    method.is_none_or(|method| method.eq_ignore_ascii_case("GET"))
+}
+
+/// Catch bodies are omitted by lowering. They cannot add normal-return data
+/// when their only action is rethrowing the caught value or returning a literal.
+/// Fallthrough catches are unsafe: an exception can bypass a clean overwrite.
+fn catch_has_no_return_dependencies(stmt: &TryStmt) -> bool {
+    if stmt.finalizer.is_some() {
+        return false;
+    }
+    let Some(handler) = &stmt.handler else {
+        return false;
+    };
+    match handler.body.stmts.as_slice() {
+        [Stmt::Throw(ThrowStmt { arg, .. })] => {
+            matches!((&handler.param, &**arg),
+                (Some(Pat::Ident(caught)), Expr::Ident(thrown))
+                    if caught.id.to_id() == thrown.to_id())
+        }
+        [Stmt::Return(ReturnStmt { arg, .. })] => {
+            arg.as_ref().is_none_or(|value| literal_return(value, 0))
+        }
+        _ => false,
+    }
+}
+
+fn literal_return(expr: &Expr, depth: usize) -> bool {
+    if depth >= 32 {
+        return false;
+    }
+    match expr {
+        Expr::Lit(_) => true,
+        Expr::Paren(value) => literal_return(&value.expr, depth + 1),
+        Expr::Array(array) => array.elems.iter().all(|element| {
+            element.as_ref().is_none_or(|element| {
+                element.spread.is_none() && literal_return(&element.expr, depth + 1)
+            })
+        }),
+        Expr::Object(object) => object.props.iter().all(|property| {
+            matches!(property, PropOrSpread::Prop(property)
+                if matches!(&**property, Prop::KeyValue(property)
+                    if !matches!(property.key, PropName::Computed(_))
+                        && literal_return(&property.value, depth + 1)))
+        }),
+        _ => false,
+    }
+}
+
 impl FunctionAnalyzer<'_> {
     fn new<'cx>(
         env: &'cx mut Environment,
@@ -1736,6 +1875,29 @@ impl FunctionAnalyzer<'_> {
             return Operand::with_var(self.body.push_tmp(self.block, call, None));
         }
         let props = normalize_callee_expr(callee, self.res, self.module);
+        if args
+            .iter()
+            .any(|arg| matches!(&*arg.expr, Expr::Arrow(_) | Expr::Fn(_)))
+            || [
+                "then",
+                "catch",
+                "finally",
+                "map",
+                "filter",
+                "forEach",
+                "foreach",
+                "reduce",
+                "reduceRight",
+                "flatMap",
+                "some",
+                "every",
+                "find",
+            ]
+            .iter()
+            .any(|method| calls_method(callee, method))
+        {
+            self.body.opaque_taint_blocks.insert(self.block);
+        }
         if let Some(&PropPath::Def(id)) = props.first()
             && (self.res.is_imported_from(id, "@forge/ui").is_some_and(|imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect")) || calls_method(callee, "then")
                 || calls_method(callee, "map")
@@ -1790,6 +1952,57 @@ impl FunctionAnalyzer<'_> {
         };
         let first_arg = args.first().map(|expr| &*expr.expr);
         let intrinsic = self.as_intrinsic(&props, first_arg);
+        let is_rest = matches!(
+            &intrinsic,
+            Some(Intrinsic::ApiCall(
+                IntrinsicName::RequestJiraAny
+                    | IntrinsicName::RequestJiraSoftware
+                    | IntrinsicName::RequestJiraServiceManagement
+                    | IntrinsicName::RequestJira
+                    | IntrinsicName::RequestConfluence
+                    | IntrinsicName::RequestBitbucket
+            ))
+        ) || (matches!(&intrinsic, Some(Intrinsic::ApiCustomField))
+            && matches!(props.last(), Some(PropPath::Static(method))
+                if matches!(method.as_ref(), "requestJira" | "requestConfluence" | "requestBitbucket")));
+        if is_rest && proven_get_options(args) {
+            let location = crate::ir::Location::new(
+                self.block,
+                self.body.blockbuilders[self.block].insts.len() as u32,
+            );
+            self.body.rest_gets.insert(location);
+            if matches!(
+                &intrinsic,
+                Some(Intrinsic::ApiCall(
+                    IntrinsicName::RequestJiraAny
+                        | IntrinsicName::RequestJira
+                        | IntrinsicName::RequestJiraSoftware
+                        | IntrinsicName::RequestJiraServiceManagement
+                ))
+            ) && first_arg
+                .is_some_and(|path| public_jira_reference_route(self.res, self.module, path))
+            {
+                self.body.public_authz_gets.insert(location);
+            }
+        }
+        if let [PropPath::Def(def), PropPath::Static(method)] = props.as_slice()
+            && method == "equalsTo"
+            && ["@forge/api", "@forge/kvs"].iter().any(|package| {
+                matches!(self.res.is_imported_from(*def, package),
+                    Some(ImportKind::Named(name)) if name == "WhereConditions")
+            })
+        {
+            self.body.pure_calls.insert(crate::ir::Location::new(
+                self.block,
+                self.body.blockbuilders[self.block].insts.len() as u32,
+            ));
+        }
+        if proven_storage_call(self.res, &props) {
+            self.body.storage_calls.insert(crate::ir::Location::new(
+                self.block,
+                self.body.blockbuilders[self.block].insts.len() as u32,
+            ));
+        }
         let call = match intrinsic {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
@@ -1963,6 +2176,8 @@ impl FunctionAnalyzer<'_> {
     }
 
     fn lower_jsx_elem(&mut self, n: &JSXElement) -> Operand {
+        // JSX attributes and framework output are not a complete value-flow model.
+        self.body.opaque_taint_blocks.insert(self.block);
         let args = n
             .children
             .iter()
@@ -2011,6 +2226,10 @@ impl FunctionAnalyzer<'_> {
                 let id = self.body.add_var(VarKind::LocalDef(def));
                 for (index, elem) in elems.iter().enumerate() {
                     if let Some(elem) = elem {
+                        if elem.spread.is_some() {
+                            // A variable-length spread changes subsequent indices.
+                            self.body.opaque_taint_blocks.insert(self.block);
+                        }
                         let value = self.lower_expr(&elem.expr, None);
                         let mut var = Variable::new(id);
                         var.projections
@@ -2047,6 +2266,11 @@ impl FunctionAnalyzer<'_> {
                                     );
                                 }
                                 Prop::KeyValue(KeyValueProp { key, value }) => {
+                                    if !matches!(key, PropName::Str(_) | PropName::Ident(_)) {
+                                        // Key dependencies and their assignment order
+                                        // are not represented by this lowering.
+                                        self.body.opaque_taint_blocks.insert(self.block);
+                                    }
                                     let lowered_value = self.lower_expr(value, None);
                                     let lowered_var = self.body.coerce_to_lval(
                                         self.block,
@@ -2085,9 +2309,23 @@ impl FunctionAnalyzer<'_> {
                                         self.body.push_inst(self.block, Inst::Assign(var, rval));
                                     }
                                 }
-                                _ => {}
+                                _ => {
+                                    self.body.opaque_taint_blocks.insert(self.block);
+                                }
                             },
-                            PropOrSpread::Spread(spread) => {}
+                            PropOrSpread::Spread(spread) => {
+                                // A spread copies arbitrary properties. Preserve the
+                                // source as an unknown-key write rather than dropping
+                                // it or overwriting the object's existing contents.
+                                let value = self.lower_expr(&spread.expr, None);
+                                let key = self.body.push_tmp(
+                                    self.block,
+                                    Rvalue::Read(Operand::UNDEF),
+                                    None,
+                                );
+                                var.projections.push(Projection::Computed(Base::Var(key)));
+                                self.push_curr_inst(Inst::Assign(var, Rvalue::Read(value)));
+                            }
                         }
                     })
                 }
@@ -2152,6 +2390,10 @@ impl FunctionAnalyzer<'_> {
                         SimpleAssignTarget::Member(MemberExpr { obj, prop, .. }) => {
                             let lval = self.lower_member(obj, prop);
                             let lval = self.body.coerce_to_lval(self.block, lval, None);
+                            self.body.taint_mutations.insert(crate::ir::Location::new(
+                                self.block,
+                                self.body.blockbuilders[self.block].insts.len() as u32,
+                            ));
                             self.push_curr_inst(Inst::Assign(lval, Rvalue::Read(rhs.clone())));
                         }
                         SimpleAssignTarget::SuperProp(_) => {
@@ -2436,11 +2678,15 @@ impl FunctionAnalyzer<'_> {
                 self.lower_switch(stmt);
             }
             Stmt::Throw(ThrowStmt { arg, .. }) => {
+                self.body.opaque_taint_blocks.insert(self.block);
                 let opnd = self.lower_expr(arg, None);
                 self.body.push_expr(self.block, Rvalue::Read(opnd));
                 self.body.set_terminator(self.block, Terminator::Throw);
             }
             Stmt::Try(stmt) => {
+                if !catch_has_no_return_dependencies(stmt) {
+                    self.body.opaque_taint_blocks.insert(self.block);
+                }
                 let TryStmt {
                     block: BlockStmt { stmts, .. },
                     handler,

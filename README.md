@@ -34,6 +34,64 @@ Commands:
 
 Run `fsrt --help`, `fsrt remote --help`, or `fsrt remote <COMMAND> --help` for current options.
 
+### Authorization
+
+For baseline comparison, the authorization scanner temporarily stops after the
+first reportable operation per handler. Exempt internal GETs do not stop traversal.
+Candidate discovery retains the baseline's shared helper-visit history across
+handlers; it does not expand reporting by rechecking shared helpers per handler.
+For REST calls through `asApp()`, a proven GET is exempt when its
+response does not flow to the invoking handler's return. Internal ID resolution,
+storage-key selection, and internal actions do not independently prevent that
+exemption. Storage reads produce fresh data; their lookup keys are not copied
+into the returned storage data by this rule.
+
+```js
+const response = await api.asApp().requestJira(route`/rest/api/3/issue/ABC-1`);
+await storage.get((await response.json()).id);
+return { ok: true }; // GET response is internal: exempt
+```
+
+Returning the response, parsed data, an ID, a derived boolean, or a container
+holding response data remains reportable, including through supported helpers and
+single-fulfillment `.then()` callbacks. This is explicit value-flow analysis;
+response-dependent control flow alone does not taint an otherwise constant return.
+
+Only omitted options or inline object options with an unambiguous GET/default
+method qualify. Dynamic options, computed keys, potentially overriding spreads,
+non-GET methods, GraphQL, Compass and remotes retain the existing eligibility
+rules. Local property writes conservatively propagate through possible aliases;
+helper parameter and captured-object effects remain unsupported. Imported Forge
+storage builder chains are boundaries, including GET-derived selection keys.
+Imported `WhereConditions.equalsTo` preserves result taint without mutating inputs.
+Unsupported callbacks, capture writes, helper mutations and exception flows
+that may obscure returned data conservatively retain findings. Unsupported lowering
+in the selected entry's reachable call graph or in source-tainted initialization
+still retains findings; unrelated initialization-only JSX does not affect that
+entry's return analysis. A catch whose only
+action is rethrowing its caught value or returning a literal adds no return
+dependency; other catches and all finally blocks remain conservative. JSX/framework
+output is not fully modeled and retains existing findings. The exemption
+makes no claim about authorization of other actions or returned storage data.
+
+A helper exempted in one handler is retried in later handlers until an operation
+on its call path is reported. This prevents internal use from hiding later
+exposure while preserving the shared-helper reporting limit.
+
+The exact Jira GET `/rest/api/3/jql/autocompletedata` is also exempt because its
+[API contract](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-jql/#api-rest-api-3-jql-autocompletedata-get)
+allows anonymous access without permissions. This requires a static imported
+`route` tag and a proven GET; it does not authorize later operations. Other JQL
+operations, query variants, dynamic routes and unknown methods remain eligible.
+
+Each GET candidate receives a fresh taint analysis for its selected handler.
+Helper summaries combine call sites within that handler, so some internal reads
+can remain reportable. Debug diagnostics record `internal-get`, the entrypoint,
+and the exempted operation's IR location. Findings now include the sink function
+and IR location, and their identifiers include the operation identity to keep
+separate calls distinguishable. Existing authorization check IDs consequently
+change. The public report fields are unchanged.
+
 ### Secret logging
 
 The `secret-logging` scanner reports values returned by `getSecret` on the `kvs`

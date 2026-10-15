@@ -80,6 +80,29 @@ pub trait TaintPolicy: Sized {
 
     fn intrinsic_taint(&self, intrinsic: &Intrinsic) -> Taint;
 
+    /// Select an individual source instruction without changing other policies.
+    fn intrinsic_taint_at(&self, _def: DefId, _loc: Location, intrinsic: &Intrinsic) -> Taint {
+        self.intrinsic_taint(intrinsic)
+    }
+
+    /// A provenance-proven call boundary for policies that need one. Other
+    /// policies keep their existing propagation and call-effect semantics.
+    fn call_taint_at(&self, _body: &Body, _loc: Location) -> Option<Taint> {
+        None
+    }
+
+    /// Pure calls still propagate result data, but cannot write into inputs.
+    fn call_is_pure(&self, _body: &Body, _loc: Location) -> bool {
+        false
+    }
+
+    fn unary_taint(&self, op: UnOp, value: Taint) -> Taint {
+        unary_taint(op, value)
+    }
+
+    /// Suppression policies must retain uncertainty about unsupported effects.
+    const CHECK_COMPLETENESS: bool = false;
+
     /// Whether `inst` is a sink reached by a reportable value.
     fn is_violation(&self, inst: &Inst, values: &TaintReader<'_, Self>) -> bool;
 
@@ -212,11 +235,15 @@ pub fn visit_taint_call<'cx, C: Runner<'cx, State = Vec<Taint>>>(
 
 pub struct TaintDataflow<P> {
     policy: P,
+    return_taint: Option<Taint>,
 }
 
 impl<P> TaintDataflow<P> {
     pub fn new(policy: P) -> Self {
-        Self { policy }
+        Self {
+            policy,
+            return_taint: None,
+        }
     }
 }
 
@@ -329,20 +356,59 @@ impl FrameState {
 struct Bindings {
     aliases: BTreeMap<DefId, SmallVec<[VarId; 2]>>,
     args: Vec<VarId>,
+    reference_edges: BTreeMap<VarId, SmallVec<[VarId; 2]>>,
 }
 
 impl Bindings {
-    fn new(body: &Body) -> Self {
+    fn new(body: &Body, track_effects: bool) -> Self {
         let mut aliases = BTreeMap::<_, SmallVec<_>>::new();
         for (id, kind) in body.vars.iter_enumerated() {
             if let Some(binding) = variable_def(kind) {
                 aliases.entry(binding).or_default().push(id);
             }
         }
+        let mut reference_edges = BTreeMap::<VarId, SmallVec<[VarId; 2]>>::new();
+        if track_effects {
+            let mut connect = |a, b| {
+                reference_edges.entry(a).or_default().push(b);
+                reference_edges.entry(b).or_default().push(a);
+            };
+            for ids in aliases.values() {
+                for &id in &ids[1..] {
+                    connect(ids[0], id);
+                }
+            }
+            for block in body.iter_block_keys() {
+                for inst in body.block(block).iter() {
+                    if let Inst::Assign(target, Rvalue::Read(Operand::Var(source))) = inst
+                        && let (Some(target), Some(source)) =
+                            (target.as_var_id(), source.as_var_id())
+                    {
+                        // Include property reads/writes: contained references may
+                        // alias their enclosing object. This overapproximates
+                        // primitive copies rather than dropping a possible effect.
+                        connect(target, source);
+                    }
+                }
+            }
+        }
         Self {
             aliases,
             args: argument_vars(body).map(|(id, _)| id).collect(),
+            reference_edges,
         }
+    }
+
+    fn affected_references(&self, mut targets: BTreeSet<VarId>) -> BTreeSet<VarId> {
+        let mut pending: Vec<_> = targets.iter().copied().collect();
+        while let Some(id) = pending.pop() {
+            for &alias in self.reference_edges.get(&id).into_iter().flatten() {
+                if targets.insert(alias) {
+                    pending.push(alias);
+                }
+            }
+        }
+        targets
     }
 
     fn frame(
@@ -428,6 +494,12 @@ pub(crate) fn binary_taint(op: BinOp, left: Taint, right: Taint) -> Taint {
 }
 
 impl<P: TaintPolicy> TaintDataflow<P> {
+    /// Selected root's joined return, available after analysis. Unknown includes
+    /// unsupported effects for policies opting into completeness checks.
+    pub fn analyzed_return(&self) -> Option<Taint> {
+        self.return_taint
+    }
+
     /// The taint of an untracked property chain read from a value with taint `base`.
     fn project(&self, base: Taint, rest: &[Projection]) -> Taint {
         match rest.last() {
@@ -670,11 +742,16 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
         let mut callers = BTreeMap::<DefId, BTreeSet<(DefId, BasicBlockId)>>::new();
         let mut globals = BTreeMap::<DefId, Tracked>::new();
         let mut queue = Queue::default();
+        let mut complete = true;
+        self.return_taint = None;
         interp.instruction_findings.clear();
 
         let bindings: BTreeMap<_, _> = env
             .bodies()
-            .filter_map(|body| body.owner().map(|def| (def, Bindings::new(body))))
+            .filter_map(|body| {
+                body.owner()
+                    .map(|def| (def, Bindings::new(body, P::CHECK_COMPLETENESS)))
+            })
             .collect();
         let captured: BTreeSet<_> = bindings
             .iter()
@@ -686,6 +763,31 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
             })
             .collect();
         let global_bodies: BTreeSet<_> = env.global.iter().copied().collect();
+        // Module initializers are analyzed alongside the selected entry so their
+        // captured globals can flow into it. They must not, however, make an
+        // unrelated function's unsupported lowering poison this entry's result.
+        // Over-approximate call reachability using the same resolver as dataflow.
+        let mut entry_reachable = BTreeSet::new();
+        let mut reach_queue = VecDeque::new();
+        if P::CHECK_COMPLETENESS {
+            entry_reachable.insert(entry);
+            reach_queue.push_back(entry);
+        }
+        while let Some(def) = reach_queue.pop_front() {
+            let Some(body) = env.def_ref(def).as_body().copied() else {
+                continue;
+            };
+            for (_, block) in body.iter_blocks_enumerated() {
+                for inst in block.iter() {
+                    if let Rvalue::Call(callee, _) = inst.rvalue()
+                        && let Some((callee, _)) = body.resolve_call(env, callee)
+                        && entry_reachable.insert(callee)
+                    {
+                        reach_queue.push_back(callee);
+                    }
+                }
+            }
+        }
         let mut roots = env.global.clone();
         roots.push(entry);
         if interp.call_uncalled {
@@ -711,7 +813,18 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
             let body = env.def_ref(def).expect_body();
             let block = body.block(bb);
             let mut frame = inputs[&(def, bb)].clone();
+            let mut tainted_block = frame.vars.iter().any(|value| *value != Taint::No)
+                || frame
+                    .captures
+                    .values()
+                    .any(|value| value.taint != Taint::No);
             let layout = &bindings[&def];
+            let crosses_frame = |id: &VarId| {
+                (def != entry && layout.args.contains(id))
+                    || variable_def(&body.vars[*id])
+                        .and_then(|binding| env.binding_owner(binding))
+                        .is_some_and(|owner| owner != def)
+            };
 
             for (idx, inst) in block.iter().enumerate() {
                 let location = (def, Location::new(bb, idx as u32));
@@ -727,7 +840,9 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                 let read = |operand| self.read(&frame, operand);
                 let value: Tracked = match inst.rvalue() {
                     Rvalue::Read(op) => self.value(&frame, op),
-                    Rvalue::Unary(op, operand) => unary_taint(*op, read(operand)).into(),
+                    Rvalue::Unary(op, operand) => {
+                        self.policy.unary_taint(*op, read(operand)).into()
+                    }
                     Rvalue::Bin(op, left, right) => self
                         .policy
                         .binary_taint(*op, read(left), read(right))
@@ -743,9 +858,10 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                         .iter()
                         .fold(Taint::No, |taint, op| taint.join(&read(op)))
                         .into(),
-                    Rvalue::Intrinsic(intrinsic, _) => {
-                        self.policy.intrinsic_taint(intrinsic).into()
-                    }
+                    Rvalue::Intrinsic(intrinsic, _) => self
+                        .policy
+                        .intrinsic_taint_at(def, location.1, intrinsic)
+                        .into(),
                     Rvalue::Call(callee, args) => {
                         if let Some((callee_def, _)) = body.resolve_call(env, callee) {
                             callers.entry(callee_def).or_default().insert((def, bb));
@@ -772,7 +888,43 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                             // Preserve data through unmodelled transformations,
                             // including methods called on a tainted receiver.
                             let receiver = self.receiver_taint(&frame, callee);
+                            if P::CHECK_COMPLETENESS
+                                && (entry_reachable.contains(&def)
+                                    || tainted_block
+                                    || receiver != Taint::No
+                                    || args.iter().any(|arg| read(arg) != Taint::No))
+                                && args.iter().any(|arg| body.resolve_call(env, arg).is_some())
+                            {
+                                tracing::debug!(function = %env.def_name(def), ?bb, reason = "higher-order call", "incomplete-taint-analysis");
+                                complete = false;
+                            }
+                            let operands = args;
                             let args: SmallVec<[Taint; 4]> = args.iter().map(read).collect();
+                            let modeled_result = self.policy.call_taint_at(body, location.1);
+                            let storage_call = modeled_result.is_some();
+                            let may_mutate =
+                                !storage_call && !self.policy.call_is_pure(body, location.1);
+                            if P::CHECK_COMPLETENESS
+                                && may_mutate
+                                && matches!(
+                                    callee_name(env, body, callee),
+                                    Some(
+                                        "push"
+                                            | "unshift"
+                                            | "splice"
+                                            | "set"
+                                            | "assign"
+                                            | "defineProperty"
+                                    )
+                                )
+                                && args
+                                    .iter()
+                                    .chain(std::iter::once(&receiver))
+                                    .any(|value| *value != Taint::No)
+                            {
+                                tracing::debug!(function = %env.def_name(def), ?bb, reason = "unmodeled mutator", "incomplete-taint-analysis");
+                                complete = false;
+                            }
                             let global_result = match callee {
                                 Operand::Var(var) => var
                                     .as_var_id()
@@ -784,7 +936,8 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                                     }),
                                 Operand::Lit(_) => None,
                             };
-                            global_result
+                            let result = modeled_result
+                                .or(global_result)
                                 .or_else(|| {
                                     callee_name(env, body, callee).and_then(|method| {
                                         self.policy.method_taint(method, receiver, &args)
@@ -792,14 +945,85 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                                 })
                                 .unwrap_or_else(|| {
                                     args.iter().fold(receiver, |taint, arg| taint.join(arg))
-                                })
-                                .into()
+                                });
+                            // An unresolved function may write a derived value into
+                            // its receiver or an argument object. Track that possible
+                            // effect without treating an unrelated constant return as
+                            // disclosure. Recognized storage operations are boundaries.
+                            if P::CHECK_COMPLETENESS && may_mutate {
+                                let effect =
+                                    args.iter().fold(receiver, |value, arg| value.join(arg));
+                                if effect != Taint::No {
+                                    let mut targets: BTreeSet<_> = operands
+                                        .iter()
+                                        .filter_map(|arg| match arg {
+                                            Operand::Var(var) => var.as_var_id(),
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    if let Operand::Var(var) = callee
+                                        && !var.projections.is_empty()
+                                        && let Some(id) = var.as_var_id()
+                                    {
+                                        targets.insert(id);
+                                    }
+                                    let targets = layout.affected_references(targets);
+                                    if targets.iter().any(|id| {
+                                        let value = frame.value(*id);
+                                        crosses_frame(id)
+                                            && (value.taint == Taint::No || value.fields.is_some())
+                                    }) {
+                                        // Newly tainted caller objects and changes
+                                        // to known clean fields need a write-back
+                                        // summary. A fully tainted input already
+                                        // exposes every field in the caller.
+                                        tracing::debug!(function = %env.def_name(def), ?bb, reason = "caller object may be mutated", "incomplete-taint-analysis");
+                                        complete = false;
+                                    }
+                                    for id in targets {
+                                        let mut value = frame.value(id);
+                                        value.taint = value.taint.join(&effect);
+                                        value.fields = None;
+                                        frame.set(id, value);
+                                    }
+                                }
+                            }
+                            result.into()
                         }
                     }
                 };
+                tainted_block |= value.taint != Taint::No;
                 if let Inst::Assign(var, _) = inst
                     && let Base::Var(id) = var.base
                 {
+                    if P::CHECK_COMPLETENESS {
+                        let tainted = value.taint != Taint::No;
+                        let outer_write = variable_def(&body.vars[id])
+                            .and_then(|binding| env.binding_owner(binding))
+                            .is_some_and(|owner| owner != def);
+                        if outer_write && tainted {
+                            tracing::debug!(function = %env.def_name(def), ?bb, reason = "captured binding write", "incomplete-taint-analysis");
+                            complete = false;
+                        }
+                        if body.taint_mutations.contains(&location.1) {
+                            let effect = value.taint.join(&frame.value(id).taint);
+                            if effect != Taint::No {
+                                let targets = layout.affected_references(BTreeSet::from([id]));
+                                // Callee parameter and captured-object writes are
+                                // not summarized back into their caller's frame.
+                                if targets.iter().any(crosses_frame) {
+                                    tracing::debug!(function = %env.def_name(def), ?bb, reason = "caller property may be mutated", "incomplete-taint-analysis");
+                                    complete = false;
+                                }
+                                for target in targets {
+                                    let mut value = frame.value(target);
+                                    value.taint = value.taint.join(&effect);
+                                    value.fields = None;
+                                    frame.set(target, value);
+                                }
+                            }
+                        }
+                    }
                     self.assign(&mut frame, id, &var.projections, value);
                     if let Some(var_def) = variable_def(&body.vars[id]) {
                         // Index aliases once per body instead of scanning all
@@ -812,6 +1036,13 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                 }
             }
 
+            if P::CHECK_COMPLETENESS
+                && body.opaque_taint_blocks.contains(&bb)
+                && (entry_reachable.contains(&def) || tainted_block)
+            {
+                tracing::debug!(function = %env.def_name(def), ?bb, reason = "unsupported lowering", "incomplete-taint-analysis");
+                complete = false;
+            }
             let successors: SmallVec<[BasicBlockId; 2]> = match block.successors() {
                 Successors::Return => {
                     let returned = body
@@ -873,6 +1104,13 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                 .map(|(key, frame)| (key, frame.vars))
                 .collect(),
         );
+        self.return_taint = returns.get(&entry).map(|value| {
+            if complete {
+                value.taint
+            } else {
+                Taint::Unknown
+            }
+        });
         interp.replace_func_states(
             returns
                 .into_iter()

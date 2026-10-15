@@ -640,6 +640,30 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
+    pub(crate) fn fresh<D: Runner<'cx>>(&self) -> Interp<'cx, D> {
+        let mut interp = Interp::new(
+            self.env,
+            false,
+            false,
+            self.permissions.clone(),
+            self.jira_any_permission_resolver,
+            self.jira_any_regex_map,
+            self.jira_software_permission_resolver,
+            self.jira_software_regex_map,
+            self.jira_service_management_permission_resolver,
+            self.jira_service_management_regex_map,
+            self.jira_permission_resolver,
+            self.jira_regex_map,
+            self.confluence_permission_resolver,
+            self.confluence_regex_map,
+            self.bitbucket_permission_resolver,
+            self.bitbucket_regex_map,
+            self.compass_permission_resolver,
+        );
+        interp.entry = self.entry.clone();
+        interp
+    }
+
     pub fn new(
         env: &'cx Environment,
         call_all: bool,
@@ -744,6 +768,18 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     #[inline]
     pub(crate) fn callstack(&self) -> Vec<Frame> {
         (*self.callstack.borrow()).clone()
+    }
+
+    /// Retry only checks whose earlier root-specific exemption cannot be reused.
+    /// Dataflow state and the visitation history of reported helpers stay intact.
+    pub(crate) fn retry_checker_functions(&self, defs: impl IntoIterator<Item = DefId>) {
+        let defs: FxHashSet<_> = defs.into_iter().collect();
+        self.checker_visited
+            .borrow_mut()
+            .retain(|def| !defs.contains(def));
+        self.runner_visited
+            .borrow_mut()
+            .retain(|(def, _)| !defs.contains(def));
     }
 
     #[inline]
