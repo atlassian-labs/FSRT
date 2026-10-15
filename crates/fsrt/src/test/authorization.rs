@@ -312,3 +312,37 @@ fn authorization_retains_unresolved_exception_dependencies() {
         check(&body, 1);
     }
 }
+
+#[test]
+fn authorization_preserves_response_data_in_object_spreads() {
+    for tail in [
+        "return {...response};",
+        "return {ok:true, ...response.data};",
+        "const out = {ok:true, ...response.data}; return out.ok;",
+        "return {nested:{...response}};",
+        "return {...response, ...payload.extra};",
+        "try { return {ok:true, ...response.data}; } catch (e) { return {ok:false}; }",
+    ] {
+        check(&format!("const response = {GET}; {tail}"), 1);
+    }
+    check(
+        &format!("const response = {GET}; internalAction({{...response}}); return true;"),
+        0,
+    );
+    check(
+        &format!("const response = {GET}; const out = {{...response, ok:true}}; return out.ok;"),
+        0,
+    );
+}
+
+#[test]
+fn authorization_retains_unsupported_aggregate_dependencies() {
+    for tail in [
+        "return {[response.id]:true};",
+        "const out = [1, ...response, 'clean']; return out[2];",
+        "const out = {get data() { return response; }}; return out.data;",
+        "const out = {data() { return response; }}; return out.data();",
+    ] {
+        check(&format!("const response = {GET}; {tail}"), 1);
+    }
+}

@@ -2135,6 +2135,10 @@ impl FunctionAnalyzer<'_> {
                 let id = self.body.add_var(VarKind::LocalDef(def));
                 for (index, elem) in elems.iter().enumerate() {
                     if let Some(elem) = elem {
+                        if elem.spread.is_some() {
+                            // A variable-length spread changes subsequent indices.
+                            self.body.opaque_taint_blocks.insert(self.block);
+                        }
                         let value = self.lower_expr(&elem.expr, None);
                         let mut var = Variable::new(id);
                         var.projections
@@ -2171,6 +2175,11 @@ impl FunctionAnalyzer<'_> {
                                     );
                                 }
                                 Prop::KeyValue(KeyValueProp { key, value }) => {
+                                    if !matches!(key, PropName::Str(_) | PropName::Ident(_)) {
+                                        // Key dependencies and their assignment order
+                                        // are not represented by this lowering.
+                                        self.body.opaque_taint_blocks.insert(self.block);
+                                    }
                                     let lowered_value = self.lower_expr(value, None);
                                     let lowered_var = self.body.coerce_to_lval(
                                         self.block,
@@ -2209,9 +2218,23 @@ impl FunctionAnalyzer<'_> {
                                         self.body.push_inst(self.block, Inst::Assign(var, rval));
                                     }
                                 }
-                                _ => {}
+                                _ => {
+                                    self.body.opaque_taint_blocks.insert(self.block);
+                                }
                             },
-                            PropOrSpread::Spread(spread) => {}
+                            PropOrSpread::Spread(spread) => {
+                                // A spread copies arbitrary properties. Preserve the
+                                // source as an unknown-key write rather than dropping
+                                // it or overwriting the object's existing contents.
+                                let value = self.lower_expr(&spread.expr, None);
+                                let key = self.body.push_tmp(
+                                    self.block,
+                                    Rvalue::Read(Operand::UNDEF),
+                                    None,
+                                );
+                                var.projections.push(Projection::Computed(Base::Var(key)));
+                                self.push_curr_inst(Inst::Assign(var, Rvalue::Read(value)));
+                            }
                         }
                     })
                 }
