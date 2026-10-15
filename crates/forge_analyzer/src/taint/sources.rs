@@ -141,7 +141,12 @@ pub static FORGE_SOURCES: &[SourceDefinition] = &[
         id: "forge.storage.read",
         label: "Forge storage read",
         classification: Classification::Untrusted,
-        matches: |ctx| matches!(ctx.intrinsic, Some(Intrinsic::StorageRead)),
+        matches: |ctx| {
+            matches!(
+                ctx.intrinsic,
+                Some(Intrinsic::StorageRead | Intrinsic::SecretRead)
+            )
+        },
     },
 ];
 

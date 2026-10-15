@@ -456,7 +456,7 @@ pub trait Runner<'cx>: Sized {
         inst: &'cx Inst,
         state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
-        self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
+        self.visit_rvalue(interp, inst.rvalue(), def, loc, state)
     }
 }
 
@@ -542,7 +542,7 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     _checker: PhantomData<C>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ValueManager {
     pub varid_to_value_with_proj: DefinitionAnalysisMapProjection,
     pub varid_to_value: DefinitionAnalysisMap,
@@ -1763,14 +1763,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.checker_visited.get_mut().clear();
         self.callstack.get_mut().clear();
         self.runner_visited.get_mut().clear();
-        self.value_manager = ValueManager {
-            varid_to_value: DefinitionAnalysisMap::default(),
-            varid_to_value_with_proj: DefinitionAnalysisMapProjection::default(),
-            defid_to_value: FxHashMap::default(),
-            expected_return_values: HashMap::default(),
-            expecting_value: RefCell::new(FxHashMap::default()),
-            changed: false,
-        };
+        self.instruction_findings.clear();
+        self.value_manager = ValueManager::default();
     }
 
     /// Run an entrypoint while giving each resolver callback independent

@@ -58,9 +58,9 @@ use crate::ir::VarId;
 use crate::{
     ctx::ModId,
     ir::{
-        Base, BasicBlockId, Body, CallFacts, CallPathPart, ConsoleMethod, Inst, Intrinsic, Literal, Location,
-        Operand, Projection, RETURN_VAR, Rvalue, STARTING_BLOCK, Template, Terminator, VarKind,
-        Variable,
+        Base, BasicBlockId, Body, CallFacts, CallPathPart, ConsoleMethod, Inst, Intrinsic, Literal,
+        Location, Operand, Projection, RETURN_VAR, Rvalue, STARTING_BLOCK, Template, Terminator,
+        VarKind, Variable,
     },
 };
 

@@ -192,8 +192,9 @@ fn variable_def(kind: &VarKind) -> Option<DefId> {
 pub fn visit_taint_call<'cx, C: Runner<'cx, State = Vec<Taint>>>(
     checker: &mut C,
     interp: &Interp<'cx, C>,
+    caller: DefId,
     callee: &Operand,
-    block: BasicBlockId,
+    loc: Location,
     state: &[Taint],
 ) -> ControlFlow<(), Vec<Taint>> {
     if let Some((def, body)) = interp.body().resolve_call(interp.env(), callee)
@@ -202,7 +203,7 @@ pub fn visit_taint_call<'cx, C: Runner<'cx, State = Vec<Taint>>>(
             .borrow()
             .contains(&(def, STARTING_BLOCK))
     {
-        interp.push_frame(def, block);
+        interp.push_frame(caller, loc.block, loc.stmt as usize);
         let result = checker.visit_body(interp, def, body, &Vec::new());
         interp.pop_frame();
         result?;
@@ -727,6 +728,23 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                 let read = |operand| self.read(&frame, operand);
                 let value: Tracked = match inst.rvalue() {
                     Rvalue::Read(op) => self.value(&frame, op),
+                    Rvalue::Array(elements) => {
+                        // Compact array IR replaces per-index assignments. Apply
+                        // the same field-write policy without expanding the IR.
+                        let mut array = FrameState {
+                            vars: vec![Taint::No],
+                            ..FrameState::default()
+                        };
+                        for (index, element) in elements.iter().enumerate() {
+                            self.assign(
+                                &mut array,
+                                VarId(0),
+                                &[Projection::Known(index.to_string().into())],
+                                self.value(&frame, element),
+                            );
+                        }
+                        array.value(VarId(0))
+                    }
                     Rvalue::Unary(op, operand) => unary_taint(*op, read(operand)).into(),
                     Rvalue::Bin(op, left, right) => self
                         .policy

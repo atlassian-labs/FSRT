@@ -334,7 +334,7 @@ fn constant_branches_preserve_only_hardcoded_secret_findings() {
         let mut project = MockForgeProject::files_from_string("// src/index.js\n");
         project.add_file(
             "src/index.js",
-            &format!(
+            format!(
                 "import {{ fetch }} from '@forge/api';
                 import {{ kvs }} from '@forge/kvs';
                 export async function run() {{
@@ -2683,7 +2683,7 @@ fn sql_injection_candidate_gate_uses_lowered_sink_recognition() {
         let files = format!("// src/index.js\n{source}");
         let project = MockForgeProject::files_from_string(&files);
         let permissions = HashSet::new();
-        let mut perm_map = PermMap::new(&permissions);
+        let mut perm_map = PermMap::new(&permissions, &crate::CacheConfig::default());
         let lowered = project
             .with_files_and_sourceroot(
                 Path::new("src"),
@@ -2774,7 +2774,7 @@ fn sql_injection_requires_provenance_for_every_sink() {
             format!("// src/index.js\n{setup}\nexport function run(payload) {{ {call}; }}");
         let project = MockForgeProject::files_from_string(&source);
         let permissions = HashSet::new();
-        let mut perm_map = PermMap::new(&permissions);
+        let mut perm_map = PermMap::new(&permissions, &crate::CacheConfig::default());
         let lowered = project
             .with_files_and_sourceroot(
                 Path::new("src"),

@@ -803,3 +803,26 @@ fn secret_logging_v1_uses_configured_suffixes() {
     assert_findings_with(&source("refresh_token"), &excluded, 1);
     assert_findings_with(&source("nextPageToken"), &excluded, 1);
 }
+
+#[test]
+fn secret_logging_compact_arrays_preserve_exact_element_taint() {
+    for (expression, count) in [
+        ("values", 1),
+        ("values[0]", 1),
+        ("values[1]", 0),
+        ("values[2].token", 1),
+        ("values[2].label", 0),
+    ] {
+        assert_findings_with(
+            &format!(
+                "import {{ kvs }} from '@forge/kvs'; export async function run() {{
+                    const secret = await kvs.getSecret('key');
+                    const values = [secret, 'public', {{ token: secret, label: 'public' }}];
+                    console.log({expression});
+                }}"
+            ),
+            V1,
+            count,
+        );
+    }
+}

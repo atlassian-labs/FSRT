@@ -1,9 +1,12 @@
 # Taint flow
 
-`TaintDataflow<P>` is the opt-in forward analysis for scanners that need input trust
-and source attribution. SQL injection is its first production consumer. The legacy
-prototype-pollution, authorization, authentication, secret, and permission engines
-retain their existing behavior.
+`taint_flow::TaintDataflow<P>` is the opt-in forward analysis for scanners that need input trust
+and source attribution. SQL injection is its first production consumer. Upstream
+`taint::TaintDataflow` remains the engine for secret logging and prototype pollution.
+The two analyses share IR and interpreter interfaces but retain their own policies
+and state. Authorization, authentication, secret, and permission engines retain
+their existing behavior. Compact arrays are interpreted by both taint engines;
+upstream field-tracking policies retain per-index values without expanding the IR.
 
 ## Value and policy contract
 
