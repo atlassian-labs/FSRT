@@ -1095,3 +1095,34 @@ fn secret_logging_tracks_data_written_to_function_bindings() {
         1,
     );
 }
+
+#[test]
+fn secret_logging_loop_iterations_do_not_exhaust_helper_contexts() {
+    // Each pass around these loops gives `id` a larger input. The final call
+    // waits on a long call chain, so it is reached only after those passes;
+    // it must still get its own context rather than the merged overflow.
+    let mut source = String::from(
+        "import { kvs } from '@forge/kvs';\nfunction id(v) { return v; }\nfunction settle0() { return 1; }\n",
+    );
+    for id in 1..30 {
+        use std::fmt::Write;
+        writeln!(
+            source,
+            "function settle{id}() {{ return settle{}(); }}",
+            id - 1
+        )
+        .unwrap();
+    }
+    source.push_str(
+        "export async function run(flag) {
+           const secret = await kvs.getSecret('key');
+           let a = secret;
+           while (flag) { a = id({ value: a, count: 1 }); }
+           let b = secret;
+           while (flag) { b = id({ value: b, size: 2 }); }
+           settle29();
+           console.log(id({ value: 'public', password: secret }).value);
+         }",
+    );
+    assert_findings_with(&source, V1, 0);
+}

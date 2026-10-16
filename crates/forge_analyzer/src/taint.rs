@@ -998,6 +998,8 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
 type BlockKey = (DefId, ContextId, BasicBlockId);
 /// A function analyzed under one entry context.
 type CallContext = (DefId, ContextId);
+/// A call instruction in a block evaluated under one context.
+type CallSite = (BlockKey, Location);
 
 /// The function whose block is being evaluated, as transfer functions see it.
 #[derive(Clone, Copy)]
@@ -1297,6 +1299,10 @@ struct Solver<'a, P: TaintPolicy> {
     /// The entry inputs of each function's precise contexts, in id order.
     contexts: BTreeMap<DefId, Vec<CallInput<P::Facts>>>,
     overflowed: BTreeSet<DefId>,
+    /// The context each call site last entered, and the sites entering each
+    /// context, so a site can grow a precise context that only it uses.
+    site_contexts: BTreeMap<CallSite, CallContext>,
+    users: BTreeMap<CallContext, BTreeSet<CallSite>>,
     findings: BTreeMap<BlockKey, BTreeSet<Location>>,
     /// The context each call in a block last entered.
     edges: BTreeMap<BlockKey, BTreeMap<Location, CallContext>>,
@@ -1316,6 +1322,8 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
             returns: BTreeMap::new(),
             contexts: BTreeMap::new(),
             overflowed: BTreeSet::new(),
+            site_contexts: BTreeMap::new(),
+            users: BTreeMap::new(),
             findings: BTreeMap::new(),
             edges: BTreeMap::new(),
             callers: BTreeMap::new(),
@@ -1402,7 +1410,7 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
             let value = if let Rvalue::Call(callee, args) = inst.rvalue()
                 && let Some((callee_def, _)) = body.resolve_call(env, callee)
             {
-                let callee_ctx = self.enter_call(key, &frame, callee_def, args);
+                let callee_ctx = self.enter_call((key, location), &frame, callee_def, args);
                 block_edges.insert(location, (callee_def, callee_ctx));
                 let Some(value) = self.returns.get(&(callee_def, callee_ctx)) else {
                     self.suspended.insert(key, (idx, frame.clone()));
@@ -1454,10 +1462,10 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
     }
 
     /// Join a resolved call's input into the callee context it selects, and
-    /// record `caller` as depending on that context's return.
+    /// record the calling block as depending on that context's return.
     fn enter_call(
         &mut self,
-        caller: BlockKey,
+        site: CallSite,
         frame: &FlowState<P::Facts>,
         callee: DefId,
         args: &[Operand],
@@ -1470,7 +1478,7 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
             program.env,
             callee,
             &program.functions,
-            program.bindings[&caller.0].captures_at_call(frame, &program.capture_needs[&callee]),
+            program.bindings[&site.0.0].captures_at_call(frame, &program.capture_needs[&callee]),
         );
         for (&id, arg) in callee_layout.args.iter().zip(args) {
             callee_frame.set(id, program.dataflow.value(frame, arg));
@@ -1483,18 +1491,34 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
                 .collect(),
             callee_frame.captures.clone(),
         );
-        let callee_ctx = self.context(callee, signature);
+        let callee_ctx = self.context(site, callee, signature);
+        let previous = self.site_contexts.insert(site, (callee, callee_ctx));
+        if previous != Some((callee, callee_ctx)) {
+            if let Some(users) = previous.and_then(|context| self.users.get_mut(&context)) {
+                users.remove(&site);
+            }
+            self.users
+                .entry((callee, callee_ctx))
+                .or_default()
+                .insert(site);
+        }
         self.callers
             .entry((callee, callee_ctx))
             .or_default()
-            .insert(caller);
+            .insert(site.0);
         self.join_input((callee, callee_ctx, STARTING_BLOCK), &callee_frame);
         callee_ctx
     }
 
     /// The context for a call's entry input: the reserved clean context, an
-    /// equal precise context, a new one within budget, or else the overflow.
-    fn context(&mut self, callee: DefId, signature: CallInput<P::Facts>) -> ContextId {
+    /// equal precise context, the site's own precise context grown to include
+    /// the input, a new one within budget, or else the overflow.
+    fn context(
+        &mut self,
+        site: CallSite,
+        callee: DefId,
+        signature: CallInput<P::Facts>,
+    ) -> ContextId {
         let clean = signature
             .0
             .iter()
@@ -1503,10 +1527,35 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
         if clean {
             return ContextId(1);
         }
+        let dataflow = self.program.dataflow;
         let keys = self.contexts.entry(callee).or_default();
         if let Some(index) = keys.iter().position(|key| key == &signature) {
-            ContextId(index + 2)
-        } else if keys.len() < MAX_CONTEXTS - 1 {
+            return ContextId(index + 2);
+        }
+        // A site's input grows as the solver iterates, as on each pass around
+        // a loop. Growing the context only that site enters keeps those
+        // intermediate inputs from each taking a slot of the budget.
+        if let Some(&(previous_callee, previous)) = self.site_contexts.get(&site)
+            && previous_callee == callee
+            && (2..=MAX_CONTEXTS).contains(&previous.0)
+            && self
+                .users
+                .get(&(callee, previous))
+                .is_some_and(|users| users.len() == 1)
+        {
+            let (args, captures) = &mut keys[previous.0 - 2];
+            for (into, from) in args.iter_mut().zip(&signature.0) {
+                dataflow.join_tracked(into, from);
+            }
+            for (&binding, value) in &signature.1 {
+                dataflow.join_tracked(
+                    captures.entry(binding).or_insert(TrackedValue::BOTTOM),
+                    value,
+                );
+            }
+            return previous;
+        }
+        if keys.len() < MAX_CONTEXTS - 1 {
             keys.push(signature);
             ContextId(keys.len() + 1)
         } else {
