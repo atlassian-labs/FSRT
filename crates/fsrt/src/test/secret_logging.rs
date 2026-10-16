@@ -1126,3 +1126,36 @@ fn secret_logging_loop_iterations_do_not_exhaust_helper_contexts() {
     );
     assert_findings_with(&source, V1, 0);
 }
+
+#[test]
+fn secret_logging_throwing_exits_add_no_return_value() {
+    for (body, count) in [
+        // A guard that throws must not make the read look possibly public,
+        // which would stop it from redacting the secret.
+        (
+            "async function read() { const key = await kvs.getSecret('key'); if (!key) { throw new Error('missing'); } return key; }
+             console.log(secret.replace(await read(), '***'));",
+            0,
+        ),
+        // Callers still continue past a call that only throws, since a
+        // surrounding catch can resume them.
+        (
+            "function fail() { throw new Error('failed'); } try { fail(); } catch (e) {} console.log(secret);",
+            1,
+        ),
+        (
+            "function fail() { throw new Error('failed'); } function wrap() { return fail(); } try { wrap(); } catch (e) {} console.log(secret);",
+            1,
+        ),
+        (
+            "function fail() { throw new Error('failed'); } const value = fail(); console.log(value, secret);",
+            1,
+        ),
+        (
+            "function fail(value) { throw new Error(value); } function wrap(value) { return fail(value); } console.log(wrap(secret));",
+            0,
+        ),
+    ] {
+        assert_v1_findings(body, count);
+    }
+}

@@ -33,7 +33,7 @@ use crate::{
     interp::{Dataflow, EntryKind, Interp, JoinSemiLattice, Runner},
     ir::{
         Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Literal, Location, Operand,
-        Projection, Rvalue, STARTING_BLOCK, Successors, UnOp, VarId, VarKind,
+        Projection, Rvalue, STARTING_BLOCK, Successors, Terminator, UnOp, VarId, VarKind,
     },
 };
 
@@ -1587,14 +1587,18 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
                 dataflow.join_tracked(&mut value, &frame.value(id));
                 value
             });
-        // An implicit return is public undefined. An explicit return whose
-        // operand is bottom is still pending.
+        // An implicit return is public undefined. A throw, or an explicit
+        // return of bottom (such as the result of a call that only throws),
+        // ends the call without a value: callers stop waiting on it, but it
+        // adds nothing to the return, so it never mixes a public value into
+        // one returned on another path. A block waits at any call that has no
+        // return yet, so a bottom here can only grow later, for example once
+        // a module initializer finishes.
         let explicit_return = block.iter().any(|inst| matches!(inst,
             Inst::Assign(var, _) if var.as_var_id().is_some_and(|id| matches!(body.vars[id], VarKind::Ret))));
-        if !returned.root.reachable && explicit_return {
-            return;
-        }
-        let returned = if returned.root.reachable {
+        let returned = if matches!(block.term, Terminator::Throw) {
+            TrackedValue::BOTTOM
+        } else if returned.root.reachable || explicit_return {
             returned
         } else {
             TrackedValue::default()
