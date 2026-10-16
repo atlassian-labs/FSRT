@@ -1,7 +1,7 @@
 #![allow(dead_code, unused)]
 use std::{
     borrow::Borrow,
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     hash::Hash,
     path::{Path, PathBuf},
 };
@@ -76,6 +76,14 @@ pub struct Resolver<'a> {
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 pub struct JustFunc<'a> {
     pub function: Option<&'a str>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ApiRoute<'a> {
+    #[serde(default, borrow)]
+    key: &'a str,
+    #[serde(flatten, borrow)]
+    function: JustFunc<'a>,
 }
 
 // Common Modules
@@ -332,7 +340,7 @@ pub struct ForgeModules<'a> {
     #[serde(rename = "scheduledTrigger", default, borrow)]
     scheduled_triggers: Vec<ScheduledTrigger<'a>>,
     #[serde(rename = "apiRoute", default, borrow)]
-    api_routes: Vec<JustFunc<'a>>,
+    api_routes: Vec<ApiRoute<'a>>,
 
     // Compass Modules
     #[serde(rename = "compass:adminPage", default, borrow)]
@@ -771,10 +779,68 @@ pub enum FunctionTy<T> {
     WebTrigger(T),
 }
 
+/// Why a manifest registration makes a function an analyzable entrypoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BindingKind {
+    Invokable,
+    WebTrigger,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModuleBinding<'a> {
+    pub module_type: &'static str,
+    pub key: &'a str,
+    pub kind: BindingKind,
+}
+
+#[derive(Default)]
+struct FunctionBindings<'a>(BTreeMap<&'a str, BTreeSet<ModuleBinding<'a>>>);
+
+impl<'a> FunctionBindings<'a> {
+    fn add(&mut self, module_type: &'static str, key: &'a str, value: &impl HasFunctions<'a>) {
+        self.record(module_type, key, BindingKind::Invokable, value);
+    }
+
+    fn record(
+        &mut self,
+        module_type: &'static str,
+        key: &'a str,
+        kind: BindingKind,
+        value: &impl HasFunctions<'a>,
+    ) {
+        let mut functions = BTreeSet::new();
+        value.append_functions(&mut functions);
+        for function in functions {
+            self.0.entry(function).or_default().insert(ModuleBinding {
+                module_type,
+                key,
+                kind,
+            });
+        }
+    }
+
+    fn common(&mut self, module_type: &'static str, modules: &[CommonKey<'a>]) {
+        for module in modules {
+            self.add(module_type, module.key, module);
+        }
+    }
+
+    fn bindings(&self, function: &str) -> Vec<ModuleBinding<'a>> {
+        self.0
+            .get(function)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect()
+    }
+}
+
 // Struct used for tracking what scan a function requires.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entrypoint<'a, S = Unresolved> {
     pub function: FunctionRef<'a, S>,
+    pub handler: &'a str,
+    pub module_bindings: Vec<ModuleBinding<'a>>,
     pub invokable: bool,
     pub web_trigger: bool,
     pub admin: bool,
@@ -794,7 +860,7 @@ impl<'a> ForgeModules<'a> {
     pub fn into_analyzable_functions(self) -> impl Iterator<Item = Entrypoint<'a>> {
         // destructuring ForgeModules to remember to add new modules to this
         let Self {
-            mut webtriggers,
+            webtriggers,
             custom_field,
             consumers,
             functions,
@@ -846,169 +912,194 @@ impl<'a> ForgeModules<'a> {
             action,
         } = self;
 
-        // number of webtriggers are usually low, so it's better to just sort them and reuse
-        webtriggers.sort_unstable_by_key(|trigger| trigger.function);
-        // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true
-        // for all trigger things
-
-        let mut invokable_functions = BTreeSet::new();
-
-        api_routes.append_functions(&mut invokable_functions);
-
-        // Compass Module Functions
-        compass_admin_page.append_functions(&mut invokable_functions);
-
-        component_page.append_functions(&mut invokable_functions);
-
-        compass_global_page.append_functions(&mut invokable_functions);
-        team_page.append_functions(&mut invokable_functions);
-
-        // Confluence Module Functions
-        // get user invokable modules that have additional exposure endpoints.
-        // ie macros has config and export fields on top of resolver fields that are functions
-        content_action
-            .iter()
-            .for_each(|content_action| content_action.append_functions(&mut invokable_functions));
-
-        content_by_line_item.iter().for_each(|by_line_item| {
-            by_line_item
-                .common_keys
-                .append_functions(&mut invokable_functions);
-            invokable_functions.extend(by_line_item.dynamic_properties.function)
-        });
-
-        context_menu.append_functions(&mut invokable_functions);
-
-        confluence_global_page.append_functions(&mut invokable_functions);
-
-        homepage_feed.append_functions(&mut invokable_functions);
-
-        space_page.append_functions(&mut invokable_functions);
-
-        space_settings.append_functions(&mut invokable_functions);
-
-        for m in macros {
-            m.common_keys.append_functions(&mut invokable_functions);
-            m.config.append_functions(&mut invokable_functions);
-            m.export.append_functions(&mut invokable_functions);
+        let mut bindings = FunctionBindings::default();
+        for trigger in webtriggers {
+            bindings.record(
+                "webtrigger",
+                trigger.key,
+                BindingKind::WebTrigger,
+                &JustFunc {
+                    function: Some(trigger.function),
+                },
+            );
         }
-
-        // Jira Module Functions
-        custom_field.into_iter().for_each(|customfield| {
-            customfield.value.append_functions(&mut invokable_functions);
-
-            customfield.value.append_functions(&mut invokable_functions);
-            customfield
-                .common_keys
-                .append_functions(&mut invokable_functions);
-        });
-
-        dashboard_background_script.append_functions(&mut invokable_functions);
-
-        for gadget in dashboard_gadget {
-            gadget
-                .common_keys
-                .append_functions(&mut invokable_functions);
-            gadget.edit.append_functions(&mut invokable_functions);
+        for route in api_routes {
+            bindings.add("apiRoute", route.key, &route.function);
         }
-
-        jira_global_page.append_functions(&mut invokable_functions);
-
-        issue_action.append_functions(&mut invokable_functions);
-
-        for issue in issue_context {
-            issue.common_keys.append_functions(&mut invokable_functions);
-            issue
-                .dynamic_properties
-                .append_functions(&mut invokable_functions);
+        bindings.common("compass:adminPage", &compass_admin_page);
+        bindings.common("compass:componentPage", &component_page);
+        bindings.common("compass:globalPage", &compass_global_page);
+        bindings.common("compass:teamPage", &team_page);
+        bindings.common("confluence:contentAction", &content_action);
+        bindings.common("confluence:contextMenu", &context_menu);
+        bindings.common("confluence:globalPage", &confluence_global_page);
+        bindings.common("confluence:homepageFeed", &homepage_feed);
+        bindings.common("confluence:spacePage", &space_page);
+        bindings.common("confluence:spaceSettings", &space_settings);
+        bindings.common(
+            "jira:dashboardBackgroundScript",
+            &dashboard_background_script,
+        );
+        bindings.common("jira:globalPage", &jira_global_page);
+        bindings.common("jira:issueAction", &issue_action);
+        bindings.common("jira:issuePanel", &issue_panel);
+        bindings.common(
+            "jira:issueViewBackgroundScript",
+            &issue_view_background_script,
+        );
+        bindings.common("jira:jqlFunction", &jql_function);
+        bindings.common("jira:projectPage", &project_page);
+        bindings.common("jira:projectSettingsPage", &project_settings_page);
+        bindings.common("jiraServiceManagement:organizationPanel", &org_panel);
+        bindings.common("jiraServiceManagement:portalFooter", &portal_footer);
+        bindings.common("jiraServiceManagement:portalHeader", &portal_header);
+        bindings.common(
+            "jiraServiceManagement:portalProfilePanel",
+            &portal_profile_panel,
+        );
+        bindings.common(
+            "jiraServiceManagement:portalRequestCreatePropertyPanel",
+            &portal_req,
+        );
+        bindings.common(
+            "jiraServiceManagement:portalRequestDetail",
+            &portal_request_detail,
+        );
+        bindings.common(
+            "jiraServiceManagement:portalRequestDetailPanel",
+            &portal_request_detail_panel,
+        );
+        bindings.common(
+            "jiraServiceManagement:portalRequestViewAction",
+            &portal_request_view_action,
+        );
+        bindings.common("jiraServiceManagement:portalSubheader", &portal_subheader);
+        bindings.common(
+            "jiraServiceManagement:portalUserMenuAction",
+            &portal_header_menu_action,
+        );
+        bindings.common("jiraServiceManagement:queuePage", &queue_page);
+        for module in content_by_line_item {
+            bindings.add(
+                "confluence:contentByLineItem",
+                module.common_keys.key,
+                &module.common_keys,
+            );
+            bindings.add(
+                "confluence:contentByLineItem",
+                module.common_keys.key,
+                &module.dynamic_properties,
+            );
         }
-
-        for issue in issue_glance {
-            issue.common_keys.append_functions(&mut invokable_functions);
-            issue
-                .dynamic_properties
-                .append_functions(&mut invokable_functions);
+        for module in macros {
+            bindings.add("macro", module.common_keys.key, &module.common_keys);
+            bindings.add("macro", module.common_keys.key, &module.config);
+            bindings.add("macro", module.common_keys.key, &module.export);
         }
-
-        issue_panel.append_functions(&mut invokable_functions);
-
-        issue_view_background_script.append_functions(&mut invokable_functions);
-
-        jql_function.append_functions(&mut invokable_functions);
-
-        project_page.append_functions(&mut invokable_functions);
-
-        project_settings_page.append_functions(&mut invokable_functions);
-
-        for ui in ui_modifications {
-            ui.common_keys.append_functions(&mut invokable_functions);
+        for module in custom_field {
+            bindings.add(
+                "jira:customField",
+                module.common_keys.key,
+                &module.common_keys,
+            );
+            bindings.add("jira:customField", module.common_keys.key, &module.value);
         }
-
-        for valid in workflow_validator {
+        for module in dashboard_gadget {
+            bindings.add(
+                "jira:dashboardGadget",
+                module.common_keys.key,
+                &module.common_keys,
+            );
+            bindings.add("jira:dashboardGadget", module.common_keys.key, &module.edit);
+        }
+        for module in issue_context {
+            bindings.add(
+                "jira:issueContext",
+                module.common_keys.key,
+                &module.common_keys,
+            );
+            bindings.add(
+                "jira:issueContext",
+                module.common_keys.key,
+                &module.dynamic_properties,
+            );
+        }
+        for module in issue_glance {
+            bindings.add(
+                "jira:issueGlance",
+                module.common_keys.key,
+                &module.common_keys,
+            );
+            bindings.add(
+                "jira:issueGlance",
+                module.common_keys.key,
+                &module.dynamic_properties,
+            );
+        }
+        for module in ui_modifications {
+            bindings.add(
+                "jira:uiModificatons",
+                module.common_keys.key,
+                &module.common_keys,
+            );
+        }
+        for module in assets_import_type {
+            bindings.add(
+                "jiraServiceManagement:assetsImportType",
+                module.common_keys.key,
+                &module.common_keys,
+            );
+            bindings.add(
+                "jiraServiceManagement:assetsImportType",
+                module.common_keys.key,
+                &module.on_delete_import,
+            );
+            bindings.add(
+                "jiraServiceManagement:assetsImportType",
+                module.common_keys.key,
+                &module.stop_import,
+            );
+            bindings.add(
+                "jiraServiceManagement:assetsImportType",
+                module.common_keys.key,
+                &module.start_import,
+            );
+            bindings.add(
+                "jiraServiceManagement:assetsImportType",
+                module.common_keys.key,
+                &module.import_status,
+            );
+        }
+        for validator in workflow_validator {
             // Only the resolver is user-invokable; the function runs workflow validation.
-            if let Some(resolver) = valid.common_keys.resolver {
-                invokable_functions.extend(resolver.function);
+            if let Some(resolver) = validator.common_keys.resolver {
+                bindings.add(
+                    "jira:workflowValidator",
+                    validator.common_keys.key,
+                    &JustFunc {
+                        function: resolver.function,
+                    },
+                );
             }
         }
-
-        // Rovo Module Functions
-        // No invokable functions for Rovo Agents but Action can have numerous user invokable functions
-        action.iter().for_each(|action| {
-            invokable_functions.extend(action.function);
-            // "Endpoint" variant of Action not being considered as an invokable function
-        });
-
-        // JSM Module Functions
-        for assets in assets_import_type {
-            assets
-                .common_keys
-                .append_functions(&mut invokable_functions);
-
-            assets
-                .on_delete_import
-                .append_functions(&mut invokable_functions);
-
-            assets
-                .stop_import
-                .append_functions(&mut invokable_functions);
-
-            assets
-                .start_import
-                .append_functions(&mut invokable_functions);
-
-            assets
-                .import_status
-                .append_functions(&mut invokable_functions);
+        for action in action {
+            bindings.add(
+                "action",
+                action.key,
+                &JustFunc {
+                    function: action.function,
+                },
+            );
         }
-        org_panel
-            .iter()
-            .for_each(|panel| panel.append_functions(&mut invokable_functions));
-
-        org_panel.append_functions(&mut invokable_functions);
-
-        portal_footer.append_functions(&mut invokable_functions);
-        portal_header.append_functions(&mut invokable_functions);
-        portal_profile_panel.append_functions(&mut invokable_functions);
-
-        portal_req.append_functions(&mut invokable_functions);
-
-        portal_request_detail.append_functions(&mut invokable_functions);
-
-        portal_request_detail_panel.append_functions(&mut invokable_functions);
-
-        portal_request_view_action.append_functions(&mut invokable_functions);
-
-        portal_subheader.append_functions(&mut invokable_functions);
-
-        portal_header_menu_action.append_functions(&mut invokable_functions);
-
-        queue_page.append_functions(&mut invokable_functions);
 
         functions.into_iter().flat_map(move |func| {
-            let web_trigger = webtriggers
-                .binary_search_by_key(&func.key, |trigger| trigger.function)
-                .is_ok();
-            let invokable = invokable_functions.contains(func.key);
+            let module_bindings = bindings.bindings(func.key);
+            let web_trigger = module_bindings
+                .iter()
+                .any(|binding| binding.kind == BindingKind::WebTrigger);
+            let invokable = module_bindings
+                .iter()
+                .any(|binding| binding.kind == BindingKind::Invokable);
             // this checks whether the function being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
             // optionally: compass:adminPage could also be considered.
             let admin = jira_admin_page
@@ -1019,6 +1110,8 @@ impl<'a> ForgeModules<'a> {
                     .any(|admin_function| admin_function.function == Some(func.key));
 
             Ok::<_, Error>(Entrypoint {
+                handler: func.handler,
+                module_bindings,
                 function: FunctionRef::try_from(func)?,
                 invokable,
                 web_trigger,
@@ -1061,6 +1154,10 @@ impl<'a> FunctionRef<'a> {
 }
 
 impl<'a, Resolved> FunctionRef<'a, Resolved> {
+    pub fn key(&self) -> &'a str {
+        self.key
+    }
+
     #[inline]
     pub fn into_func_path(self) -> (&'a str, PathBuf) {
         (self.func, self.path)
@@ -1324,6 +1421,8 @@ mod tests {
                     providers: None,
                 })
                 .unwrap(),
+                handler: "index.run",
+                module_bindings: vec![],
                 invokable: false,
                 web_trigger: false,
                 admin: true
@@ -1339,6 +1438,12 @@ mod tests {
                     providers: None,
                 })
                 .unwrap(),
+                handler: "src.run",
+                module_bindings: vec![ModuleBinding {
+                    module_type: "macro",
+                    key: "my-macro",
+                    kind: BindingKind::Invokable,
+                }],
                 invokable: true,
                 web_trigger: false,
                 admin: false

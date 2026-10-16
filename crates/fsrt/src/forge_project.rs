@@ -1,7 +1,7 @@
 use crate::{ResolvedEntryPoint, collect_sourcefiles};
 use forge_analyzer::ctx::AppCtx;
 use forge_analyzer::definitions::{Environment, PackageData, run_resolver};
-use forge_loader::manifest::{Entrypoint, ForgeManifest, Resolved};
+use forge_loader::manifest::{BindingKind, Entrypoint, ForgeManifest, Resolved};
 use forge_permission_resolver::permissions_resolver::PermMap;
 use serde_yaml::Error as YamlError;
 use std::collections::HashSet;
@@ -117,12 +117,16 @@ impl<'a> ForgeProject<'a> {
     #[inline]
     pub fn add_funcs<I: IntoIterator<Item = Entrypoint<'a, Resolved>>>(&mut self, iter: I) {
         self.funcs.extend(iter.into_iter().filter_map(|entrypoint| {
+            let function_key = entrypoint.function.key();
             let (func_name, path) = entrypoint.function.into_func_path();
             let module = self.ctx.modid_from_path(&path)?;
             let def_id = self.env.module_export(module, func_name)?;
             // Resolve ExportAlias / ResolverHandler chains to the actual definition.
             let def_id = self.env.resolve_alias(def_id);
             Some(ResolvedEntryPoint {
+                function_key,
+                handler: entrypoint.handler,
+                module_bindings: entrypoint.module_bindings,
                 func_name,
                 path,
                 module,
@@ -166,5 +170,33 @@ impl ForgeProjectTrait<'_> for ForgeProjectFromDir {
 
     fn get_manifest(&self) -> Result<ForgeManifest<'_>, YamlError> {
         serde_yaml::from_str(&self.manifest_file_content)
+    }
+}
+
+impl ResolvedEntryPoint<'_> {
+    /// List only the registrations that selected this scanner.
+    pub(crate) fn manifest_proof(&self, kind: BindingKind) -> String {
+        let modules = self
+            .module_bindings
+            .iter()
+            .filter(|binding| binding.kind == kind)
+            .map(|binding| {
+                // Keep accepting legacy declarations that omitted a key.
+                let key = if binding.key.is_empty() {
+                    "<missing key>"
+                } else {
+                    binding.key
+                };
+                format!("{}: {key}", binding.module_type)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        if modules.is_empty() {
+            return String::new();
+        }
+        format!(
+            "Modules: [{modules}]\nFunction: {}\nHandler: {}",
+            self.function_key, self.handler
+        )
     }
 }
