@@ -977,26 +977,170 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
         interp: &mut Interp<'cx, C>,
         entry: DefId,
     ) -> bool {
-        let env = interp.env();
-        let mut inputs = BTreeMap::<(DefId, ContextId, BasicBlockId), FlowState<P::Facts>>::new();
-        // Absence means no returning execution has been discovered, not clean.
-        let mut returns = BTreeMap::<(DefId, ContextId), TrackedValue<P::Facts>>::new();
-        let mut contexts = BTreeMap::<DefId, Vec<CallInput<P::Facts>>>::new();
-        let mut overflowed = BTreeSet::new();
-        let mut findings = BTreeMap::new();
-        let mut edges = BTreeMap::<
-            (DefId, ContextId, BasicBlockId),
-            BTreeMap<Location, (DefId, ContextId)>,
-        >::new();
-        let mut callers =
-            BTreeMap::<(DefId, ContextId), BTreeSet<(DefId, ContextId, BasicBlockId)>>::new();
-        let mut globals = BTreeMap::<DefId, TrackedValue<P::Facts>>::new();
-        let mut queue = Queue::default();
-        // One checkpoint per blocked block. Invalidate it whenever an input
-        // or a previously consumed return changes; otherwise resume at the call.
-        let mut suspended = BTreeMap::new();
         interp.instruction_findings.clear();
+        let program = Program::new(
+            self,
+            interp.env(),
+            entry,
+            P::TAINT_RESOLVER_INPUT && matches!(interp.entry.kind, EntryKind::Resolver(..)),
+            interp.call_uncalled,
+        );
+        let mut solver = Solver::new(&program);
+        solver.run();
+        solver.finish(interp);
+        true
+    }
+}
 
+type BlockKey = (DefId, ContextId, BasicBlockId);
+/// A function analyzed under one entry context.
+type CallContext = (DefId, ContextId);
+
+/// The function whose block is being evaluated, as transfer functions see it.
+#[derive(Clone, Copy)]
+struct Site<'a> {
+    env: &'a Environment,
+    body: &'a Body,
+    layout: &'a Bindings,
+    def: DefId,
+}
+
+impl<P: TaintPolicy> TaintDataflow<P> {
+    /// The value an instruction produces. Resolved calls are the solver's.
+    fn transfer(
+        &self,
+        site: Site<'_>,
+        frame: &FlowState<P::Facts>,
+        location: Location,
+        rvalue: &Rvalue,
+    ) -> TrackedValue<P::Facts> {
+        let read = |operand| self.read(frame, operand);
+        match rvalue {
+            Rvalue::Read(op) => self.value(frame, op),
+            Rvalue::Unary(op, operand) => {
+                let value = read(operand);
+                if unary_taint(*op, Taint::Yes) == Taint::No {
+                    value.with_facts(P::Facts::from_taint(Taint::No)).into()
+                } else {
+                    value.into()
+                }
+            }
+            Rvalue::Bin(op, left, right) => self
+                .policy
+                .binary_value(*op, read(left), read(right))
+                .into(),
+            Rvalue::Phi(vars) => vars
+                .iter()
+                .fold(TrackedValue::BOTTOM, |mut value, (id, _)| {
+                    self.join_tracked(&mut value, &frame.value(*id));
+                    value
+                }),
+            Rvalue::Template(template) => template
+                .exprs
+                .iter()
+                .fold(FlowValue::default(), |value, op| value.combine(&read(op)))
+                .into(),
+            Rvalue::Intrinsic(intrinsic, _) => self.policy.intrinsic_value(intrinsic).into(),
+            Rvalue::Call(callee, args) => self
+                .lodash_call(site.env, site.body, site.layout, frame, callee, args)
+                .unwrap_or_else(|| {
+                    self.unresolved_call(site, frame, location, callee, args)
+                        .into()
+                }),
+        }
+    }
+
+    /// Preserve data through unmodelled transformations, including methods
+    /// called on a tainted receiver, unless the policy classifies the call.
+    fn unresolved_call(
+        &self,
+        site: Site<'_>,
+        frame: &FlowState<P::Facts>,
+        location: Location,
+        callee: &Operand,
+        args: &[Operand],
+    ) -> FlowValue<P::Facts> {
+        let Site {
+            env,
+            body,
+            layout,
+            def,
+        } = site;
+        let receiver = self.receiver_value(frame, callee);
+        let taints: SmallVec<[FlowValue<P::Facts>; 4]> =
+            args.iter().map(|arg| self.read(frame, arg)).collect();
+        let global_result = match callee {
+            Operand::Var(var) => var
+                .as_var_id()
+                .and_then(|id| variable_def(&body.vars[id]))
+                .filter(|&def| env.is_undeclared_global(def))
+                .and_then(|def| {
+                    self.policy
+                        .global_call_value(env.def_name(def), &var.projections)
+                }),
+            Operand::Lit(_) => None,
+        };
+        let mut result = global_result
+            .or_else(|| {
+                callee_name(env, body, callee).and_then(|method| {
+                    self.policy.method_value(&UnresolvedCall {
+                        method,
+                        receiver: receiver.clone(),
+                        args: &taints,
+                        callee,
+                        operands: args,
+                        env,
+                        body,
+                        layout,
+                        def,
+                        location,
+                    })
+                })
+            })
+            .unwrap_or_else(|| {
+                taints
+                    .iter()
+                    .fold(receiver.clone(), |value, arg| value.combine(arg))
+            });
+        // Policy facts may sanitize a value without erasing its provenance.
+        // Bottom is strict across calls.
+        let inputs = taints
+            .iter()
+            .fold(receiver, |value, arg| value.combine(arg));
+        if !inputs.reachable {
+            result = FlowValue::BOTTOM;
+        } else {
+            result.provenance.join_changed(&inputs.provenance);
+        }
+        result
+    }
+}
+
+/// What the solver reads but never changes.
+struct Program<'a, P> {
+    dataflow: &'a TaintDataflow<P>,
+    env: &'a Environment,
+    bindings: BTreeMap<DefId, Bindings>,
+    /// Bindings read by a function other than the one that owns them.
+    captured: BTreeSet<DefId>,
+    /// The outer bindings each function and its callees read.
+    capture_needs: BTreeMap<DefId, BTreeSet<DefId>>,
+    global_bodies: BTreeSet<DefId>,
+    /// Module initializers first, then the entrypoint and any uncalled functions.
+    roots: Vec<DefId>,
+    entry: DefId,
+    /// Whether the entrypoint's first argument is a resolver request source.
+    tainted_request: bool,
+}
+
+impl<'a, P: TaintPolicy> Program<'a, P> {
+    fn new(
+        dataflow: &'a TaintDataflow<P>,
+        env: &'a Environment,
+        entry: DefId,
+        tainted_request: bool,
+        call_uncalled: bool,
+    ) -> Self {
         let bindings: BTreeMap<_, _> = env
             .bodies()
             .filter_map(|body| body.owner().map(|def| (def, Bindings::new(body))))
@@ -1060,348 +1204,386 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                 }
             }
         }
-        let global_bodies: BTreeSet<_> = env.global.iter().copied().collect();
         let mut roots = env.global.clone();
         roots.push(entry);
-        if interp.call_uncalled {
+        if call_uncalled {
             roots.extend(env.get_all_functions_and_closures());
         }
-        let root_frame = |def, globals: &BTreeMap<DefId, TrackedValue<P::Facts>>| {
-            let captures = globals
-                .iter()
-                .filter(|(binding, _)| capture_needs[&def].contains(binding))
-                .map(|(&binding, value)| (binding, value.clone()))
-                .collect();
-            let mut initial = bindings[&def].frame(env, def, captures);
-            if def == entry
-                && P::TAINT_RESOLVER_INPUT
-                && matches!(interp.entry.kind, EntryKind::Resolver(..))
-                && let Some(&id) = bindings[&def].args.first()
-            {
-                initial.set(id, FlowValue::from_taint(Taint::Yes).into());
-            }
-            initial
-        };
+        Self {
+            dataflow,
+            env,
+            bindings,
+            captured,
+            capture_needs,
+            global_bodies: env.global.iter().copied().collect(),
+            roots: roots.into(),
+            entry,
+            tainted_request,
+        }
+    }
+
+    fn root_frame(
+        &self,
+        def: DefId,
+        globals: &BTreeMap<DefId, TrackedValue<P::Facts>>,
+    ) -> FlowState<P::Facts> {
+        let captures = globals
+            .iter()
+            .filter(|(binding, _)| self.capture_needs[&def].contains(binding))
+            .map(|(&binding, value)| (binding, value.clone()))
+            .collect();
+        let mut initial = self.bindings[&def].frame(self.env, def, captures);
+        if def == self.entry
+            && self.tainted_request
+            && let Some(&id) = self.bindings[&def].args.first()
+        {
+            initial.set(id, FlowValue::from_taint(Taint::Yes).into());
+        }
+        initial
+    }
+}
+
+/// The worklist solver: block inputs and return summaries per context, joined
+/// to a fixed point. A block that calls a function with no returning execution
+/// yet in its context is suspended at that call until one is discovered.
+struct Solver<'a, P: TaintPolicy> {
+    program: &'a Program<'a, P>,
+    inputs: BTreeMap<BlockKey, FlowState<P::Facts>>,
+    /// Absence means no returning execution has been discovered, not clean.
+    returns: BTreeMap<CallContext, TrackedValue<P::Facts>>,
+    /// The entry inputs of each function's precise contexts, in id order.
+    contexts: BTreeMap<DefId, Vec<CallInput<P::Facts>>>,
+    overflowed: BTreeSet<DefId>,
+    findings: BTreeMap<BlockKey, BTreeSet<Location>>,
+    /// The context each call in a block last entered.
+    edges: BTreeMap<BlockKey, BTreeMap<Location, CallContext>>,
+    callers: BTreeMap<CallContext, BTreeSet<BlockKey>>,
+    globals: BTreeMap<DefId, TrackedValue<P::Facts>>,
+    queue: Queue,
+    /// One checkpoint per blocked block: the index of the call it waits on
+    /// and the state just before it.
+    suspended: BTreeMap<BlockKey, (usize, FlowState<P::Facts>)>,
+}
+
+impl<'a, P: TaintPolicy> Solver<'a, P> {
+    fn new(program: &'a Program<'a, P>) -> Self {
+        Self {
+            program,
+            inputs: BTreeMap::new(),
+            returns: BTreeMap::new(),
+            contexts: BTreeMap::new(),
+            overflowed: BTreeSet::new(),
+            findings: BTreeMap::new(),
+            edges: BTreeMap::new(),
+            callers: BTreeMap::new(),
+            globals: BTreeMap::new(),
+            queue: Queue::default(),
+            suspended: BTreeMap::new(),
+        }
+    }
+
+    fn run(&mut self) {
+        let program = self.program;
         // Module IDs are not dependency ordered. Solve their captured values
         // together before seeding entrypoints; missing globals remain bottom.
-        for &def in &env.global {
-            let key = (def, ContextId(0), STARTING_BLOCK);
-            inputs.insert(key, root_frame(def, &globals));
-            queue.push(key);
+        for &def in &program.env.global {
+            self.start_root(def);
         }
-        let mut pending_roots = roots.iter().skip(env.global.len());
+        let mut pending_roots = program.roots.iter().skip(program.env.global.len());
         loop {
-            let Some((def, ctx, bb)) = queue.pop() else {
-                let Some(&def) = pending_roots.next() else {
+            if let Some(key) = self.queue.pop() {
+                self.eval_block(key);
+            } else if let Some(&def) = pending_roots.next() {
+                self.start_root(def);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn start_root(&mut self, def: DefId) {
+        let key = (def, ContextId(0), STARTING_BLOCK);
+        let frame = self.program.root_frame(def, &self.globals);
+        self.inputs.insert(key, frame);
+        self.queue.push(key);
+    }
+
+    /// Join `frame` into a block's input, rerunning the block from its start
+    /// when the input is new or grows.
+    fn join_input(&mut self, key: BlockKey, frame: &FlowState<P::Facts>) {
+        let is_new = !self.inputs.contains_key(&key);
+        if self
+            .program
+            .dataflow
+            .join_frames(self.inputs.entry(key).or_default(), frame)
+            || is_new
+        {
+            self.suspended.remove(&key);
+            self.queue.push(key);
+        }
+    }
+
+    fn eval_block(&mut self, key: BlockKey) {
+        let program = self.program;
+        let (dataflow, env) = (program.dataflow, program.env);
+        let (def, ctx, bb) = key;
+        let body = env.def_ref(def).expect_body();
+        let block = body.block(bb);
+        let site = Site {
+            env,
+            body,
+            layout: &program.bindings[&def],
+            def,
+        };
+        let resume = self.suspended.remove(&key);
+        let previous_edges = self.edges.remove(&key).unwrap_or_default();
+        let previous_findings = self.findings.remove(&key).unwrap_or_default();
+        // A resumed block keeps what it recorded before the call it waited on.
+        let (mut block_edges, mut block_findings, previous_targets) = if resume.is_some() {
+            (previous_edges, previous_findings, BTreeSet::new())
+        } else {
+            let targets = previous_edges.values().copied().collect();
+            (BTreeMap::new(), BTreeSet::new(), targets)
+        };
+        let (start, mut frame) = resume.unwrap_or_else(|| (0, self.inputs[&key].clone()));
+        let mut returning = true;
+        for (idx, inst) in block.iter().enumerate().skip(start) {
+            let location = Location::new(bb, idx as u32);
+            let values = TaintReader {
+                dataflow,
+                frame: &frame,
+            };
+            if dataflow.policy.is_violation(inst, &values) {
+                block_findings.insert(location);
+            }
+            let value = if let Rvalue::Call(callee, args) = inst.rvalue()
+                && let Some((callee_def, _)) = body.resolve_call(env, callee)
+            {
+                let callee_ctx = self.enter_call(key, &frame, callee_def, args);
+                block_edges.insert(location, (callee_def, callee_ctx));
+                let Some(value) = self.returns.get(&(callee_def, callee_ctx)) else {
+                    self.suspended.insert(key, (idx, frame.clone()));
+                    returning = false;
                     break;
                 };
-                let key = (def, ContextId(0), STARTING_BLOCK);
-                inputs.insert(key, root_frame(def, &globals));
-                queue.push(key);
-                continue;
-            };
-            let body = env.def_ref(def).expect_body();
-            let block = body.block(bb);
-            let block_key = (def, ctx, bb);
-            let resume = suspended.remove(&block_key);
-            let previous_edges = edges.remove(&block_key).unwrap_or_default();
-            let previous_findings = findings.remove(&block_key).unwrap_or_default();
-            let (mut block_edges, mut block_findings, previous_targets) = if resume.is_some() {
-                (previous_edges, previous_findings, BTreeSet::new())
+                value.clone()
             } else {
-                let targets = previous_edges.values().copied().collect();
-                (BTreeMap::new(), BTreeSet::new(), targets)
+                dataflow.transfer(site, &frame, location, inst.rvalue())
             };
-            let (start, mut frame) = resume.unwrap_or_else(|| (0, inputs[&block_key].clone()));
-            let layout = &bindings[&def];
-            let mut returning = true;
-            for (idx, inst) in block.iter().enumerate().skip(start) {
-                let location = (def, Location::new(bb, idx as u32));
-                let values = TaintReader {
-                    dataflow: self,
-                    frame: &frame,
-                };
-                if self.policy.is_violation(inst, &values) {
-                    block_findings.insert(location.1);
-                }
-                let read = |operand| self.read(&frame, operand);
-                let value: TrackedValue<P::Facts> = match inst.rvalue() {
-                    Rvalue::Read(op) => self.value(&frame, op),
-                    Rvalue::Unary(op, operand) => {
-                        let value = read(operand);
-                        if unary_taint(*op, Taint::Yes) == Taint::No {
-                            value.with_facts(P::Facts::from_taint(Taint::No)).into()
-                        } else {
-                            value.into()
-                        }
+            if let Inst::Assign(var, _) = inst
+                && let Base::Var(id) = var.base
+            {
+                dataflow.assign(&mut frame, id, &var.projections, value);
+                if let Some(var_def) = variable_def(&body.vars[id]) {
+                    // Index aliases once per body instead of scanning all
+                    // variables at every assignment.
+                    let value = frame.value(id);
+                    for &alias in &site.layout.aliases[&var_def] {
+                        frame.set(alias, value.clone());
                     }
-                    Rvalue::Bin(op, left, right) => self
-                        .policy
-                        .binary_value(*op, read(left), read(right))
-                        .into(),
-                    Rvalue::Phi(vars) => {
-                        vars.iter()
-                            .fold(TrackedValue::BOTTOM, |mut value, (id, _)| {
-                                self.join_tracked(&mut value, &frame.value(*id));
-                                value
-                            })
-                    }
-                    Rvalue::Template(template) => template
-                        .exprs
-                        .iter()
-                        .fold(FlowValue::default(), |value, op| value.combine(&read(op)))
-                        .into(),
-                    Rvalue::Intrinsic(intrinsic, _) => {
-                        self.policy.intrinsic_value(intrinsic).into()
-                    }
-                    Rvalue::Call(callee, args) => {
-                        if let Some((callee_def, _)) = body.resolve_call(env, callee) {
-                            let callee_layout = &bindings[&callee_def];
-                            // Capture the values visible at this call, including
-                            // clean overwrites. Never join a binding's lifetime.
-                            let mut callee_frame = callee_layout.frame(
-                                env,
-                                callee_def,
-                                layout.captures_at_call(&frame, &capture_needs[&callee_def]),
-                            );
-                            for (&id, arg) in callee_layout.args.iter().zip(args) {
-                                callee_frame.set(id, self.value(&frame, arg));
-                            }
-                            let signature = (
-                                callee_layout
-                                    .args
-                                    .iter()
-                                    .map(|&id| callee_frame.value(id))
-                                    .collect::<Vec<_>>(),
-                                callee_frame.captures.clone(),
-                            );
-                            let clean = signature
-                                .0
-                                .iter()
-                                .chain(signature.1.values())
-                                .all(|value| value.aggregate() == FlowValue::default());
-                            let callee_ctx = if clean {
-                                ContextId(1)
-                            } else {
-                                let keys = contexts.entry(callee_def).or_default();
-                                if let Some(index) = keys.iter().position(|key| key == &signature) {
-                                    ContextId(index + 2)
-                                } else if keys.len() < MAX_CONTEXTS - 1 {
-                                    keys.push(signature);
-                                    ContextId(keys.len() + 1)
-                                } else {
-                                    if overflowed.insert(callee_def) {
-                                        tracing::debug!(
-                                            function = env.def_name(callee_def),
-                                            "taint context budget exhausted; merging additional inputs"
-                                        );
-                                    }
-                                    OVERFLOW
-                                }
-                            };
-                            callers
-                                .entry((callee_def, callee_ctx))
-                                .or_default()
-                                .insert((def, ctx, bb));
-                            block_edges.insert(location.1, (callee_def, callee_ctx));
-                            let key = (callee_def, callee_ctx, STARTING_BLOCK);
-                            let is_new = !inputs.contains_key(&key);
-                            if self.join_frames(inputs.entry(key).or_default(), &callee_frame)
-                                || is_new
-                            {
-                                suspended.remove(&key);
-                                queue.push(key);
-                            }
-                            let Some(value) = returns.get(&(callee_def, callee_ctx)) else {
-                                suspended.insert(block_key, (idx, frame.clone()));
-                                returning = false;
-                                break;
-                            };
-                            value.clone()
-                        } else if let Some(value) =
-                            self.lodash_call(env, body, layout, &frame, callee, args)
-                        {
-                            value
-                        } else {
-                            // Preserve data through unmodelled transformations,
-                            // including methods called on a tainted receiver.
-                            let receiver = self.receiver_value(&frame, callee);
-                            let taints: SmallVec<[FlowValue<P::Facts>; 4]> =
-                                args.iter().map(read).collect();
-                            let global_result = match callee {
-                                Operand::Var(var) => var
-                                    .as_var_id()
-                                    .and_then(|id| variable_def(&body.vars[id]))
-                                    .filter(|&def| env.is_undeclared_global(def))
-                                    .and_then(|def| {
-                                        self.policy
-                                            .global_call_value(env.def_name(def), &var.projections)
-                                    }),
-                                Operand::Lit(_) => None,
-                            };
-                            let mut result = global_result
-                                .or_else(|| {
-                                    callee_name(env, body, callee).and_then(|method| {
-                                        self.policy.method_value(&UnresolvedCall {
-                                            method,
-                                            receiver: receiver.clone(),
-                                            args: &taints,
-                                            callee,
-                                            operands: args,
-                                            env,
-                                            body,
-                                            layout,
-                                            def,
-                                            location: location.1,
-                                        })
-                                    })
-                                })
-                                .unwrap_or_else(|| {
-                                    taints
-                                        .iter()
-                                        .fold(receiver.clone(), |value, arg| value.combine(arg))
-                                });
-                            // Policy facts may sanitize a value without erasing
-                            // its provenance. Bottom is strict across calls.
-                            let inputs = taints
-                                .iter()
-                                .fold(receiver, |value, arg| value.combine(arg));
-                            if !inputs.reachable {
-                                result = FlowValue::BOTTOM;
-                            } else {
-                                result.provenance.join_changed(&inputs.provenance);
-                            }
-                            result.into()
-                        }
-                    }
-                };
-                if let Inst::Assign(var, _) = inst
-                    && let Base::Var(id) = var.base
-                {
-                    self.assign(&mut frame, id, &var.projections, value);
-                    if let Some(var_def) = variable_def(&body.vars[id]) {
-                        // Index aliases once per body instead of scanning all
-                        // variables at every assignment.
-                        let value = frame.value(id);
-                        for &alias in &layout.aliases[&var_def] {
-                            frame.set(alias, value.clone());
-                        }
-                    }
-                }
-            }
-
-            if !block_findings.is_empty() {
-                findings.insert(block_key, block_findings);
-            }
-            if !previous_targets.is_empty() {
-                let targets: BTreeSet<_> = block_edges.values().copied().collect();
-                for target in previous_targets.difference(&targets) {
-                    if let Some(dependents) = callers.get_mut(target) {
-                        dependents.remove(&block_key);
-                    }
-                }
-            }
-            edges.insert(block_key, block_edges);
-            if !returning {
-                continue;
-            }
-            let successors: SmallVec<[BasicBlockId; 2]> = match block.successors() {
-                Successors::Return => {
-                    let returned = body
-                        .vars
-                        .iter_enumerated()
-                        .filter(|(_, kind)| matches!(kind, VarKind::Ret))
-                        .fold(TrackedValue::BOTTOM, |mut value, (id, _)| {
-                            self.join_tracked(&mut value, &frame.value(id));
-                            value
-                        });
-                    // An implicit return is public undefined. An explicit
-                    // return whose operand is bottom is still pending.
-                    let explicit_return = block.iter().any(|inst| matches!(inst,
-                        Inst::Assign(var, _) if var.as_var_id().is_some_and(|id| matches!(body.vars[id], VarKind::Ret))));
-                    if !returned.root.reachable && explicit_return {
-                        continue;
-                    }
-                    let returned = if returned.root.reachable {
-                        returned
-                    } else {
-                        TrackedValue::default()
-                    };
-                    let is_new = !returns.contains_key(&(def, ctx));
-                    if (self.join_tracked(
-                        returns.entry((def, ctx)).or_insert(TrackedValue::BOTTOM),
-                        &returned,
-                    ) || is_new)
-                        && let Some(dependents) = callers.get(&(def, ctx))
-                    {
-                        for &key in dependents {
-                            if let Some((start, _)) = suspended.get(&key) {
-                                let waiting_at = Location::new(key.2, *start as u32);
-                                let calls = &edges[&key];
-                                let changed = (def, ctx);
-                                if calls.get(&waiting_at) != Some(&changed)
-                                    || calls
-                                        .range(..waiting_at)
-                                        .any(|(_, target)| *target == changed)
-                                {
-                                    suspended.remove(&key);
-                                }
-                            }
-                            queue.push(key);
-                        }
-                    }
-                    // Entrypoints inherit completed module initializers, not
-                    // every historical assignment made while initializing them.
-                    if global_bodies.contains(&def) {
-                        let mut changed = false;
-                        for (&binding, ids) in &layout.aliases {
-                            if captured.contains(&binding)
-                                && env.binding_owner(binding) == Some(def)
-                            {
-                                changed |= self.join_tracked(
-                                    globals.entry(binding).or_insert(TrackedValue::BOTTOM),
-                                    &frame.value(ids[0]),
-                                );
-                            }
-                        }
-                        if changed {
-                            for &root in &env.global {
-                                let key = (root, ContextId(0), STARTING_BLOCK);
-                                if self.join_frames(
-                                    inputs.entry(key).or_default(),
-                                    &root_frame(root, &globals),
-                                ) {
-                                    suspended.remove(&key);
-                                    queue.push(key);
-                                }
-                            }
-                        }
-                    }
-                    SmallVec::new()
-                }
-                Successors::One(succ) => smallvec::smallvec![succ],
-                Successors::Two(left, right) => smallvec::smallvec![left, right],
-            };
-            for succ in successors {
-                let key = (def, ctx, succ);
-                let is_new = !inputs.contains_key(&key);
-                if self.join_frames(inputs.entry(key).or_default(), &frame) || is_new {
-                    suspended.remove(&key);
-                    queue.push(key);
                 }
             }
         }
-        // Only final call edges establish reachable contexts. Evidence from
-        // preliminary invocations must not survive after their callers move on.
+
+        if !block_findings.is_empty() {
+            self.findings.insert(key, block_findings);
+        }
+        if !previous_targets.is_empty() {
+            let targets: BTreeSet<_> = block_edges.values().copied().collect();
+            for target in previous_targets.difference(&targets) {
+                if let Some(dependents) = self.callers.get_mut(target) {
+                    dependents.remove(&key);
+                }
+            }
+        }
+        self.edges.insert(key, block_edges);
+        if !returning {
+            return;
+        }
+        match block.successors() {
+            Successors::Return => self.exit(key, body, block, &frame),
+            Successors::One(succ) => self.join_input((def, ctx, succ), &frame),
+            Successors::Two(left, right) => {
+                self.join_input((def, ctx, left), &frame);
+                self.join_input((def, ctx, right), &frame);
+            }
+        }
+    }
+
+    /// Join a resolved call's input into the callee context it selects, and
+    /// record `caller` as depending on that context's return.
+    fn enter_call(
+        &mut self,
+        caller: BlockKey,
+        frame: &FlowState<P::Facts>,
+        callee: DefId,
+        args: &[Operand],
+    ) -> ContextId {
+        let program = self.program;
+        let callee_layout = &program.bindings[&callee];
+        // Capture the values visible at this call, including clean
+        // overwrites. Never join a binding's lifetime.
+        let mut callee_frame = callee_layout.frame(
+            program.env,
+            callee,
+            program.bindings[&caller.0].captures_at_call(frame, &program.capture_needs[&callee]),
+        );
+        for (&id, arg) in callee_layout.args.iter().zip(args) {
+            callee_frame.set(id, program.dataflow.value(frame, arg));
+        }
+        let signature = (
+            callee_layout
+                .args
+                .iter()
+                .map(|&id| callee_frame.value(id))
+                .collect(),
+            callee_frame.captures.clone(),
+        );
+        let callee_ctx = self.context(callee, signature);
+        self.callers
+            .entry((callee, callee_ctx))
+            .or_default()
+            .insert(caller);
+        self.join_input((callee, callee_ctx, STARTING_BLOCK), &callee_frame);
+        callee_ctx
+    }
+
+    /// The context for a call's entry input: the reserved clean context, an
+    /// equal precise context, a new one within budget, or else the overflow.
+    fn context(&mut self, callee: DefId, signature: CallInput<P::Facts>) -> ContextId {
+        let clean = signature
+            .0
+            .iter()
+            .chain(signature.1.values())
+            .all(|value| value.aggregate() == FlowValue::default());
+        if clean {
+            return ContextId(1);
+        }
+        let keys = self.contexts.entry(callee).or_default();
+        if let Some(index) = keys.iter().position(|key| key == &signature) {
+            ContextId(index + 2)
+        } else if keys.len() < MAX_CONTEXTS - 1 {
+            keys.push(signature);
+            ContextId(keys.len() + 1)
+        } else {
+            if self.overflowed.insert(callee) {
+                tracing::debug!(
+                    function = self.program.env.def_name(callee),
+                    "taint context budget exhausted; merging additional inputs"
+                );
+            }
+            OVERFLOW
+        }
+    }
+
+    /// A returning block: publish the return value of its context and, for a
+    /// module initializer, the bindings it leaves for entrypoints.
+    fn exit(
+        &mut self,
+        (def, ctx, _): BlockKey,
+        body: &Body,
+        block: &BasicBlock,
+        frame: &FlowState<P::Facts>,
+    ) {
+        let dataflow = self.program.dataflow;
+        let returned = body
+            .vars
+            .iter_enumerated()
+            .filter(|(_, kind)| matches!(kind, VarKind::Ret))
+            .fold(TrackedValue::BOTTOM, |mut value, (id, _)| {
+                dataflow.join_tracked(&mut value, &frame.value(id));
+                value
+            });
+        // An implicit return is public undefined. An explicit return whose
+        // operand is bottom is still pending.
+        let explicit_return = block.iter().any(|inst| matches!(inst,
+            Inst::Assign(var, _) if var.as_var_id().is_some_and(|id| matches!(body.vars[id], VarKind::Ret))));
+        if !returned.root.reachable && explicit_return {
+            return;
+        }
+        let returned = if returned.root.reachable {
+            returned
+        } else {
+            TrackedValue::default()
+        };
+        self.publish_return((def, ctx), &returned);
+        if self.program.global_bodies.contains(&def) {
+            self.publish_globals(def, frame);
+        }
+    }
+
+    fn publish_return(&mut self, context: CallContext, returned: &TrackedValue<P::Facts>) {
+        let is_new = !self.returns.contains_key(&context);
+        let grew = self.program.dataflow.join_tracked(
+            self.returns.entry(context).or_insert(TrackedValue::BOTTOM),
+            returned,
+        );
+        if !(grew || is_new) {
+            return;
+        }
+        let Some(dependents) = self.callers.get(&context) else {
+            return;
+        };
+        for &key in dependents {
+            // A suspended block resumes at its checkpoint only if it waits on
+            // this context and no earlier call in the block already read the
+            // old return. Otherwise it reruns from its input.
+            if let Some((start, _)) = self.suspended.get(&key) {
+                let waiting_at = Location::new(key.2, *start as u32);
+                let calls = &self.edges[&key];
+                if calls.get(&waiting_at) != Some(&context)
+                    || calls
+                        .range(..waiting_at)
+                        .any(|(_, target)| *target == context)
+                {
+                    self.suspended.remove(&key);
+                }
+            }
+            self.queue.push(key);
+        }
+    }
+
+    /// Entrypoints inherit completed module initializers, not every
+    /// historical assignment made while initializing them.
+    fn publish_globals(&mut self, def: DefId, frame: &FlowState<P::Facts>) {
+        let program = self.program;
+        let mut changed = false;
+        for (&binding, ids) in &program.bindings[&def].aliases {
+            if program.captured.contains(&binding)
+                && program.env.binding_owner(binding) == Some(def)
+            {
+                changed |= program.dataflow.join_tracked(
+                    self.globals.entry(binding).or_insert(TrackedValue::BOTTOM),
+                    &frame.value(ids[0]),
+                );
+            }
+        }
+        if changed {
+            for &root in &program.env.global {
+                let frame = program.root_frame(root, &self.globals);
+                self.join_input((root, ContextId(0), STARTING_BLOCK), &frame);
+            }
+        }
+    }
+
+    /// Export findings and a context-erased view of the states, keeping only
+    /// contexts the final call edges reach from a root. Evidence from
+    /// preliminary invocations must not survive after their callers move on.
+    fn finish<'cx, C: Runner<'cx, State = Vec<Taint>>>(self, interp: &mut Interp<'cx, C>) {
         let mut adjacency = BTreeMap::<_, BTreeSet<_>>::new();
-        for ((def, ctx, _), calls) in edges {
+        for ((def, ctx, _), calls) in self.edges {
             adjacency
                 .entry((def, ctx))
                 .or_default()
                 .extend(calls.into_values());
         }
         let mut live = BTreeSet::new();
-        let mut pending: VecDeque<_> = roots.iter().map(|&def| (def, ContextId(0))).collect();
+        let mut pending: VecDeque<_> = self
+            .program
+            .roots
+            .iter()
+            .map(|&def| (def, ContextId(0)))
+            .collect();
         while let Some(context) = pending.pop_front() {
             if live.insert(context)
                 && let Some(targets) = adjacency.get(&context)
@@ -1409,7 +1591,8 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
                 pending.extend(targets);
             }
         }
-        interp.instruction_findings = findings
+        interp.instruction_findings = self
+            .findings
             .into_iter()
             .filter(|((def, ctx, _), _)| live.contains(&(*def, *ctx)))
             .flat_map(|((def, _, _), locations)| locations.into_iter().map(move |loc| (def, loc)))
@@ -1417,7 +1600,7 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
         // The legacy reporting traversal uses a context-erased compatibility
         // view. Sink decisions have already been made on precise local states.
         let mut blocks = BTreeMap::<(DefId, BasicBlockId), Vec<Taint>>::new();
-        for ((def, ctx, bb), frame) in inputs {
+        for ((def, ctx, bb), frame) in self.inputs {
             if live.contains(&(def, ctx)) {
                 let values = frame
                     .vars
@@ -1429,7 +1612,7 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
         }
         interp.set_block_states(blocks);
         let mut summaries = BTreeMap::<DefId, Vec<Taint>>::new();
-        for ((def, ctx), value) in returns {
+        for ((def, ctx), value) in self.returns {
             if live.contains(&(def, ctx)) {
                 summaries
                     .entry(def)
@@ -1438,7 +1621,6 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
             }
         }
         interp.replace_func_states(summaries);
-        true
     }
 }
 
