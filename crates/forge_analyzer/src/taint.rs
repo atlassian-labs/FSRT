@@ -29,7 +29,7 @@ pub use state::{FlowState, TrackedValue};
 pub use value::{FlowFacts, FlowValue};
 
 use crate::{
-    definitions::{DefId, Environment, ImportKind},
+    definitions::{DefId, DefKind, Environment, ImportKind},
     interp::{Dataflow, EntryKind, Interp, JoinSemiLattice, Runner},
     ir::{
         Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Literal, Location, Operand,
@@ -551,6 +551,7 @@ impl Bindings {
         &self,
         env: &Environment,
         def: DefId,
+        functions: &BTreeSet<DefId>,
         mut captures: BTreeMap<DefId, TrackedValue<F>>,
     ) -> FlowState<F> {
         // Recursive calls get fresh locals; only outer bindings are inherited.
@@ -577,7 +578,9 @@ impl Bindings {
                 // An initializer in another module may still be pending.
                 // Functions are resolved from the IR independently of values.
                 env.binding_owner(*binding)
-                    .filter(|&owner| owner != def && env.global.contains(&owner))
+                    .filter(|&owner| {
+                        owner != def && env.global.contains(&owner) && !functions.contains(binding)
+                    })
                     .map(|_| TrackedValue::BOTTOM)
             });
             if let Some(value) = value {
@@ -1123,6 +1126,9 @@ struct Program<'a, P> {
     bindings: BTreeMap<DefId, Bindings>,
     /// Bindings read by a function other than the one that owns them.
     captured: BTreeSet<DefId>,
+    /// Function bindings never written anything but their declaration, so
+    /// their value is always clean and never needs to be captured.
+    functions: BTreeSet<DefId>,
     /// The outer bindings each function and its callees read.
     capture_needs: BTreeMap<DefId, BTreeSet<DefId>>,
     global_bodies: BTreeSet<DefId>,
@@ -1145,13 +1151,51 @@ impl<'a, P: TaintPolicy> Program<'a, P> {
             .bodies()
             .filter_map(|body| body.owner().map(|def| (def, Bindings::new(body))))
             .collect();
+        // A declaration such as `const f = () => {}` lowers to a write of
+        // `undefined`; any other write may store data in the binding.
+        let mut written = BTreeSet::new();
+        for body in env.bodies() {
+            for (_, block) in body.iter_blocks_enumerated() {
+                for inst in block.iter() {
+                    if let Inst::Assign(var, rvalue) = inst
+                        && let Base::Var(id) = var.base
+                        && let Some(binding) = variable_def(&body.vars[id])
+                        && !(var.projections.is_empty()
+                            && matches!(rvalue, Rvalue::Read(Operand::Lit(_))))
+                    {
+                        written.insert(binding);
+                    }
+                }
+            }
+        }
+        let functions: BTreeSet<_> = bindings
+            .values()
+            .flat_map(|layout| layout.aliases.keys().copied())
+            .filter(|&binding| {
+                let target = env.resolve_alias(binding);
+                !written.contains(&binding)
+                    && !written.contains(&target)
+                    && matches!(
+                        env.def_ref(target),
+                        DefKind::Function(_) | DefKind::Closure(_)
+                    )
+            })
+            .collect();
+        // Calls are resolved from the IR, so a helper's callees never need
+        // its function bindings. Capturing them would make each call's
+        // context key grow with every helper reachable from the callee.
+        let outer = |def: DefId, binding: DefId| {
+            !functions.contains(&binding)
+                && env.binding_owner(binding).is_some_and(|owner| owner != def)
+        };
         let captured: BTreeSet<_> = bindings
             .iter()
             .flat_map(|(&def, bindings)| {
-                bindings.aliases.keys().copied().filter(move |binding| {
-                    env.binding_owner(*binding)
-                        .is_some_and(|owner| owner != def)
-                })
+                bindings
+                    .aliases
+                    .keys()
+                    .copied()
+                    .filter(move |&binding| outer(def, binding))
             })
             .collect();
         // A helper needs only its own free bindings and those used by its
@@ -1166,9 +1210,7 @@ impl<'a, P: TaintPolicy> Program<'a, P> {
                         .aliases
                         .keys()
                         .copied()
-                        .filter(|&binding| {
-                            env.binding_owner(binding).is_some_and(|owner| owner != def)
-                        })
+                        .filter(|&binding| outer(def, binding))
                         .collect(),
                 )
             })
@@ -1214,6 +1256,7 @@ impl<'a, P: TaintPolicy> Program<'a, P> {
             env,
             bindings,
             captured,
+            functions,
             capture_needs,
             global_bodies: env.global.iter().copied().collect(),
             roots: roots.into(),
@@ -1232,7 +1275,7 @@ impl<'a, P: TaintPolicy> Program<'a, P> {
             .filter(|(binding, _)| self.capture_needs[&def].contains(binding))
             .map(|(&binding, value)| (binding, value.clone()))
             .collect();
-        let mut initial = self.bindings[&def].frame(self.env, def, captures);
+        let mut initial = self.bindings[&def].frame(self.env, def, &self.functions, captures);
         if def == self.entry
             && self.tainted_request
             && let Some(&id) = self.bindings[&def].args.first()
@@ -1426,6 +1469,7 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
         let mut callee_frame = callee_layout.frame(
             program.env,
             callee,
+            &program.functions,
             program.bindings[&caller.0].captures_at_call(frame, &program.capture_needs[&callee]),
         );
         for (&id, arg) in callee_layout.args.iter().zip(args) {

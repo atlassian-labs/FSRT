@@ -1078,3 +1078,20 @@ fn secret_logging_revisits_earlier_calls_when_a_suspended_caller_gets_new_facts(
         1,
     );
 }
+
+#[test]
+fn secret_logging_tracks_data_written_to_function_bindings() {
+    assert_v1_findings(
+        "let read = () => 'public'; read = secret; function get() { return read; } console.log(get());",
+        1,
+    );
+    assert_findings_with(
+        "import { kvs } from '@forge/kvs';
+         let read = () => 'public';
+         read = kvs.getSecret('key');
+         function get() { return read; }
+         export function run() { console.log(get()); }",
+        V1,
+        1,
+    );
+}
