@@ -2819,6 +2819,32 @@ fn scan_manifest_evidence(manifest: &str, scanner: &str) -> Report {
 fn manifest_evidence_formats_bindings_without_changing_findings() {
     for (scanner, modules, expected) in [
         (
+            "authorization",
+            r#"
+  confluence:contentBylineItem:
+    - key: sample-byline
+      resolver: { function: main }
+  function:
+    - { key: main, handler: index.run }
+"#,
+            vec![
+                "Modules: [confluence:contentBylineItem: sample-byline (resolver.function)]\nFunction: main\nHandler: index.run",
+            ],
+        ),
+        (
+            "authorization",
+            r#"
+  jira:uiModifications:
+    - key: sample-modification
+      resolver: { function: main }
+  function:
+    - { key: main, handler: index.run }
+"#,
+            vec![
+                "Modules: [jira:uiModifications: sample-modification (resolver.function)]\nFunction: main\nHandler: index.run",
+            ],
+        ),
+        (
             "authentication",
             r#"
   example:module:

@@ -208,10 +208,10 @@ struct ContentAction<'a> {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct ContentByLineItem<'a> {
+struct ContentBylineItem<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
-    #[serde(borrow, rename = "dynamicProperties")]
+    #[serde(default, borrow, rename = "dynamicProperties")]
     dynamic_properties: JustFunc<'a>,
 }
 
@@ -288,7 +288,7 @@ struct IssueClass<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct UiModificatons<'a> {
+pub struct UiModifications<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
 }
@@ -343,7 +343,7 @@ pub struct Action<'a> {
     pub endpoint: Option<&'a str>,
 }
 
-impl<'a> HasFunctions<'a> for ContentByLineItem<'a> {
+impl<'a> HasFunctions<'a> for ContentBylineItem<'a> {
     fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
         self.common_keys.append_functions(funcs);
         self.dynamic_properties
@@ -382,7 +382,7 @@ impl<'a> HasFunctions<'a> for IssueClass<'a> {
     }
 }
 
-impl<'a> HasFunctions<'a> for UiModificatons<'a> {
+impl<'a> HasFunctions<'a> for UiModifications<'a> {
     fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
         self.common_keys.append_functions(funcs);
     }
@@ -452,8 +452,8 @@ pub struct ForgeModules<'a> {
     // Confluence Modules
     #[serde(rename = "confluence:contentAction", default, borrow)]
     content_action: Vec<CommonKey<'a>>,
-    #[serde(rename = "confluence:contentByLineItem", default, borrow)]
-    content_by_line_item: Vec<ContentByLineItem<'a>>,
+    #[serde(rename = "confluence:contentBylineItem", default, borrow)]
+    content_byline_item: Vec<ContentBylineItem<'a>>,
     #[serde(rename = "confluence:contextMenu", default, borrow)]
     context_menu: Vec<CommonKey<'a>>,
     #[serde(rename = "confluence:globalPage", default, borrow)]
@@ -496,8 +496,8 @@ pub struct ForgeModules<'a> {
     project_page: Vec<CommonKey<'a>>,
     #[serde(rename = "jira:projectSettingsPage", default, borrow)]
     project_settings_page: Vec<CommonKey<'a>>,
-    #[serde(rename = "jira:uiModificatons", default, borrow)]
-    pub ui_modifications: Vec<UiModificatons<'a>>,
+    #[serde(rename = "jira:uiModifications", default, borrow)]
+    pub ui_modifications: Vec<UiModifications<'a>>,
     #[serde(rename = "jira:workflowValidator", default, borrow)]
     pub workflow_validator: Vec<WorkflowValidator<'a>>,
     #[serde(rename = "jira:workflowPostFunction", default, borrow)]
@@ -974,7 +974,7 @@ impl<'a> ForgeModules<'a> {
             compass_global_page,
             team_page,
             content_action,
-            content_by_line_item,
+            content_byline_item,
             context_menu,
             confluence_global_page,
             homepage_feed,
@@ -1081,9 +1081,9 @@ impl<'a> ForgeModules<'a> {
             &portal_header_menu_action,
         );
         bindings.common("jiraServiceManagement:queuePage", &queue_page);
-        for module in content_by_line_item {
+        for module in content_byline_item {
             bindings.add(
-                "confluence:contentByLineItem",
+                "confluence:contentBylineItem",
                 module.common_keys.key,
                 &module,
             );
@@ -1104,7 +1104,7 @@ impl<'a> ForgeModules<'a> {
             bindings.add("jira:issueGlance", module.common_keys.key, &module);
         }
         for module in ui_modifications {
-            bindings.add("jira:uiModificatons", module.common_keys.key, &module);
+            bindings.add("jira:uiModifications", module.common_keys.key, &module);
         }
         for module in assets_import_type {
             bindings.add(
