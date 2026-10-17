@@ -28,28 +28,49 @@ struct CommonKey<'a> {
     resolver: Option<Resolver<'a>>,
 }
 
-trait HasFunctions<'a> {
-    fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I);
+/// A function key and the manifest property through which it was registered.
+struct FunctionProperty<'a> {
+    function: &'a str,
+    property: String,
 }
 
-impl<'a> HasFunctions<'a> for CommonKey<'a> {
-    fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
-        funcs.extend(self.function);
+trait HasFunctions<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>);
 
-        if let Some(Resolver {
-            function,
-            method: _,
-            endpoint: _,
-        }) = self.resolver
-        {
-            funcs.extend(function);
+    fn append_nested_functions(&self, property: &str, funcs: &mut Vec<FunctionProperty<'a>>) {
+        let start = funcs.len();
+        self.append_functions(funcs);
+        for function in &mut funcs[start..] {
+            function.property = format!("{property}.{}", function.property);
         }
     }
 }
 
+impl<'a> HasFunctions<'a> for CommonKey<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        JustFunc {
+            function: self.function,
+        }
+        .append_functions(funcs);
+        self.resolver.append_nested_functions("resolver", funcs);
+    }
+}
+
 impl<'a> HasFunctions<'a> for JustFunc<'a> {
-    fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
-        funcs.extend(self.function);
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        funcs.extend(self.function.map(|function| FunctionProperty {
+            function,
+            property: "function".to_owned(),
+        }));
+    }
+}
+
+impl<'a> HasFunctions<'a> for Resolver<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        JustFunc {
+            function: self.function,
+        }
+        .append_functions(funcs);
     }
 }
 
@@ -57,10 +78,9 @@ impl<'a, I, E: HasFunctions<'a>> HasFunctions<'a> for I
 where
     for<'c> &'c I: IntoIterator<Item = &'c E>,
 {
-    fn append_functions<B: Extend<&'a str>>(&self, funcs: &mut B) {
-        // iterating over &I
-        for e in self {
-            e.append_functions(funcs);
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        for value in self {
+            value.append_functions(funcs);
         }
     }
 }
@@ -204,7 +224,7 @@ enum MacroConfig<'a> {
 }
 
 impl<'a> HasFunctions<'a> for MacroConfig<'a> {
-    fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
         if let Self::Object(config) = self {
             config.append_functions(funcs);
         }
@@ -321,6 +341,83 @@ pub struct Action<'a> {
     pub function: Option<&'a str>,
     #[serde(rename = "endpoint", default)]
     pub endpoint: Option<&'a str>,
+}
+
+impl<'a> HasFunctions<'a> for ContentByLineItem<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+        self.dynamic_properties
+            .append_nested_functions("dynamicProperties", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for MacroMod<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+        self.config.append_nested_functions("config", funcs);
+        self.export.append_nested_functions("export", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for CustomField<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+        // Preserve the existing scan scope: value is included; edit is not.
+        self.value.append_nested_functions("value", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for DashboardGadget<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+        self.edit.append_nested_functions("edit", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for IssueClass<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+        self.dynamic_properties
+            .append_nested_functions("dynamicProperties", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for UiModificatons<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for AssetsImportType<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+        self.on_delete_import
+            .append_nested_functions("onDeleteImport", funcs);
+        self.stop_import
+            .append_nested_functions("stopImport", funcs);
+        self.start_import
+            .append_nested_functions("startImport", funcs);
+        self.import_status
+            .append_nested_functions("importStatus", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for WorkflowValidator<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        // Only the resolver is user-invokable; the function runs workflow validation.
+        self.common_keys
+            .resolver
+            .append_nested_functions("resolver", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for Action<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        JustFunc {
+            function: self.function,
+        }
+        .append_functions(funcs);
+    }
 }
 
 // Add more structs here for deserializing forge modules
@@ -790,6 +887,7 @@ pub enum BindingKind {
 pub struct ModuleBinding<'a> {
     pub module_type: &'static str,
     pub key: &'a str,
+    pub property: String,
     pub kind: BindingKind,
 }
 
@@ -808,14 +906,18 @@ impl<'a> FunctionBindings<'a> {
         kind: BindingKind,
         value: &impl HasFunctions<'a>,
     ) {
-        let mut functions = BTreeSet::new();
+        let mut functions = Vec::new();
         value.append_functions(&mut functions);
         for function in functions {
-            self.0.entry(function).or_default().insert(ModuleBinding {
-                module_type,
-                key,
-                kind,
-            });
+            self.0
+                .entry(function.function)
+                .or_default()
+                .insert(ModuleBinding {
+                    module_type,
+                    key,
+                    property: function.property,
+                    kind,
+                });
         }
     }
 
@@ -983,113 +1085,39 @@ impl<'a> ForgeModules<'a> {
             bindings.add(
                 "confluence:contentByLineItem",
                 module.common_keys.key,
-                &module.common_keys,
-            );
-            bindings.add(
-                "confluence:contentByLineItem",
-                module.common_keys.key,
-                &module.dynamic_properties,
+                &module,
             );
         }
         for module in macros {
-            bindings.add("macro", module.common_keys.key, &module.common_keys);
-            bindings.add("macro", module.common_keys.key, &module.config);
-            bindings.add("macro", module.common_keys.key, &module.export);
+            bindings.add("macro", module.common_keys.key, &module);
         }
         for module in custom_field {
-            bindings.add(
-                "jira:customField",
-                module.common_keys.key,
-                &module.common_keys,
-            );
-            bindings.add("jira:customField", module.common_keys.key, &module.value);
+            bindings.add("jira:customField", module.common_keys.key, &module);
         }
         for module in dashboard_gadget {
-            bindings.add(
-                "jira:dashboardGadget",
-                module.common_keys.key,
-                &module.common_keys,
-            );
-            bindings.add("jira:dashboardGadget", module.common_keys.key, &module.edit);
+            bindings.add("jira:dashboardGadget", module.common_keys.key, &module);
         }
         for module in issue_context {
-            bindings.add(
-                "jira:issueContext",
-                module.common_keys.key,
-                &module.common_keys,
-            );
-            bindings.add(
-                "jira:issueContext",
-                module.common_keys.key,
-                &module.dynamic_properties,
-            );
+            bindings.add("jira:issueContext", module.common_keys.key, &module);
         }
         for module in issue_glance {
-            bindings.add(
-                "jira:issueGlance",
-                module.common_keys.key,
-                &module.common_keys,
-            );
-            bindings.add(
-                "jira:issueGlance",
-                module.common_keys.key,
-                &module.dynamic_properties,
-            );
+            bindings.add("jira:issueGlance", module.common_keys.key, &module);
         }
         for module in ui_modifications {
-            bindings.add(
-                "jira:uiModificatons",
-                module.common_keys.key,
-                &module.common_keys,
-            );
+            bindings.add("jira:uiModificatons", module.common_keys.key, &module);
         }
         for module in assets_import_type {
             bindings.add(
                 "jiraServiceManagement:assetsImportType",
                 module.common_keys.key,
-                &module.common_keys,
-            );
-            bindings.add(
-                "jiraServiceManagement:assetsImportType",
-                module.common_keys.key,
-                &module.on_delete_import,
-            );
-            bindings.add(
-                "jiraServiceManagement:assetsImportType",
-                module.common_keys.key,
-                &module.stop_import,
-            );
-            bindings.add(
-                "jiraServiceManagement:assetsImportType",
-                module.common_keys.key,
-                &module.start_import,
-            );
-            bindings.add(
-                "jiraServiceManagement:assetsImportType",
-                module.common_keys.key,
-                &module.import_status,
+                &module,
             );
         }
-        for validator in workflow_validator {
-            // Only the resolver is user-invokable; the function runs workflow validation.
-            if let Some(resolver) = validator.common_keys.resolver {
-                bindings.add(
-                    "jira:workflowValidator",
-                    validator.common_keys.key,
-                    &JustFunc {
-                        function: resolver.function,
-                    },
-                );
-            }
+        for module in workflow_validator {
+            bindings.add("jira:workflowValidator", module.common_keys.key, &module);
         }
         for action in action {
-            bindings.add(
-                "action",
-                action.key,
-                &JustFunc {
-                    function: action.function,
-                },
-            );
+            bindings.add("action", action.key, &action);
         }
 
         functions.into_iter().flat_map(move |func| {
@@ -1442,12 +1470,58 @@ mod tests {
                 module_bindings: vec![ModuleBinding {
                     module_type: "macro",
                     key: "my-macro",
+                    property: "function".to_owned(),
                     kind: BindingKind::Invokable,
                 }],
                 invokable: true,
                 web_trigger: false,
                 admin: false
             })
+        );
+    }
+
+    #[test]
+    fn asset_import_bindings_preserve_each_callback_property() {
+        let yaml = r#"
+app: { id: test-app }
+modules:
+  jiraServiceManagement:assetsImportType:
+    - key: sample-import
+      function: main
+      resolver: { function: main }
+      onDeleteImport: { function: main }
+      stopImport: { function: main }
+      startImport: { function: main }
+      importStatus: { function: main }
+  function:
+    - { key: main, handler: index.run }
+"#;
+        let manifest: ForgeManifest<'_> = serde_yaml::from_str(yaml).unwrap();
+        let entrypoint = manifest.modules.into_analyzable_functions().next().unwrap();
+        assert!(entrypoint.invokable);
+        assert!(!entrypoint.web_trigger);
+        let properties: Vec<_> = entrypoint
+            .module_bindings
+            .iter()
+            .map(|binding| {
+                assert_eq!(
+                    binding.module_type,
+                    "jiraServiceManagement:assetsImportType"
+                );
+                assert_eq!(binding.key, "sample-import");
+                binding.property.as_str()
+            })
+            .collect();
+        assert_eq!(
+            properties,
+            vec![
+                "function",
+                "importStatus.function",
+                "onDeleteImport.function",
+                "resolver.function",
+                "startImport.function",
+                "stopImport.function",
+            ]
         );
     }
 

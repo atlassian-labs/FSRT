@@ -2832,7 +2832,7 @@ fn manifest_evidence_formats_bindings_without_changing_findings() {
     - { key: main, handler: index.run }
 "#,
             vec![
-                "Modules: [webtrigger: public-job, webtrigger: secondary-job]\nFunction: main\nHandler: index.run",
+                "Modules: [webtrigger: public-job (function), webtrigger: secondary-job (function)]\nFunction: main\nHandler: index.run",
             ],
         ),
         (
@@ -2850,8 +2850,26 @@ fn manifest_evidence_formats_bindings_without_changing_findings() {
     - { key: alias, handler: index.run }
 "#,
             vec![
-                "Modules: [jira:globalPage: first-page]\nFunction: main\nHandler: index.run",
-                "Modules: [jira:globalPage: second-page]\nFunction: alias\nHandler: index.run",
+                "Modules: [jira:globalPage: first-page (resolver.function)]\nFunction: main\nHandler: index.run",
+                "Modules: [jira:globalPage: second-page (resolver.function)]\nFunction: alias\nHandler: index.run",
+            ],
+        ),
+        (
+            "authorization",
+            r#"
+  jira:customField:
+    - key: sample-field
+      resolver: { function: main }
+      value: { function: main }
+  macro:
+    - key: sample-macro
+      function: main
+      config: { function: main }
+  function:
+    - { key: main, handler: index.run }
+"#,
+            vec![
+                "Modules: [jira:customField: sample-field (resolver.function), jira:customField: sample-field (value.function), macro: sample-macro (config.function), macro: sample-macro (function)]\nFunction: main\nHandler: index.run",
             ],
         ),
     ] {

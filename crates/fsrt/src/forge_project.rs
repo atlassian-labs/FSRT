@@ -187,7 +187,7 @@ impl ResolvedEntryPoint<'_> {
                 } else {
                     binding.key
                 };
-                format!("{}: {key}", binding.module_type)
+                format!("{}: {key} ({})", binding.module_type, binding.property)
             })
             .collect::<Vec<_>>()
             .join(", ");
