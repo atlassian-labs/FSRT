@@ -8,18 +8,6 @@ fn fsrt(args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn secret_logging_version_requires_the_scanner() {
-    let output = fsrt(&["--secret-logging-version", "v1"]);
-
-    assert_eq!(output.status.code(), Some(2));
-    assert!(
-        String::from_utf8(output.stderr)
-            .unwrap()
-            .contains("--secret-logging-version only applies with --scanners secret-logging")
-    );
-}
-
-#[test]
 fn help_lists_secret_logging_options_with_defaults() {
     let output = fsrt(&["--help"]);
     // Compare without the terminal-dependent line wrapping.

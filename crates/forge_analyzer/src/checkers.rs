@@ -33,7 +33,7 @@ use tracing::{debug, info, warn};
 
 mod secret_logging;
 pub use secret_logging::{
-    DEFAULT_EXCLUDED_SECRET_SUFFIXES, DEFAULT_SECRET_SUFFIXES, PropertyReads, SecretLoggingChecker,
+    DEFAULT_EXCLUDED_SECRET_SUFFIXES, DEFAULT_SECRET_SUFFIXES, SecretLoggingChecker,
     SecretLoggingVuln, SecretSuffixes,
 };
 

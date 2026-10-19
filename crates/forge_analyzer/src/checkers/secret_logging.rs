@@ -96,23 +96,13 @@ impl Default for SecretSuffixes {
     }
 }
 
-/// How reading a property of a secret is treated.
-#[derive(Clone, Debug, Default)]
-pub enum PropertyReads {
-    /// v0: property reads, indexes and destructured bindings are clean.
-    #[default]
-    Clean,
-    /// v1: a written property keeps its own taint. Other properties read from a
-    /// secret stay tracked, but only report when the last property name matches
-    /// a secret suffix, as in `secret[account].password`.
-    Named(SecretSuffixes),
-}
-
 /// Values returned by Forge secret storage reads are sources, and console
-/// arguments are sinks.
+/// arguments are sinks. A written property keeps its own taint. Other
+/// properties read from a secret stay tracked, but only report when the last
+/// property name matches a secret suffix, as in `secret[account].password`.
 #[derive(Clone, Debug, Default)]
 pub struct SecretTaint {
-    property_reads: PropertyReads,
+    suffixes: SecretSuffixes,
     /// Partial masks already warned about, shared by every entrypoint's copy.
     masked: Rc<RefCell<BTreeSet<(DefId, Location)>>>,
 }
@@ -181,22 +171,17 @@ impl TaintPolicy for SecretTaint {
     }
 
     fn tracks_fields(&self) -> bool {
-        matches!(self.property_reads, PropertyReads::Named(_))
+        true
     }
 
     fn property_value(&self, base: SecretValue, name: Option<&str>) -> SecretValue {
         let facts = base
             .facts
             .classes()
-            .map(|class| match &self.property_reads {
-                PropertyReads::Clean => Taint::No,
-                PropertyReads::Named(_) if class == Taint::No => Taint::No,
-                PropertyReads::Named(suffixes)
-                    if name.is_some_and(|name| suffixes.matches(name)) =>
-                {
-                    Taint::Yes
-                }
-                PropertyReads::Named(_) => Taint::Unknown,
+            .map(|class| match class {
+                Taint::No => Taint::No,
+                _ if name.is_some_and(|name| self.suffixes.matches(name)) => Taint::Yes,
+                _ => Taint::Unknown,
             })
             .fold(SecretFacts::BOTTOM, |facts, class| {
                 facts.join(&SecretFacts::from_taint(class))
@@ -288,10 +273,10 @@ pub struct SecretLoggingChecker {
 }
 
 impl SecretLoggingChecker {
-    pub fn new(property_reads: PropertyReads) -> Self {
+    pub fn new(suffixes: SecretSuffixes) -> Self {
         Self {
             policy: SecretTaint {
-                property_reads,
+                suffixes,
                 ..SecretTaint::default()
             },
             ..Self::default()

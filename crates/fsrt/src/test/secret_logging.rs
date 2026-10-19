@@ -545,15 +545,12 @@ fn secret_logging_logical_presence_checks_do_not_disclose_values() {
         ("secret ?? 'fallback'", 1),
         ("secret && secret", 1),
     ] {
-        for options in [&[][..], &["--secret-logging-version", "v1"][..]] {
-            assert_findings_with(
-                &format!(
-                    "import {{ kvs }} from '@forge/kvs'; export async function run(flag) {{ const secret = await kvs.getSecret('key'); console.log({expression}); }}"
-                ),
-                options,
-                count,
-            );
-        }
+        assert_findings(
+            &format!(
+                "import {{ kvs }} from '@forge/kvs'; export async function run(flag) {{ const secret = await kvs.getSecret('key'); console.log({expression}); }}"
+            ),
+            count,
+        );
     }
 }
 
@@ -580,46 +577,6 @@ fn secret_logging_reports_console_methods() {
                 "{vuln:#?}"
             );
         }
-    }
-}
-
-#[test]
-fn secret_logging_treats_property_reads_as_clean() {
-    for (body, count) in [
-        ("console.log(secret.length);", 0),
-        ("console.log(secret.token);", 0),
-        ("console.log(secret['token']);", 0),
-        ("console.log(secret[0]);", 0),
-        ("console.log(`token: ${secret.token}`);", 0),
-        ("console.log(secret.token.trim());", 0),
-        ("const { token } = secret; console.log(token);", 0),
-        ("const [token] = secret; console.log(token);", 0),
-        (
-            "const config = { token: secret, id: 'public' }; console.log(config.id);",
-            0,
-        ),
-        (
-            "const [value, groups] = await Promise.all([secret, fetchGroups()]); console.log(groups.length);",
-            0,
-        ),
-        (
-            "function log({ value }) { console.log(value); } log({ value: secret });",
-            0,
-        ),
-        ("console.log(secret);", 1),
-        ("console.log(secret.trim());", 1),
-        ("console.log(JSON.stringify(secret));", 1),
-        (
-            "const config = { token: secret, id: 'public' }; console.log(config);",
-            1,
-        ),
-    ] {
-        assert_findings(
-            &format!(
-                "import {{ kvs }} from '@forge/kvs'; function fetchGroups() {{}} export async function run() {{ const secret = await kvs.getSecret('key'); {body} }}"
-            ),
-            count,
-        );
     }
 }
 
@@ -745,32 +702,26 @@ fn secret_logging_builtin_rules_respect_bindings_and_receiver() {
         ("let Boolean;", "Boolean(secret)", 1),
         ("let Object;", "Object.keys(secret)", 1),
     ] {
-        for options in [&[][..], &["--secret-logging-version", "v1"][..]] {
-            assert_findings_with(
-                &format!(
-                    "import {{ kvs }} from '@forge/kvs'; {setup} export async function run() {{ const secret = await kvs.getSecret('key'); console.log({expression}); }}"
-                ),
-                options,
-                count,
-            );
-        }
+        assert_findings(
+            &format!(
+                "import {{ kvs }} from '@forge/kvs'; {setup} export async function run() {{ const secret = await kvs.getSecret('key'); console.log({expression}); }}"
+            ),
+            count,
+        );
     }
 }
 
-const V1: &[&str] = &["--secret-logging-version", "v1"];
-
-fn assert_v1_findings(body: &str, count: usize) {
-    assert_findings_with(
+fn assert_body_findings(body: &str, count: usize) {
+    assert_findings(
         &format!(
             "import {{ kvs }} from '@forge/kvs'; function pick(value) {{ return value.creds; }} export async function run(key) {{ const secret = await kvs.getSecret('key'); {body} }}"
         ),
-        V1,
         count,
     );
 }
 
 #[test]
-fn secret_logging_v1_reports_property_reads_by_last_name() {
+fn secret_logging_reports_property_reads_by_last_name() {
     for body in [
         "console.log(secret[key].password);",
         "const account = secret.accounts[key]; console.log(account.auth.password.trim());",
@@ -780,9 +731,12 @@ fn secret_logging_v1_reports_property_reads_by_last_name() {
         "const config = secret.config; function log() { console.log(config.password); } log();",
         "console.log(JSON.parse(secret.config).password);",
         "console.log({ password: secret.password });",
+        "console.log(secret['token']);",
+        "console.log(secret.token.trim());",
+        "const { token } = secret; console.log(token);",
         "console.log(secret);",
     ] {
-        assert_v1_findings(body, 1);
+        assert_body_findings(body, 1);
     }
 
     for body in [
@@ -794,13 +748,17 @@ fn secret_logging_v1_reports_property_reads_by_last_name() {
         "console.log(secret.password.value);",
         "console.log(secret.nextPageToken);",
         "const user = { password: key }; console.log(user.password);",
+        "console.log(secret.length);",
+        "console.log(secret[0]);",
+        "const config = { token: secret, id: 'public' }; console.log(config.id);",
+        "const [value, groups] = await Promise.all([secret, pick(key)]); console.log(groups.length);",
     ] {
-        assert_v1_findings(body, 0);
+        assert_body_findings(body, 0);
     }
 }
 
 #[test]
-fn secret_logging_v1_tracks_written_properties() {
+fn secret_logging_tracks_written_properties() {
     for body in [
         "const config = { host: secret.host, password: 'literal' }; console.log(config.password);",
         "const config = { auth: { user: secret.user, password: 'literal' } }; console.log(config.auth.password);",
@@ -810,7 +768,7 @@ fn secret_logging_v1_tracks_written_properties() {
         "const config = {}; config.password = secret.password; config.password = 'literal'; console.log(config.password);",
         "const config = { host: secret.host, password: 'literal' }; const alias = config; console.log(alias.password);",
     ] {
-        assert_v1_findings(body, 0);
+        assert_body_findings(body, 0);
     }
 
     for body in [
@@ -820,22 +778,22 @@ fn secret_logging_v1_tracks_written_properties() {
         "function log({ value }) { console.log(value); } log({ value: secret });",
         "const config = { auth: { password: secret.password } }; console.log(config.auth);",
     ] {
-        assert_v1_findings(body, 1);
+        assert_body_findings(body, 1);
     }
 }
 
 #[test]
-fn secret_logging_v1_uses_configured_suffixes() {
+fn secret_logging_uses_configured_suffixes() {
     let source = |read: &str| {
         format!(
             "import {{ kvs }} from '@forge/kvs'; export async function run() {{ const secret = await kvs.getSecret('key'); console.log(secret.{read}); }}"
         )
     };
-    let suffixes = [V1, &["--secret-logging-suffixes", "credential"]].concat();
+    let suffixes = ["--secret-logging-suffixes", "credential"];
     assert_findings_with(&source("dbCredential"), &suffixes, 1);
     assert_findings_with(&source("password"), &suffixes, 0);
 
-    let excluded = [V1, &["--secret-logging-excluded-suffixes", "access_token"]].concat();
+    let excluded = ["--secret-logging-excluded-suffixes", "access_token"];
     assert_findings_with(&source("accessToken"), &excluded, 0);
     assert_findings_with(&source("refresh_token"), &excluded, 1);
     assert_findings_with(&source("nextPageToken"), &excluded, 1);
@@ -870,15 +828,6 @@ fn secret_logging_selects_properties_through_lodash() {
         // Other libraries and lodash/fp's argument order are not modeled.
         ("fpOmit(location, ['customToken'])", 1),
         ("ramdaOmit(location, ['customToken'])", 1),
-    ] {
-        assert_findings_with(&source(expression), V1, count);
-    }
-
-    // v0 tracks no properties to remove, and treats property reads as clean.
-    for (expression, count) in [
-        ("_omit(location, ['customToken'])", 1),
-        ("pick(location, ['customToken'])", 0),
-        ("get(secret, 'config.password')", 0),
     ] {
         assert_findings(&source(expression), count);
     }
@@ -921,7 +870,7 @@ fn reporting_functions(report: &Report) -> Vec<String> {
 
 #[test]
 fn secret_logging_keeps_helper_returns_per_call_site() {
-    let report = scan_with(SHARED_CLONE_HELPER, V1);
+    let report = scan(SHARED_CLONE_HELPER);
     assert!(!report.has_errors());
     assert_eq!(reporting_functions(&report), ["logHeaders"], "{report:#?}");
 }
@@ -940,7 +889,7 @@ fn secret_logging_keeps_helper_fields_and_captures_per_call() {
          value = {value: secret, password: 'public'};
          console.log(pass());",
     ] {
-        assert_v1_findings(body, 1);
+        assert_body_findings(body, 1);
     }
 }
 
@@ -960,7 +909,7 @@ fn secret_logging_waits_for_returning_values_before_classifying_redaction() {
          const scrubbed = secret.replace(read(), '***');
          export function run() { console.log(scrubbed); }",
     ] {
-        assert_findings_with(&format!("import {{ kvs }} from '@forge/kvs'; {source}"), V1, 0);
+        assert_findings(&format!("import {{ kvs }} from '@forge/kvs'; {source}"), 0);
     }
 }
 
@@ -988,7 +937,7 @@ fn secret_logging_requires_redaction_on_every_alternative() {
             1,
         ),
     ] {
-        assert_v1_findings(body, count);
+        assert_body_findings(body, count);
     }
 }
 
@@ -1011,7 +960,7 @@ fn secret_logging_context_overflow_preserves_unsafe_and_clean_calls() {
         "console.log(scrub({value: secret, pattern: 'public'}));
                    console.log(scrub({value: 'public', pattern: 'public'}));",
     );
-    assert_v1_findings(&body, 1);
+    assert_body_findings(&body, 1);
 }
 
 #[test]
@@ -1031,7 +980,7 @@ fn secret_logging_distinguishes_no_return_from_a_clean_return() {
             1,
         ),
     ] {
-        assert_v1_findings(body, count);
+        assert_body_findings(body, count);
     }
 }
 
@@ -1057,13 +1006,13 @@ fn secret_logging_preserves_sources_when_recursive_fields_are_bounded() {
          while (flag) { value = wrap(value); }
          console.log(value);",
     ] {
-        assert_v1_findings(body, 1);
+        assert_body_findings(body, 1);
     }
 }
 
 #[test]
 fn secret_logging_revisits_earlier_calls_when_a_suspended_caller_gets_new_facts() {
-    assert_findings_with(
+    assert_findings(
         "import { kvs } from '@forge/kvs';
          function deep() { return kvs.getSecret('key'); }
          function source(flag) { if (flag) { return deep(); } return 'public'; }
@@ -1074,24 +1023,22 @@ fn secret_logging_revisits_earlier_calls_when_a_suspended_caller_gets_new_facts(
              waitForHelper();
              console.log(value);
          }",
-        V1,
         1,
     );
 }
 
 #[test]
 fn secret_logging_tracks_data_written_to_function_bindings() {
-    assert_v1_findings(
+    assert_body_findings(
         "let read = () => 'public'; read = secret; function get() { return read; } console.log(get());",
         1,
     );
-    assert_findings_with(
+    assert_findings(
         "import { kvs } from '@forge/kvs';
          let read = () => 'public';
          read = kvs.getSecret('key');
          function get() { return read; }
          export function run() { console.log(get()); }",
-        V1,
         1,
     );
 }
@@ -1124,7 +1071,7 @@ fn secret_logging_loop_iterations_do_not_exhaust_helper_contexts() {
            console.log(id({ value: 'public', password: secret }).value);
          }",
     );
-    assert_findings_with(&source, V1, 0);
+    assert_findings(&source, 0);
 }
 
 #[test]
@@ -1156,6 +1103,6 @@ fn secret_logging_throwing_exits_add_no_return_value() {
             0,
         ),
     ] {
-        assert_v1_findings(body, count);
+        assert_body_findings(body, count);
     }
 }
