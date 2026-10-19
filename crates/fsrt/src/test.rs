@@ -2797,3 +2797,153 @@ mod is_admin_path_tests {
         }
     }
 }
+
+fn scan_manifest_evidence(manifest: &str, scanner: &str) -> Report {
+    let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+    project.add_file(
+        "src/index.js",
+        r#"
+        import api, { route } from '@forge/api';
+        export const run = async () => api.asApp().requestJira(
+            route`/rest/api/3/issue/EXAMPLE-1`, { method: 'POST' });
+    "#,
+    );
+    project.manifest_file_content = Some(manifest.to_owned());
+    let report =
+        scan_directory_test_with_args(project, Args::parse_from(["fsrt", "--scanners", scanner]));
+    assert!(!report.has_errors(), "{report:#?}");
+    report
+}
+
+#[test]
+fn manifest_evidence_formats_bindings_without_changing_findings() {
+    for (scanner, modules, expected) in [
+        (
+            "authorization",
+            r#"
+  confluence:contentBylineItem:
+    - key: sample-byline
+      resolver: { function: main }
+  function:
+    - { key: main, handler: index.run }
+"#,
+            vec![
+                "Modules: [confluence:contentBylineItem: sample-byline (resolver.function)]\nFunction: main\nHandler: index.run",
+            ],
+        ),
+        (
+            "authorization",
+            r#"
+  jira:uiModifications:
+    - key: sample-modification
+      resolver: { function: main }
+  function:
+    - { key: main, handler: index.run }
+"#,
+            vec![
+                "Modules: [jira:uiModifications: sample-modification (resolver.function)]\nFunction: main\nHandler: index.run",
+            ],
+        ),
+        (
+            "authentication",
+            r#"
+  example:module:
+    - { key: auxiliary, resolver: { function: main } }
+  scheduledTrigger:
+    - { key: hourly-job, function: main, interval: hour }
+  webtrigger:
+    - { key: public-job, function: main, response: { type: dynamic } }
+    - { key: secondary-job, function: main }
+  function:
+    - { key: main, handler: index.run }
+"#,
+            vec![
+                "Modules: [webtrigger: public-job (function), webtrigger: secondary-job (function)]\nFunction: main\nHandler: index.run",
+            ],
+        ),
+        (
+            "authorization",
+            r#"
+  webtrigger:
+    - { key: unrelated-public-job, function: main }
+  jira:workflowValidator:
+    - { key: validation-only, function: main }
+  jira:globalPage:
+    - { key: first-page, resolver: { function: main } }
+    - { key: second-page, resolver: { function: alias } }
+  function:
+    - { key: main, handler: index.run }
+    - { key: alias, handler: index.run }
+"#,
+            vec![
+                "Modules: [jira:globalPage: first-page (resolver.function)]\nFunction: main\nHandler: index.run",
+                "Modules: [jira:globalPage: second-page (resolver.function)]\nFunction: alias\nHandler: index.run",
+            ],
+        ),
+        (
+            "authorization",
+            r#"
+  jira:customField:
+    - key: sample-field
+      resolver: { function: main }
+      value: { function: main }
+  macro:
+    - key: sample-macro
+      function: main
+      config: { function: main }
+  function:
+    - { key: main, handler: index.run }
+"#,
+            vec![
+                "Modules: [jira:customField: sample-field (resolver.function), jira:customField: sample-field (value.function), macro: sample-macro (config.function), macro: sample-macro (function)]\nFunction: main\nHandler: index.run",
+            ],
+        ),
+    ] {
+        let manifest =
+            format!("modules:\n{modules}\napp: {{ id: test-app }}\npermissions: {{ scopes: [] }}");
+        let report = scan_manifest_evidence(&manifest, scanner);
+        let findings = serde_json::to_value(report.into_vulns()).unwrap();
+        let findings = findings.as_array().unwrap();
+        assert_eq!(findings.len(), expected.len());
+        for (finding, expected) in findings.iter().zip(expected) {
+            let proof = finding["proof"].as_str().unwrap();
+            let operation = if scanner == "authentication" {
+                "Unauthenticated"
+            } else {
+                "Unauthorized"
+            };
+            assert_eq!(
+                proof,
+                format!("{expected}\n{operation} API call via asApp() found via run")
+            );
+            let check = if scanner == "authentication" {
+                "Authentication"
+            } else {
+                "Authorization"
+            };
+            // Captured before manifest evidence was carried through the loader.
+            assert_eq!(
+                finding["check_name"],
+                format!("Custom-Check-{check}-286024937650911987")
+            );
+        }
+    }
+}
+
+#[test]
+fn manifest_evidence_does_not_report_scheduled_only_handler() {
+    let manifest = r#"
+modules:
+  example:module:
+    - { key: auxiliary, resolver: { function: main } }
+  scheduledTrigger:
+    - { key: hourly-job, function: main, interval: hour }
+  function:
+    - { key: main, handler: index.run }
+app: { id: test-app }
+permissions: { scopes: [] }
+"#;
+    for scanner in ["authentication", "authorization"] {
+        assert!(scan_manifest_evidence(manifest, scanner).has_no_vulns());
+    }
+}

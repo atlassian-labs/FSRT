@@ -205,6 +205,9 @@ impl Args {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ResolvedEntryPoint<'a> {
+    function_key: &'a str,
+    handler: &'a str,
+    module_bindings: Vec<manifest::ModuleBinding<'a>>,
     func_name: &'a str,
     path: PathBuf,
     module: ModId,
@@ -601,6 +604,8 @@ pub(crate) fn scan_directory<'a>(
         .flat_map(|entrypoint| {
             Ok::<_, forge_loader::Error>(Entrypoint {
                 function: entrypoint.function.try_resolve(&paths, &dir)?,
+                handler: entrypoint.handler,
+                module_bindings: entrypoint.module_bindings,
                 invokable: entrypoint.invokable,
                 web_trigger: entrypoint.web_trigger,
                 admin: entrypoint.admin,
@@ -726,7 +731,10 @@ pub(crate) fn scan_directory<'a>(
                         func.func_name, func.path,
                     );
                 }
-                reporter.add_vulnerabilities(checker.into_vulns());
+                reporter.add_vulnerabilities_with_proof(
+                    checker.into_vulns(),
+                    &func.manifest_proof(manifest::BindingKind::Invokable),
+                );
             }
         } else if func.webtrigger
             && let Some(interp) = &mut authn_interp
@@ -747,7 +755,10 @@ pub(crate) fn scan_directory<'a>(
                     func.func_name, func.path,
                 );
             }
-            reporter.add_vulnerabilities(checker.into_vulns());
+            reporter.add_vulnerabilities_with_proof(
+                checker.into_vulns(),
+                &func.manifest_proof(manifest::BindingKind::WebTrigger),
+            );
         }
     }
 
