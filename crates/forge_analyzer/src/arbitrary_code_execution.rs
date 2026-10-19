@@ -1,10 +1,9 @@
-//! IR-based execution checks. The conservative policy is intentionally a starting
-//! point: unmodelled calls remain unknown until their source semantics are modelled.
-//! `sink` recognizes execution targets from IR bindings; `ExecutionTaint` supplies
-//! sources and the reporting predicate to the shared fixed-point engine. New
-//! constructor syntax is marked by the lowerer in `definitions.rs`.
-//! See fsrt/src/test/arbitrary_code_execution.rs for the enabled, intentionally
-//! failing acceptance cases. Pure string transformations are the remaining work.
+//! IR-based execution checks. `sink` recognizes execution targets from IR
+//! bindings, so a call and a `new` expression are classified the same way.
+//! `ExecutionTaint` supplies sources and the reporting predicate to the shared
+//! fixed-point engine: Forge entrypoint arguments and IO results are sources,
+//! and text assembled only from constants is not.
+
 use std::{
     collections::HashSet,
     fmt,
@@ -23,9 +22,7 @@ use crate::{
         VarKind,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    taint::{
-        FlowValue, Taint, TaintDataflow, TaintPolicy, TaintReader, UnresolvedCall, visit_taint_call,
-    },
+    taint::{FlowValue, Taint, TaintDataflow, TaintPolicy, TaintReader, visit_taint_call},
 };
 
 fn child_process_api(name: &str) -> Option<&'static str> {
@@ -42,10 +39,74 @@ fn child_process_api(name: &str) -> Option<&'static str> {
     .find(|api| *api == name)
 }
 
+/// `node:vm` entry points that compile their first argument.
+fn vm_api(name: &str) -> Option<&'static str> {
+    [
+        "compileFunction",
+        "runInContext",
+        "runInNewContext",
+        "runInThisContext",
+        "Script",
+        "SourceTextModule",
+    ]
+    .into_iter()
+    .find(|api| *api == name)
+}
+
+/// The `Function` family, whose every argument is compiled.
+fn function_constructor(name: &str) -> Option<&'static str> {
+    [
+        "Function",
+        "AsyncFunction",
+        "GeneratorFunction",
+        "AsyncGeneratorFunction",
+    ]
+    .into_iter()
+    .find(|api| *api == name)
+}
+
+/// Global bindings that compile their arguments, whether called or constructed.
+fn code_constructor(name: &str) -> Option<&'static str> {
+    match name {
+        "eval" => Some("eval"),
+        _ => function_constructor(name),
+    }
+}
+
+/// The module namespace bound by `require(module)`.
+fn required_module(module: &str) -> Option<Binding> {
+    match module {
+        "child_process" | "node:child_process" => Some(Binding::ChildProcess),
+        "vm" | "node:vm" => Some(Binding::Vm),
+        _ => None,
+    }
+}
+
+/// How many leading arguments of `name` are executed as code or as a command.
+fn executable_arguments(name: &str) -> usize {
+    // Every parameter name is compiled alongside the body.
+    if function_constructor(name).is_some() {
+        return usize::MAX;
+    }
+    match name {
+        // The command or the source text; options and callbacks follow it.
+        "eval" | "exec" | "execSync" | "compileFunction" | "runInContext" | "runInNewContext"
+        | "runInThisContext" | "Script" | "SourceTextModule" => 1,
+        // The command and its argument vector.
+        _ => 2,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Binding {
     Global(String),
     ChildProcess,
+    Vm,
+    /// `Object.getPrototypeOf` or `Reflect.getPrototypeOf`.
+    GetPrototypeOf,
+    /// A prototype object returned by `getPrototypeOf`, whose `constructor`
+    /// property is the `Function` variant that built the inspected function.
+    Prototype,
     Sink(&'static str),
 }
 
@@ -71,12 +132,21 @@ fn binding(
         if env.is_undeclared_global(def) {
             return Some(Binding::Global(env.def_name(def).to_owned()));
         }
-        for module in ["child_process", "node:child_process"] {
-            if let Some(import) = env.is_imported_from(def, module) {
-                return match import {
-                    ImportKind::Star | ImportKind::Default => Some(Binding::ChildProcess),
-                    ImportKind::Named(name) => child_process_api(name).map(Binding::Sink),
-                };
+        for (modules, namespace, api) in [
+            (
+                ["child_process", "node:child_process"],
+                Binding::ChildProcess,
+                child_process_api as fn(&str) -> Option<&'static str>,
+            ),
+            (["vm", "node:vm"], Binding::Vm, vm_api),
+        ] {
+            for module in modules {
+                if let Some(import) = env.is_imported_from(def, module) {
+                    return match import {
+                        ImportKind::Star | ImportKind::Default => Some(namespace),
+                        ImportKind::Named(name) => api(name).map(Binding::Sink),
+                    };
+                }
             }
         }
         None
@@ -98,16 +168,14 @@ fn binding(
             if writes.next().is_none() {
                 result = match value {
                     Rvalue::Read(value) => binding(env, body, value, seen),
-                    Rvalue::Call(callee, args) if matches!(binding(env, body, callee, seen), Some(Binding::Global(name)) if name == "require") => {
-                        match args.as_slice() {
-                            [Operand::Lit(Literal::Str(module))]
-                                if module == "child_process" || module == "node:child_process" =>
-                            {
-                                Some(Binding::ChildProcess)
-                            }
+                    Rvalue::Call(callee, args) => match binding(env, body, callee, seen) {
+                        Some(Binding::Global(name)) if name == "require" => match args.as_slice() {
+                            [Operand::Lit(Literal::Str(module))] => required_module(module),
                             _ => None,
-                        }
-                    }
+                        },
+                        Some(Binding::GetPrototypeOf) => Some(Binding::Prototype),
+                        _ => None,
+                    },
                     _ => None,
                 };
             }
@@ -127,12 +195,17 @@ fn binding(
             return None;
         };
         result = match result? {
-            Binding::Global(global)
-                if (global == "global" || global == "globalThis") && name == "eval" =>
-            {
-                Some(Binding::Sink("eval"))
+            Binding::Global(global) if global == "global" || global == "globalThis" => {
+                code_constructor(name).map(Binding::Sink)
+            }
+            Binding::Global(global) if global == "Object" || global == "Reflect" => {
+                (name == "getPrototypeOf").then_some(Binding::GetPrototypeOf)
             }
             Binding::ChildProcess => child_process_api(name).map(Binding::Sink),
+            Binding::Vm => vm_api(name).map(Binding::Sink),
+            // `Object.getPrototypeOf(function () {}).constructor` reaches the
+            // `Function` variant for a generator or an async function.
+            Binding::Prototype if name == "constructor" => Some(Binding::Sink("Function")),
             _ => None,
         };
     }
@@ -144,26 +217,15 @@ fn sink<'a>(
     body: &Body,
     inst: &'a Inst,
 ) -> Option<(&'static str, &'a [Operand])> {
-    let (name, args) = match inst.rvalue() {
-        Rvalue::Intrinsic(Intrinsic::CodeConstructor(name), args) => {
-            return Some((name, args));
-        }
-        Rvalue::Call(callee, args) => {
-            let name = match binding(env, body, callee, &mut HashSet::new())? {
-                Binding::Global(name) if name == "eval" => "eval",
-                Binding::Sink(name) => name,
-                _ => return None,
-            };
-            (name, args)
-        }
+    let Rvalue::Call(callee, args) = inst.rvalue() else {
+        return None;
+    };
+    let name = match binding(env, body, callee, &mut HashSet::new())? {
+        Binding::Global(name) => code_constructor(&name)?,
+        Binding::Sink(name) => name,
         _ => return None,
     };
-    let count = if matches!(name, "eval" | "exec" | "execSync") {
-        1
-    } else {
-        2
-    };
-    Some((name, &args[..args.len().min(count)]))
+    Some((name, &args[..args.len().min(executable_arguments(name))]))
 }
 
 #[derive(Default)]
@@ -187,6 +249,12 @@ impl TaintPolicy for ExecutionTaint {
         })
     }
 
+    // Each written property keeps its own taint, so reading one field of an
+    // object excludes the taint of its siblings.
+    fn tracks_fields(&self) -> bool {
+        true
+    }
+
     fn is_violation(&self, inst: &Inst, values: &TaintReader<'_, Self>) -> bool {
         sink(values.env, values.body, inst).is_some_and(|(_, args)| {
             args.iter()
@@ -194,13 +262,15 @@ impl TaintPolicy for ExecutionTaint {
         })
     }
 
-    fn method_value(&self, call: &UnresolvedCall<'_, Taint>) -> Option<FlowValue<Taint>> {
-        // TODO: Distinguish pure construction from IO. Keep unknown call results
-        // reportable until the handoff's static-construction tests are implemented.
-        Some(call.args.iter().fold(
-            FlowValue::from_taint(Taint::Unknown).combine(&call.receiver),
-            |value, arg| value.combine(arg),
-        ))
+    fn global_call_value(&self, name: &str, path: &[Projection]) -> Option<FlowValue<Taint>> {
+        match (name, path) {
+            // A bare `fetch` call nested in another call reaches the policy as
+            // a global rather than as `Intrinsic::Fetch`.
+            ("fetch" | "forgeFetch", []) => Some(FlowValue::from_taint(Taint::Yes)),
+            // A coerced boolean carries a decision, not the text behind it.
+            ("Boolean", []) => Some(FlowValue::default()),
+            _ => None,
+        }
     }
 }
 
