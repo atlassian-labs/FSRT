@@ -102,8 +102,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
             | Intrinsic::EnvRead
             | Intrinsic::StorageRead
             | Intrinsic::SecretRead
-            | Intrinsic::ConsoleLog(_)
-            | Intrinsic::CodeConstructor(_) => initial_state,
+            | Intrinsic::ConsoleLog(_) => initial_state,
         }
     }
 
@@ -442,8 +441,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             | Intrinsic::ApiCustomField
             | Intrinsic::StorageRead
             | Intrinsic::SecretRead
-            | Intrinsic::ConsoleLog(_)
-            | Intrinsic::CodeConstructor(_) => ControlFlow::Continue(*state),
+            | Intrinsic::ConsoleLog(_) => ControlFlow::Continue(*state),
         }
     }
 }
@@ -497,9 +495,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         _operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         match *intrinsic {
-            Intrinsic::Authorize(_) | Intrinsic::ConsoleLog(_) | Intrinsic::CodeConstructor(_) => {
-                initial_state
-            }
+            Intrinsic::Authorize(_) | Intrinsic::ConsoleLog(_) => initial_state,
             Intrinsic::Fetch
             | Intrinsic::EnvRead
             | Intrinsic::StorageRead
@@ -604,9 +600,7 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         match *intrinsic {
-            Intrinsic::Authorize(_) | Intrinsic::ConsoleLog(_) | Intrinsic::CodeConstructor(_) => {
-                ControlFlow::Continue(*state)
-            }
+            Intrinsic::Authorize(_) | Intrinsic::ConsoleLog(_) => ControlFlow::Continue(*state),
             Intrinsic::Fetch
             | Intrinsic::EnvRead
             | Intrinsic::StorageRead
