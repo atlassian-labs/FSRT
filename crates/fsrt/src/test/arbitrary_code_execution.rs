@@ -395,6 +395,24 @@ fn reflect_get_prototype_of_resolves_the_function_constructor() {
 }
 
 #[test]
+fn prototype_of_a_non_function_is_not_the_function_constructor() {
+    // The constructor of a non-function prototype is Object, Array or String.
+    for value in ["{}", "[]", "'text'", "input.value", "settings"] {
+        assert_execution_findings(
+            &format!(
+                r#"// src/index.js
+            const settings = {{ mode: 'strict' }};
+            export function run(input) {{
+                Object.getPrototypeOf({value}).constructor(input.source);
+            }}
+        "#
+            ),
+            0,
+        );
+    }
+}
+
+#[test]
 fn function_constructor_checks_every_argument() {
     // Each parameter name is compiled alongside the body, so a source in the
     // last position still reports.
