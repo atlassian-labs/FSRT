@@ -15,7 +15,7 @@ use std::{
 use smallvec::SmallVec;
 
 use crate::{
-    definitions::{DefId, Environment, ImportKind},
+    definitions::{DefId, DefKind, Environment, ImportKind},
     interp::{Checker, Interp, Runner, WithCallStack},
     ir::{
         BasicBlockId, Body, Inst, Intrinsic, Literal, Location, Operand, Projection, Rvalue, VarId,
@@ -152,18 +152,7 @@ fn binding(
         None
     });
     if result.is_none() {
-        let mut writes = body
-            .blocks
-            .iter()
-            .flat_map(|block| block.iter())
-            .filter_map(|inst| match inst {
-                Inst::Assign(target, value)
-                    if target.as_var_id() == Some(id) && target.projections.is_empty() =>
-                {
-                    Some(value)
-                }
-                _ => None,
-            });
+        let mut writes = writes(body, id);
         if let Some(value) = writes.next() {
             if writes.next().is_none() {
                 result = match value {
@@ -173,7 +162,13 @@ fn binding(
                             [Operand::Lit(Literal::Str(module))] => required_module(module),
                             _ => None,
                         },
-                        Some(Binding::GetPrototypeOf) => Some(Binding::Prototype),
+                        Some(Binding::GetPrototypeOf)
+                            if args
+                                .first()
+                                .is_some_and(|arg| is_function(env, body, arg, seen)) =>
+                        {
+                            Some(Binding::Prototype)
+                        }
                         _ => None,
                     },
                     _ => None,
@@ -209,6 +204,57 @@ fn binding(
             _ => None,
         };
     }
+    result
+}
+
+/// The values assigned to the whole variable `id`.
+fn writes(body: &Body, id: VarId) -> impl Iterator<Item = &Rvalue> {
+    body.blocks
+        .iter()
+        .flat_map(|block| block.iter())
+        .filter_map(move |inst| match inst {
+            Inst::Assign(target, value)
+                if target.as_var_id() == Some(id) && target.projections.is_empty() =>
+            {
+                Some(value)
+            }
+            _ => None,
+        })
+}
+
+/// Whether `op` holds a function: a function or arrow expression, which lowers
+/// to `undefined`, or a binding to a declared function, closure or class.
+fn is_function(
+    env: &Environment,
+    body: &Body,
+    op: &Operand,
+    seen: &mut HashSet<(DefId, VarId)>,
+) -> bool {
+    let var = match op {
+        Operand::Lit(Literal::Undef) => return true,
+        Operand::Var(var) if var.projections.is_empty() => var,
+        _ => return false,
+    };
+    let (Some(id), Some(owner)) = (var.as_var_id(), body.owner()) else {
+        return false;
+    };
+    if let VarKind::GlobalRef(def) | VarKind::LocalDef(def) = body.vars[id]
+        && matches!(
+            env.def_ref(def),
+            DefKind::Function(_) | DefKind::Closure(_) | DefKind::Class(_)
+        )
+    {
+        return true;
+    }
+    if !seen.insert((owner, id)) {
+        return false;
+    }
+    let mut values = writes(body, id);
+    let result = match (values.next(), values.next()) {
+        (Some(Rvalue::Read(value)), None) => is_function(env, body, value, seen),
+        _ => false,
+    };
+    seen.remove(&(owner, id));
     result
 }
 
