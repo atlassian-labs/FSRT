@@ -37,6 +37,8 @@ trait ReportExt {
     fn contains_api_token_vuln(&self, expected_len: usize) -> bool;
 
     fn contains_container_token_vuln(&self, expected_len: usize) -> bool;
+
+    fn contains_secret_storage_vuln(&self, expected_len: usize) -> bool;
 }
 
 impl ReportExt for Report {
@@ -68,6 +70,18 @@ impl ReportExt for Report {
         self.into_vulns()
             .iter()
             .filter(|vuln| vuln.check_name() == "ATLASSIAN_CONTAINER_TOKEN")
+            .count()
+            == expected_len
+    }
+
+    #[inline]
+    fn contains_secret_storage_vuln(&self, expected_len: usize) -> bool {
+        self.into_vulns()
+            .iter()
+            .filter(|vuln| {
+                vuln.check_name()
+                    .starts_with("Custom-Check-Secret-Storage-")
+            })
             .count()
             == expected_len
     }
@@ -301,7 +315,10 @@ fn scanners_parse_as_typed_list() {
 fn scanners_help_lists_possible_values() {
     let help = Args::command().render_long_help().to_string();
 
-    assert!(help.contains("possible values:"));
+    // Case-insensitive: clap renders the inline `[possible values: ...]` form
+    // until one variant carries a doc comment, after which it emits a
+    // `Possible values:` block instead.
+    assert!(help.to_lowercase().contains("possible values:"));
     for scanner in [
         "authentication",
         "authorization",
@@ -309,6 +326,8 @@ fn scanners_help_lists_possible_values() {
         "permission",
         "secret",
         "secret-logging",
+        "runtime-version",
+        "secret-storage",
     ] {
         assert!(help.contains(scanner), "help omitted scanner {scanner}");
     }
@@ -2595,6 +2614,1504 @@ providers:
     let scan_result = scan_directory_test(test_forge_project);
     assert!(scan_result.contains_secret_vuln(2));
     assert!(scan_result.contains_vulns(2));
+}
+
+// -----------------------------------------------------------------------------
+// Forge secret storage scan (`--scanners secret-storage`).
+//
+// Reports `storage.setSecret` / `storage.getSecret` (and the `@forge/kvs`
+// equivalents) reachable from an entry point with no authorization check.
+// Off by default because non-admin access can be legitimate.
+// -----------------------------------------------------------------------------
+
+fn scan_with_secret_storage(
+    forge_test_proj: MockForgeProject<'_>,
+) -> forge_analyzer::reporter::Report {
+    // Every scanner plus the opt-in one, so the vuln totals asserted below stay
+    // comparable with the default-mode tests.
+    scan_directory_test_with_args(
+        forge_test_proj,
+        Args::parse_from([
+            "",
+            "--scanners",
+            "authentication,authorization,auth-header,permission,secret,runtime-version,secret-storage",
+        ]),
+    )
+}
+
+const SET_SECRET_APP: &str = "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { storage } from '@forge/api';
+
+        function App() {
+            storage.setSecret('sharedSecret', 'hunter2');
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yaml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                function: main
+                title: admin
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []";
+
+const SET_SECRET_ORDINARY_APP: &str = "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { storage } from '@forge/api';
+
+        function App() {
+            storage.setSecret('sharedSecret', 'hunter2');
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yaml
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []";
+
+#[test]
+fn set_secret_in_shared_admin_resolver_via_ui_kit() {
+    let scan_result = scan_with_secret_storage(MockForgeProject::files_from_string(SET_SECRET_APP));
+    assert!(scan_result.contains_secret_storage_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
+// A resolver exposed only by ordinary modules was never restricted to admins, so
+// there is no platform restriction for sharing to remove. The scan is scoped to
+// admin resolvers shared with another module, so this is not reported.
+#[test]
+fn set_secret_in_ordinary_module_is_not_reported() {
+    let scan_result =
+        scan_with_secret_storage(MockForgeProject::files_from_string(SET_SECRET_ORDINARY_APP));
+    assert!(scan_result.contains_secret_storage_vuln(0));
+    assert!(scan_result.contains_vulns(0));
+}
+
+// The scan must stay off unless the flag is passed.
+#[test]
+fn set_secret_not_reported_without_flag() {
+    let scan_result = scan_directory_test(MockForgeProject::files_from_string(SET_SECRET_APP));
+    assert!(scan_result.contains_secret_storage_vuln(0));
+    assert!(scan_result.contains_vulns(0));
+}
+
+// Distinct secrets in one function are reported separately, so triage sees every
+// key that is exposed.
+#[test]
+fn multiple_secrets_in_one_function_are_reported_separately() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { storage } from '@forge/api';
+
+        function App() {
+            storage.setSecret('secretOne', 'a');
+            storage.setSecret('secretTwo', 'b');
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yaml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                function: main
+                title: admin
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(2));
+    assert!(scan_result.contains_vulns(2));
+}
+
+// The call stack in the proof spans multiple frames when the call is made from a
+// helper rather than the entry point itself.
+#[test]
+fn set_secret_in_helper_reached_from_entrypoint() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { saveToken } from './helper';
+
+        function App() {
+            saveToken('hunter2');
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);
+
+        // src/helper.js
+        import { storage } from '@forge/api';
+
+        export function saveToken(token) {
+            storage.setSecret('apiToken', token);
+        }
+
+        // manifest.yaml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                function: main
+                title: admin
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
+// Writing a secret is not evidence of authentication, unlike reading one. Guards
+// the `SecretRead`/`SecretWrite` split in `AuthenticateDataflow`; compare
+// `kvs_is_valid_authn`, where `getSecret` suppresses the finding.
+#[test]
+fn set_secret_is_not_authentication() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import { kvs } from '@forge/kvs';
+        import api from '@forge/api';
+
+        export const src = () => {
+            kvs.setSecret('sharedSecret', 'x');
+            api.asApp().requestJira('/rest/api/3/issue/40');
+        };
+
+        // manifest.yml
+        modules:
+            webtrigger:
+              - key: basic-hello-world
+                function: main
+            function:
+              - key: main
+                handler: index.src
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(1));
+    assert!(
+        scan_result
+            .into_vulns()
+            .iter()
+            .all(|vuln| vuln.check_name().contains("Authentication"))
+    );
+}
+
+#[test]
+fn get_secret_in_shared_admin_resolver() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { storage } from '@forge/api';
+
+        function App() {
+            const secret = storage.getSecret('sharedSecret');
+            return (
+                <Fragment>
+                <Text>{secret}</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yaml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                function: main
+                title: admin
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
+// An authorization check before the call clears the finding.
+#[test]
+fn set_secret_behind_authorize_is_not_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { storage, authorize } from '@forge/api';
+
+        async function App() {
+            await authorize().onJira([{ permissions: ['ADMINISTER'] }]);
+            storage.setSecret('sharedSecret', 'hunter2');
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yaml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                function: main
+                title: admin
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(0));
+    assert!(scan_result.contains_vulns(0));
+}
+
+// An entry point used *only* by `jira:adminPage` is not reported: the platform
+// gates invocations of an admin page's own resolver on Jira admin permission, so
+// the app is not expected to check again. Contrast
+// `set_secret_in_shared_admin_resolver`, where the same resolver is also
+// registered by a non-admin module and that platform check no longer applies.
+#[test]
+fn set_secret_in_admin_page_only_entrypoint_is_not_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, AdminPage, Fragment, Text } from '@forge/ui';
+        import { storage } from '@forge/api';
+
+        function App() {
+            storage.setSecret('sharedSecret', 'hunter2');
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<AdminPage><App /></AdminPage>);
+
+        // manifest.yaml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                function: main
+                title: admin
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(0));
+    assert!(scan_result.contains_vulns(0));
+}
+
+// The `@forge/resolver` shape that Custom UI apps use: the manifest entry point
+// is the resolver handler and each `resolver.define` callback is checked as its
+// own entry.
+#[test]
+fn set_secret_in_custom_ui_resolver() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('setConfig', async (req) => {
+            await storage.setSecret('apiToken', req.payload.token);
+            return { ok: true };
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
+// Same as above for a Custom UI admin page, which declares its entry point under
+// `resolver.function` rather than `function`. Still admin-only, so still not
+// reported — but `ForgeModules::into_analyzable_functions` has to recognise the
+// resolver form to know that, which is what the `admin` flag collection does.
+#[test]
+fn set_secret_in_admin_page_only_resolver_is_not_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('setConfig', async (req) => {
+            await storage.setSecret('apiToken', req.payload.token);
+            return { ok: true };
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(0));
+    assert!(scan_result.contains_vulns(0));
+}
+
+// A `compass:adminPage` resolver used only by the admin page is not reported —
+// the platform restricts it to admin users. Note this function *is* in the
+// invokable set (`compass_admin_page` contributes to it, unlike
+// `jira_admin_page`), so `admin_only` is what excludes it.
+#[test]
+fn set_secret_in_compass_admin_page_only_resolver_is_not_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('setConfig', async (req) => {
+            await storage.setSecret('apiToken', req.payload.token);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            compass:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(0));
+    assert!(scan_result.contains_vulns(0));
+}
+
+// The documented Forge admin resolver exposure, in the product it was reported
+// against: a `compass:adminPage` resolver shared with `compass:globalPage`.
+// Sharing means the platform no longer restricts the resolver to admins, so the
+// admin-page functions on it become callable by any user.
+#[test]
+fn set_secret_in_shared_compass_admin_resolver() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('setConfig', async (req) => {
+            await storage.setSecret('apiToken', req.payload.token);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            compass:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            compass:globalPage:
+              - key: global-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: release notes
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+    assert!(
+        scan_result
+            .into_vulns()
+            .iter()
+            .any(|vuln| vuln.description().contains(
+                "an admin page module shares it with a module any authenticated user can reach"
+            )),
+        "shared admin resolver finding did not explain the bypass"
+    );
+}
+
+// The same exposure via `jira:adminPage`, which is reported to behave the same
+// way. The documented case is the Compass one above, so treat the Jira half of
+// this rule as the less firmly evidenced one.
+#[test]
+fn set_secret_in_shared_admin_resolver() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('setConfig', async (req) => {
+            await storage.setSecret('apiToken', req.payload.token);
+            return { ok: true };
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+    // The finding has to explain the shared-resolver mechanism, not claim that
+    // module placement is never an authorization boundary.
+    assert!(
+        scan_result
+            .into_vulns()
+            .iter()
+            .any(|vuln| vuln.description().contains(
+                "an admin page module shares it with a module any authenticated user can reach"
+            )),
+        "shared admin resolver finding did not explain the bypass"
+    );
+}
+
+// A secret keyed by the caller's own account id is a per-user credential: the
+// caller can only ever reach their own. Non-admin access to it is how the
+// pattern is meant to work, so it is not reported. This was the single largest
+// source of false positives when the scan was run across the Marketplace.
+#[test]
+fn secret_keyed_by_caller_account_id_is_not_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('saveToken', async ({ payload, context }) => {
+            const accountId = context.accountId;
+            await storage.setSecret(`user-token:${accountId}`, payload.token);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(0));
+}
+
+// A helper called from one resolver with the caller's own account id and from
+// another with an app-wide secret name must still report the app-wide read. The
+// first implementation accumulated the key's origin across every path at once, so
+// the per-user call site suppressed the finding for the app-wide one — a false
+// negative on exactly the case this scan exists to find.
+#[test]
+fn per_user_call_site_does_not_suppress_an_app_wide_one() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        async function readToken(accountId) {
+            return await storage.getSecret(`user-token:${accountId}`);
+        }
+
+        resolver.define('readMine', async ({ context }) => readToken(context.accountId));
+        resolver.define('readShared', async () => readToken('shared-service-account'));
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(1));
+}
+
+// The same helper reached only through the caller's own account id stays
+// suppressed, so the fix above did not just disable the suppression.
+#[test]
+fn helper_reached_only_by_caller_identity_is_not_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        async function readToken(accountId) {
+            return await storage.getSecret(`user-token:${accountId}`);
+        }
+
+        resolver.define('readMine', async ({ context }) => readToken(context.accountId));
+        resolver.define('readAlsoMine', async ({ context }) => readToken(context.accountId));
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(0));
+}
+
+// Two secrets read in one function whose keys cannot be resolved are still two
+// findings. `None` means the key is unknown, not that it is the same key, so the
+// call site has to be part of what distinguishes them.
+#[test]
+fn distinct_unresolvable_keys_in_one_function_are_reported_separately() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        const lookup = (name) => `secret-${name}`;
+
+        resolver.define('readBoth', async ({ payload }) => {
+            const a = await storage.getSecret(lookup(payload.one));
+            const b = await storage.getSecret(lookup(payload.two));
+            return [a, b];
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(2));
+}
+
+// A part of the key the walk cannot trace must leave the finding reported, not
+// silently contribute nothing. An all-false origin is the identity element of the
+// `or` that combines the parts of a key, so an untraced part would otherwise erase
+// the untrusted evidence behind it, making the verdict depend on the order the
+// parts happen to appear in.
+#[test]
+fn untraceable_part_of_a_key_does_not_suppress() {
+    // A chain long enough to exhaust the walk's budget before the key is traced.
+    let chain = (1..17)
+        .map(|i| format!("const d{i} = `${{d{}}}${{d{}}}`;", i - 1, i - 1))
+        .collect::<Vec<_>>()
+        .join("\n                ");
+
+    for key in [
+        "`${context.accountId}-${deep}-${payload.victim}`",
+        "`${context.accountId}-${payload.victim}-${deep}`",
+    ] {
+        let mut project = MockForgeProject::files_from_string(
+            "// manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+        );
+        project.add_file(
+            "src/index.js",
+            format!(
+                "import Resolver from '@forge/resolver';
+                import {{ storage }} from '@forge/api';
+                const resolver = new Resolver();
+                resolver.define('read', async ({{ context, payload }}) => {{
+                    const d0 = 'x';
+                    {chain}
+                    const deep = d16;
+                    return await storage.getSecret({key});
+                }});
+                export const handler = resolver.getDefinitions();"
+            ),
+        );
+
+        let scan_result = scan_with_secret_storage(project);
+        assert!(
+            scan_result.contains_secret_storage_vuln(1),
+            "an untraced part of the key suppressed the finding for: {key}"
+        );
+    }
+}
+
+// Two secrets read off one object share a base variable, so the projections have
+// to be part of what distinguishes the call sites.
+#[test]
+fn distinct_projections_off_one_object_are_reported_separately() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('readBoth', async ({ payload }) => {
+            const names = payload.names;
+            const a = await storage.getSecret(names.one);
+            const b = await storage.getSecret(names.two);
+            return [a, b];
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(2));
+}
+
+// The finding has to name the admin module behind the sharing. `jira:adminPage`
+// is never recorded as a module binding, so it comes from the loader instead, and
+// a Custom UI admin page declares its entry point under `resolver.function`.
+#[test]
+fn finding_names_the_admin_page_behind_the_sharing() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('setConfig', async (req) => {
+            await storage.setSecret('apiToken', req.payload.token);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    let description = scan_result
+        .into_vulns()
+        .iter()
+        .find(|vuln| {
+            vuln.check_name()
+                .starts_with("Custom-Check-Secret-Storage-")
+        })
+        .expect("a secret storage finding")
+        .description()
+        .to_owned();
+    assert!(
+        description.contains("jira:adminPage") && description.contains("jira:issuePanel"),
+        "finding named only one side of the sharing: {description}"
+    );
+}
+
+// The per-user key still has to be recognised when it is built several calls
+// away from the resolver, which is the shape that actually occurs: the account
+// id is threaded through helpers as a parameter and interpolated there.
+#[test]
+fn secret_keyed_by_account_id_through_helpers_is_not_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        async function readCachedEmail(accountId) {
+            return await storage.getSecret(`email-cache:${accountId}`);
+        }
+
+        async function loadProfile(id) {
+            return await readCachedEmail(id);
+        }
+
+        resolver.define('getProfile', async ({ context }) => {
+            return await loadProfile(context.accountId);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(0));
+}
+
+// An account id the *caller supplies* is not the caller's own identity. Keying a
+// secret on it lets any user read or overwrite another user's secret, so this
+// must still report — it is an IDOR, and suppressing it would turn the fix for
+// the per-user false positive into a missed vulnerability.
+#[test]
+fn secret_keyed_by_payload_account_id_is_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('readToken', async ({ payload }) => {
+            return await storage.getSecret(`user-token:${payload.accountId}`);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(1));
+}
+
+// A key scoped to a resource rather than to a user is shared by everyone who can
+// reach the resolver, so it stays reported even though it is not a constant.
+#[test]
+fn secret_keyed_by_project_id_is_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('saveAgentKey', async ({ payload, context }) => {
+            const projectId = payload.projectId;
+            await storage.setSecret(`agent-api-key:${projectId}`, payload.apiKey);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(1));
+}
+
+// A key that mixes the caller's identity with a caller-supplied value is not a
+// per-user key: the caller still chooses part of it. Suppression requires that
+// nothing untrusted contributes.
+#[test]
+fn secret_keyed_by_account_id_and_payload_is_reported() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        resolver.define('saveScoped', async ({ payload, context }) => {
+            const key = `${payload.scope}:${context.accountId}`;
+            await storage.setSecret(key, payload.token);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin config
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(1));
+}
+
+// One `requireAdmin()` helper shared by every resolver property is the canonical
+// Forge idiom. Each property must be credited with the authorization the helper
+// performs, not just the first one to reach it.
+#[test]
+fn shared_authorization_helper_clears_every_resolver_prop() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage, authorize } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        async function requireAdmin() {
+            const perms = await authorize().onJira([{ permissions: ['ADMINISTER'] }]);
+            if (!perms.every((p) => p.permission === 'ADMINISTER')) {
+                throw new Error('forbidden');
+            }
+        }
+
+        resolver.define('saveA', async (req) => {
+            await requireAdmin();
+            await storage.setSecret('tokenA', req.payload.t);
+        });
+
+        resolver.define('saveB', async (req) => {
+            await requireAdmin();
+            await storage.setSecret('tokenB', req.payload.t);
+        });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(0));
+    assert!(scan_result.contains_vulns(0));
+}
+
+// A sink helper shared by several properties is an exposure through each of them,
+// but it is one call site and one triage decision, so it reports once and names
+// every entry point that reaches it.
+#[test]
+fn shared_sink_helper_reported_once_naming_every_entry_point() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import { storage } from '@forge/api';
+
+        const resolver = new Resolver();
+
+        async function saveToken(t) {
+            await storage.setSecret('apiToken', t);
+        }
+
+        resolver.define('saveA', async (req) => { await saveToken(req.payload.t); });
+        resolver.define('saveB', async (req) => { await saveToken(req.payload.t); });
+
+        export const handler = resolver.getDefinitions();
+
+        // manifest.yml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: admin
+            jira:issuePanel:
+              - key: panel
+                resource: main
+                resolver:
+                  function: resolver-fn
+                title: panel
+            function:
+              - key: resolver-fn
+                handler: index.handler
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.contains_secret_storage_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+
+    // Grouping must not lose the exposure: both properties are named.
+    let description = scan_result
+        .into_vulns()
+        .iter()
+        .find(|vuln| {
+            vuln.check_name()
+                .starts_with("Custom-Check-Secret-Storage-")
+        })
+        .expect("a secret storage finding")
+        .description()
+        .to_owned();
+    assert!(
+        description.contains("2 entry points"),
+        "expected both entry points to be counted: {description}"
+    );
+    assert!(
+        description.contains("handler.saveA") && description.contains("handler.saveB"),
+        "expected both entry points to be named: {description}"
+    );
+    assert!(
+        description.contains("saveToken"),
+        "expected the finding to name the function holding the call: {description}"
+    );
+}
+
+// `api.storage.getSecret` on a default import is classified as a secret read, the
+// same as the named-import `storage.getSecret` always has been. Reading a secret
+// counts as evidence of authentication, so this webtrigger no longer produces an
+// Authentication finding — accepted deliberately, because classifying the same
+// call differently depending on how `@forge/api` was imported was the defect.
+#[test]
+fn get_secret_on_default_import_counts_as_authentication() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import api, { route } from '@forge/api';
+
+        export async function run(req) {
+            const shared = await api.storage.getSecret('sharedSecret');
+            if (req.headers.token !== shared) return { statusCode: 401 };
+            return await api.asApp().requestJira(route`/rest/api/3/issue/1`);
+        }
+
+        // manifest.yml
+        modules:
+            webtrigger:
+              - key: trigger
+                function: trigger-fn
+            function:
+              - key: trigger-fn
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    // The read is now authentication evidence, so the Authentication finding is
+    // gone. The webtrigger is not an admin resolver either, so the secret storage
+    // scan stays silent as well.
+    assert!(scan_result.has_no_vulns());
+}
+
+// The named-import form has always behaved this way; asserting it alongside the
+// default-import case is what pins the two paths together.
+#[test]
+fn get_secret_on_named_import_counts_as_authentication() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import api, { route, storage } from '@forge/api';
+
+        export async function run(req) {
+            const shared = await storage.getSecret('sharedSecret');
+            if (req.headers.token !== shared) return { statusCode: 401 };
+            return await api.asApp().requestJira(route`/rest/api/3/issue/1`);
+        }
+
+        // manifest.yml
+        modules:
+            webtrigger:
+              - key: trigger
+                function: trigger-fn
+            function:
+              - key: trigger-fn
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_with_secret_storage(test_forge_project);
+    assert!(scan_result.has_no_vulns());
+}
+
+// `kvs` from `@forge/kvs` and `api.storage` on a default `@forge/api` import
+// are the other two ways apps reach secret storage, for both reads and writes.
+#[test]
+fn secret_storage_detected_on_kvs_and_default_import() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "kvs named import, getSecret",
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { kvs } from '@forge/kvs';
+
+        function App() {
+            const secret = kvs.getSecret('sharedSecret');
+            return (
+                <Fragment>
+                <Text>{secret}</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yaml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                function: main
+                title: admin
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+        ),
+        (
+            "kvs named import",
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { kvs } from '@forge/kvs';
+
+        function App() {
+            kvs.setSecret('sharedSecret', 'hunter2');
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yaml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                function: main
+                title: admin
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+        ),
+        (
+            "api default import",
+            "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api from '@forge/api';
+
+        function App() {
+            api.storage.setSecret('sharedSecret', 'hunter2');
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        }
+
+        export const run = render(<Macro app={<App />} />);
+
+        // manifest.yaml
+        modules:
+            jira:adminPage:
+              - key: admin-page
+                function: main
+                title: admin
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+        ),
+    ];
+
+    for (label, source) in cases {
+        let scan_result = scan_with_secret_storage(MockForgeProject::files_from_string(source));
+        assert!(
+            scan_result.contains_secret_storage_vuln(1),
+            "expected one secret storage finding for: {label}"
+        );
+        assert!(
+            scan_result.contains_vulns(1),
+            "expected no other findings for: {label}"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------------
