@@ -221,3 +221,20 @@ another reported operation, the sixth is a queue consumer that stores per-priori
 counts of a board's backlog under a key built from the board id.
 Writes are never exempted by what they return: of the 103 triaged POST, PUT, DELETE and PATCH
 findings that return a constant or nothing, 60 are true positives.
+
+### D9 Second tranche of metadata routes; a read's options and query are not exposure
+The metadata table (D3) gains routes the triage rated false positive with no true
+positive among them: one service desk by id and its request types (17 findings,
+all false positives), the app's own `/myself`, field-context project and issue-type
+mappings, field configuration schemes, `attachment/meta` and `project/{}/roledetails`.
+`jql/parse` and `jql/sanitize` (POST) only analyse the query in the body and
+return its structure (7 findings, all false positives); they are exempted by
+route and method, as a separate class.
+
+The flow analysis also stops counting the options of a GET, and the body of a
+read-only POST search, as an exposure: they name what to read. A response that only
+names the next resource in a search body (the board's filter id) is no longer kept
+alive by it. Bodies of writes and of `asUser` requests still count.
+
+Evidence: 28 findings removed, all rated false positive (see the log); no
+true-positive row, and no group with a true positive, is affected.

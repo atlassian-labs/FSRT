@@ -377,13 +377,15 @@ impl AuthZChecker {
 /// rule needs a proven GET: unknown facts keep the finding.
 fn suppression(env: &Environment, def: DefId, loc: Location) -> Option<&'static str> {
     let request = env.def_ref(def).as_body()?.authz_requests.get(&loc)?;
-    if request.method(env)? != HttpMethod::Get {
-        return None;
+    match request.method(env)? {
+        HttpMethod::Get if authz_routes::is_instance_metadata(request.route(env)?) => {
+            Some("instance-metadata-route")
+        }
+        HttpMethod::Post if authz_routes::is_query_analysis_post(request.route(env)?) => {
+            Some("query-analysis-route")
+        }
+        _ => None,
     }
-    if authz_routes::is_instance_metadata(request.route(env)?) {
-        return Some("instance-metadata-route");
-    }
-    None
 }
 
 /// Reads that the flow analysis shows cannot be used by the caller to obtain data

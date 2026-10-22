@@ -189,6 +189,13 @@ fn responses_that_never_leave_the_resolver_are_not_reported() {
              return 'done';",
             0,
         ),
+        // A search names the next resource in the body of a read-only POST.
+        (
+            "const board = await (await api.asApp().requestJira(route`/rest/agile/1.0/board/${payload.id}/configuration`)).json();
+             const issues = await api.asApp().requestJira(route`/rest/api/3/search/jql`, {method: 'POST', body: JSON.stringify({jql: `filter = ${board.filter.id}`})});
+             return issues.json();",
+            1,
+        ),
         // The response only names the next resource; what that returns is reported.
         (
             "const board = await (await api.asApp().requestJira(route`/rest/agile/1.0/board/${payload.id}/configuration`)).json();
