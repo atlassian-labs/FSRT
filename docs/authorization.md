@@ -258,3 +258,19 @@ log counts entries.
 
 This is a reporting-unit decision, not a precision gain: it is kept as its own commit
 so that it can be reverted alone.
+
+### D11 An action is a user entrypoint only if a Rovo agent lists it
+An `action` module is invoked by a Rovo agent (a user chatting with the agent) or by
+an Automation rule that an administrator wrote. The manifest tells which: a Rovo
+agent module lists the actions it can call. An action no agent lists is
+`BindingKind::Privileged` (D5): the inputs come from rule configuration, not from a
+caller. An action an agent lists, or one whose function an ordinary module also
+binds, stays an entrypoint. The triaged true positive on a Rovo-listed action (a
+checklist agent) is unchanged.
+
+Evidence: 8 findings (entries) in 8 apps leave the report, all rated false positive
+(mostly `FP-ADMIN-ONLY`); no triaged true positive is affected.
+Residual risk: an action that is both listed by an agent of another app is not
+possible (agents list their own app's actions); a user who can edit an Automation
+rule can already run the action with chosen inputs, which is what an administrator
+configuring it is trusted to do.

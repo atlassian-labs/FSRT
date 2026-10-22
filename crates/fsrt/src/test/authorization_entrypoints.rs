@@ -52,3 +52,22 @@ fn an_ordinary_module_keeps_the_resolver_reachable() {
         assert!(report.contains_authz_vuln(1), "{modules}\n{report:#?}");
     }
 }
+
+#[test]
+fn an_action_is_reachable_only_through_a_rovo_agent_that_lists_it() {
+    let action = "  action:\n    - { key: act, function: resolver, name: Act, actionVerb: GET, description: x }\n";
+    let agent =
+        "  rovo:agent:\n    - { key: helper, name: Helper, prompt: help, actions: [act] }\n";
+    let page = "  jira:globalPage:\n    - { key: page, resource: main, resolver: { function: resolver } }\n";
+    for (modules, findings) in [
+        (action.to_owned(), 0),
+        (format!("{action}{agent}"), 1),
+        (format!("{action}{page}"), 1),
+    ] {
+        let report = scan_with_modules(&modules);
+        assert!(
+            report.contains_authz_vuln(findings),
+            "{modules}\n{report:#?}"
+        );
+    }
+}
