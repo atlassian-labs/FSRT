@@ -76,3 +76,44 @@ spreads, computed keys and methods are dropped by the lowering, so a method read
 from the IR could wrongly look like GET. The AST call is exact for what it names.
 Alternative rejected: recover the method from IR property writes (unsound because
 of the dropped constructs above).
+
+### D3 Instance-metadata GET table (`checkers/authz_routes.rs`)
+A GET whose route names instance configuration metadata is not reported. The
+table is a list of anchored path patterns (`:v` is the REST version, `{}` one
+segment), matched against the route's path segments, never against substrings.
+A route whose matching segment is computed does not match a literal one, the
+query string is ignored, and the method must be a proven GET.
+
+Evidence: of the 646 triaged GET sinks that this table matches, the triage rated
+303 false positive (`FP-READ-ONLY-METADATA`) and the 19 rows it rated true
+positive are all sinks in a group (same finding id) whose real exposure is another
+operation that is still reported, except one: `getProjectsPage` of a governance
+app reads `/project/search` and then versions of every project through a helper
+that the walk had already visited for another resolver (the visit-once
+limitation). That finding is the only true positive group lost, and the
+operation behind it is still reported under the other resolver.
+
+Alternatives rejected:
+* a substring or regex over the route (the legacy `user|instance|avatar|...` regex
+  makes `/properties/userPrefs` safe and misses `/field/search`);
+* allowing any GET with a constant route: `/rest/api/3/issue/ONE` or
+  `/project/KEY/role/10002` name one resource and carry data the caller may not see;
+* including routes with a computed segment, such as `/project/{key}`, whose raw
+  response was the exposure in the triaged true positives;
+* suppressing every GET of a read-only verb: `search/jql`, board configuration,
+  sprint issues, attachments and Confluence pages are GETs or POST reads of
+  content, and 242 of the triaged GET sinks are true positives.
+
+Known residual risk: project, board, service desk and space *lists* disclose the
+names of containers the caller may not be allowed to browse. The triage rated these
+lists false positive; a policy owner may want them back as low severity.
+
+### D4 Retry helpers only while nothing on their call path is reported
+When the policy suppresses an operation, the helpers on its call path are visited
+again for later resolvers so that a suppressed read cannot hide a write in the same
+helper (the legacy visit-once set would otherwise hide it). Retrying every helper on
+the path of any suppressed operation also re-reports the helper's *other*, reportable
+operations under every later resolver, which is not what the retry is for. The
+retry now excludes any helper that is on the call path of a reported operation.
+Measured effect with D3 alone: 14 additional findings without the exclusion, none
+with it.

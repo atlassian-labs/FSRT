@@ -33,6 +33,7 @@ use time::{Date, Month, OffsetDateTime};
 use tracing::{debug, info, warn};
 
 mod authz_principal;
+mod authz_routes;
 mod secret_logging;
 pub use secret_logging::{
     DEFAULT_EXCLUDED_SECRET_SUFFIXES, DEFAULT_SECRET_SUFFIXES, SecretLoggingChecker,
@@ -306,6 +307,10 @@ impl AuthZChecker {
     /// Report or suppress each operation the root reached, in discovery order,
     /// and audit the decision. Suppressions never reach the report.
     fn decide<'cx>(&mut self, interp: &Interp<'cx, Self>) {
+        // A helper is retried for later roots only while nothing on its call path
+        // is reported; otherwise the report already exposes it.
+        let mut retry = HashSet::new();
+        let mut exposed = HashSet::new();
         for candidate in mem::take(&mut self.candidates) {
             let helpers: Vec<_> = candidate
                 .callstack
@@ -321,18 +326,38 @@ impl AuthZChecker {
             let check_name = vuln.check_name();
             let ordinal = self.audited.entry(check_name.clone()).or_default();
             *ordinal += 1;
+            let reason = suppression(interp.env(), candidate.def, candidate.loc);
             audit(
                 interp,
                 candidate.def,
                 candidate.loc,
                 &check_name,
                 *ordinal,
-                "reported",
+                reason.unwrap_or("reported"),
             );
-            let _ = helpers;
-            self.vulns.push(vuln);
+            if reason.is_some() {
+                retry.extend(helpers);
+            } else {
+                exposed.extend(helpers);
+                self.vulns.push(vuln);
+            }
         }
+        self.suppressed_helpers
+            .extend(retry.difference(&exposed).copied());
     }
+}
+
+/// Why a candidate is not reported, from what the request itself says. Every
+/// rule needs a proven GET: unknown facts keep the finding.
+fn suppression(env: &Environment, def: DefId, loc: Location) -> Option<&'static str> {
+    let request = env.def_ref(def).as_body()?.authz_requests.get(&loc)?;
+    if request.method(env)? != HttpMethod::Get {
+        return None;
+    }
+    if authz_routes::is_instance_metadata(request.route(env)?) {
+        return Some("instance-metadata-route");
+    }
+    None
 }
 
 /// One machine-readable line per decision, enabled with

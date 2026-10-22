@@ -3334,5 +3334,6 @@ fn authorization_permission_presence_follows_imports_but_requires_a_resolver_roo
     }
 }
 
+mod authorization_metadata_routes;
 mod authorization_principal;
 mod authorization_requests;
