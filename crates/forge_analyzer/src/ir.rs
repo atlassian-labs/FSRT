@@ -182,6 +182,12 @@ pub struct Body {
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     pub class_instantiations: HashMap<DefId, DefId>,
     pub(crate) const_bindings: FxHashSet<DefId>,
+    /// Simple, unwritten formal bindings, in argument order, with boolean defaults.
+    pub(crate) authz_bool_parameters: Vec<Option<(DefId, Option<bool>)>>,
+    pub(crate) authz_written_bindings: FxHashSet<DefId>,
+    pub(crate) authz_principal_opaque: bool,
+    /// Calls whose actual argument positions are obscured by a spread.
+    pub(crate) authz_spread_calls: FxHashSet<Location>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
     pub dominator_tree: OnceCell<DomTree>,
     pub blockbuilders: TiVec<BasicBlockId, BasicBlockBuilder>,
@@ -439,6 +445,10 @@ impl Body {
             values: FxHashMap::default(),
             class_instantiations: Default::default(),
             const_bindings: Default::default(),
+            authz_bool_parameters: Default::default(),
+            authz_written_bindings: Default::default(),
+            authz_principal_opaque: false,
+            authz_spread_calls: Default::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
             predecessors: Default::default(),

@@ -51,7 +51,7 @@ use swc_core::{
 use tracing::{debug, field::debug, info, instrument, warn};
 use typed_index_collections::{TiSlice, TiVec};
 
-use crate::ir::VarId;
+use crate::ir::{Location, VarId};
 use crate::{
     ctx::ModId,
     ir::{
@@ -59,6 +59,8 @@ use crate::{
         RETURN_VAR, Rvalue, STARTING_BLOCK, Template, Terminator, VarKind, Variable,
     },
 };
+
+mod authz_principal;
 
 create_newtype! {
     pub struct FuncId(u32);
@@ -1836,6 +1838,12 @@ impl FunctionAnalyzer<'_> {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
         };
+        if args.iter().any(|arg| arg.spread.is_some()) {
+            self.body.authz_spread_calls.insert(Location::new(
+                self.block,
+                self.body.blockbuilders[self.block].insts.len() as u32,
+            ));
+        }
         let res = self.body.push_tmp(self.block, call, None);
         Operand::with_var(res)
     }
@@ -3136,7 +3144,11 @@ impl Visit for FunctionCollector<'_> {
             body,
         };
         func_body.visit_children_with(&mut localdef);
-        let body = localdef.body;
+        let mut body = localdef.body;
+        let mut writes = authz_principal::Writes::default();
+        params.visit_with(&mut writes);
+        func_body.visit_with(&mut writes);
+        authz_principal::record(self.res, self.module, &mut body, params, writes);
         let mut analyzer = FunctionAnalyzer::new(
             self.res,
             self.module,
@@ -3442,7 +3454,13 @@ impl FunctionCollector<'_> {
             body,
         };
         n.body.visit_children_with(&mut localdef);
-        let body = localdef.body;
+        let mut body = localdef.body;
+        let mut writes = authz_principal::Writes::default();
+        n.params.visit_with(&mut writes);
+        n.body.visit_with(&mut writes);
+        let params: Vec<_> = n.params.iter().map(|param| param.pat.clone()).collect();
+        authz_principal::record(self.res, self.module, &mut body, &params, writes);
+        body.authz_principal_opaque |= n.is_generator;
         let mut analyzer = FunctionAnalyzer::new(
             self.res,
             self.module,
