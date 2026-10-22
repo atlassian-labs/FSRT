@@ -1166,7 +1166,7 @@ impl IntoVuln for AuthHeaderVuln {
                 severity: Severity::Critical,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
-                marketplace_security_requirement: "Requirement 10.0",
+                marketplace_security_requirement: "Requirement 11.0",
                 date: reporter.current_date(),
             },
         }
