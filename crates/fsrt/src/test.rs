@@ -2877,8 +2877,7 @@ fn manifest_evidence_formats_bindings_without_changing_findings() {
     - { key: alias, handler: index.run }
 "#,
             vec![
-                "Modules: [jira:globalPage: first-page (resolver.function)]\nFunction: main\nHandler: index.run",
-                "Modules: [jira:globalPage: second-page (resolver.function)]\nFunction: alias\nHandler: index.run",
+                "Modules: [jira:globalPage: first-page (resolver.function)]\nFunction: main\nHandler: index.run\nModules: [jira:globalPage: second-page (resolver.function)]\nFunction: alias\nHandler: index.run",
             ],
         ),
         (
@@ -2947,4 +2946,156 @@ permissions: { scopes: [] }
     for scanner in ["authentication", "authorization"] {
         assert!(scan_manifest_evidence(manifest, scanner).has_no_vulns());
     }
+}
+
+// WorklogPro's manifest shape: three function keys expose the same Resolver
+// through different surfaces. Multiple operations in a definition share a hash.
+fn alias_manifest(aliases: bool) -> String {
+    let alias_modules = if aliases {
+        r#"
+  jira:globalPage:
+    - key: global-page
+      resolver: { function: resolvert }
+  jira:issueAction:
+    - key: issue-action
+      resolver: { function: resolveraction }
+"#
+    } else {
+        ""
+    };
+    let alias_functions = if aliases {
+        "    - { key: resolvert, handler: index.handler }\n    - { key: resolveraction, handler: index.handler }\n"
+    } else {
+        ""
+    };
+    format!(
+        "modules:\n  jira:projectPage:\n    - key: project-page\n      resolver: {{ function: resolver }}\n{alias_modules}  function:\n    - {{ key: resolver, handler: index.handler }}\n{alias_functions}app: {{ id: test-app }}\npermissions: {{ scopes: [] }}\n"
+    )
+}
+
+fn scan_alias_fixture(aliases: bool) -> Report {
+    let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+    project.add_file(
+        "src/index.js",
+        r#"
+        import api, { route } from '@forge/api';
+        import Resolver from '@forge/resolver';
+        const resolver = new Resolver();
+        resolver.define('searchProjectScopes', async () => {
+            const first = await api.asApp().requestJira(route`/rest/api/3/issue/ONE`);
+            const second = await api.asApp().requestJira(route`/rest/api/3/issue/TWO`);
+            return [await first.json(), await second.json()];
+        });
+        resolver.define('updateJiraIssueDates', async () => {
+            return api.asApp().requestJira(route`/rest/api/3/issue/ONE`, { method: 'PUT' });
+        });
+        export const handler = resolver.getDefinitions();
+        "#,
+    );
+    project.manifest_file_content = Some(alias_manifest(aliases));
+    let report = scan_directory_test_with_args(
+        project,
+        Args::parse_from(["fsrt", "--scanners", "authorization"]),
+    );
+    assert!(!report.has_errors(), "{report:#?}");
+    report
+}
+
+#[test]
+fn authorization_dedup_preserves_operations_hashes_and_binding_evidence() {
+    let single = scan_alias_fixture(false);
+    let aliases = scan_alias_fixture(true);
+    assert_eq!(single.into_vulns().len(), 3, "{single:#?}");
+    assert_eq!(aliases.into_vulns().len(), 3, "{aliases:#?}");
+    let hashes = |report: &Report| {
+        let mut names = report
+            .into_vulns()
+            .iter()
+            .map(|v| v.check_name().to_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    assert_eq!(hashes(&single), hashes(&aliases));
+    // Both operations in searchProjectScopes intentionally retain their legacy ID.
+    assert_eq!(
+        hashes(&aliases).into_iter().collect::<HashSet<_>>().len(),
+        2
+    );
+    let findings = serde_json::to_value(aliases.into_vulns()).unwrap();
+    for finding in findings.as_array().unwrap() {
+        let proof = finding["proof"].as_str().unwrap();
+        for binding in ["resolver", "resolvert", "resolveraction"] {
+            assert!(proof.contains(&format!("Function: {binding}\n")), "{proof}");
+        }
+        for module in ["jira:projectPage", "jira:globalPage", "jira:issueAction"] {
+            assert!(proof.contains(module), "{proof}");
+        }
+        assert_eq!(proof.matches("Unauthorized API call").count(), 1);
+    }
+}
+
+#[test]
+fn authorization_dedup_keeps_distinct_exported_handlers() {
+    let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+    project.add_file(
+        "src/index.js",
+        r#"
+        import api, { route } from '@forge/api';
+        export async function first() {
+            return api.asApp().requestJira(route`/rest/api/3/issue/ONE`, { method: 'POST' });
+        }
+        export async function second() {
+            return api.asApp().requestJira(route`/rest/api/3/issue/TWO`, { method: 'POST' });
+        }
+        "#,
+    );
+    project.manifest_file_content = Some(
+        r#"
+modules:
+  jira:globalPage:
+    - { key: first-page, resolver: { function: first } }
+    - { key: second-page, resolver: { function: second } }
+  function:
+    - { key: first, handler: index.first }
+    - { key: second, handler: index.second }
+app: { id: test-app }
+permissions: { scopes: [] }
+"#
+        .to_owned(),
+    );
+    let report = scan_directory_test_with_args(
+        project,
+        Args::parse_from(["fsrt", "--scanners", "authorization"]),
+    );
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(report.into_vulns().len(), 2, "{report:#?}");
+    assert_eq!(
+        report
+            .into_vulns()
+            .iter()
+            .map(|v| v.check_name())
+            .collect::<HashSet<_>>()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn authorization_dedup_does_not_change_authentication_alias_reports() {
+    let report = scan_manifest_evidence(
+        r#"
+modules:
+  webtrigger:
+    - { key: first-trigger, function: main }
+    - { key: second-trigger, function: alias }
+  function:
+    - { key: main, handler: index.run }
+    - { key: alias, handler: index.run }
+app: { id: test-app }
+permissions: { scopes: [] }
+"#,
+        "authentication",
+    );
+    assert_eq!(report.into_vulns().len(), 2, "{report:#?}");
 }

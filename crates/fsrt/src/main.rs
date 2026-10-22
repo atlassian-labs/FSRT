@@ -658,6 +658,19 @@ pub(crate) fn scan_directory<'a>(
         }
     }
 
+    // Manifest function aliases share an exported handler. Analyze that handler
+    // once for authorization, retaining every invokable binding as evidence.
+    // Do not deduplicate check_name: distinct operations can share its legacy hash.
+    let mut authorization_proofs: HashMap<_, Vec<String>> = HashMap::new();
+    if run_authorization_scanner {
+        for func in proj.funcs.iter().filter(|func| func.invokable) {
+            authorization_proofs
+                .entry((func.def_id, &func.path, func.func_name))
+                .or_default()
+                .push(func.manifest_proof(manifest::BindingKind::Invokable));
+        }
+    }
+
     for func in &proj.funcs {
         if let Some(interp) = &mut secret_logging_interp
             && let Err(err) = interp.run_checker(
@@ -693,7 +706,10 @@ pub(crate) fn scan_directory<'a>(
         }
 
         if func.invokable {
-            if let Some(interp) = &mut authz_interp {
+            if let Some(interp) = &mut authz_interp
+                && let Some(proofs) =
+                    authorization_proofs.remove(&(func.def_id, &func.path, func.func_name))
+            {
                 let mut checker = AuthZChecker::new(opts.enable_aec_mode);
                 debug!("checking {:?} at {:?}", func.func_name, &func.path);
                 if let Err(err) = interp.run_checker(
@@ -707,10 +723,7 @@ pub(crate) fn scan_directory<'a>(
                         func.func_name, func.path,
                     );
                 }
-                reporter.add_vulnerabilities_with_proof(
-                    checker.into_vulns(),
-                    &func.manifest_proof(manifest::BindingKind::Invokable),
-                );
+                reporter.add_vulnerabilities_with_proof(checker.into_vulns(), &proofs.join("\n"));
             }
         } else if func.webtrigger
             && let Some(interp) = &mut authn_interp
