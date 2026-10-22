@@ -47,6 +47,8 @@ fn metadata_gets_are_not_reported() {
         "api.asApp().requestJira(route`/rest/servicedeskapi/servicedesk/${payload.id}/requesttype`)",
         "api.asApp().requestJira(route`/rest/api/3/field/${payload.id}/context/projectmapping`)",
         "api.asApp().requestJira(route`/rest/api/3/attachment/meta`)",
+        "api.asApp().requestJira(route`/rest/servicedeskapi/assets/workspace`)",
+        "api.asApp().requestJira(route`/rest/api/3/jql/function/computation?orderBy=key`)",
         // Query analysis returns the structure of the query in the body.
         "api.asApp().requestJira(route`/rest/api/3/jql/parse?validation=strict`, {method: 'POST', body: JSON.stringify({queries: [payload.jql]})})",
         "api.asApp().requestJira(route`/rest/api/3/jql/sanitize`, {method: 'POST', body: JSON.stringify({queries: [{query: payload.jql}]})})",
@@ -87,6 +89,8 @@ fn resources_and_unproven_routes_are_reported() {
         "api.asApp().requestJira(route`/rest/api/3/myself/${payload.id}`)",
         "api.asApp().requestJira(route`/rest/servicedeskapi/servicedesk/${payload.id}/queue`)",
         "api.asApp().requestJira(route`/rest/api/3/jql/parse`, {method: 'PUT'})",
+        "api.asApp().requestJira(route`/rest/atlassian-connect/1/addons/${payload.key}/properties/${payload.name}`)",
+        "api.asApp().requestJira(route`/rest/servicedeskapi/assets/workspace/${payload.id}`)",
     ] {
         let report = scan_resolver(&returns(request));
         assert!(report.contains_authz_vuln(1), "{request}\n{report:#?}");
@@ -136,6 +140,43 @@ fn const_bound_routes_are_classified_like_inline_routes() {
         assert!(
             report.contains_authz_vuln(finding),
             "{preamble}\n{report:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_license_route_built_in_a_constant_is_metadata_only_for_gets() {
+    // A route that spells `license` inline is a trivial route the checker never
+    // reports (for any method); one built in a constant is not seen that way.
+    for (options, finding) in [
+        ("", 0),
+        (", {method: 'GET'}", 0),
+        (", {method: 'PUT', body: JSON.stringify({})}", 1),
+        (", payload.options", 1),
+    ] {
+        let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+        project.add_file(
+            "src/index.js",
+            format!(
+                "import Resolver from '@forge/resolver';
+                 import api, {{route}} from '@forge/api';
+                 const resolver = new Resolver();
+                 const LICENSE = route`/rest/atlassian-connect/1/addons/com.example.app/license`;
+                 resolver.define('probe', async ({{payload}}) => {{
+                     const response = await api.asApp().requestJira(LICENSE{options});
+                     return response.json();
+                 }});
+                 export const handler = resolver.getDefinitions();"
+            ),
+        );
+        project.manifest_file_content = Some(alias_manifest(false));
+        let report = scan_directory_test_with_args(
+            project,
+            Args::parse_from(["fsrt", "--scanners", "authorization"]),
+        );
+        assert!(
+            report.contains_authz_vuln(finding),
+            "{options}\n{report:#?}"
         );
     }
 }
