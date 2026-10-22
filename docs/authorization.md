@@ -274,3 +274,34 @@ Residual risk: an action that is both listed by an agent of another app is not
 possible (agents list their own app's actions); a user who can edit an Automation
 rule can already run the action with chosen inputs, which is what an administrator
 configuring it is trusted to do.
+
+### D12 Module context content that users edit is not the platform's to vouch for
+D7 trusts `context` because the platform fills it. Not everything it carries is the
+platform's: `context.extension.fieldValue` is the text of a custom field, and a macro
+or a gadget delivers its saved configuration the same way; those values are chosen
+by whoever can edit the field, macro or gadget, so a route built from them is as
+user-controlled as one built from `payload`. Reads through a property named in
+`CALLER_CONTROLLED_CONTEXT` (`jobId`, `fieldValue`, `gadgetConfiguration`,
+`config`, `macro`, `properties`) are labelled caller data, including when the path
+is the receiver of a method (`context.extension.fieldValue.split(',')`) or is read
+through an alias or a destructuring. Everything else under `context` (identifiers of
+the page: `extension.issue.key`, `extension.project.id`, `extension.content.id`, the
+account, cloud and module ids) stays trusted.
+
+Why: the triaged true positive `com.alexanderm.initiativepicker`'s "generic field
+value resolver" reads `/rest/api/3/issue/${key}` for each key in the field value,
+rated `TP-READ-USER-CONTROLLED` ("only provenance, not permission"). It was reported
+only because the flow analysis could not follow the callback that parses the value
+(D13); once it can, D7 alone would have suppressed it.
+
+Corpus effect before D13: none (659 findings, 250 apps, the same decisions). The rule
+is a guard for the flows D13 makes visible.
+
+Rejected: an allowlist of the context paths the platform vouches for. The flow
+analysis reads `context` once, when the handler destructures it, and a read of the
+whole object is by far the commonest (211 of the 400 reads in the corpus audit); the
+paths below it are not tracked, so an allowlist would either suppress nothing or have
+to treat every whole-object read as caller data. A denylist of the content names errs
+the same way for the paths it can see and documents the limit for the rest:
+`Object.values(context.extension)` and similar aggregate reads keep their CONTEXT
+label.

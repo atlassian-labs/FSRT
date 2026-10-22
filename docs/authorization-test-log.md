@@ -26,6 +26,7 @@ the lower and upper bound when a group is partly suppressed.
 | 6 | second tranche of metadata routes; a read's options are not exposure | 1064/257 | 93/74 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 34.331 | 0.085 | 28 rows (all FP) | 0 (no TP row or TP group) |
 | 7 | one finding per entry (operations listed in the proof) | 667/257 | 93/74 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 34.174 | 0.084 | 0 operations dropped; 397 findings merged into their entry's finding | 0 (385 TP-bearing entries, 12 uncertain, 268 all-FP, 2 untriaged) |
 | 8 | actions no Rovo agent lists are privileged bindings | 659/250 | 93/74 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 34.063 | 0.085 | 8 findings (entries), all FP | 0 |
+| 9 | module context content users edit is caller data | 659/250 | 93/74 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 34.025 | 0.085 | 0 | 0 (guards the TP initiativepicker/field value resolver) |
 
 ## Iteration tails
 
@@ -152,5 +153,19 @@ Unfiltered finding baseline:
   secret: 56 findings in 29 app(s)
   secret-logging: 76 findings in 16 app(s)
 Combined runtime per app: max 34.063s, p90 0.085s
+Baseline scans: 205 failed, 0 not completed
+```
+
+### 9 module context content users edit is caller data
+```
+Unfiltered finding baseline:
+  auth-header: 93 findings in 74 app(s)
+  authentication: 92 findings in 44 app(s)
+  authorization: 659 findings in 250 app(s)
+  permission: 36 findings in 36 app(s)
+  runtime-version: 538 findings in 538 app(s)
+  secret: 56 findings in 29 app(s)
+  secret-logging: 76 findings in 16 app(s)
+Combined runtime per app: max 34.025s, p90 0.085s
 Baseline scans: 205 failed, 0 not completed
 ```

@@ -57,6 +57,21 @@ mod exposure {
 
 const MAX_FUNCTIONS: usize = 300;
 
+/// Properties the caller controls even when they are read from the platform's
+/// `context`: the caller names the job, and the module context carries content
+/// users edit (a custom field's value, a gadget's or macro's configuration, the
+/// properties of a request). The rest of `context` says who and where, which the
+/// platform vouches for. Reading the whole `context` or `context.extension` and
+/// picking these apart later is the known limit of this list.
+const CALLER_CONTROLLED_CONTEXT: &[&str] = &[
+    "jobId",
+    "fieldValue",
+    "gadgetConfiguration",
+    "config",
+    "macro",
+    "properties",
+];
+
 /// A function whose body is part of the analysis: a definition, or a function
 /// value passed to a call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -541,12 +556,8 @@ impl<'a> Builder<'a> {
         {
             return None;
         }
-        // The platform sets `context`, but a caller can name the job.
-        if var
-            .projections
-            .iter()
-            .any(|projection| matches!(projection, Projection::Known(name) if name == "jobId"))
-        {
+        // The platform sets `context`, but not all of what it carries.
+        if Self::caller_controlled(&var.projections) {
             let source = Node::Source(func, self.cursor.0, self.cursor.1);
             self.cursor.1 += 1;
             self.classes.label(source, origin::PAYLOAD);
@@ -567,19 +578,24 @@ impl<'a> Builder<'a> {
     }
 
     /// The origin of a read through the request: `payload` is the caller's,
-    /// `context` the platform's (but `context.jobId` is not), and every other
-    /// property is treated as the caller's.
+    /// `context` the platform's (except what `CALLER_CONTROLLED_CONTEXT` names),
+    /// and every other property is treated as the caller's.
     fn request_read(projections: &[Projection]) -> u8 {
         match projections.first() {
-            Some(Projection::Known(name)) if name == "context" => {
-                if matches!(projections.get(1), Some(Projection::Known(job)) if job == "jobId") {
-                    origin::PAYLOAD
-                } else {
-                    origin::CONTEXT
-                }
+            Some(Projection::Known(name))
+                if name == "context" && !Self::caller_controlled(projections) =>
+            {
+                origin::CONTEXT
             }
             _ => origin::PAYLOAD,
         }
+    }
+
+    fn caller_controlled(projections: &[Projection]) -> bool {
+        projections.iter().any(|projection| {
+            matches!(projection, Projection::Known(name)
+                if CALLER_CONTROLLED_CONTEXT.contains(&name.as_ref()))
+        })
     }
 
     fn read(&mut self, body: &Body, func: Func, lhs: Option<Node>, source: &Operand) {
@@ -945,6 +961,14 @@ impl<'a> Builder<'a> {
             })
             .collect();
         all.extend(receiver);
+        // A method called on a property path: the path says where its receiver is from.
+        let path = &callee_var.projections[..callee_var.projections.len().saturating_sub(1)];
+        if receiver.is_some() && Self::caller_controlled(path) {
+            let source = Node::Source(func, self.cursor.0, self.cursor.1);
+            self.cursor.1 += 1;
+            self.classes.label(source, origin::PAYLOAD);
+            all.push(source);
+        }
         if let Some(first) = all.first().copied() {
             for node in &all {
                 self.classes.unify(*node, first);
