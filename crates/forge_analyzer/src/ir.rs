@@ -42,6 +42,7 @@ use crate::definitions::IntrinsicName;
 use crate::definitions::PackageData;
 use crate::definitions::Value;
 use crate::interp::ProjectionVec;
+use crate::request::RequestFacts;
 
 pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
 
@@ -184,8 +185,8 @@ pub struct Body {
     pub(crate) const_bindings: FxHashSet<DefId>,
     /// Syntactic proof about this function's normal returns, not helper returns.
     pub(crate) authz_constant_returns: bool,
-    /// REST calls with an omitted method or an inline, literal GET method.
-    pub(crate) authz_gets: FxHashSet<Location>,
+    /// The method and route of each `requestJira`-style call, by location.
+    pub(crate) authz_requests: FxHashMap<Location, RequestFacts>,
     /// Simple, unwritten formal bindings, in argument order, with boolean defaults.
     pub(crate) authz_bool_parameters: Vec<Option<(DefId, Option<bool>)>>,
     pub(crate) authz_written_bindings: FxHashSet<DefId>,
@@ -450,7 +451,7 @@ impl Body {
             class_instantiations: Default::default(),
             const_bindings: Default::default(),
             authz_constant_returns: false,
-            authz_gets: Default::default(),
+            authz_requests: Default::default(),
             authz_bool_parameters: Default::default(),
             authz_written_bindings: Default::default(),
             authz_principal_opaque: false,

@@ -6,6 +6,7 @@ pub mod ir;
 pub mod lattice;
 pub mod pretty;
 pub mod reporter;
+pub mod request;
 pub mod taint;
 pub mod utils;
 pub mod worklist;

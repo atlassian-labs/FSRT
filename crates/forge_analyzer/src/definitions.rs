@@ -52,6 +52,7 @@ use tracing::{debug, field::debug, info, instrument, warn};
 use typed_index_collections::{TiSlice, TiVec};
 
 use crate::ir::{Location, VarId};
+use crate::request::ConstFacts;
 use crate::{
     ctx::ModId,
     ir::{
@@ -61,6 +62,7 @@ use crate::{
 };
 
 mod authz_principal;
+mod authz_request;
 
 // Deliberately syntactic: aliases and computed expressions are
 // not proven independent of privileged data. Inspect the AST because lowering
@@ -109,40 +111,6 @@ fn authz_constant_returns(block: &BlockStmt) -> bool {
     let mut returns = Returns(true);
     block.visit_with(&mut returns);
     returns.0
-}
-
-fn authz_get_options(args: &[ExprOrSpread]) -> bool {
-    if args.is_empty() || args.len() > 2 || args.iter().any(|arg| arg.spread.is_some()) {
-        return false;
-    }
-    let Some(options) = args.get(1) else {
-        return true;
-    };
-    let Expr::Object(options) = &*options.expr else {
-        return false;
-    };
-    let mut is_get = true;
-    for prop in &options.props {
-        let PropOrSpread::Prop(prop) = prop else {
-            return false;
-        };
-        let Prop::KeyValue(prop) = &**prop else {
-            return false;
-        };
-        let key = match &prop.key {
-            PropName::Ident(key) => key.sym.as_ref(),
-            PropName::Str(key) => key.value.as_ref(),
-            _ => return false,
-        };
-        // An object-literal prototype can supply an inherited method.
-        if key == "__proto__" {
-            return false;
-        }
-        if key == "method" {
-            is_get = matches!(&*prop.value, Expr::Lit(Lit::Str(value)) if value.value.eq_ignore_ascii_case("GET"));
-        }
-    }
-    is_get
 }
 
 create_newtype! {
@@ -681,6 +649,8 @@ pub struct Environment {
     default_exports: FxHashMap<ModId, DefId>,
     pub resolver: ResolverTable,
     pub all_strings: Vec<String>,
+    /// Request arguments that `const` bindings hold, such as a route template.
+    pub(crate) authz_consts: FxHashMap<DefId, ConstFacts>,
 }
 
 struct ImportCollector<'cx> {
@@ -1880,12 +1850,15 @@ impl FunctionAnalyzer<'_> {
             Some(Intrinsic::ApiCall(_) | Intrinsic::ApiCustomField)
         ) && matches!(props.last(), Some(PropPath::Static(name))
                 if matches!(name.as_ref(), "requestJira" | "requestConfluence" | "requestBitbucket"))
-            && authz_get_options(args)
         {
-            self.body.authz_gets.insert(Location::new(
-                self.block,
-                self.body.blockbuilders[self.block].insts.len() as u32,
-            ));
+            let facts = self.request_facts(args);
+            self.body.authz_requests.insert(
+                Location::new(
+                    self.block,
+                    self.body.blockbuilders[self.block].insts.len() as u32,
+                ),
+                facts,
+            );
         }
         let call = match intrinsic {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
@@ -2667,6 +2640,12 @@ impl FunctionAnalyzer<'_> {
                 let def = self.res.get_or_insert_sym(id, self.module);
                 if var.kind == swc_core::ecma::ast::VarDeclKind::Const {
                     self.body.const_bindings.insert(def);
+                    if let Some(init) = decl.init.as_deref() {
+                        let facts = self.const_facts(init);
+                        if facts != Default::default() {
+                            self.res.authz_consts.insert(def, facts);
+                        }
+                    }
                 }
                 let opnd = decl
                     .init
