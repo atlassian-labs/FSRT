@@ -32,6 +32,7 @@ use std::{
 use time::{Date, Month, OffsetDateTime};
 use tracing::{debug, info, warn};
 
+mod authz_flow;
 mod authz_principal;
 mod authz_routes;
 mod secret_logging;
@@ -251,10 +252,14 @@ pub struct AuthZChecker {
     check_remotes: bool,
     principal: Option<authz_principal::Reachability>,
     suppressed_helpers: HashSet<DefId>,
+    /// The root being checked.
+    root: Option<DefId>,
     /// The instruction being visited.
     at: Option<(DefId, Location)>,
     /// Privileged operations found by the current root, in discovery order.
     candidates: Vec<Candidate>,
+    /// What the flow analysis shows about the current root, once an operation needs it.
+    flow: Option<Result<authz_flow::Flow, String>>,
     /// Candidates already audited per finding id, for stable ordinals.
     audited: HashMap<String, u32>,
 }
@@ -268,6 +273,8 @@ struct Candidate {
     kind: AuthZVulnKind,
     /// Why it is not reported; `None` reports it.
     reason: Option<&'static str>,
+    /// Route origin, body origin and whether the response is exposed, when known.
+    facts: Option<(u8, u8, bool)>,
 }
 
 impl AuthZChecker {
@@ -277,8 +284,10 @@ impl AuthZChecker {
             check_remotes,
             principal: None,
             suppressed_helpers: HashSet::new(),
+            root: None,
             at: None,
             candidates: Vec::new(),
+            flow: None,
             audited: HashMap::new(),
         }
     }
@@ -302,13 +311,33 @@ impl AuthZChecker {
             warn!("privileged operation outside an instruction");
             return ControlFlow::Continue(*state);
         };
-        let reason = suppression(interp.env(), def, loc);
+        if self.flow.is_none()
+            && matches!(interp.entry().kind, EntryKind::Resolver(..))
+            && let Some(root) = self.root
+        {
+            self.flow = Some(authz_flow::analyze(interp.env(), root));
+        }
+        let site = (def, loc);
+        let facts = self
+            .flow
+            .as_mut()
+            .and_then(|flow| flow.as_mut().ok())
+            .and_then(|flow| {
+                Some((
+                    flow.route_origin(site)?,
+                    flow.body_origin(site)?,
+                    flow.response_exposed(site)?,
+                ))
+            });
+        let reason = suppression(interp.env(), def, loc)
+            .or_else(|| flow_suppression(interp.env(), def, loc, facts));
         self.candidates.push(Candidate {
             def,
             loc,
             callstack: interp.callstack(),
             kind,
             reason,
+            facts,
         });
         if reason.is_some() {
             ControlFlow::Continue(*state)
@@ -324,6 +353,7 @@ impl AuthZChecker {
         // is reported; otherwise the report already exposes it.
         let mut retry = HashSet::new();
         let mut exposed = HashSet::new();
+        let flow = self.flow.take();
         for candidate in mem::take(&mut self.candidates) {
             let helpers: Vec<_> = candidate
                 .callstack
@@ -346,6 +376,8 @@ impl AuthZChecker {
                 &check_name,
                 *ordinal,
                 candidate.reason.unwrap_or("reported"),
+                flow.as_ref().map(|flow| flow.as_ref().err()),
+                candidate.facts,
             );
             if candidate.reason.is_some() {
                 retry.extend(helpers);
@@ -372,6 +404,40 @@ fn suppression(env: &Environment, def: DefId, loc: Location) -> Option<&'static 
     None
 }
 
+/// Reads that the flow analysis shows cannot be used by the caller to obtain data
+/// they could not read: the request is bound to the module context the platform
+/// supplied and nothing the caller sent, or its response goes nowhere the caller
+/// can see it. Writes are never exempted by what they return.
+fn flow_suppression(
+    env: &Environment,
+    def: DefId,
+    loc: Location,
+    facts: Option<(u8, u8, bool)>,
+) -> Option<&'static str> {
+    let (route_origin, body_origin, exposed) = facts?;
+    let request = env.def_ref(def).as_body()?.authz_requests.get(&loc)?;
+    let read = match request.method(env)? {
+        HttpMethod::Get => true,
+        HttpMethod::Post => request
+            .route(env)
+            .is_some_and(authz_routes::is_read_only_post),
+        _ => false,
+    };
+    if !read {
+        return None;
+    }
+    let sent = route_origin | body_origin;
+    if sent & authz_flow::origin::CONTEXT != 0
+        && sent & (authz_flow::origin::PAYLOAD | authz_flow::origin::EXTERNAL) == 0
+    {
+        return Some("context-bound-read");
+    }
+    if !exposed {
+        return Some("unexposed-read-response");
+    }
+    None
+}
+
 /// One machine-readable line per decision, enabled with
 /// `FORGE_LOG=authz_audit=debug`. Suppression is never evidence of authorization.
 fn audit<'cx>(
@@ -381,6 +447,8 @@ fn audit<'cx>(
     check_name: &str,
     ordinal: u32,
     decision: &str,
+    flow: Option<Option<&String>>,
+    facts: Option<(u8, u8, bool)>,
 ) {
     if !tracing::enabled!(target: "authz_audit", tracing::Level::DEBUG) {
         return;
@@ -405,7 +473,14 @@ fn audit<'cx>(
             "function": env.def_name(def),
             "method": method,
             "route": route,
+            "holes": request
+                .and_then(|request| request.route(env))
+                .map(|route| route.pieces().iter().any(|piece| matches!(piece, crate::request::Piece::Hole))),
             "decision": decision,
+            "flow": flow.map(|gap| gap.map_or("complete", |reason| reason.as_str())),
+            "route_origin": facts.map(|facts| facts.0),
+            "body_origin": facts.map(|facts| facts.1),
+            "response_exposed": facts.map(|facts| facts.2),
         })
     );
 }
@@ -542,6 +617,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
     ) -> ControlFlow<(), Self::State> {
         let is_root = interp.callstack().is_empty();
         if is_root {
+            self.root = Some(def);
             self.principal = authz_principal::analyze(interp.env(), def);
         }
         let old_body = interp.body();

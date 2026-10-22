@@ -64,6 +64,19 @@ const INSTANCE_METADATA: &[&str] = &[
     "/wiki/rest/api/settings/systemInfo",
 ];
 
+/// POST endpoints that only read: the body selects what to read. They are treated
+/// like GETs by the policies that depend on a request being a read.
+const READ_ONLY_POSTS: &[&str] = &[
+    "/rest/api/:v/search",
+    "/rest/api/:v/search/jql",
+    "/rest/api/:v/search/approximate-count",
+    "/rest/api/:v/jql/parse",
+    "/rest/api/:v/jql/sanitize",
+    "/rest/api/:v/issue/bulkfetch",
+    "/rest/api/:v/changelog/bulkfetch",
+    "/rest/api/:v/worklog/list",
+];
+
 fn matches(pattern: &str, route: &[Option<String>]) -> bool {
     let mut segments = pattern.split('/').filter(|segment| !segment.is_empty());
     for actual in route {
@@ -81,6 +94,14 @@ fn matches(pattern: &str, route: &[Option<String>]) -> bool {
         }
     }
     segments.next().is_none()
+}
+
+/// Whether a POST of `route` is a read whose body selects what to read.
+pub(super) fn is_read_only_post(route: &RouteText) -> bool {
+    let segments = route.path_segments();
+    READ_ONLY_POSTS
+        .iter()
+        .any(|pattern| matches(pattern, &segments))
 }
 
 /// Whether a GET of `route` reads instance configuration metadata.
