@@ -21,6 +21,7 @@ the lower and upper bound when a group is partly suppressed.
 | 1 | boolean-argument branch pruning (captain's WIP) | 1507/295 | 93/74 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 32.544 | 0.086 | 0 triaged (43 untriaged findings) | 0 |
 | 2 | request facts + candidate/audit pipeline | 1507/295 | 93/74 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 32.703 | 0.088 | 0 | 0 |
 | 3 | instance-metadata GET route table | 1185/283 | 93/74 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 32.735 | 0.085 | 303 rows (ordinal join) | 19 rows, 18 in groups that still report the TP sink; 1 group lost (see D3) |
+| 4 | assets-import hooks and compass admin pages are privileged bindings | 1171/279 | 93/74 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 32.744 | 0.087 | 14 rows (13 ADMIN-ONLY, 1 NO-RESULT) | 0 (no TP group lost) |
 
 ## Iteration tails
 
@@ -77,5 +78,19 @@ Unfiltered finding baseline:
   secret: 56 findings in 29 app(s)
   secret-logging: 76 findings in 16 app(s)
 Combined runtime per app: max 32.735s, p90 0.085s
+Baseline scans: 205 failed, 0 not completed
+```
+
+### 4 assets-import hooks and compass admin pages are privileged bindings
+```
+Unfiltered finding baseline:
+  auth-header: 93 findings in 74 app(s)
+  authentication: 92 findings in 44 app(s)
+  authorization: 1171 findings in 279 app(s)
+  permission: 36 findings in 36 app(s)
+  runtime-version: 538 findings in 538 app(s)
+  secret: 56 findings in 29 app(s)
+  secret-logging: 76 findings in 16 app(s)
+Combined runtime per app: max 32.744s, p90 0.087s
 Baseline scans: 205 failed, 0 not completed
 ```

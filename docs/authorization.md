@@ -117,3 +117,23 @@ operations under every later resolver, which is not what the retry is for. The
 retry now excludes any helper that is on the call path of a reported operation.
 Measured effect with D3 alone: 14 additional findings without the exclusion, none
 with it.
+
+### D5 Platform-invoked and product-admin-only modules are not unprivileged entrypoints
+A manifest registration now has a third kind, `BindingKind::Privileged`, for
+modules only the platform or a whole-product administrator can reach:
+`jiraServiceManagement:assetsImportType` (the platform calls `startImport`,
+`stopImport`, `importStatus` and `onDeleteImport` with the stored import
+configuration) and `compass:adminPage` (consistent with `jira:adminPage`, which
+was already not an entrypoint). A function is analysed as an entrypoint only if an
+ordinary (invokable) module also binds it; the privileged bindings are kept in the
+evidence.
+
+Evidence: 14 findings in four apps are reported on assets-import hooks and were all
+rated false positive (13 `FP-ADMIN-ONLY`, 1 `FP-NO-RESULT-EXPOSURE`).
+
+Rejected: treating `jira:projectSettingsPage` and `confluence:spaceSettings` the
+same way. Project and space administrators are not product administrators, and two
+triaged true positives are exactly this elevation (a project settings page whose
+resolver runs a payload-supplied JQL as the app, and one that rewrites global
+workflows). Also rejected: `action` modules, which are user-reachable when a Rovo
+agent lists them, and `automation:actionProvider`-style modules are not parsed.
