@@ -1780,7 +1780,9 @@ impl FunctionAnalyzer<'_> {
         {
             let value = self.lower_expr(obj, None);
             let callback_operand = match &**callback {
-                Expr::Arrow(arrow) => self.lower_callback("__FULFILLMENT", &arrow.params, &arrow.body),
+                Expr::Arrow(arrow) => {
+                    self.lower_callback("__FULFILLMENT", &arrow.params, &arrow.body)
+                }
                 Expr::Fn(function) if function.function.body.is_some() => {
                     let params = function
                         .function

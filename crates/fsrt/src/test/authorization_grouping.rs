@@ -117,7 +117,8 @@ fn operations_in_and_after_a_callback_that_returns_are_all_found() {
         "{proof}"
     );
     assert!(
-        proof.contains("POST /rest/api/3/issue/${}/comment in second (via handler.batch -> second)"),
+        proof
+            .contains("POST /rest/api/3/issue/${}/comment in second (via handler.batch -> second)"),
         "{proof}"
     );
     // The callback is part of the function that wrote it, not a call in the stack.
