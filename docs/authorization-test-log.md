@@ -32,6 +32,28 @@ the lower and upper bound when a group is partly suppressed.
 | 12 | site-level lookups: assets workspace id, app license, JQL function computation | 661/252 | 94/75 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 34.339 | 0.087 | 5 reported FP rows | 1 row (jaanga workspace id; entry still reported) |
 | 13 | callbacks of forEach, find, some, every, flatMap, sort, reduce, finally are called (recall) | 662/252 | 94/75 | 92/44 | 36/36 | 538/538 | 57/30 | 76/16 | 205 | 34.603 | 0.087 | 0 | 0 (+1 finding: asApp DELETE of a screen tab field) |
 
+Commit of each row (`git log 999d3d1..HEAD`):
+
+| # | commit |
+|---|--------|
+| 1 | `e53f2ca` prune branches selected by immutable boolean arguments (captain's WIP, reviewed) |
+| 2 | `e8da6aa` record request method and route, collect candidates and audit decisions |
+| 3 | `57c1ed4` do not report GETs of instance configuration metadata |
+| 4 | `c757d3b` treat assets-import hooks and compass admin pages as privileged bindings |
+| 5 | `02f4706` do not report reads bound to the module context or whose response goes nowhere |
+| 6 | `7ae9c8e` more instance-metadata routes; a read's options are not an exposure |
+| 7 | `01cdf83` report one finding per entry and list its operations in the proof |
+| 8 | `540900d` an action is a user entrypoint only if a Rovo agent lists it |
+| 9 | `ec68fc5` module context content that users edit is caller data |
+| 10 | `c730f14` call a callback that returns instead of pasting it into its caller |
+| 11 | `18130f6` lower every object spread instead of ignoring it (`c709c86` is `cargo fmt` for 10 and 11) |
+| 12 | `f243adf` site-level lookups are instance metadata too |
+| 13 | `71401e7` see what the callbacks of forEach, find, some, every, flatMap, sort, reduce and finally do |
+
+Experiments that were measured and not kept are listed in `authorization.md`
+sections 5.5 and 6 (wrapper routes, asUser-listing origin, `count`/`total` as scalars,
+route-class policies, ignoring checks).
+
 ## Iteration tails
 
 ### 0 base 999d3d1
@@ -227,5 +249,20 @@ Unfiltered finding baseline:
   secret: 57 findings in 30 app(s)
   secret-logging: 76 findings in 16 app(s)
 Combined runtime per app: max 34.603s, p90 0.087s
+Baseline scans: 205 failed, 0 not completed
+```
+
+### Final verification on the head of the branch
+`cargo fmt --all -- --check`, `cargo clippy --workspace` and `cargo test --workspace` pass (188 tests in `fsrt`, 15 in `forge_analyzer`, 14 in `forge_loader`); corpus scan with the installed head binary:
+```
+Unfiltered finding baseline:
+  auth-header: 94 findings in 75 app(s)
+  authentication: 92 findings in 44 app(s)
+  authorization: 662 findings in 252 app(s)
+  permission: 36 findings in 36 app(s)
+  runtime-version: 538 findings in 538 app(s)
+  secret: 57 findings in 30 app(s)
+  secret-logging: 76 findings in 16 app(s)
+Combined runtime per app: max 34.378s, p90 0.088s
 Baseline scans: 205 failed, 0 not completed
 ```
