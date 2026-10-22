@@ -157,9 +157,8 @@ impl Visit for Lossy {
                 }
                 PropOrSpread::Prop(prop)
                     if matches!(&**prop, Prop::KeyValue(_) | Prop::Shorthand(_)) => {}
-                // A spread of a plain reference is linked to the object.
-                PropOrSpread::Spread(spread) if Self::pure(&spread.expr) => {}
-                PropOrSpread::Spread(_) => self.set("object spread"),
+                // What a spread copies is linked to the object.
+                PropOrSpread::Spread(_) => {}
                 _ => self.set("object method or accessor"),
             }
         }

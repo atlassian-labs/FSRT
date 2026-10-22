@@ -372,3 +372,16 @@ Known false-negative risks that remain (accepted, listed for the captain):
   rules;
 * helpers are visited once per run, so which entry names a shared helper depends on
   entry order.
+
+### D14 An object spread is lowered, not ignored
+`{...expr}` lowered nothing for a spread of anything but a plain reference, so the
+request inside `{...(await (await api.asApp().requestJira(...)).json())}` was never
+seen and the flow through `{...(await response.json()), key}` was a gap (D6). Every
+spread is now lowered and its value joined to the object. A spread of the response
+is exposure when the object is returned; a spread of something unrelated is not.
+
+Effect (corpus, run `11-spread`): authorization 666 findings in 253 apps (no
+change at the finding level); four more operations are found (sinks inside spread
+expressions), and six operations rated false positive are suppressed by the flow
+rules (reported rows rated false positive 422 → 416). No true positive group is lost.
+Tests: `spread_objects_carry_what_they_copy`.

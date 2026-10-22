@@ -363,10 +363,6 @@ fn constructs_the_analysis_cannot_follow_keep_the_finding() {
             "console.log(Object.keys(arguments[0])); return data;",
         ),
         (
-            "object spread",
-            "const copy = {...(await payload.load())}; return copy.id;",
-        ),
-        (
             "class",
             "class Box { value() { return data; } } return new Box().value().length;",
         ),
@@ -572,6 +568,44 @@ fn filtered_and_searched_collections_still_carry_the_data() {
         (
             "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
              return data.issues.reduce((all, issue) => { all.push(issue); return all; }, []);",
+            1,
+        ),
+    ]);
+}
+
+#[test]
+fn spread_objects_carry_what_they_copy() {
+    check(&[
+        // Not the response: the spread copies something the caller sent.
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`);
+             const data = await response.json();
+             const copy = {...(await payload.load())};
+             return copy.id;",
+            0,
+        ),
+    ]);
+    check(&[
+        // The response, copied by a spread of a reference or of an expression.
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             return {...data, requested: payload.key};",
+            1,
+        ),
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`);
+             return {...(await response.json()), requested: payload.key};",
+            1,
+        ),
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             const copy = {...data.fields};
+             return copy;",
+            1,
+        ),
+        // A request made inside the spread is still a request.
+        (
+            "return {...(await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json())};",
             1,
         ),
     ]);

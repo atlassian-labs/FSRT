@@ -2231,13 +2231,11 @@ impl FunctionAnalyzer<'_> {
                             },
                             PropOrSpread::Spread(spread) => {
                                 // The properties it copies are unknown; join the whole
-                                // source to the object, when reading it has no effect.
-                                if authz_lossy::Lossy::pure(&spread.expr) {
-                                    let source = self.lower_expr(&spread.expr, None);
-                                    self.body
-                                        .authz_flow_links
-                                        .push((source, Variable::new(class_var_id)));
-                                }
+                                // source to the object.
+                                let source = self.lower_expr(&spread.expr, None);
+                                self.body
+                                    .authz_flow_links
+                                    .push((source, Variable::new(class_var_id)));
                             }
                         }
                     })
