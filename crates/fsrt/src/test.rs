@@ -3478,6 +3478,7 @@ fn scan_resolver_with_read_helper(definitions: &str) -> Report {
     report
 }
 
+mod authorization_entrypoints;
 mod authorization_metadata_routes;
 mod authorization_principal;
 mod authorization_requests;
