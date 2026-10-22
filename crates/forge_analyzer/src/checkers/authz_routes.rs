@@ -61,6 +61,11 @@ const INSTANCE_METADATA: &[&str] = &[
     "/rest/api/:v/attachment/meta",
     "/rest/api/:v/project/{}/roledetails",
     "/rest/servicedeskapi/servicedesk/{}/requesttype",
+    // Site-level lookups the same for every viewer: the id of the Assets workspace, the
+    // license state of an app, the app's own JQL function precomputations.
+    "/rest/servicedeskapi/assets/workspace",
+    "/rest/atlassian-connect/1/addons/{}/license",
+    "/rest/api/:v/jql/function/computation",
     // Who the app is acting as: the app's own user, not a user of the caller's.
     "/rest/api/:v/myself",
     // Lists of containers.
@@ -162,6 +167,9 @@ mod tests {
             "/rest/api/3/field/customfield_10001/context/$/option",
             "/rest/api/3/project/$/statuses",
             "/wiki/api/v2/spaces?keys=$&limit=1",
+            "/rest/servicedeskapi/assets/workspace",
+            "/rest/atlassian-connect/1/addons/com.example.app/license",
+            "/rest/api/3/jql/function/computation?orderBy=key",
         ] {
             assert!(is_instance_metadata(&route(yes)), "{yes}");
         }
@@ -184,6 +192,10 @@ mod tests {
             "/wiki/api/v2/spaces/$",
             "/rest/api/3/field$",
             "/rest/agile/1.0/board/$/configuration",
+            "/rest/atlassian-connect/1/addons/$/properties/$",
+            "/rest/atlassian-connect/1/addons/$",
+            "/rest/servicedeskapi/assets/workspace/$",
+            "/rest/api/3/jql/function/computation/$",
         ] {
             assert!(!is_instance_metadata(&route(no)), "{no}");
         }
