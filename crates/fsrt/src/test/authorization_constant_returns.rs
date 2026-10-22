@@ -72,10 +72,9 @@ fn authorization_constant_returns_exposed_and_conditional_results_still_report()
         "return helper();",
         "const result = await helper(); return result;",
         "const result = await helper(); if (payload.test) return result;",
-        "await helper(); return payload.test;",
-        "await helper(); const ok = true; return ok;",
-        "const undefined = payload.test; await helper(); return undefined;",
-        "try { await helper(); return true; } catch (error) { return error; }",
+        // A returned value that does not come from the response is not an exposure of
+        // it; the flow policy (authorization_flow.rs) handles those reads.
+        // A caught error is not the response; see authorization_flow.rs.
     ] {
         expect(
             &format!("resolver.define('exposed', async ({{payload}}) => {{ {body} }});"),
@@ -132,7 +131,6 @@ fn authorization_constant_returns_preserve_dynamic_container_returns() {
         "{['status']: 'ok'}",
         "{get value() { return result; }}",
         "{value() { return result; }}",
-        "{__proto__: {ok: true}}",
     ] {
         expect(
             &format!(

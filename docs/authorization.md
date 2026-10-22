@@ -137,3 +137,87 @@ triaged true positives are exactly this elevation (a project settings page whose
 resolver runs a payload-supplied JQL as the app, and one that rewrites global
 workflows). Also rejected: `action` modules, which are user-reachable when a Rovo
 agent lists them, and `automation:actionProvider`-style modules are not parsed.
+
+### D6 A flow analysis for resolver entries (`checkers/authz_flow.rs`)
+Two rules (D7, D8) conclude that a read is harmless from the *absence* of a flow, so
+the analysis must be sound before it is precise. It is a flow-insensitive,
+alias-unifying may-flow analysis over everything a resolver callback can reach:
+
+* One class per variable binding, temporary, function result and request response.
+  Copies, phi joins, property reads and writes (field-insensitive), template and
+  concatenation parts, arguments joined to the parameters of a resolved callee, the
+  callee's result, and everything an *unresolved* call touches (receiver, arguments,
+  result) are unified. A mutation through any alias therefore reaches every alias.
+  Only operations that cannot carry data cut a flow: comparisons, `!`, `typeof`,
+  `void`, `delete`, and reads of `length`, `size`, `ok`, `statusText`.
+* Sources label classes: the request's `payload` (and `context.jobId` and any other
+  property of the request) are *caller* data; `context` is *platform* data;
+  storage, secrets, the environment, `fetch` and `asUser` responses are *external*.
+  The request itself must stay intact: destructuring is followed, and the request
+  may be handed to a function the analysis follows, but passing it anywhere else
+  makes the analysis give up.
+* Sinks mark classes as exposed: the resolver's return value; the body of a request
+  (asApp or asUser) or the arguments of a call to a request client; outbound calls
+  (`fetch`, an imported client, any call the analysis cannot classify as pure) and
+  module-level state. A response used only in a route, a comparison, `length`, or a
+  condition is not exposed. A `console` call is not an exposure.
+* A request's response inherits the origins of what was sent (the route and body),
+  without joining the classes, so that data derived from a read the caller steered
+  is caller data too.
+* Function values passed as call arguments, catch handlers and loop variables are
+  lowered into side tables (`Environment::authz_closures`, `Body::authz_callbacks`,
+  `authz_catches`, `authz_flow_links`) that the definitions table and the other
+  scanners never see.
+* Anything the lowering drops or approximates is recorded per function by
+  `definitions/authz_lossy.rs` (`Body::authz_flow_gap`): function values that are
+  not call arguments or bindings, classes and `this`, object spread of anything
+  but a plain reference, computed object keys, non-literal default values, rest
+  parameters, generators, JSX, `new` of a non-identifier, dynamic `import`,
+  `super`, `with`, `yield`, inlined array callbacks whose block body returns, and
+  calls of a variable holding a function. If any function the entry reaches has
+  one, or the budget (300 functions) is exceeded, the analysis fails and the
+  finding is kept. The audit log records which construct it was (`flow`).
+
+Known limits, accepted and documented: values moved through app storage, module
+state or the platform between two resolver calls are not followed (a payload stored
+by one resolver and used by another); errors raised by the runtime (a JSON syntax
+error that quotes the body) are not exposures; module initializers are assumed to
+be faithfully lowered; field-insensitivity means a response whose any part is
+exposed counts as exposed.
+
+Alternatives rejected: reusing the taint engine (`taint.rs`) as is. It copies
+objects by value, so `list.push(response)` or a helper filling an argument loses the
+flow, and it trusts unresolved calls to be pure. Making it sound needed a write-back
+summary for every call and a heap model, which is a larger and riskier change than
+a unification analysis that is sound by construction. Also rejected: running the
+analysis per request (a fresh solve per sink) — one solve per resolver answers all
+its requests; and lowering the dropped constructs into the shared IR, which would
+change what every other scanner sees.
+
+### D7 A read bound to the module context is not reported
+A GET (or one of the read-only POST search endpoints) whose route and body are
+reached by platform `context` data and by no caller-controlled or external value is
+not reported. The caller already opened that issue, project or page in the product,
+so the app reads what the caller is already looking at. `context.jobId`, storage,
+asUser and fetch data, and any mix with caller data keep the finding; so does a
+read with no context in it (an unscoped site-wide read is the data exposure the
+scanner exists for), and every write.
+
+Evidence (ordinal join with the triage): 64 findings rated false positive
+(`FP-GUARD-CONTEXT`, `FP-NO-RESULT-EXPOSURE`, the context-sourced target and
+context-bound resource classes, app-own data), 1 rated uncertain (a portal customer
+view of an issue's raw JSON, where the product would also apply issue security),
+0 rated true positive. Residual risk: `context.extension` is validated by the
+product for browser calls only; invoked directly (the non-browser path of the FCT
+trust analysis) a caller can fill it, and the asApp read can return more than the
+caller may see (issue security, comment visibility).
+
+### D8 A read whose response goes nowhere the caller can see is not reported
+A GET or read-only POST whose response is not exposed (D6) is not reported: it only
+decides control flow, counts, or names the next resource, whose own request is
+reported if it is exposed. The 11 false positives and 6 rated true positives this
+removes are in `docs/authorization-test-log.md`; five of the six sit in a group with
+another reported operation, the sixth is a queue consumer that stores per-priority
+counts of a board's backlog under a key built from the board id.
+Writes are never exempted by what they return: of the 103 triaged POST, PUT, DELETE and PATCH
+findings that return a constant or nothing, 60 are true positives.

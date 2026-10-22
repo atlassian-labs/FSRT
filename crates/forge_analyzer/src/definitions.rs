@@ -61,6 +61,7 @@ use crate::{
     },
 };
 
+mod authz_lossy;
 mod authz_principal;
 mod authz_request;
 
@@ -295,6 +296,8 @@ pub fn run_resolver(
             secret_packages,
             module: curr_mod,
             parent: None,
+            bound_function: false,
+            function_depth: 0,
             suspicious_remotes,
         };
         module.visit_with(&mut collector);
@@ -651,6 +654,10 @@ pub struct Environment {
     pub all_strings: Vec<String>,
     /// Request arguments that `const` bindings hold, such as a route template.
     pub(crate) authz_consts: FxHashMap<DefId, ConstFacts>,
+    /// Bodies of function values written inside another function (callbacks),
+    /// which the definitions table does not hold, by the function's span.
+    pub(crate) authz_closures: Vec<Body>,
+    pub(crate) authz_closure_index: FxHashMap<Span, usize>,
 }
 
 struct ImportCollector<'cx> {
@@ -950,6 +957,11 @@ struct FunctionCollector<'cx> {
     curr_function: Option<DefId>,
     secret_packages: &'cx [PackageData],
     parent: Option<DefId>,
+    /// The next function visited is the initializer of a binding or a
+    /// declaration, not a function value written inside another function.
+    bound_function: bool,
+    /// How many function bodies enclose the node being visited.
+    function_depth: usize,
     suspicious_remotes: &'cx HashSet<String>,
 }
 
@@ -1798,27 +1810,56 @@ impl FunctionAnalyzer<'_> {
                 || calls_method(callee, "filter")
                 || calls_method(callee, "catch"))
                 && let [ExprOrSpread { expr, .. }] = args {
+                    // The callback is lowered into the caller without binding its
+                    // parameters to the receiver or its value to the result. Record
+                    // those flows, and refuse to vouch for shapes that cannot be linked.
+                    let mut receiver = Operand::with_var(self.body.get_or_insert_global(id));
+                    let mut receiver_is_call = false;
                     if let CalleeRef::Expr(Expr::Member(mem)) = callee
                         && let Expr::Call(inner_call) = &*mem.obj
                     {
+                        // The receiver is the call's result, not the function it names.
                         let inner_callee = inner_call
                             .callee
                             .as_expr()
                             .map_or(CalleeRef::Import, |e| CalleeRef::Expr(e));
-                        self.lower_call(inner_callee, &inner_call.args);
+                        let result = self.lower_call(inner_callee, &inner_call.args);
+                        if matches!(result, Operand::Var(_)) {
+                            receiver = result;
+                        } else {
+                            receiver_is_call = true;
+                        }
                     }
                     match &**expr {
-                        Expr::Arrow(ArrowExpr { body, .. }) => match &**body {
-                            BlockStmtOrExpr::BlockStmt(stmt) => {
-                                self.lower_stmts(&stmt.stmts);
-                                return Operand::UNDEF;
+                        Expr::Arrow(ArrowExpr { body, params, .. }) => {
+                            self.link_parameters(&receiver, params);
+                            match &**body {
+                                BlockStmtOrExpr::BlockStmt(stmt) => {
+                                    // `return` here would be taken for the caller's.
+                                    if receiver_is_call || authz_lossy::Lossy::returns(stmt) {
+                                        self.flow_gap("inlined callback with a block body");
+                                    }
+                                    self.lower_stmts(&stmt.stmts);
+                                    return Operand::UNDEF;
+                                }
+                                BlockStmtOrExpr::Expr(expr) => {
+                                    if receiver_is_call {
+                                        self.flow_gap("inlined callback on a call result");
+                                    }
+                                    let value = self.lower_expr(expr, None);
+                                    self.body.authz_flow_links.push((receiver, Variable::new_operand(&value)));
+                                    return value;
+                                }
                             }
-                            BlockStmtOrExpr::Expr(expr) => {
-                                return self.lower_expr(expr, None);
-                            }
-                        },
+                        }
                         Expr::Fn(FnExpr { ident: _, function }) => {
                             if let Some(body) = &function.body {
+                                let params: Vec<_> =
+                                    function.params.iter().map(|param| param.pat.clone()).collect();
+                                self.link_parameters(&receiver, &params);
+                                if receiver_is_call || authz_lossy::Lossy::returns(body) {
+                                    self.flow_gap("inlined callback with a block body");
+                                }
                                 self.lower_stmts(&body.stmts);
 
                                 return Operand::UNDEF;
@@ -1870,6 +1911,7 @@ impl FunctionAnalyzer<'_> {
                 self.body.blockbuilders[self.block].insts.len() as u32,
             ));
         }
+        self.record_callbacks(args);
         let res = self.body.push_tmp(self.block, call, None);
         Operand::with_var(res)
     }
@@ -1893,6 +1935,7 @@ impl FunctionAnalyzer<'_> {
             body: args.body,
         };
         body.visit_with(&mut locals);
+        locals.body.authz_flow_gap = authz_lossy::flow_gap(params, body);
         let mut analyzer = FunctionAnalyzer::new(
             locals.res,
             self.module,
@@ -2163,7 +2206,16 @@ impl FunctionAnalyzer<'_> {
                                 }
                                 _ => {}
                             },
-                            PropOrSpread::Spread(spread) => {}
+                            PropOrSpread::Spread(spread) => {
+                                // The properties it copies are unknown; join the whole
+                                // source to the object, when reading it has no effect.
+                                if authz_lossy::Lossy::pure(&spread.expr) {
+                                    let source = self.lower_expr(&spread.expr, None);
+                                    self.body
+                                        .authz_flow_links
+                                        .push((source, Variable::new(class_var_id)));
+                                }
+                            }
                         }
                     })
                 }
@@ -2524,6 +2576,9 @@ impl FunctionAnalyzer<'_> {
                     ..
                 } = &**stmt;
                 self.lower_stmts(stmts);
+                if let Some(handler) = handler {
+                    self.lower_catch(handler);
+                }
                 if let Some(BlockStmt { stmts, .. }) = finalizer {
                     self.lower_stmts(stmts);
                 }
@@ -2621,7 +2676,29 @@ impl FunctionAnalyzer<'_> {
         // FIXME: don't assume loops are infinite
         let opnd = self.lower_expr(right, None);
         match left {
-            ForHead::VarDecl(var) => self.lower_var_decl(var),
+            ForHead::VarDecl(var) => {
+                self.lower_var_decl(var);
+                // The loop variables take the iterated value's elements, which
+                // `lower_var_decl` leaves undefined.
+                for decl in &var.decls {
+                    struct Bound(Vec<Id>);
+                    impl Visit for Bound {
+                        noop_visit_type!();
+                        fn visit_binding_ident(&mut self, ident: &BindingIdent) {
+                            self.0.push(ident.id.to_id());
+                        }
+                    }
+                    let mut bound = Bound(Vec::new());
+                    decl.name.visit_with(&mut bound);
+                    for id in bound.0 {
+                        let def = self.res.get_or_insert_sym(id, self.module);
+                        let var = self.body.get_or_insert_global(def);
+                        self.body
+                            .authz_flow_links
+                            .push((opnd.clone(), Variable::new(var)));
+                    }
+                }
+            }
             ForHead::Pat(pat) => self.bind_pats(pat, Rvalue::Read(opnd)),
             ForHead::UsingDecl(_) => {
                 //FIXME: investigate this case
@@ -2967,9 +3044,11 @@ impl Visit for FunctionCollector<'_> {
                     && ident_property.sym == "exports"
                 {
                     match &*n.right {
-                        Expr::Fn(FnExpr { ident, function }) => {
-                            self.handle_function(function, self.res.default_export(self.module))
-                        }
+                        Expr::Fn(FnExpr { ident, function }) => self.handle_function(
+                            function,
+                            self.res.default_export(self.module),
+                            false,
+                        ),
                         Expr::Class(ClassExpr { ident, class }) => {
                             self.curr_class = self.res.default_export(self.module)
                         }
@@ -2986,7 +3065,7 @@ impl Visit for FunctionCollector<'_> {
                         if let Some(defid) =
                             self.res.get_sym(ident_property.sym.to_id(), self.module)
                         {
-                            self.handle_function(&n.function, Some(defid));
+                            self.handle_function(&n.function, Some(defid), false);
                         }
                     }
                     Expr::Class(class) => {
@@ -3146,15 +3225,21 @@ impl Visit for FunctionCollector<'_> {
         ArrowExpr {
             body: func_body,
             params,
+            span,
             ..
         }: &ArrowExpr,
     ) {
+        // A function value inside another function is a callback or a stored
+        // function, never the function that `self.parent` names.
+        let nested = self.function_depth > 0 && !mem::take(&mut self.bound_function);
         let owner = self.parent.unwrap_or_else(|| {
             self.res
                 .add_anonymous("__UNKNOWN", AnonType::Closure, self.module)
         });
         let old_parent = self.parent.replace(owner);
+        self.function_depth += 1;
         func_body.visit_with(self);
+        self.function_depth -= 1;
         let mut argdef = ArgDefiner {
             res: self.res,
             module: self.module,
@@ -3176,6 +3261,7 @@ impl Visit for FunctionCollector<'_> {
         params.visit_with(&mut writes);
         func_body.visit_with(&mut writes);
         authz_principal::record(self.res, self.module, &mut body, params, writes);
+        body.authz_flow_gap = authz_lossy::flow_gap(params, &**func_body);
         body.authz_constant_returns = match &**func_body {
             BlockStmtOrExpr::BlockStmt(block) => authz_constant_returns(block),
             BlockStmtOrExpr::Expr(expr) => authz_constant_return(expr),
@@ -3212,7 +3298,11 @@ impl Visit for FunctionCollector<'_> {
             body.set_terminator(id, Terminator::Ret);
         }
 
-        *self.res.def_mut(owner).expect_body() = body;
+        if nested {
+            self.res.add_closure(*span, body);
+        } else {
+            *self.res.def_mut(owner).expect_body() = body;
+        }
         self.parent = old_parent;
     }
 
@@ -3228,7 +3318,9 @@ impl Visit for FunctionCollector<'_> {
                     .res
                     .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
                 let old_parent = self.parent.replace(defid);
+                self.bound_function = true;
                 f.visit_with(self);
+                self.bound_function = false;
                 self.parent = old_parent;
             }
             Some(Expr::Arrow(arrow)) => {
@@ -3236,7 +3328,9 @@ impl Visit for FunctionCollector<'_> {
                     .res
                     .get_or_overwrite_sym(id, self.module, DefKind::Function(()));
                 let old_parent = self.parent.replace(owner);
+                self.bound_function = true;
                 self.visit_arrow_expr(arrow);
+                self.bound_function = false;
                 self.parent = old_parent;
             }
             Some(Expr::Call(CallExpr {
@@ -3340,7 +3434,7 @@ impl Visit for FunctionCollector<'_> {
                             id.to_id(),
                             &key_ident.clone().into(),
                         );
-                        self.handle_function(function, None);
+                        self.handle_function(function, None, false);
                         self.parent = former_parent;
                     }
                 });
@@ -3387,7 +3481,7 @@ impl Visit for FunctionCollector<'_> {
             self.res.resolver.defs[defid] = DefRes::Function(());
             self.res.overwrite_def(defid, DefRes::Function(()));
             self.curr_function = Some(defid);
-            self.handle_function(&n.function, Some(defid));
+            self.handle_function(&n.function, Some(defid), false);
         } else {
             let def = self
                 .res
@@ -3395,19 +3489,24 @@ impl Visit for FunctionCollector<'_> {
 
             let former_parent = self.parent;
             self.parent = Some(def);
+            self.bound_function = true;
             n.function.visit_with(self);
+            self.bound_function = false;
             self.parent = former_parent;
         }
     }
 
     fn visit_function(&mut self, n: &Function) {
+        let nested = self.function_depth > 0 && !mem::take(&mut self.bound_function);
+        self.function_depth += 1;
         n.visit_children_with(self);
-        self.handle_function(n, None);
+        self.function_depth -= 1;
+        self.handle_function(n, None, nested);
     }
 }
 
 impl FunctionCollector<'_> {
-    fn handle_function(&mut self, n: &Function, owner: Option<DefId>) {
+    fn handle_function(&mut self, n: &Function, owner: Option<DefId>, nested: bool) {
         let owner = self.parent.unwrap_or_else(|| {
             if let Some(def_id) = owner {
                 def_id
@@ -3441,6 +3540,13 @@ impl FunctionCollector<'_> {
         let params: Vec<_> = n.params.iter().map(|param| param.pat.clone()).collect();
         authz_principal::record(self.res, self.module, &mut body, &params, writes);
         body.authz_principal_opaque |= n.is_generator;
+        body.authz_flow_gap = if n.is_generator {
+            Some("generator")
+        } else {
+            n.body.as_ref().map_or(Some("no body"), |block| {
+                authz_lossy::flow_gap(&params, block)
+            })
+        };
         body.authz_constant_returns =
             !n.is_generator && n.body.as_ref().is_some_and(authz_constant_returns);
         let mut analyzer = FunctionAnalyzer::new(
@@ -3469,7 +3575,11 @@ impl FunctionCollector<'_> {
                 body.set_terminator(id, Terminator::Ret);
             }
 
-            *self.res.def_mut(owner).expect_body() = body;
+            if nested {
+                self.res.add_closure(n.span, body);
+            } else {
+                *self.res.def_mut(owner).expect_body() = body;
+            }
         }
     }
 }
@@ -4226,6 +4336,22 @@ impl Environment {
     }
 
     /// The lexical body that declares a binding, independent of its writes.
+    /// Keep the body of a function value written inside another function.
+    fn add_closure(&mut self, span: Span, body: Body) -> usize {
+        match self.authz_closure_index.get(&span) {
+            Some(&index) => {
+                self.authz_closures[index] = body;
+                index
+            }
+            None => {
+                let index = self.authz_closures.len();
+                self.authz_closure_index.insert(span, index);
+                self.authz_closures.push(body);
+                index
+            }
+        }
+    }
+
     pub(crate) fn binding_owner(&self, binding: DefId) -> Option<DefId> {
         self.resolver.parent.get(&binding).copied()
     }
