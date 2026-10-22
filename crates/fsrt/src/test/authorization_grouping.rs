@@ -93,3 +93,35 @@ fn a_suppressed_operation_is_neither_reported_nor_listed() {
         vulns[0].proof()
     );
 }
+
+#[test]
+fn operations_in_and_after_a_callback_that_returns_are_all_found() {
+    // A `return` inside the callback used to be taken for the resolver's own, so
+    // what the callback did, and everything after it, was lost.
+    let definitions = "resolver.define('batch', async ({payload}) => {
+        await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`, {method: 'DELETE'});
+        const rows = await Promise.all(payload.keys.map(async (key) => {
+            const response = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`);
+            return response.json();
+        }));
+        await second(payload.key);
+        return rows;
+    });";
+    let report = scan(definitions, false);
+    let vulns = report.into_vulns();
+    assert_eq!(vulns.len(), 1, "{vulns:#?}");
+    let proof = vulns[0].proof();
+    assert!(proof.contains("2 more privileged operation(s)"), "{proof}");
+    assert!(
+        proof.contains("GET /rest/api/3/issue/${} in a callback (via handler.batch)"),
+        "{proof}"
+    );
+    assert!(
+        proof.contains("POST /rest/api/3/issue/${}/comment in second (via handler.batch -> second)"),
+        "{proof}"
+    );
+    // The callback is part of the function that wrote it, not a call in the stack.
+    assert!(!proof.contains("__CALLBACK"), "{proof}");
+    let operations = scan(definitions, true);
+    assert_eq!(operations.into_vulns().len(), 3, "{operations:#?}");
+}

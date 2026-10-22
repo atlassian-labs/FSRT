@@ -1780,7 +1780,7 @@ impl FunctionAnalyzer<'_> {
         {
             let value = self.lower_expr(obj, None);
             let callback_operand = match &**callback {
-                Expr::Arrow(arrow) => self.lower_callback(&arrow.params, &arrow.body),
+                Expr::Arrow(arrow) => self.lower_callback("__FULFILLMENT", &arrow.params, &arrow.body),
                 Expr::Fn(function) if function.function.body.is_some() => {
                     let params = function
                         .function
@@ -1789,7 +1789,7 @@ impl FunctionAnalyzer<'_> {
                         .map(|param| param.pat.clone())
                         .collect::<Vec<_>>();
                     let body = BlockStmtOrExpr::BlockStmt(function.function.body.clone().unwrap());
-                    self.lower_callback(&params, &body)
+                    self.lower_callback("__FULFILLMENT", &params, &body)
                 }
                 _ => self.get_operand_for_call(callback),
             };
@@ -1832,11 +1832,19 @@ impl FunctionAnalyzer<'_> {
                     }
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, params, .. }) => {
+                            match &**body {
+                                BlockStmtOrExpr::BlockStmt(stmt) if !receiver_is_call && authz_lossy::Lossy::returns(stmt) => {
+                                    // `return` inlined here would be taken for the caller's:
+                                    // the callback is a function called with the receiver.
+                                    let callback = self.lower_callback("__CALLBACK", params, body);
+                                    return self.call_callback(callback, receiver);
+                                }
+                                _ => {}
+                            }
                             self.link_parameters(&receiver, params);
                             match &**body {
                                 BlockStmtOrExpr::BlockStmt(stmt) => {
-                                    // `return` here would be taken for the caller's.
-                                    if receiver_is_call || authz_lossy::Lossy::returns(stmt) {
+                                    if receiver_is_call {
                                         self.flow_gap("inlined callback with a block body");
                                     }
                                     self.lower_stmts(&stmt.stmts);
@@ -1856,8 +1864,13 @@ impl FunctionAnalyzer<'_> {
                             if let Some(body) = &function.body {
                                 let params: Vec<_> =
                                     function.params.iter().map(|param| param.pat.clone()).collect();
+                                if !receiver_is_call && authz_lossy::Lossy::returns(body) {
+                                    let block = BlockStmtOrExpr::BlockStmt(body.clone());
+                                    let callback = self.lower_callback("__CALLBACK", &params, &block);
+                                    return self.call_callback(callback, receiver);
+                                }
                                 self.link_parameters(&receiver, &params);
-                                if receiver_is_call || authz_lossy::Lossy::returns(body) {
+                                if receiver_is_call {
                                     self.flow_gap("inlined callback with a block body");
                                 }
                                 self.lower_stmts(&body.stmts);
@@ -1916,10 +1929,20 @@ impl FunctionAnalyzer<'_> {
         Operand::with_var(res)
     }
 
-    fn lower_callback(&mut self, params: &[Pat], body: &BlockStmtOrExpr) -> Operand {
-        let owner = self
-            .res
-            .add_anonymous("__FULFILLMENT", AnonType::Closure, self.module);
+    /// Call a callback with the receiver of the method it was given to, whose
+    /// result may be the receiver's own elements (`filter`, `find`, `sort`) as
+    /// well as what the callback returns (`map`).
+    fn call_callback(&mut self, callback: Operand, receiver: Operand) -> Operand {
+        let call = Rvalue::Call(callback, smallvec::smallvec![receiver.clone()]);
+        let result = self.body.push_tmp(self.block, call, None);
+        self.body
+            .authz_flow_links
+            .push((receiver, Variable::new(result)));
+        Operand::with_var(result)
+    }
+
+    fn lower_callback(&mut self, name: &str, params: &[Pat], body: &BlockStmtOrExpr) -> Operand {
+        let owner = self.res.add_anonymous(name, AnonType::Closure, self.module);
         let mut args = ArgDefiner {
             res: self.res,
             module: self.module,

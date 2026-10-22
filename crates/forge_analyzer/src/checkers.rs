@@ -459,7 +459,12 @@ fn describe(env: &Environment, def: DefId, loc: Location) -> String {
     let route = request
         .and_then(|request| request.route(env))
         .map_or_else(|| "(route not known)".to_owned(), RouteText::display);
-    format!("{method} {route} in {}", env.def_name(def))
+    let function = env.def_name(def);
+    if is_callback_frame(function) {
+        format!("{method} {route} in a callback")
+    } else {
+        format!("{method} {route} in {function}")
+    }
 }
 
 /// One machine-readable line per decision, enabled with
@@ -571,6 +576,12 @@ pub struct AuthZVuln {
     others: Vec<(String, String)>,
 }
 
+/// A callback given to `map`, `filter` and the like runs where it is written, so
+/// its frame is part of the function that wrote it and not a call a finding names.
+pub(crate) fn is_callback_frame(name: &str) -> bool {
+    name == "__CALLBACK"
+}
+
 impl AuthZVuln {
     fn new(
         callstack: Vec<Frame>,
@@ -592,7 +603,8 @@ impl AuthZVuln {
                 callstack
                     .into_iter()
                     .rev()
-                    .map(|frame| env.def_name(frame.calling_function)),
+                    .map(|frame| env.def_name(frame.calling_function))
+                    .filter(|name| !is_callback_frame(name)),
             ),
             " -> ",
         )
@@ -1049,7 +1061,8 @@ impl AuthNVuln {
                 callstack
                     .into_iter()
                     .rev()
-                    .map(|frame| env.def_name(frame.calling_function)),
+                    .map(|frame| env.def_name(frame.calling_function))
+                    .filter(|name| !is_callback_frame(name)),
             ),
             " -> ",
         )
@@ -1245,7 +1258,8 @@ impl SecretVuln {
                 callstack
                     .into_iter()
                     .rev()
-                    .map(|frame| env.def_name(frame.calling_function)),
+                    .map(|frame| env.def_name(frame.calling_function))
+                    .filter(|name| !is_callback_frame(name)),
             ),
             " -> ",
         )
@@ -1452,7 +1466,8 @@ impl AuthHeaderVuln {
                 callstack
                     .into_iter()
                     .rev()
-                    .map(|frame| env.def_name(frame.calling_function)),
+                    .map(|frame| env.def_name(frame.calling_function))
+                    .filter(|name| !is_callback_frame(name)),
             ),
             " -> ",
         )

@@ -305,3 +305,70 @@ to treat every whole-object read as caller data. A denylist of the content names
 the same way for the paths it can see and documents the limit for the rest:
 `Object.values(context.extension)` and similar aggregate reads keep their CONTEXT
 label.
+
+### D13 A callback that returns is a function that is called, not code pasted into the caller
+`items.map(callback)`, `.filter`, `.forEach` and `.catch` on a plain identifier were
+lowered by pasting the callback's statements into the enclosing function. A `return`
+in the callback was then taken for the enclosing function's own: the block ended
+there, so the instructions before the callback in that block and everything the
+callback itself did were dropped, for every scanner. The scanner never saw a sink the
+callback contained, nor a sink before the callback:
+
+    resolver.define('batch', async ({payload}) => {
+      await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`, {method: 'DELETE'});
+      const rows = await Promise.all(payload.keys.map(async (key) => {
+        const r = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`);
+        return r.json();
+      }));
+      await second(payload.key);
+      return rows;
+    });
+
+reported only `second`; the DELETE and the read were invisible.
+
+A callback whose block body contains a `return` is now lowered like the `.then`
+callback already was: its own body (`__CALLBACK`), called with the receiver. Callbacks
+without a `return`, and expression-bodied callbacks, are still pasted in and linked
+to the receiver as before. Two details keep the flow analysis sound:
+
+* the call's result is also joined with the receiver. `filter`, `find` and `sort`
+  return the receiver's elements, not what the callback returns, so
+  `data.values.filter((sla) => { return sla.ongoingCycle != null; })` still returns the
+  data. (The first version did not join them and suppressed the triaged true positive
+  `jsm.plugins.customer-portal-sla` `getSLAs`, whose response is exactly that. The
+  regression test is `filtered_and_searched_collections_still_carry_the_data`.)
+* the callback's frame is not shown. It is part of the function that wrote it, so a
+  finding's stack, and therefore its id, is unchanged; the operation is described as
+  "in a callback". The auth-header and secret-logging stacks are filtered the same
+  way. A scanner that checks every function as an entry (auth-header, secrets) names
+  the callback `__CALLBACK`, as it already named `__FULFILLMENT`.
+
+Effect (corpus, run `10-callbacks`): authorization 659 → 666 findings, 250 → 253
+apps. This is a recall fix, so the count goes up before the rules can apply:
+
+* 22 findings appear and 15 disappear by id. Most of both are operations that moved
+  between entries (a helper is visited once per run, and the first entry to reach it
+  names it) or whose entry now reaches a sink it lost before: `getCustomerIssues`
+  (reads an issue and its worklogs by key from a database query), `getStepAttachments`
+  (reads an issue's attachments by the caller's key and returns their bytes),
+  `getIssueChangelogs`, the comment-history custom field value functions and others.
+  Spot-checked: the two entries above are true positives.
+* the flow rules now apply inside callbacks: 22 more reads are `context-bound-read` and
+  3 more `unexposed-read-response` (all 25 rows rated false positive or have no triage
+  row; no new true positive group is lost), reported rows rated false positive drop from
+  439 to 422.
+* auth-header 93 → 94 findings (74 → 75 apps): a container token on an admin endpoint
+  in a fetch inside such a callback, `de.techanics.bulkuseractions`. No other scanner
+  changes.
+
+Known false-negative risks that remain (accepted, listed for the captain):
+
+* a callback with no `return` is still pasted into its caller, so a `throw` or
+  `break` inside it is taken for the caller's;
+* a callback passed to anything but `map`, `filter`, `forEach`, `catch`, `then` on an
+  identifier (`reduce`, `find`, `some`, `sort`, a call result such as
+  `fetchAll().map(...)`) goes through the closure side table (D6), which the legacy
+  checkers do not follow: a sink inside it is invisible to them but not to the flow
+  rules;
+* helpers are visited once per run, so which entry names a shared helper depends on
+  entry order.

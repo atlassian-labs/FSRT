@@ -453,3 +453,126 @@ fn content_users_edit_is_not_the_platforms_to_vouch_for() {
         ),
     ]);
 }
+
+#[test]
+fn a_callback_that_returns_is_a_function_the_analysis_follows() {
+    check(&[
+        // The callback's result goes nowhere the caller can see.
+        (
+            "const results = await Promise.all(payload.keys.map(async (key) => {
+                 const response = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`);
+                 if (!response.ok) { return false; }
+                 return true;
+             }));
+             return {updated: results.every(Boolean)};",
+            0,
+        ),
+        (
+            "const results = await Promise.all(payload.keys.map(async function (key) {
+                 const response = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`);
+                 if (!response.ok) { return false; }
+                 return true;
+             }));
+             return results.length;",
+            0,
+        ),
+        // The callback reads only what the platform put in the module context.
+        (
+            "const rows = await Promise.all(context.extension.keys.map(async (key) => {
+                 const response = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`);
+                 return response.json();
+             }));
+             return rows;",
+            0,
+        ),
+    ]);
+    check(&[
+        // What the callback returns reaches the caller.
+        (
+            "const rows = await Promise.all(payload.keys.map(async (key) => {
+                 const response = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`);
+                 return response.json();
+             }));
+             return rows;",
+            1,
+        ),
+        (
+            "return payload.keys.map(async function (key) {
+                 const response = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`);
+                 return response.json();
+             });",
+            1,
+        ),
+        // The callback keeps the data somewhere that outlives the call.
+        (
+            "await Promise.all(payload.keys.map(async (key) => {
+                 const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${key}`)).json();
+                 cache = data;
+                 return true;
+             }));
+             return payload.keys.length;",
+            1,
+        ),
+        // A write is a write wherever it is.
+        (
+            "await Promise.all(payload.keys.map(async (key) => {
+                 await api.asApp().requestJira(route`/rest/api/3/issue/${key}`, {method: 'DELETE'});
+                 return true;
+             }));
+             return 'done';",
+            1,
+        ),
+        // The callback's result reaches the caller through the code after it.
+        (
+            "const found = [];
+             await Promise.all(payload.keys.map(async (key) => {
+                 const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${key}`)).json();
+                 found.push(data);
+                 return true;
+             }));
+             return found;",
+            1,
+        ),
+    ]);
+}
+
+#[test]
+fn filtered_and_searched_collections_still_carry_the_data() {
+    check(&[
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             return data.issues.filter((issue) => issue.status === 'open');",
+            1,
+        ),
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             return data.issues.filter(function (issue) { return issue.status === 'open'; });",
+            1,
+        ),
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             return data.issues.filter((issue) => { return issue.status === 'open'; });",
+            1,
+        ),
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             return data.issues.find((issue) => issue.status === 'open');",
+            1,
+        ),
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             return data.issues.find((issue) => { return issue.status === 'open'; });",
+            1,
+        ),
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             return data.issues.sort((a, b) => { return a.rank - b.rank; });",
+            1,
+        ),
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             return data.issues.reduce((all, issue) => { all.push(issue); return all; }, []);",
+            1,
+        ),
+    ]);
+}
