@@ -53,6 +53,7 @@ Commit of each row (`git log 999d3d1..HEAD`):
 Experiments that were measured and not kept are listed in `authorization.md`
 sections 5.5 and 6 (wrapper routes, asUser-listing origin, `count`/`total` as scalars,
 route-class policies, ignoring checks).
+| 14 | code that only runs at module load is not checked for lowering gaps | 661/252 | 94/75 | 92/44 | 36/36 | 538/538 | 57/30 | 76/16 | 205 | 34.811 | 0.087 | 4 reported FP ops | 0 |
 
 ## Iteration tails
 
@@ -264,5 +265,19 @@ Unfiltered finding baseline:
   secret: 57 findings in 30 app(s)
   secret-logging: 76 findings in 16 app(s)
 Combined runtime per app: max 34.378s, p90 0.088s
+Baseline scans: 205 failed, 0 not completed
+```
+
+### 14 code that only runs at module load is not checked for lowering gaps
+```
+Unfiltered finding baseline:
+  auth-header: 94 findings in 75 app(s)
+  authentication: 92 findings in 44 app(s)
+  authorization: 661 findings in 252 app(s)
+  permission: 36 findings in 36 app(s)
+  runtime-version: 538 findings in 538 app(s)
+  secret: 57 findings in 30 app(s)
+  secret-logging: 76 findings in 16 app(s)
+Combined runtime per app: max 34.811s, p90 0.087s
 Baseline scans: 205 failed, 0 not completed
 ```

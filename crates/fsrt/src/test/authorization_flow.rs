@@ -653,3 +653,22 @@ fn iteration_methods_carry_the_data_they_iterate() {
         ),
     ]);
 }
+
+#[test]
+fn code_that_only_runs_at_module_load_does_not_make_a_resolver_unanalysable() {
+    // A module that also renders its UI: the component is passed to `render` at load.
+    let helpers = "function App() { return <div>{cache}</div>; }
+                   render(App);";
+    let unexposed =
+        "const response = await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`);
+         const data = await response.json();
+         return data.fields.length;";
+    let report = scan_with(helpers, unexposed);
+    assert!(report.contains_authz_vuln(0), "{report:#?}");
+    // The same lowering gap in code a request reaches keeps the finding.
+    let report = scan_with(
+        "function App() { return <div/>; }",
+        &format!("const view = App(); {unexposed}"),
+    );
+    assert!(report.contains_authz_vuln(1), "{report:#?}");
+}

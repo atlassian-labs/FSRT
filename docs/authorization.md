@@ -456,6 +456,24 @@ auth-header and authentication unchanged. Tests: operations in the callbacks of
 every method are found; reduce carries the accumulator, `forEach` pushing response
 data into a captured array is exposure and a counter is not.
 
+### D17 Code that only runs at module load is not checked for a faithful lowering
+The flow analysis (D6) follows the module initializers because they set the module-level
+bindings a resolver reads. It also followed every function those initializers call or hand a
+function to (`ForgeReconciler.render(<App/>)`, `render(App)`, a logger factory) and then
+refused to vouch for the resolver when one of them contained JSX, a function value or a
+class. Those functions run once at load, before any request exists, so no request data can
+flow through what the lowering dropped from them. They are now followed for what they do
+to module state but not checked for gaps unless a request's data can reach them (the same
+function reached from the resolver is checked then).
+
+Effect (run `14-load`): the reported operations whose flow is complete go from 575 to 605
+(JSX gaps 21 → 0, function-value gaps 88 → 31, class constructors 49 → 27; the operations
+now stop at the next real gap, `this`, which rises from 60 to 110); four more operations
+are suppressed by the flow rules, authorization 662 → 661 findings, 252 apps; no true
+positive group is lost; other scanners unchanged. Test:
+`code_that_only_runs_at_module_load_does_not_make_a_resolver_unanalysable` (and the same
+gap in code a request reaches still keeps the finding).
+
 ## 5. Checks: what is recognised, what is verified
 
 ### 5.1 Recognition today (legacy, unchanged)

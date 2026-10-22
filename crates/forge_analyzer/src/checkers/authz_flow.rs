@@ -356,7 +356,12 @@ struct Builder<'a> {
     classes: Classes,
     requests: FxHashMap<Site, Request>,
     functions: BTreeSet<Func>,
+    /// Functions a request's data can reach, whose lowering must be faithful. The
+    /// others run only at module load, before any request exists.
+    tracked: BTreeSet<Func>,
     pending: VecDeque<Func>,
+    /// Whether the function being processed runs only at module load.
+    at_load: bool,
     /// The nodes that name the resolver request itself.
     request: FxHashSet<Node>,
     /// The instruction being read, and how many request reads it has had.
@@ -373,7 +378,9 @@ pub(super) fn analyze(env: &Environment, root: DefId) -> Result<Flow, String> {
         classes: Classes::default(),
         requests: FxHashMap::default(),
         functions: BTreeSet::new(),
+        tracked: BTreeSet::new(),
         pending: VecDeque::new(),
+        at_load: false,
         request: FxHashSet::default(),
         cursor: (Location::new(crate::ir::BasicBlockId(0), 0), 0),
         incomplete: None,
@@ -386,11 +393,13 @@ pub(super) fn analyze(env: &Environment, root: DefId) -> Result<Flow, String> {
     for global in globals {
         builder.process(Func::Def(global), false);
     }
+    builder.at_load = false;
     while let Some(func) = builder.pending.pop_front() {
         if let Some(reason) = builder.incomplete {
             return Err(reason);
         }
-        builder.process(func, true);
+        let tracked = builder.tracked.contains(&func);
+        builder.process(func, tracked);
     }
     if let Some(reason) = builder.incomplete {
         return Err(reason);
@@ -414,10 +423,17 @@ impl<'a> Builder<'a> {
     }
 
     fn add_function(&mut self, func: Func) {
-        if self.functions.insert(func) {
+        let first = self.functions.insert(func);
+        // A function met from module-load code is followed for what it does to
+        // module-level state, but it is only checked for a faithful lowering once a
+        // request's data can reach it.
+        let newly_tracked = !self.at_load && self.tracked.insert(func);
+        if first {
             if self.functions.len() > MAX_FUNCTIONS {
                 self.gap("too many functions");
             }
+        }
+        if first || newly_tracked {
             self.pending.push_back(func);
         }
     }
@@ -612,6 +628,7 @@ impl<'a> Builder<'a> {
     }
 
     fn process(&mut self, func: Func, tracked: bool) {
+        self.at_load = !tracked;
         let Some(body) = self.body(func) else {
             return;
         };
