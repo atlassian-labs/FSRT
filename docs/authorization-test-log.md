@@ -29,6 +29,7 @@ the lower and upper bound when a group is partly suppressed.
 | 9 | module context content users edit is caller data | 659/250 | 93/74 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 34.025 | 0.085 | 0 | 0 (guards the TP initiativepicker/field value resolver) |
 | 10 | callbacks that return are called (recall fix: ops in and before them were lost) | 666/253 | 94/75 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 34.139 | 0.087 | 17 reported FP rows (+25 suppressed by flow rules) | 0 (recall: +TPs found e.g. getStepAttachments, getCustomerIssues) |
 | 11 | object spreads are lowered (recall +4 ops) | 666/253 | 94/75 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 34.508 | 0.084 | 6 reported FP rows | 0 |
+| 12 | site-level lookups: assets workspace id, app license, JQL function computation | 661/252 | 94/75 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 34.339 | 0.087 | 5 reported FP rows | 1 row (jaanga workspace id; entry still reported) |
 
 ## Iteration tails
 
@@ -197,5 +198,19 @@ Unfiltered finding baseline:
   secret: 56 findings in 29 app(s)
   secret-logging: 76 findings in 16 app(s)
 Combined runtime per app: max 34.508s, p90 0.084s
+Baseline scans: 205 failed, 0 not completed
+```
+
+### 12 site-level lookups: assets workspace id, app license, JQL function computation
+```
+Unfiltered finding baseline:
+  auth-header: 94 findings in 75 app(s)
+  authentication: 92 findings in 44 app(s)
+  authorization: 661 findings in 252 app(s)
+  permission: 36 findings in 36 app(s)
+  runtime-version: 538 findings in 538 app(s)
+  secret: 56 findings in 29 app(s)
+  secret-logging: 76 findings in 16 app(s)
+Combined runtime per app: max 34.339s, p90 0.087s
 Baseline scans: 205 failed, 0 not completed
 ```

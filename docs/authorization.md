@@ -385,3 +385,25 @@ change at the finding level); four more operations are found (sinks inside sprea
 expressions), and six operations rated false positive are suppressed by the flow
 rules (reported rows rated false positive 422 → 416). No true positive group is lost.
 Tests: `spread_objects_carry_what_they_copy`.
+
+### D15 Third tranche of site-level lookups
+Three more GET routes join the instance-metadata table (D3, D9): the id of the Assets
+workspace (`/rest/servicedeskapi/assets/workspace`, needed to call the Assets API and
+the same for every viewer), the license state of an app
+(`/rest/atlassian-connect/1/addons/{}/license`) and the app's own JQL function
+precomputations (`/rest/api/:v/jql/function/computation`).
+
+Evidence (run `12-metadata-3`): authorization 666 → 661 findings, 253 → 252 apps; 6
+entries leave the report; reported rows rated false positive 416 → 411, one more row
+rated true positive is suppressed (the workspace-id lookup of
+`com.jaanga.assetsanalytics`, in an entry whose other operations stay reported). No
+true-positive group is lost.
+
+Why the table matters less here than it looks: a route whose text spells `user`,
+`instance`, `avatar`, `license`, `preferences`, `serverInfo` or `group` (or any of
+`TRIVIAL_API_PREFIXES`) is classified as a trivial route by `classify_api_call`, so it is
+never a privileged operation for any method. That list is older than this work and is
+applied to the route's spelling at the call, so it only fires for routes written inline;
+the license route in the table is reached through a constant or a helper. The list is a
+false-negative risk (`DELETE` of a group route, `PUT` of a user property). Left as is;
+listed in the report.
