@@ -404,7 +404,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
 
                         info!("Found a remote vuln!");
                         self.vulns.push(vuln);
-                        ControlFlow::Break(())
+                        ControlFlow::Continue(*state)
                     } else {
                         warn!("Privileged remote missing ID");
                         ControlFlow::Continue(*state)
@@ -423,7 +423,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                         AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
                     info!("Found a vuln!");
                     self.vulns.push(vuln);
-                    ControlFlow::Break(())
+                    ControlFlow::Continue(*state)
                 }
             },
             Intrinsic::ApiCustomField if *state < AuthorizeState::CustomFieldOnly => {
@@ -431,7 +431,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                     AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
                 info!("Found a vuln!");
                 self.vulns.push(vuln);
-                ControlFlow::Break(())
+                ControlFlow::Continue(*state)
             }
             Intrinsic::SecretFunction(_)
             | Intrinsic::ApiCall(_)
