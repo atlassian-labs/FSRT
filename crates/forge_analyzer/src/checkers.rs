@@ -33,6 +33,7 @@ use time::{Date, Month, OffsetDateTime};
 use tracing::{debug, info, warn};
 
 mod authz_principal;
+mod authz_routes;
 mod secret_logging;
 pub use secret_logging::{
     DEFAULT_EXCLUDED_SECRET_SUFFIXES, DEFAULT_SECRET_SUFFIXES, SecretLoggingChecker,
@@ -258,13 +259,15 @@ pub struct AuthZChecker {
     audited: HashMap<String, u32>,
 }
 
-/// A privileged operation the walk reached without a recognised check. The
-/// policy decides at the end of the root whether to report it.
+/// A privileged operation the walk reached without a recognised check, and what the
+/// policy decided about it when it was reached.
 struct Candidate {
     def: DefId,
     loc: Location,
     callstack: Vec<Frame>,
     kind: AuthZVulnKind,
+    /// Why it is not reported; `None` reports it.
+    reason: Option<&'static str>,
 }
 
 impl AuthZChecker {
@@ -285,23 +288,42 @@ impl AuthZChecker {
         self.vulns.into_iter()
     }
 
-    /// Record a privileged operation at the instruction being visited.
-    fn found<'cx>(&mut self, interp: &Interp<'cx, Self>, kind: AuthZVulnKind) {
+    /// Record a privileged operation at the instruction being visited and apply the
+    /// policy to it. The walk ends at the first operation that is reported, as it did
+    /// before the policy existed; an operation the policy suppresses leaves the walk
+    /// running, so a later operation of the same entry can still be reported.
+    fn found<'cx>(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        kind: AuthZVulnKind,
+        state: &AuthorizeState,
+    ) -> ControlFlow<(), AuthorizeState> {
         let Some((def, loc)) = self.at else {
             warn!("privileged operation outside an instruction");
-            return;
+            return ControlFlow::Continue(*state);
         };
+        let reason = suppression(interp.env(), def, loc);
         self.candidates.push(Candidate {
             def,
             loc,
             callstack: interp.callstack(),
             kind,
+            reason,
         });
+        if reason.is_some() {
+            ControlFlow::Continue(*state)
+        } else {
+            ControlFlow::Break(())
+        }
     }
 
-    /// Report or suppress each operation the root reached, in discovery order,
-    /// and audit the decision. Suppressions never reach the report.
+    /// Report or drop each operation the root reached, in discovery order, and audit
+    /// the decision. Suppressions never reach the report.
     fn decide<'cx>(&mut self, interp: &Interp<'cx, Self>) {
+        // A helper is retried for later roots only while nothing on its call path
+        // is reported; otherwise the report already exposes it.
+        let mut retry = HashSet::new();
+        let mut exposed = HashSet::new();
         for candidate in mem::take(&mut self.candidates) {
             let helpers: Vec<_> = candidate
                 .callstack
@@ -323,12 +345,31 @@ impl AuthZChecker {
                 candidate.loc,
                 &check_name,
                 *ordinal,
-                "reported",
+                candidate.reason.unwrap_or("reported"),
             );
-            let _ = helpers;
-            self.vulns.push(vuln);
+            if candidate.reason.is_some() {
+                retry.extend(helpers);
+            } else {
+                exposed.extend(helpers);
+                self.vulns.push(vuln);
+            }
         }
+        self.suppressed_helpers
+            .extend(retry.difference(&exposed).copied());
     }
+}
+
+/// Why a candidate is not reported, from what the request itself says. Every
+/// rule needs a proven GET: unknown facts keep the finding.
+fn suppression(env: &Environment, def: DefId, loc: Location) -> Option<&'static str> {
+    let request = env.def_ref(def).as_body()?.authz_requests.get(&loc)?;
+    if request.method(env)? != HttpMethod::Get {
+        return None;
+    }
+    if authz_routes::is_instance_metadata(request.route(env)?) {
+        return Some("instance-metadata-route");
+    }
+    None
 }
 
 /// One machine-readable line per decision, enabled with
@@ -577,8 +618,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                         ControlFlow::Continue(*state)
                     } else if let Some(remote_name) = remote {
                         info!("Found a remote vuln!");
-                        self.found(interp, RemoteCall(remote_name.clone()));
-                        ControlFlow::Break(())
+                        self.found(interp, RemoteCall(remote_name.clone()), state)
                     } else {
                         warn!("Privileged remote missing ID");
                         ControlFlow::Continue(*state)
@@ -594,14 +634,12 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                 | IntrinsicName::RequestCompass(_)
                 | IntrinsicName::Other => {
                     info!("Found a vuln!");
-                    self.found(interp, ApiCall);
-                    ControlFlow::Break(())
+                    self.found(interp, ApiCall, state)
                 }
             },
             Intrinsic::ApiCustomField if *state < AuthorizeState::CustomFieldOnly => {
                 info!("Found a vuln!");
-                self.found(interp, ApiCall);
-                ControlFlow::Break(())
+                self.found(interp, ApiCall, state)
             }
             Intrinsic::SecretFunction(_)
             | Intrinsic::ApiCall(_)
