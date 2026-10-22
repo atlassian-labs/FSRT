@@ -7,16 +7,16 @@ entry (`D<n>`) that records the alternatives that were rejected. Results of each
 change on the Marketplace corpus are in [authorization-test-log.md](authorization-test-log.md).
 
 Status at the head of this branch (final verification run, 4745 apps scanned):
-662 authorization findings in 252 apps, from 1507 findings in 295 apps at the reference
+661 authorization findings in 252 apps, from 1507 findings in 295 apps at the reference
 run. The unit changed from one finding per privileged operation to one per entry
 (D10). The audit (`FORGE_LOG=authz_audit=debug`, run over the apps the reference run
-reported on) sees 1622 privileged operations at the head (1507 at the reference run; 115
+reported on) sees 1624 privileged operations at the head (1507 at the reference run; 117
 more are found because helpers are retried after a suppressed operation, D4, and because
-of the lowering fixes D13, D14 and D16): 580 are suppressed by a rule and 1042 are
-reported, as 657 entries (662 findings in the full scan, which also covers apps the
-reference run did not report on). Of those 657 entries, 393 hold an operation the triage
-rated a true positive, 238 only operations it rated false positive, 11 uncertain ones,
-and 15 are not in the triage (an entry name that did not exist then, or an operation
+of the lowering fixes D13, D14 and D16): 584 are suppressed by a rule and 1040 are
+reported, as 656 entries (661 findings in the full scan, which also covers apps the
+reference run did not report on). Of those 656 entries, 393 hold an operation the triage
+rated a true positive, 236 only operations it rated false positive, 11 uncertain ones,
+and 16 are not in the triage (an entry name that did not exist then, or an operation
 the lowering fixes found).
 Section 7 says what is left and why.
 
@@ -643,7 +643,7 @@ route table can tell.
 
 ## 8. Reproduction
 
-* Tests: `cargo test --workspace` (188 in `fsrt`, 15 in `forge_analyzer`, 14 in
+* Tests: `cargo test --workspace` (189 in `fsrt`, 15 in `forge_analyzer`, 14 in
   `forge_loader`); `cargo fmt --all -- --check`; `cargo clippy --workspace`.
 * One app with decisions: `FORGE_LOG=authz_audit=debug fsrt --scanners authorization
   <app>` prints a JSON record per operation (`decision`, `flow`, `route_origin`,

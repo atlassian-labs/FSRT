@@ -49,6 +49,7 @@ Commit of each row (`git log 999d3d1..HEAD`):
 | 11 | `18130f6` lower every object spread instead of ignoring it (`c709c86` is `cargo fmt` for 10 and 11) |
 | 12 | `f243adf` site-level lookups are instance metadata too |
 | 13 | `71401e7` see what the callbacks of forEach, find, some, every, flatMap, sort, reduce and finally do |
+| 14 | `7bcba76` do not check code that only runs at module load for a faithful lowering |
 
 Experiments that were measured and not kept are listed in `authorization.md`
 sections 5.5 and 6 (wrapper routes, asUser-listing origin, `count`/`total` as scalars,
@@ -253,22 +254,22 @@ Combined runtime per app: max 34.603s, p90 0.087s
 Baseline scans: 205 failed, 0 not completed
 ```
 
-### Final verification on the head of the branch
-`cargo fmt --all -- --check`, `cargo clippy --workspace` and `cargo test --workspace` pass (188 tests in `fsrt`, 15 in `forge_analyzer`, 14 in `forge_loader`); corpus scan with the installed head binary:
+### 14 code that only runs at module load is not checked for lowering gaps
 ```
 Unfiltered finding baseline:
   auth-header: 94 findings in 75 app(s)
   authentication: 92 findings in 44 app(s)
-  authorization: 662 findings in 252 app(s)
+  authorization: 661 findings in 252 app(s)
   permission: 36 findings in 36 app(s)
   runtime-version: 538 findings in 538 app(s)
   secret: 57 findings in 30 app(s)
   secret-logging: 76 findings in 16 app(s)
-Combined runtime per app: max 34.378s, p90 0.088s
+Combined runtime per app: max 34.811s, p90 0.087s
 Baseline scans: 205 failed, 0 not completed
 ```
 
-### 14 code that only runs at module load is not checked for lowering gaps
+### Final verification on the head of the branch
+`cargo fmt --all -- --check`, `cargo clippy --workspace` and `cargo test --workspace` pass (189 tests in `fsrt`, 15 in `forge_analyzer`, 14 in `forge_loader`); the corpus scan of row 14 is the head binary:
 ```
 Unfiltered finding baseline:
   auth-header: 94 findings in 75 app(s)
