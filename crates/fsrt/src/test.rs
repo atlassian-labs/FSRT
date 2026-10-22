@@ -3452,3 +3452,30 @@ permissions: { scopes: [] }
     );
     assert_eq!(report.into_vulns().len(), 2, "{report:#?}");
 }
+
+fn scan_resolver_with_read_helper(definitions: &str) -> Report {
+    let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+    project.add_file(
+        "src/index.js",
+        format!(
+            "import Resolver from '@forge/resolver';
+             import api, {{route, authorize}} from '@forge/api';
+             const resolver = new Resolver();
+             async function read() {{
+                 const response = await api.asApp().requestJira(route`/rest/api/3/issue/DEMO-1`);
+                 return response.json();
+             }}
+             {definitions}
+             export const handler = resolver.getDefinitions();"
+        ),
+    );
+    project.manifest_file_content = Some(alias_manifest(false));
+    let report = scan_directory_test_with_args(
+        project,
+        Args::parse_from(["fsrt", "--scanners", "authorization"]),
+    );
+    assert!(!report.has_errors(), "{report:#?}");
+    report
+}
+
+mod authorization_principal;

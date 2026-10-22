@@ -8,8 +8,8 @@ use crate::{
         WithCallStack,
     },
     ir::{
-        Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
-        Projection, Rvalue, VarId, VarKind, Variable,
+        Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Literal, Location, Operand,
+        Projection, Rvalue, STARTING_BLOCK, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     utils::{add_elements_to_intrinsic_struct, convert_lit_to_raw, translate_request_type},
@@ -31,6 +31,7 @@ use std::{
 use time::{Date, Month, OffsetDateTime};
 use tracing::{debug, info, warn};
 
+mod authz_principal;
 mod secret_logging;
 pub use secret_logging::{
     DEFAULT_EXCLUDED_SECRET_SUFFIXES, DEFAULT_SECRET_SUFFIXES, SecretLoggingChecker,
@@ -246,6 +247,8 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
 pub struct AuthZChecker {
     vulns: Vec<AuthZVuln>,
     check_remotes: bool,
+    principal: Option<authz_principal::Reachability>,
+    suppressed_helpers: HashSet<DefId>,
 }
 
 impl AuthZChecker {
@@ -253,6 +256,8 @@ impl AuthZChecker {
         Self {
             vulns: vec![],
             check_remotes,
+            principal: None,
+            suppressed_helpers: HashSet::new(),
         }
     }
 
@@ -375,6 +380,69 @@ impl<'cx> Runner<'cx> for AuthZChecker {
     type Dataflow = AuthorizeDataflow;
 
     const NAME: &'static str = "Authorization";
+
+    fn visit_body(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        body: &'cx Body,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        let is_root = interp.callstack().is_empty();
+        if is_root {
+            self.principal = authz_principal::analyze(interp.env(), def);
+        }
+        let old_body = interp.body();
+        interp.set_body(body);
+        let result = self.visit_block(
+            interp,
+            def,
+            STARTING_BLOCK,
+            body.block(STARTING_BLOCK),
+            state,
+        );
+        interp.set_body(old_body);
+        if is_root {
+            // Retain recursion protection during this traversal, but let a later
+            // resolver expose the same helper's result. Other history is unchanged.
+            interp.retry_checker_functions(self.suppressed_helpers.drain());
+            self.principal = None;
+        }
+        result
+    }
+
+    fn visit_inst(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        loc: Location,
+        inst: &'cx Inst,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        if self
+            .principal
+            .as_ref()
+            .is_some_and(|facts| facts.excludes(def, loc.block))
+        {
+            self.suppressed_helpers.insert(def);
+            self.suppressed_helpers.extend(
+                interp
+                    .callstack()
+                    .iter()
+                    .map(|frame| frame.calling_function),
+            );
+            if matches!(
+                inst.rvalue(),
+                Rvalue::Call(..)
+                    | Rvalue::Intrinsic(Intrinsic::ApiCall(_) | Intrinsic::ApiCustomField, _)
+            ) {
+                debug!(entry = ?interp.entry(), function = ?def, operation = ?loc,
+                    reason = "principal-branch-unreachable", "Skipped unreachable authorization path");
+            }
+            return ControlFlow::Continue(*state);
+        }
+        self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
+    }
 
     fn visit_intrinsic(
         &mut self,
