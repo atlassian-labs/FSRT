@@ -42,6 +42,7 @@ use crate::definitions::IntrinsicName;
 use crate::definitions::PackageData;
 use crate::definitions::Value;
 use crate::interp::ProjectionVec;
+use crate::request::RequestFacts;
 
 pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
 
@@ -182,6 +183,8 @@ pub struct Body {
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     pub class_instantiations: HashMap<DefId, DefId>,
     pub(crate) const_bindings: FxHashSet<DefId>,
+    /// The method and route of each `requestJira`-style call, by location.
+    pub(crate) authz_requests: FxHashMap<Location, RequestFacts>,
     /// Simple, unwritten formal bindings, in argument order, with boolean defaults.
     pub(crate) authz_bool_parameters: Vec<Option<(DefId, Option<bool>)>>,
     pub(crate) authz_written_bindings: FxHashSet<DefId>,
@@ -445,6 +448,7 @@ impl Body {
             values: FxHashMap::default(),
             class_instantiations: Default::default(),
             const_bindings: Default::default(),
+            authz_requests: Default::default(),
             authz_bool_parameters: Default::default(),
             authz_written_bindings: Default::default(),
             authz_principal_opaque: false,
