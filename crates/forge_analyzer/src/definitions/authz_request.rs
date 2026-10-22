@@ -164,3 +164,99 @@ fn options_method(options: &ObjectLit) -> Option<HttpMethod> {
     }
     Some(method)
 }
+
+impl FunctionAnalyzer<'_> {
+    /// Refuse to vouch for the flow through this function.
+    pub(super) fn flow_gap(&mut self, reason: &'static str) {
+        self.body.authz_flow_gap.get_or_insert(reason);
+    }
+
+    /// The parameters of a callback that was lowered without binding them take
+    /// the receiver's elements.
+    pub(super) fn link_parameters(&mut self, receiver: &Operand, params: &[Pat]) {
+        #[derive(Default)]
+        struct Bound(Vec<Id>);
+        impl Visit for Bound {
+            noop_visit_type!();
+            fn visit_binding_ident(&mut self, ident: &BindingIdent) {
+                self.0.push(ident.id.to_id());
+            }
+        }
+        let mut bound = Bound::default();
+        params.visit_with(&mut bound);
+        for id in bound.0 {
+            let def = self.res.get_or_insert_sym(id, self.module);
+            let var = self.body.get_or_insert_global(def);
+            self.body
+                .authz_flow_links
+                .push((receiver.clone(), Variable::new(var)));
+        }
+    }
+
+    /// Remember the function values among a call's arguments, whose bodies the
+    /// lowering kept apart in `Environment::authz_closures`.
+    pub(super) fn record_callbacks(&mut self, args: &[ExprOrSpread]) {
+        let callbacks: SmallVec<[usize; 1]> = args
+            .iter()
+            .filter_map(|arg| {
+                let span = match &*arg.expr {
+                    Expr::Arrow(arrow) => arrow.span,
+                    Expr::Fn(function) => function.function.span,
+                    _ => return None,
+                };
+                self.res.authz_closure_index.get(&span).copied()
+            })
+            .collect();
+        if !callbacks.is_empty() {
+            let location = Location::new(
+                self.block,
+                self.body.blockbuilders[self.block].insts.len() as u32,
+            );
+            self.body.authz_callbacks.insert(location, callbacks);
+        }
+    }
+}
+
+impl FunctionAnalyzer<'_> {
+    /// A catch handler is not part of the lowered control flow. Lower it as a body
+    /// of its own so the flow analysis can follow what it reads and returns.
+    pub(super) fn lower_catch(&mut self, handler: &swc_core::ecma::ast::CatchClause) {
+        let owner = self
+            .res
+            .add_anonymous("__CATCH", AnonType::Closure, self.module);
+        let params: Vec<Pat> = handler.param.iter().cloned().collect();
+        let mut args = ArgDefiner {
+            res: self.res,
+            module: self.module,
+            func: owner,
+            body: Body::with_owner(owner),
+            current_arg: Variable::default(),
+        };
+        args.visit_pats(&params);
+        let mut locals = LocalDefiner {
+            res: args.res,
+            module: self.module,
+            func: owner,
+            body: args.body,
+        };
+        handler.body.visit_with(&mut locals);
+        locals.body.authz_flow_gap = authz_lossy::flow_gap(&params, &handler.body);
+        let mut analyzer = FunctionAnalyzer::new(
+            locals.res,
+            self.module,
+            owner,
+            self.secret_packages,
+            locals.body,
+            self.suspicious_remotes,
+        );
+        analyzer.lower_stmts(&handler.body.stmts);
+        for bb in analyzer.body.iter_block_keys().collect::<Vec<_>>() {
+            if !analyzer.body.block(bb).set_term_called {
+                analyzer.body.set_terminator(bb, Terminator::Ret);
+            }
+        }
+        let body = analyzer.body;
+        let index = self.res.add_closure(handler.span, body);
+        self.body.authz_catches.push(index);
+    }
+}
