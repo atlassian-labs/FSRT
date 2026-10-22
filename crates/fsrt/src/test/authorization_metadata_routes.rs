@@ -42,6 +42,14 @@ fn metadata_gets_are_not_reported() {
         "api.asApp().requestJira(route`/rest/agile/1.0/board?name=${payload.name}`)",
         "api.asApp().requestConfluence(route`/wiki/api/v2/spaces?limit=25`)",
         "api.asApp().requestJira('/rest/api/3/status')",
+        "api.asApp().requestJira(route`/rest/api/3/myself`)",
+        "api.asApp().requestJira(route`/rest/servicedeskapi/servicedesk/${payload.id}`)",
+        "api.asApp().requestJira(route`/rest/servicedeskapi/servicedesk/${payload.id}/requesttype`)",
+        "api.asApp().requestJira(route`/rest/api/3/field/${payload.id}/context/projectmapping`)",
+        "api.asApp().requestJira(route`/rest/api/3/attachment/meta`)",
+        // Query analysis returns the structure of the query in the body.
+        "api.asApp().requestJira(route`/rest/api/3/jql/parse?validation=strict`, {method: 'POST', body: JSON.stringify({queries: [payload.jql]})})",
+        "api.asApp().requestJira(route`/rest/api/3/jql/sanitize`, {method: 'POST', body: JSON.stringify({queries: [{query: payload.jql}]})})",
     ] {
         let report = scan_resolver(&returns(request));
         assert!(report.contains_authz_vuln(0), "{request}\n{report:#?}");
@@ -76,6 +84,9 @@ fn resources_and_unproven_routes_are_reported() {
         "api.asApp().requestJira(payload.route)",
         "api.asApp().requestJira(route`/rest/api/3/field/search/extra`)",
         "api.asApp().requestConfluence(route`/wiki/api/v2/pages/${payload.id}`)",
+        "api.asApp().requestJira(route`/rest/api/3/myself/${payload.id}`)",
+        "api.asApp().requestJira(route`/rest/servicedeskapi/servicedesk/${payload.id}/queue`)",
+        "api.asApp().requestJira(route`/rest/api/3/jql/parse`, {method: 'PUT'})",
     ] {
         let report = scan_resolver(&returns(request));
         assert!(report.contains_authz_vuln(1), "{request}\n{report:#?}");
