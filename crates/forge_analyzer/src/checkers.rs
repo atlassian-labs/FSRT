@@ -9,7 +9,7 @@ use crate::{
     },
     ir::{
         Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Literal, Location, Operand,
-        Projection, Rvalue, STARTING_BLOCK, VarId, VarKind, Variable,
+        Projection, Rvalue, STARTING_BLOCK, Successors, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     utils::{add_elements_to_intrinsic_struct, convert_lit_to_raw, translate_request_type},
@@ -247,6 +247,7 @@ pub struct AuthZChecker {
     vulns: Vec<AuthZVuln>,
     check_remotes: bool,
     constant_return_resolver: bool,
+    resolver_permission_present: bool,
     suppressed_helpers: HashSet<DefId>,
 }
 
@@ -256,6 +257,7 @@ impl AuthZChecker {
             vulns: vec![],
             check_remotes,
             constant_return_resolver: false,
+            resolver_permission_present: false,
             suppressed_helpers: HashSet::new(),
         }
     }
@@ -264,6 +266,44 @@ impl AuthZChecker {
         // TODO: make this an associated function on the Checker trait.
         self.vulns.into_iter()
     }
+}
+
+// Presence is a reporting policy, not proof of an enforced permission check.
+// Follow the same recognized intrinsics and resolvable calls as the legacy
+// checker, but only through reachable blocks in this resolver's call graph.
+// A visited set bounds loops/recursion; uncalled helpers confer no exemption.
+fn resolver_has_authorize(env: &Environment, root: DefId) -> bool {
+    let mut pending = vec![(root, STARTING_BLOCK)];
+    let mut visited = HashSet::new();
+    while let Some((def, block_id)) = pending.pop() {
+        if !visited.insert((def, block_id)) {
+            continue;
+        }
+        let Some(body) = env.def_ref(def).as_body().copied() else {
+            continue;
+        };
+        let block = body.block(block_id);
+        for inst in block.iter() {
+            match inst.rvalue() {
+                Rvalue::Intrinsic(Intrinsic::Authorize(_), _) => return true,
+                Rvalue::Call(callee, _) => {
+                    if let Some((callee, _)) = body.resolve_call(env, callee) {
+                        pending.push((callee, STARTING_BLOCK));
+                    }
+                }
+                _ => {}
+            }
+        }
+        match block.successors() {
+            Successors::Return => {}
+            Successors::One(next) => pending.push((def, next)),
+            Successors::Two(first, second) => {
+                pending.push((def, first));
+                pending.push((def, second));
+            }
+        }
+    }
+    false
 }
 
 impl Default for AuthZChecker {
@@ -389,8 +429,10 @@ impl<'cx> Runner<'cx> for AuthZChecker {
     ) -> ControlFlow<(), Self::State> {
         let is_root = interp.callstack().is_empty();
         if is_root {
-            self.constant_return_resolver = matches!(interp.entry().kind, EntryKind::Resolver(..))
-                && body.authz_constant_returns;
+            let is_resolver = matches!(interp.entry().kind, EntryKind::Resolver(..));
+            self.constant_return_resolver = is_resolver && body.authz_constant_returns;
+            self.resolver_permission_present =
+                is_resolver && resolver_has_authorize(interp.env(), def);
         }
         let old_body = interp.body();
         interp.set_body(body);
@@ -407,6 +449,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             // resolver expose the same helper's result. Other history is unchanged.
             interp.retry_checker_functions(self.suppressed_helpers.drain());
             self.constant_return_resolver = false;
+            self.resolver_permission_present = false;
         }
         result
     }
@@ -419,15 +462,22 @@ impl<'cx> Runner<'cx> for AuthZChecker {
         inst: &'cx Inst,
         state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
-        if self.constant_return_resolver && interp.body().authz_gets.contains(&loc) {
+        if (self.constant_return_resolver || self.resolver_permission_present)
+            && interp.body().authz_gets.contains(&loc)
+        {
             self.suppressed_helpers.extend(
                 interp
                     .callstack()
                     .iter()
                     .map(|frame| frame.calling_function),
             );
+            let reason = if self.resolver_permission_present {
+                "resolver-permission-present-get-policy"
+            } else {
+                "constant-return-resolver-get"
+            };
             debug!(entry = ?interp.entry(), function = ?def, operation = ?loc,
-                reason = "constant-return-resolver-get", "Suppressed authorization finding");
+                reason, authorization_verified = false, "Suppressed authorization finding");
             return ControlFlow::Continue(*state);
         }
         self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
