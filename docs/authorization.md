@@ -562,6 +562,19 @@ chose and what came back, not the route. The two classes with no true positive a
 directory reads (users and groups), where the question is a product setting ("Browse
 users and groups"), not a code signal.
 
+Tried on the flow rules and rejected (no code kept):
+
+* `count` and `total` as properties that carry no data, like `length`: 3 entries leave
+  the report, but two triaged true positives go with them (`com.lbcg.jira.plugin.pro.BulkClone`
+  `get-project-issue-count` and `xray-check-issue-types-in-jql` return the
+  `approximate-count` of a JQL the caller wrote, which is a blind query oracle).
+* Following a route through a wrapper (`get(path)` called with literal paths) with
+  literal-string tracking in the flow classes, to classify it with the metadata table:
+  11 operations in 8 apps have a route that is a binding with complete flow, and the
+  wrappers there take a `route` result built elsewhere and pass options through, so most
+  would still be reported. Not worth the machinery.
+* An origin for what an asUser listing returned (5.5), the verified gate (5.5).
+
 Further policies the captain may want to weigh:
 
 * *Verified checks* (5.3): strict mode would add up to 166 findings (5.2) and remove
