@@ -31,6 +31,7 @@ use crate::{
         Base, BinOp, Body, Inst, Intrinsic, Location, Operand, Projection, Rvalue, UnOp, VarId,
         VarKind, Variable,
     },
+    request::HttpMethod,
 };
 
 /// Where a value may come from.
@@ -735,7 +736,19 @@ impl<'a> Builder<'a> {
                     _ => 0,
                 };
                 let egress = matches!(name, IntrinsicName::InvokeRemote(_));
-                for node in nodes.iter().skip(rest_from).flatten() {
+                // What a read sends is a question, not data: the options of a GET and
+                // the query of a search POST name what to read.
+                let asks = is_app
+                    && body.authz_requests.get(&loc).is_some_and(|request| {
+                        match request.method(self.env) {
+                            Some(HttpMethod::Get) => true,
+                            Some(HttpMethod::Post) => request
+                                .route(self.env)
+                                .is_some_and(super::authz_routes::is_read_only_post),
+                            _ => false,
+                        }
+                    });
+                for node in nodes.iter().skip(rest_from).flatten().filter(|_| !asks) {
                     self.classes.expose(
                         *node,
                         if egress {

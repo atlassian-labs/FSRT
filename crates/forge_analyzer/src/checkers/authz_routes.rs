@@ -53,12 +53,24 @@ const INSTANCE_METADATA: &[&str] = &[
     "/rest/api/:v/configuration",
     "/rest/api/:v/configuration/timetracking/options",
     "/rest/api/:v/jql/autocompletedata",
+    "/rest/api/:v/field/{}/context/projectmapping",
+    "/rest/api/:v/field/{}/context/issuetypemapping",
+    "/rest/api/:v/fieldconfigurationscheme/project",
+    "/rest/api/:v/fieldconfigurationscheme/mapping",
+    "/rest/api/:v/config/fieldschemes",
+    "/rest/api/:v/attachment/meta",
+    "/rest/api/:v/project/{}/roledetails",
+    "/rest/servicedeskapi/servicedesk/{}/requesttype",
+    // Who the app is acting as: the app's own user, not a user of the caller's.
+    "/rest/api/:v/myself",
     // Lists of containers.
     "/rest/api/:v/project",
     "/rest/api/:v/project/search",
     "/rest/api/:v/project/{}/statuses",
     "/rest/agile/1.0/board",
     "/rest/servicedeskapi/servicedesk",
+    // One service desk by id: its name and project key, like the list.
+    "/rest/servicedeskapi/servicedesk/{}",
     "/wiki/api/v2/spaces",
     "/wiki/rest/api/space",
     "/wiki/rest/api/settings/systemInfo",
@@ -70,12 +82,14 @@ const READ_ONLY_POSTS: &[&str] = &[
     "/rest/api/:v/search",
     "/rest/api/:v/search/jql",
     "/rest/api/:v/search/approximate-count",
-    "/rest/api/:v/jql/parse",
-    "/rest/api/:v/jql/sanitize",
     "/rest/api/:v/issue/bulkfetch",
     "/rest/api/:v/changelog/bulkfetch",
     "/rest/api/:v/worklog/list",
 ];
+
+/// POST endpoints that analyse a query and return its structure; nothing in the
+/// instance is read or changed.
+const QUERY_ANALYSIS_POSTS: &[&str] = &["/rest/api/:v/jql/parse", "/rest/api/:v/jql/sanitize"];
 
 fn matches(pattern: &str, route: &[Option<String>]) -> bool {
     let mut segments = pattern.split('/').filter(|segment| !segment.is_empty());
@@ -100,6 +114,14 @@ fn matches(pattern: &str, route: &[Option<String>]) -> bool {
 pub(super) fn is_read_only_post(route: &RouteText) -> bool {
     let segments = route.path_segments();
     READ_ONLY_POSTS
+        .iter()
+        .any(|pattern| matches(pattern, &segments))
+}
+
+/// Whether a POST of `route` only analyses the query in its body.
+pub(super) fn is_query_analysis_post(route: &RouteText) -> bool {
+    let segments = route.path_segments();
+    QUERY_ANALYSIS_POSTS
         .iter()
         .any(|pattern| matches(pattern, &segments))
 }
