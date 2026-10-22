@@ -3333,3 +3333,5 @@ fn authorization_permission_presence_follows_imports_but_requires_a_resolver_roo
         );
     }
 }
+
+mod authorization_principal;

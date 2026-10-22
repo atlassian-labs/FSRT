@@ -31,6 +31,7 @@ use std::{
 use time::{Date, Month, OffsetDateTime};
 use tracing::{debug, info, warn};
 
+mod authz_principal;
 mod secret_logging;
 pub use secret_logging::{
     DEFAULT_EXCLUDED_SECRET_SUFFIXES, DEFAULT_SECRET_SUFFIXES, SecretLoggingChecker,
@@ -248,6 +249,7 @@ pub struct AuthZChecker {
     check_remotes: bool,
     constant_return_resolver: bool,
     resolver_permission_present: bool,
+    principal: Option<authz_principal::Reachability>,
     suppressed_helpers: HashSet<DefId>,
 }
 
@@ -258,6 +260,7 @@ impl AuthZChecker {
             check_remotes,
             constant_return_resolver: false,
             resolver_permission_present: false,
+            principal: None,
             suppressed_helpers: HashSet::new(),
         }
     }
@@ -429,6 +432,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
     ) -> ControlFlow<(), Self::State> {
         let is_root = interp.callstack().is_empty();
         if is_root {
+            self.principal = authz_principal::analyze(interp.env(), def);
             let is_resolver = matches!(interp.entry().kind, EntryKind::Resolver(..));
             self.constant_return_resolver = is_resolver && body.authz_constant_returns;
             self.resolver_permission_present =
@@ -450,6 +454,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             interp.retry_checker_functions(self.suppressed_helpers.drain());
             self.constant_return_resolver = false;
             self.resolver_permission_present = false;
+            self.principal = None;
         }
         result
     }
@@ -462,6 +467,28 @@ impl<'cx> Runner<'cx> for AuthZChecker {
         inst: &'cx Inst,
         state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
+        if self
+            .principal
+            .as_ref()
+            .is_some_and(|facts| facts.excludes(def, loc.block))
+        {
+            self.suppressed_helpers.insert(def);
+            self.suppressed_helpers.extend(
+                interp
+                    .callstack()
+                    .iter()
+                    .map(|frame| frame.calling_function),
+            );
+            if matches!(
+                inst.rvalue(),
+                Rvalue::Call(..)
+                    | Rvalue::Intrinsic(Intrinsic::ApiCall(_) | Intrinsic::ApiCustomField, _)
+            ) {
+                debug!(entry = ?interp.entry(), function = ?def, operation = ?loc,
+                    reason = "principal-branch-unreachable", "Skipped unreachable authorization path");
+            }
+            return ControlFlow::Continue(*state);
+        }
         if (self.constant_return_resolver || self.resolver_permission_present)
             && interp.body().authz_gets.contains(&loc)
         {

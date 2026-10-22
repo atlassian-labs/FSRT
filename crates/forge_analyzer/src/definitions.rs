@@ -60,6 +60,8 @@ use crate::{
     },
 };
 
+mod authz_principal;
+
 // Deliberately syntactic: aliases and computed expressions are
 // not proven independent of privileged data. Inspect the AST because lowering
 // does not preserve every JavaScript construct.
@@ -1889,6 +1891,12 @@ impl FunctionAnalyzer<'_> {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
         };
+        if args.iter().any(|arg| arg.spread.is_some()) {
+            self.body.authz_spread_calls.insert(Location::new(
+                self.block,
+                self.body.blockbuilders[self.block].insts.len() as u32,
+            ));
+        }
         let res = self.body.push_tmp(self.block, call, None);
         Operand::with_var(res)
     }
@@ -3185,6 +3193,10 @@ impl Visit for FunctionCollector<'_> {
         };
         func_body.visit_children_with(&mut localdef);
         let mut body = localdef.body;
+        let mut writes = authz_principal::Writes::default();
+        params.visit_with(&mut writes);
+        func_body.visit_with(&mut writes);
+        authz_principal::record(self.res, self.module, &mut body, params, writes);
         body.authz_constant_returns = match &**func_body {
             BlockStmtOrExpr::BlockStmt(block) => authz_constant_returns(block),
             BlockStmtOrExpr::Expr(expr) => authz_constant_return(expr),
@@ -3444,6 +3456,12 @@ impl FunctionCollector<'_> {
         };
         n.body.visit_children_with(&mut localdef);
         let mut body = localdef.body;
+        let mut writes = authz_principal::Writes::default();
+        n.params.visit_with(&mut writes);
+        n.body.visit_with(&mut writes);
+        let params: Vec<_> = n.params.iter().map(|param| param.pat.clone()).collect();
+        authz_principal::record(self.res, self.module, &mut body, &params, writes);
+        body.authz_principal_opaque |= n.is_generator;
         body.authz_constant_returns =
             !n.is_generator && n.body.as_ref().is_some_and(authz_constant_returns);
         let mut analyzer = FunctionAnalyzer::new(
