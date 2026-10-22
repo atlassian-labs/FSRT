@@ -51,7 +51,7 @@ use swc_core::{
 use tracing::{debug, field::debug, info, instrument, warn};
 use typed_index_collections::{TiSlice, TiVec};
 
-use crate::ir::VarId;
+use crate::ir::{Location, VarId};
 use crate::{
     ctx::ModId,
     ir::{
@@ -59,6 +59,89 @@ use crate::{
         RETURN_VAR, Rvalue, STARTING_BLOCK, Template, Terminator, VarKind, Variable,
     },
 };
+
+// Deliberately syntactic: aliases and computed expressions are
+// not proven independent of privileged data. Inspect the AST because lowering
+// does not preserve every JavaScript construct.
+fn authz_constant_return(expr: &Expr) -> bool {
+    match expr {
+        Expr::Lit(Lit::Str(_) | Lit::Num(_) | Lit::Bool(_) | Lit::Null(_)) => true,
+        Expr::Paren(expr) => authz_constant_return(&expr.expr),
+        Expr::Array(array) => array.elems.iter().all(|element| {
+            element.as_ref().is_none_or(|element| {
+                element.spread.is_none() && authz_constant_return(&element.expr)
+            })
+        }),
+        Expr::Object(object) => object.props.iter().all(|prop| {
+            let PropOrSpread::Prop(prop) = prop else {
+                return false;
+            };
+            let Prop::KeyValue(prop) = &**prop else {
+                return false;
+            };
+            // Accept data properties only; prototype setters and computed keys
+            // are outside this literal-return policy.
+            let static_key = match &prop.key {
+                PropName::Ident(key) => key.sym != "__proto__",
+                PropName::Str(key) => key.value != "__proto__",
+                PropName::Num(_) | PropName::BigInt(_) => true,
+                _ => false,
+            };
+            static_key && authz_constant_return(&prop.value)
+        }),
+        _ => false,
+    }
+}
+
+fn authz_constant_returns(block: &BlockStmt) -> bool {
+    struct Returns(bool);
+    impl Visit for Returns {
+        fn visit_return_stmt(&mut self, stmt: &ReturnStmt) {
+            self.0 &= stmt.arg.as_deref().is_none_or(authz_constant_return);
+        }
+        // Only the entrypoint's own returns matter. Helpers may return data.
+        fn visit_function(&mut self, _: &Function) {}
+        fn visit_arrow_expr(&mut self, _: &ArrowExpr) {}
+        fn visit_class(&mut self, _: &swc_core::ecma::ast::Class) {}
+    }
+    let mut returns = Returns(true);
+    block.visit_with(&mut returns);
+    returns.0
+}
+
+fn authz_get_options(args: &[ExprOrSpread]) -> bool {
+    if args.is_empty() || args.len() > 2 || args.iter().any(|arg| arg.spread.is_some()) {
+        return false;
+    }
+    let Some(options) = args.get(1) else {
+        return true;
+    };
+    let Expr::Object(options) = &*options.expr else {
+        return false;
+    };
+    let mut is_get = true;
+    for prop in &options.props {
+        let PropOrSpread::Prop(prop) = prop else {
+            return false;
+        };
+        let Prop::KeyValue(prop) = &**prop else {
+            return false;
+        };
+        let key = match &prop.key {
+            PropName::Ident(key) => key.sym.as_ref(),
+            PropName::Str(key) => key.value.as_ref(),
+            _ => return false,
+        };
+        // An object-literal prototype can supply an inherited method.
+        if key == "__proto__" {
+            return false;
+        }
+        if key == "method" {
+            is_get = matches!(&*prop.value, Expr::Lit(Lit::Str(value)) if value.value.eq_ignore_ascii_case("GET"));
+        }
+    }
+    is_get
+}
 
 create_newtype! {
     pub struct FuncId(u32);
@@ -1790,6 +1873,18 @@ impl FunctionAnalyzer<'_> {
         };
         let first_arg = args.first().map(|expr| &*expr.expr);
         let intrinsic = self.as_intrinsic(&props, first_arg);
+        if matches!(
+            intrinsic,
+            Some(Intrinsic::ApiCall(_) | Intrinsic::ApiCustomField)
+        ) && matches!(props.last(), Some(PropPath::Static(name))
+                if matches!(name.as_ref(), "requestJira" | "requestConfluence" | "requestBitbucket"))
+            && authz_get_options(args)
+        {
+            self.body.authz_gets.insert(Location::new(
+                self.block,
+                self.body.blockbuilders[self.block].insts.len() as u32,
+            ));
+        }
         let call = match intrinsic {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
@@ -3089,7 +3184,11 @@ impl Visit for FunctionCollector<'_> {
             body,
         };
         func_body.visit_children_with(&mut localdef);
-        let body = localdef.body;
+        let mut body = localdef.body;
+        body.authz_constant_returns = match &**func_body {
+            BlockStmtOrExpr::BlockStmt(block) => authz_constant_returns(block),
+            BlockStmtOrExpr::Expr(expr) => authz_constant_return(expr),
+        };
         let mut analyzer = FunctionAnalyzer::new(
             self.res,
             self.module,
@@ -3344,7 +3443,9 @@ impl FunctionCollector<'_> {
             body,
         };
         n.body.visit_children_with(&mut localdef);
-        let body = localdef.body;
+        let mut body = localdef.body;
+        body.authz_constant_returns =
+            !n.is_generator && n.body.as_ref().is_some_and(authz_constant_returns);
         let mut analyzer = FunctionAnalyzer::new(
             self.res,
             self.module,

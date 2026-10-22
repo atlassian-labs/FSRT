@@ -8,8 +8,8 @@ use crate::{
         WithCallStack,
     },
     ir::{
-        Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
-        Projection, Rvalue, VarId, VarKind, Variable,
+        Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Literal, Location, Operand,
+        Projection, Rvalue, STARTING_BLOCK, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     utils::{add_elements_to_intrinsic_struct, convert_lit_to_raw, translate_request_type},
@@ -246,6 +246,8 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
 pub struct AuthZChecker {
     vulns: Vec<AuthZVuln>,
     check_remotes: bool,
+    constant_return_resolver: bool,
+    suppressed_helpers: HashSet<DefId>,
 }
 
 impl AuthZChecker {
@@ -253,6 +255,8 @@ impl AuthZChecker {
         Self {
             vulns: vec![],
             check_remotes,
+            constant_return_resolver: false,
+            suppressed_helpers: HashSet::new(),
         }
     }
 
@@ -375,6 +379,59 @@ impl<'cx> Runner<'cx> for AuthZChecker {
     type Dataflow = AuthorizeDataflow;
 
     const NAME: &'static str = "Authorization";
+
+    fn visit_body(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        body: &'cx Body,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        let is_root = interp.callstack().is_empty();
+        if is_root {
+            self.constant_return_resolver = matches!(interp.entry().kind, EntryKind::Resolver(..))
+                && body.authz_constant_returns;
+        }
+        let old_body = interp.body();
+        interp.set_body(body);
+        let result = self.visit_block(
+            interp,
+            def,
+            STARTING_BLOCK,
+            body.block(STARTING_BLOCK),
+            state,
+        );
+        interp.set_body(old_body);
+        if is_root {
+            // Retain recursion protection during this traversal, but let a later
+            // resolver expose the same helper's result. Other history is unchanged.
+            interp.retry_checker_functions(self.suppressed_helpers.drain());
+            self.constant_return_resolver = false;
+        }
+        result
+    }
+
+    fn visit_inst(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        loc: Location,
+        inst: &'cx Inst,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        if self.constant_return_resolver && interp.body().authz_gets.contains(&loc) {
+            self.suppressed_helpers.extend(
+                interp
+                    .callstack()
+                    .iter()
+                    .map(|frame| frame.calling_function),
+            );
+            debug!(entry = ?interp.entry(), function = ?def, operation = ?loc,
+                reason = "constant-return-resolver-get", "Suppressed authorization finding");
+            return ControlFlow::Continue(*state);
+        }
+        self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
+    }
 
     fn visit_intrinsic(
         &mut self,
