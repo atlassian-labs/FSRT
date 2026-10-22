@@ -383,3 +383,73 @@ fn constructs_the_analysis_cannot_follow_keep_the_finding() {
         assert!(report.contains_authz_vuln(1), "{name}\n{report:#?}");
     }
 }
+
+#[test]
+fn content_users_edit_is_not_the_platforms_to_vouch_for() {
+    check(&[
+        // Identifiers of the page the caller opened.
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.issue.id}`);
+             return response.json();",
+            0,
+        ),
+        (
+            "const {issue} = context.extension;
+             const response = await api.asApp().requestJira(route`/rest/api/3/issue/${issue.key}`);
+             return response.json();",
+            0,
+        ),
+        (
+            "const response = await api.asApp().requestConfluence(route`/wiki/api/v2/pages/${context.extension.content.id}`);
+             return response.json();",
+            0,
+        ),
+    ]);
+    check(&[
+        // Content users edit, delivered in the context.
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.fieldValue}`);
+             return response.json();",
+            1,
+        ),
+        (
+            "const keys = context.extension.fieldValue.split(',');
+             const response = await api.asApp().requestJira(route`/rest/api/3/issue/${keys[0]}`);
+             return response.json();",
+            1,
+        ),
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.gadgetConfiguration.issue}`);
+             return response.json();",
+            1,
+        ),
+        (
+            "const response = await api.asApp().requestConfluence(route`/wiki/api/v2/pages/${context.extension.macro.config.page}`);
+             return response.json();",
+            1,
+        ),
+        (
+            "const response = await api.asApp().requestJira(route`/rest/servicedeskapi/request/${context.extension.request.properties.related}`);
+             return response.json();",
+            1,
+        ),
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/${context.jobId}`);
+             return response.json();",
+            1,
+        ),
+        // Through an alias or a destructuring.
+        (
+            "const {fieldValue} = context.extension;
+             const response = await api.asApp().requestJira(route`/rest/api/3/issue/${fieldValue}`);
+             return response.json();",
+            1,
+        ),
+        (
+            "const extension = context.extension;
+             const response = await api.asApp().requestJira(route`/rest/api/3/issue/${extension.fieldValue}`);
+             return response.json();",
+            1,
+        ),
+    ]);
+}
