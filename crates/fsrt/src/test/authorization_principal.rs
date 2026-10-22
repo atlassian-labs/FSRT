@@ -58,7 +58,13 @@ fn root(name: &str, argument: &str) -> String {
 fn scan(project: MockForgeProject<'_>) -> Report {
     let report = scan_directory_test_with_args(
         project,
-        Args::parse_from(["fsrt", "--scanners", "authorization"]),
+        // Each case counts the operations of one entry.
+        Args::parse_from([
+            "fsrt",
+            "--scanners",
+            "authorization",
+            "--authorization-report-operations",
+        ]),
     );
     assert!(!report.has_errors(), "{report:#?}");
     report

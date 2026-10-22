@@ -238,3 +238,23 @@ alive by it. Bodies of writes and of `asUser` requests still count.
 
 Evidence: 28 findings removed, all rated false positive (see the log); no
 true-positive row, and no group with a true positive, is affected.
+
+### D10 One finding per entry
+A resolver definition (or a handler function) is one finding, however many privileged
+operations it reaches: the triage's own unit of triage ("154 resolver definitions,
+251 rows") and the unit the scanner reported before it reported every operation. The
+finding is identified by the id of the entry's *first* reported operation, which is
+the id it already had, and its proof lists the other operations (method, route,
+function and call chain). Nothing is dropped: every operation that survives the
+policy is in the finding; `--authorization-report-operations` restores one finding
+per operation, and the audit log (D1) still has one record per operation.
+
+Alternatives rejected: grouping per finding id only (operations in different helpers
+of one entry would still be separate tickets for one root cause: the entry lacks a
+check); grouping per app (loses which resolver to fix); dropping all but the "worst"
+operation (hides operations, and severity is constant). The triage verdicts are per
+operation; an entry is a true positive if any of its operations is, which is how the
+log counts entries.
+
+This is a reporting-unit decision, not a precision gain: it is kept as its own commit
+so that it can be reverted alone.

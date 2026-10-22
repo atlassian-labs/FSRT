@@ -601,7 +601,11 @@ impl<'a> Builder<'a> {
         };
         if tracked {
             if let Some(gap) = body.authz_flow_gap {
-                self.gap(&format!("lossy lowering: {gap}"));
+                let name = match func {
+                    Func::Def(def) => self.env.def_name(def).to_owned(),
+                    Func::Closure(index) => format!("closure {index}"),
+                };
+                self.gap(&format!("lossy lowering: {gap} [{name}]"));
                 return;
             }
             if body.authz_principal_opaque {

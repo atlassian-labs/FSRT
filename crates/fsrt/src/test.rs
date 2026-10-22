@@ -2993,9 +2993,15 @@ fn scan_alias_fixture(aliases: bool) -> Report {
         "#,
     );
     project.manifest_file_content = Some(alias_manifest(aliases));
+    // These tests count operations that share one entry.
     let report = scan_directory_test_with_args(
         project,
-        Args::parse_from(["fsrt", "--scanners", "authorization"]),
+        Args::parse_from([
+            "fsrt",
+            "--scanners",
+            "authorization",
+            "--authorization-report-operations",
+        ]),
     );
     assert!(!report.has_errors(), "{report:#?}");
     report
@@ -3336,6 +3342,7 @@ fn authorization_permission_presence_follows_imports_but_requires_a_resolver_roo
 
 mod authorization_entrypoints;
 mod authorization_flow;
+mod authorization_grouping;
 mod authorization_metadata_routes;
 mod authorization_principal;
 mod authorization_requests;

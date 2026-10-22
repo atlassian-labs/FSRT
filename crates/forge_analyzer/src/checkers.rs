@@ -262,6 +262,9 @@ pub struct AuthZChecker {
     candidates: Vec<Candidate>,
     /// Candidates already audited per finding id, for stable ordinals.
     audited: HashMap<String, u32>,
+    /// Report each privileged operation as its own finding, instead of one finding
+    /// per entry that lists them.
+    per_operation: bool,
 }
 
 /// A privileged operation the walk reached without a recognised check. The
@@ -286,7 +289,16 @@ impl AuthZChecker {
             at: None,
             candidates: Vec::new(),
             audited: HashMap::new(),
+            per_operation: false,
         }
+    }
+
+    /// Report every privileged operation as a finding of its own. By default an
+    /// entry is one finding, identified by its first operation, whose proof lists
+    /// the others.
+    pub fn per_operation(mut self, per_operation: bool) -> Self {
+        self.per_operation = per_operation;
+        self
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthZVuln> {
@@ -315,6 +327,7 @@ impl AuthZChecker {
         // is reported; otherwise the report already exposes it.
         let mut retry = HashSet::new();
         let mut exposed = HashSet::new();
+        let mut reported = Vec::new();
         let candidates = mem::take(&mut self.candidates);
         let mut flow = None;
         if !candidates.is_empty()
@@ -365,11 +378,23 @@ impl AuthZChecker {
                 retry.extend(helpers);
             } else {
                 exposed.extend(helpers);
-                self.vulns.push(vuln);
+                let mut vuln = vuln;
+                vuln.operation = describe(interp.env(), candidate.def, candidate.loc);
+                reported.push(vuln);
             }
         }
         self.suppressed_helpers
             .extend(retry.difference(&exposed).copied());
+        if self.per_operation || reported.len() < 2 {
+            self.vulns.extend(reported);
+        } else {
+            // One finding per entry: the first operation names it, as it did before
+            // every operation was reported, and the proof lists the rest.
+            let mut reported = reported.into_iter();
+            let mut first = reported.next().unwrap();
+            first.others = reported.map(|vuln| (vuln.operation, vuln.stack)).collect();
+            self.vulns.push(first);
+        }
     }
 }
 
@@ -420,6 +445,21 @@ fn flow_suppression(
         return Some("unexposed-read-response");
     }
     None
+}
+
+/// The method and route of an operation, as the proof shows it.
+fn describe(env: &Environment, def: DefId, loc: Location) -> String {
+    let request = env
+        .def_ref(def)
+        .as_body()
+        .and_then(|body| body.authz_requests.get(&loc));
+    let method = request
+        .and_then(|request| request.method(env))
+        .map_or("?", HttpMethod::as_str);
+    let route = request
+        .and_then(|request| request.route(env))
+        .map_or_else(|| "(route not known)".to_owned(), RouteText::display);
+    format!("{method} {route} in {}", env.def_name(def))
 }
 
 /// One machine-readable line per decision, enabled with
@@ -525,6 +565,10 @@ pub struct AuthZVuln {
     entry_func: String,
     file: PathBuf,
     kind: AuthZVulnKind,
+    /// What the operation is, for the proof: `GET /rest/api/3/issue/${}`.
+    operation: String,
+    /// The other operations of the same entry, when they share one finding.
+    others: Vec<(String, String)>,
 }
 
 impl AuthZVuln {
@@ -558,6 +602,8 @@ impl AuthZVuln {
             entry_func,
             file,
             kind,
+            operation: String::new(),
+            others: Vec::new(),
         }
     }
 }
@@ -589,14 +635,30 @@ impl AuthZVuln {
 impl IntoVuln for AuthZVuln {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
         let check_name = self.check_name();
+        let more = if self.others.is_empty() {
+            String::new()
+        } else {
+            let lines = self
+                .others
+                .iter()
+                .map(|(operation, stack)| format!("\n- {operation} (via {stack})"))
+                .collect::<String>();
+            format!(
+                "\nThe same entry has {} more privileged operation(s):{lines}",
+                self.others.len()
+            )
+        };
         let (proof, req_id) = match self.kind {
             ApiCall => (
-                format!("Unauthorized API call via asApp() found via {}", self.stack),
+                format!(
+                    "Unauthorized API call via asApp() found via {}{more}",
+                    self.stack
+                ),
                 "Requirement 1.2",
             ),
             RemoteCall(remote) => (
                 format!(
-                    "Unauthorized call to forge remote `{}` with app system token found via {}",
+                    "Unauthorized call to forge remote `{}` with app system token found via {}{more}",
                     remote, self.stack
                 ),
                 "AEC Requirement 1.14",

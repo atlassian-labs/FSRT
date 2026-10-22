@@ -103,6 +103,18 @@ impl SecretLoggingArgs {
     }
 }
 
+/// Flags of the authorization scanner. Every flag is prefixed with the scanner's
+/// name, and `--help` lists the group under its own heading.
+#[derive(clap::Args, Debug)]
+#[command(next_help_heading = "Authorization (--scanners authorization)")]
+struct AuthorizationArgs {
+    /// Report every privileged operation as a finding of its own. By default an
+    /// entry (a resolver definition or handler) is one finding, identified by its
+    /// first operation, whose proof lists the other operations.
+    #[arg(long = "authorization-report-operations", default_value_t = false)]
+    report_operations: bool,
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
@@ -167,6 +179,9 @@ pub struct Args {
 
     #[command(flatten)]
     secret_logging: SecretLoggingArgs,
+
+    #[command(flatten)]
+    authorization: AuthorizationArgs,
 }
 
 impl Args {
@@ -710,7 +725,8 @@ pub(crate) fn scan_directory<'a>(
                 && let Some(proofs) =
                     authorization_proofs.remove(&(func.def_id, &func.path, func.func_name))
             {
-                let mut checker = AuthZChecker::new(opts.enable_aec_mode);
+                let mut checker = AuthZChecker::new(opts.enable_aec_mode)
+                    .per_operation(opts.authorization.report_operations);
                 debug!("checking {:?} at {:?}", func.func_name, &func.path);
                 if let Err(err) = interp.run_checker(
                     func.def_id,
