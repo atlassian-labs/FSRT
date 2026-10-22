@@ -610,3 +610,46 @@ fn spread_objects_carry_what_they_copy() {
         ),
     ]);
 }
+
+#[test]
+fn iteration_methods_carry_the_data_they_iterate() {
+    check(&[
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             return data.issues.reduce((all, issue) => { all.push(issue.fields); return all; }, []);",
+            1,
+        ),
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             const names = [];
+             data.issues.forEach((issue) => { names.push(issue.key); });
+             return names;",
+            1,
+        ),
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             return data.issues.find((issue) => { return issue.key === payload.other; });",
+            1,
+        ),
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             return data.issues.flatMap((issue) => { return [issue.fields]; });",
+            1,
+        ),
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             return data.issues.reduce((total, issue) => total + issue.fields.points, 0);",
+            1,
+        ),
+    ]);
+    check(&[
+        // Nothing the callback sees leaves the resolver.
+        (
+            "const data = await (await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`)).json();
+             let open = 0;
+             data.issues.forEach((issue) => { if (issue.fields.status.name === 'Open') { open += 1; } });
+             return open > 0;",
+            0,
+        ),
+    ]);
+}

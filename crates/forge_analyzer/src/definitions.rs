@@ -1016,6 +1016,24 @@ enum ApiCallKind {
 /// Specific API path prefixes that are unconditionally safe (trivial) for AuthZ purposes.
 const TRIVIAL_API_PREFIXES: &[&str] = &["/wiki/api/v2/app/properties"];
 
+/// Methods that call their first argument for the elements of their receiver and
+/// that `lower_call` does not paste into the caller (`map`, `filter`, `catch`, `then`,
+/// which it does).
+const ITERATION_METHODS: &[&str] = &[
+    "forEach",
+    "some",
+    "every",
+    "find",
+    "findIndex",
+    "findLast",
+    "findLastIndex",
+    "flatMap",
+    "sort",
+    "reduce",
+    "reduceRight",
+    "finally",
+];
+
 fn classify_api_call(expr: &Expr) -> ApiCallKind {
     use regex::Regex;
     use std::cell::OnceCell;
@@ -1883,21 +1901,64 @@ impl FunctionAnalyzer<'_> {
                         _ => {}
                     }
                 }
-        let lowered_args = args
+        // A callback given to `forEach`, `find`, `reduce` and the like runs when the
+        // call does. The call stays an ordinary call of an unknown method, so what the
+        // other scanners see of its result is unchanged; the callback is also a function
+        // of its own, called once with the receiver, which is what makes what it does
+        // visible to the walk.
+        let iteration = match (callee, args.first()) {
+            (CalleeRef::Expr(_), Some(first))
+                if ITERATION_METHODS
+                    .iter()
+                    .any(|name| calls_method(callee, name)) =>
+            {
+                match &*first.expr {
+                    Expr::Arrow(ArrowExpr { params, body, .. }) => {
+                        Some((params.clone(), (**body).clone()))
+                    }
+                    Expr::Fn(FnExpr { function, .. }) => function.body.as_ref().map(|body| {
+                        (
+                            function
+                                .params
+                                .iter()
+                                .map(|param| param.pat.clone())
+                                .collect(),
+                            BlockStmtOrExpr::BlockStmt(body.clone()),
+                        )
+                    }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let lowered_args: SmallVec<[Operand; 4]> = args
             .iter()
             .enumerate()
             .map(|(i, arg)| {
+                if i == 0 && iteration.is_some() {
+                    return Operand::UNDEF;
+                }
                 let defid =
                     self.res
                         .add_anonymous(format!("{i}argument"), AnonType::Unknown, self.module);
                 self.lower_expr(&arg.expr, Some(defid))
             })
             .collect();
+        let initial = lowered_args.get(1).cloned();
 
         let callee = match callee {
             CalleeRef::Super => Operand::Var(Variable::SUPER),
             CalleeRef::Import => Operand::UNDEF,
             CalleeRef::Expr(expr) => self.get_operand_for_call(expr),
+        };
+        // What the method is called on: the callee without its last property.
+        let receiver = match (&iteration, &callee) {
+            (Some(_), Operand::Var(method)) if !method.projections.is_empty() => {
+                let mut receiver = method.clone();
+                receiver.projections.pop();
+                Some(Operand::Var(receiver))
+            }
+            _ => None,
         };
         let first_arg = args.first().map(|expr| &*expr.expr);
         let intrinsic = self.as_intrinsic(&props, first_arg);
@@ -1926,8 +1987,24 @@ impl FunctionAnalyzer<'_> {
                 self.body.blockbuilders[self.block].insts.len() as u32,
             ));
         }
-        self.record_callbacks(args);
+        if iteration.is_none() || receiver.is_none() {
+            self.record_callbacks(args);
+        }
         let res = self.body.push_tmp(self.block, call, None);
+        if let (Some((params, body)), Some(receiver)) = (iteration, receiver) {
+            let callback = self.lower_callback("__CALLBACK", &params, &body);
+            // `reduce` hands the accumulator first, then the element.
+            let mut arguments: SmallVec<[Operand; 4]> = SmallVec::new();
+            arguments.extend(initial);
+            arguments.push(receiver);
+            let returned = self
+                .body
+                .push_tmp(self.block, Rvalue::Call(callback, arguments), None);
+            // What the callback returns is part of what the call returns.
+            self.body
+                .authz_flow_links
+                .push((Operand::with_var(returned), Variable::new(res)));
+        }
         Operand::with_var(res)
     }
 

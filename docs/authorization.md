@@ -6,6 +6,19 @@ what it suppresses and why, and what it can still miss. Every rule has a decisio
 entry (`D<n>`) that records the alternatives that were rejected. Results of each
 change on the Marketplace corpus are in [authorization-test-log.md](authorization-test-log.md).
 
+Status at the head of this branch (corpus run `12-metadata-3`, 4745 apps scanned):
+661 authorization findings in 252 apps, from 1507 findings in 295 apps at the reference
+run. The unit changed from one finding per privileged operation to one per entry
+(D10). The audit (`FORGE_LOG=authz_audit=debug`, run over the apps the reference run
+reported on) sees 1618 privileged operations at the head (1507 at the reference run; 111 more are
+found because helpers are retried after a suppressed operation, D4, and because of
+the lowering fixes D13 and D14): 580 are suppressed by a rule and
+1038 are reported, as 656 entries (661 findings in the full scan, which also covers
+apps the reference run did not report on). Of those 656 entries, 393 hold an
+operation the triage rated a true positive, 238 only operations it rated false
+positive, 11 uncertain ones, and 14 are not in the triage (found by the callback fix).
+Section 7 says what is left and why.
+
 A finding is a review candidate, not proof of an exploitable flaw, and a
 suppression is not proof that the code is authorized. Rules are kept only when
 they match a real signal in the code and were justified against the per-finding
@@ -26,8 +39,10 @@ The call is a *sink* because the app, not the user, supplies the credentials.
   paths (a *may* analysis).
 * The walk visits each helper function at most once per scan, except helpers on
   the call path of a suppressed operation, which are retried for later roots.
-* One finding is created per sink reached. The id (`check_name`) hashes the
-  file, entry function and call chain, so several sinks in one function share it.
+* One finding is created per entry (D10): the entry's first reported sink names it
+  and the proof lists the others; `--authorization-report-operations` restores one
+  finding per sink. The id (`check_name`) hashes the file, entry function and call
+  chain of the first sink.
 
 ## 2. Operations, candidates and audit
 
@@ -170,11 +185,11 @@ alias-unifying may-flow analysis over everything a resolver callback can reach:
   scanners never see.
 * Anything the lowering drops or approximates is recorded per function by
   `definitions/authz_lossy.rs` (`Body::authz_flow_gap`): function values that are
-  not call arguments or bindings, classes and `this`, object spread of anything
-  but a plain reference, computed object keys, non-literal default values, rest
-  parameters, generators, JSX, `new` of a non-identifier, dynamic `import`,
-  `super`, `with`, `yield`, inlined array callbacks whose block body returns, and
-  calls of a variable holding a function. If any function the entry reaches has
+  not call arguments or bindings, classes and `this`, computed object keys,
+  non-literal default values, rest parameters, generators, JSX, `new` of a
+  non-identifier, dynamic `import`, `super`, `with`, `yield`, inlined array
+  callbacks on a call result, and calls of a variable holding a function (object
+  spreads and array callbacks that return were gaps until D14 and D13). If any function the entry reaches has
   one, or the budget (300 functions) is exceeded, the analysis fails and the
   finding is kept. The audit log records which construct it was (`flow`).
 
@@ -365,11 +380,10 @@ Known false-negative risks that remain (accepted, listed for the captain):
 
 * a callback with no `return` is still pasted into its caller, so a `throw` or
   `break` inside it is taken for the caller's;
-* a callback passed to anything but `map`, `filter`, `forEach`, `catch`, `then` on an
-  identifier (`reduce`, `find`, `some`, `sort`, a call result such as
-  `fetchAll().map(...)`) goes through the closure side table (D6), which the legacy
-  checkers do not follow: a sink inside it is invisible to them but not to the flow
-  rules;
+* a callback passed to a method other than the ones in D13 and D16, or to a function
+  of the app (`run(items, async (item) => {...})`), goes through the closure side
+  table (D6), which the legacy checkers do not follow: a sink inside it is invisible
+  to them but not to the flow rules;
 * helpers are visited once per run, so which entry names a shared helper depends on
   entry order.
 
@@ -407,3 +421,203 @@ applied to the route's spelling at the call, so it only fires for routes written
 the license route in the table is reached through a constant or a helper. The list is a
 false-negative risk (`DELETE` of a group route, `PUT` of a user property). Left as is;
 listed in the report.
+
+### D16 Callbacks of `forEach`, `find`, `some`, `every`, `flatMap`, `sort`, `reduce` and `finally` are called
+`lower_call` pasted the callbacks of `map`, `filter`, `catch` and `then` into the caller.
+It also tested for `foreach`, which no JavaScript method is called, so `forEach`, the
+commonest of them, and every other iteration method kept their callback in the side
+table of D6, where the walk of the other checkers cannot see it:
+
+    payload.keys.forEach(async (key) => {
+      await api.asApp().requestJira(route`/rest/api/3/issue/${key}`, {method: 'DELETE'});
+    });
+
+was not a finding (nor were `find`, `some`, `every`, `flatMap`, `sort`, `reduce`).
+
+Pasting the callback in is not an option for these: `x = items.find(cb)` would then
+be the callback's expression, and the taint-based scanners (secret logging) lose the
+flow from `items` to `x`. A first attempt that did paste them in dropped
+secret-logging from 76 to 44 findings (three apps, 32 findings) before it was
+replaced. The call is now lowered exactly as before (an unknown method called on the
+receiver, so the result still carries the receiver for every scanner) and the
+callback is *also* lowered as a function of its own (`__CALLBACK`) and called once, with
+the receiver (`reduce`: the first value of the accumulator, then the receiver); what it
+returns is joined to the call's result for the flow analysis. The callback is no
+longer registered in the side table, which would have analysed it twice.
+
+Effect (run `13-iteration`): authorization 661 → 662 findings, 252 apps, one new entry
+(`com.develocenter.jira.links-scheme` `deleteFieldFromScreen`: an asApp
+`DELETE /rest/api/3/screens/${}/tabs/${}/fields/resolution` in a resolver whose only
+check is none: a write any caller can trigger, so a true positive that was invisible);
+four more operations in all. secret 56 → 57 (one hard-coded secret inside such a callback);
+secret-logging 76 findings in 16 apps unchanged (three ids move with their call path),
+auth-header and authentication unchanged. Tests: operations in the callbacks of
+every method are found; reduce carries the accumulator, `forEach` pushing response
+data into a captured array is exposure and a counter is not.
+
+## 5. Checks: what is recognised, what is verified
+
+### 5.1 Recognition today (legacy, unchanged)
+A path is *checked* when the walk meets an `authorize(...)` call or a request whose
+route contains `permission` (`ApiCallKind::Authorize`), and the state stays checked
+along every later instruction of the path and after any helper that checked
+(`AuthorizeState`, a *may* analysis whose join is `max`). Nothing about the check is
+verified: not that its result gates the sink, not that it names the same resource, not
+that every path is gated.
+
+### 5.2 What presence-only recognition hides
+With recognition switched off (an experiment build, not committed:
+`FSRT_EXPERIMENT_IGNORE_CHECKS`; run `X1-ignore-checks`) the scan reports 825
+authorization findings in 314 apps instead of 666 in 253: **166 findings in 88 apps are
+suppressed only because a check is present**. Three that were read:
+
+* `io.prodbuddy.app addCommentToIssue`: `authorize().onJiraIssue(issueId).canEdit()`,
+  then the asApp POST only `if (canEdit)`, on the same `issueId`. Enforced.
+* `scrubzzly.rohn.eu orderIssueBeforeOther`: `authorize().onJiraIssue(issue).canEdit()`
+  with `throw` on denial, then an asApp rank request whose body also names
+  `rankBeforeIssue` from the payload, which no check covers. Partly enforced.
+* `codeforme.development.versionmanager deleteVersion`: an asUser request to
+  `/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS` (no project, no issue), then
+  an asApp `POST /version/${payload.id}/removeAndSwap` on a version id the caller
+  chose. The probe cannot establish authority over that version. Not enforced: a
+  finding the scanner hides.
+
+So the presence rule is right often and wrong sometimes, and the three outcomes need
+different handling. Making it strict would *add* findings (up to the 166), which is
+why it is a policy decision for the captain and not a change made here (section 6).
+
+### 5.3 What verifying a check would require
+A check suppresses a sink only when all of these hold; each is checkable on the IR.
+
+1. *Gate.* The sink is reachable only through the success outcome of a conditional
+   whose condition derives from the check's result, with the polarity known
+   (`res.ok`, `res.status === 200`, `canEdit`, `!res.ok` and so on), or the sink is
+   after a call to a helper that throws unless the check passes. Removing the success
+   edge from the CFG must make the sink unreachable.
+2. *Resource.* The check's route and the sink's route name the same resource: the
+   sink's route is the check's route plus literal segments, and the values in the
+   holes are the same value (equal canonical access paths through single-assignment
+   copies and the same parameter instantiated at the call).
+3. *Strength.* A write sink needs a write check; a read check covers reads only.
+4. *Exceptions.* A `try` whose handler can fall through to the sink breaks (1); the
+   handler is not in the control flow graph, so this must be recorded at lowering.
+5. *Identity.* The check was made as the caller (`asUser`, `authorize`), not as the
+   app.
+
+### 5.4 Shapes seen in the triage
+Guard kinds the triager recorded on false-positive findings (rows; one finding can have
+several): context-scoped resource 43, context-resource binding 19, app-level role
+check inside a helper 11, helper that throws on a missing permission 9, `mypermissions`
+probe inside a helper 9, group lookup by `context.accountId` inside a helper 9,
+payload id compared with a context id 8, asUser same-resource request that throws on
+failure 8, `authorize` API on an issue or a project 12, asUser search that supplies the
+id set 5, context-derived resource id 5, context equality gate 5, asUser status gate 4.
+Only the asUser same-resource, `authorize`-on-resource and throwing-helper shapes meet
+conditions 1 to 5; the role and group shapes check an app-level role, which says
+nothing about the resource, and the context shapes are D7 (reads) or a comparison the
+analysis cannot decide.
+
+### 5.5 What was tried, and why none of it is shipped
+* A *class-based* same-resource test (both routes' holes in one flow class) was
+  unsound: the flow classes merge values that flow through shared helpers and objects,
+  and it gated a triaged true positive (`de.kyona.meeting`) on a check of a different
+  resource. Replaced by the canonical-access-path test of 5.3, which is sound and
+  recognised **one** finding; the remaining shapes need helper summaries (the guard is
+  `fetchIssue(key)` or `assertProjectAccess(key)`), polarity analysis and try-region
+  tracking. Archived outside the tree
+  (`data/authz_noise_reduction_v2-night/experiments/user-gate`).
+* An origin for data an asUser *listing* returned (search, board and sprint lists,
+  Confluence page and space lists): an asApp read of ids that came from the user's own
+  search reads only objects the user can browse. Sound for lists (an asUser read of one
+  issue is not a listing: a parent or link may not be browsable) and it recognised
+  **one** finding: the asApp request nearly always carries a caller-chosen field list or
+  options object in the same flow class as the ids. Not shipped.
+* Estimate for the full engine (helper summaries, polarity, try regions, resource
+  sameness): about 20 of the 22 `FP-GUARD-ASUSER` and 23 `FP-GUARD-CUSTOM-HELPER`
+  entries are candidates by guard kind; reading the code, six to ten fit all five
+  conditions. About 1.5% of the report for several hundred lines of analysis in the
+  lowering and the walker, with the risk 4 describes. Not built.
+
+## 6. Policy options that need a decision
+
+Every row is a rule that matches a real code signal and was evaluated offline on the
+head audit against the triage (`tools/policy_eval.py`; "entries vanishing" means every
+reported operation of the entry matches). None is applied.
+
+| candidate suppression (GET unless stated) | operations: TP / FP / uncertain | entries vanishing | of which hold a TP operation |
+|---|---|---|---|
+| project by id and its versions, components, statuses, roles | 12 / 35 / 1 | 18 | 5 |
+| board and sprint metadata | 19 / 12 / 0 | 12 | 8 |
+| issue `editmeta` and `transitions` | 12 / 3 / 0 | 5 | 3 |
+| property reads (issue, project, page, space, Forge app properties) | 5 / 23 / 0 | 15 | 3 |
+| property writes (PUT, POST, DELETE of the same) | 25 / 28 / 0 | 28 | 15 |
+| user search and lookup by id | 0 / 2 / 0 | 2 | 0 |
+| group picker and bulk lookup | 0 / 2 / 0 | 2 | 0 |
+| Assets schema, type and attribute metadata | 7 / 4 / 0 | 7 | 4 |
+| `jql/autocompletedata/suggestions` | 2 / 1 / 2 | 3 | 1 |
+
+A route class by itself is not separable: every class with enough rows contains rows
+the triager rated true positive, because what separated them was what the caller
+chose and what came back, not the route. The two classes with no true positive are
+directory reads (users and groups), where the question is a product setting ("Browse
+users and groups"), not a code signal.
+
+Further policies the captain may want to weigh:
+
+* *Verified checks* (5.3): strict mode would add up to 166 findings (5.2) and remove
+  the guard false positives that meet 1 to 5. A strict mode behind a flag
+  (`--authorization-verify-checks`) is the safe form.
+* *Defines that only the platform calls*: every `resolver.define` is reachable through
+  the frontend bridge by whoever can open a module bound to the resolver, including a
+  define the app meant only for a queue consumer or an event listener, so they are
+  entries (the queue consumer of `performancesavvy` is a triaged true positive that D8
+  suppressed). Event and scheduled triggers are not entries at all
+  (`into_analyzable_functions` ignores them).
+* *Trivial routes* (D15 note): the list that turns a route into a non-sink should be
+  replaced by a method-aware table.
+
+## 7. Known false-negative risks and residual limits
+
+False negatives the scanner has (not all introduced here; each one is a way a real
+finding can be hidden):
+
+1. Presence-only checks (5.2): up to 166 findings hidden by checks that may not be
+   enforced.
+2. The trivial-route list (D15): a route whose text spells `user`, `instance`,
+   `avatar`, `license`, `preferences`, `serverInfo` or `group` is never a sink, for
+   any method.
+3. A helper is visited once per scan (D4): the first entry to reach it names the
+   finding and a later entry with different inputs is not reported separately.
+4. Legacy checkers do not follow a callback handed to anything but the methods of D13
+   and D16 (`map`, `filter`, `catch`, `then`, `forEach`, `find`, `some`, `every`,
+   `flatMap`, `sort`, `reduce`, `finally`), nor the second argument of a two-argument
+   `then`; the flow rules do.
+5. Catch handlers are lowered for the flow analysis but are not in the control flow
+   graph the walker uses; a sink only a handler reaches is invisible to it.
+6. Classes, `this`, and JSX are lowered lossily; the flow rules keep the finding in
+   those cases, the walker may miss sinks in methods it cannot resolve.
+7. Non-resolver entries (UI Kit functions, custom field value functions, web
+   triggers) have no flow analysis: only the route table (D3, D9, D15) applies.
+
+Residual limits of the suppressions (accepted, each documented at its rule):
+D3/D9/D15: lists of containers (the project list of `de.syracom.jira.grc`, a
+triaged true positive that left the report); D7/D12: `context.extension` can be filled
+by a direct (non-browser) invocation, a read of the whole `context` object cannot be
+refined; D8: values stored by one resolver and used by another (the queue consumer of
+`performancesavvy`, a triaged true positive that left the report); D11: a user who can
+edit an Automation rule can already choose an action's inputs; the asApp read can
+return more than the caller may see (issue security, comment visibility), which no
+route table can tell.
+
+## 8. Reproduction
+
+* Tests: `cargo test --workspace` (186 in `fsrt`, 15 in `forge_analyzer`, 14 in
+  `forge_loader`); `cargo fmt --all -- --check`; `cargo clippy --workspace`.
+* One app with decisions: `FORGE_LOG=authz_audit=debug fsrt --scanners authorization
+  <app>` prints a JSON record per operation (`decision`, `flow`, `route_origin`,
+  `body_origin`, `response_exposed`); `--authorization-report-operations` reports each
+  operation as its own finding.
+* Corpus: `scan_fsrt.py <rsm-zipped/assets> --timeout 60 --jobs 8` and, for the audit,
+  the same binary with `FORGE_LOG` on the apps the reference run reported on. The
+  scripts used to join the audit with the triage are in the task data directory
+  (`tools/`).

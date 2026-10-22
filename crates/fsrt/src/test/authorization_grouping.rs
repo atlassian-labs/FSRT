@@ -126,3 +126,27 @@ fn operations_in_and_after_a_callback_that_returns_are_all_found() {
     let operations = scan(definitions, true);
     assert_eq!(operations.into_vulns().len(), 3, "{operations:#?}");
 }
+
+#[test]
+fn operations_in_the_callbacks_of_iteration_methods_are_found() {
+    // `forEach` is spelled as JavaScript spells it, and `find`, `some`, `every`,
+    // `flatMap`, `reduce` and the like run their callbacks like `map` does.
+    for callback in [
+        "payload.keys.forEach(async (key) => { await api.asApp().requestJira(route`/rest/api/3/issue/${key}`, {method: 'DELETE'}); });",
+        "payload.keys.forEach(function (key) { api.asApp().requestJira(route`/rest/api/3/issue/${key}`, {method: 'DELETE'}); });",
+        "payload.keys.find((key) => api.asApp().requestJira(route`/rest/api/3/issue/${key}`, {method: 'DELETE'}));",
+        "payload.keys.some(async (key) => { const r = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`, {method: 'DELETE'}); return r.ok; });",
+        "payload.keys.every(async (key) => { const r = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`, {method: 'DELETE'}); return r.ok; });",
+        "payload.keys.findIndex(async (key) => { const r = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`, {method: 'DELETE'}); return r.ok; });",
+        "payload.keys.flatMap(async (key) => { await api.asApp().requestJira(route`/rest/api/3/issue/${key}`, {method: 'DELETE'}); return [key]; });",
+        "payload.keys.reduce(async (all, key) => { await api.asApp().requestJira(route`/rest/api/3/issue/${key}`, {method: 'DELETE'}); return all; }, []);",
+        "payload.keys.reduce(async (all, key) => { await api.asApp().requestJira(route`/rest/api/3/issue/${key}`, {method: 'DELETE'}); return all; });",
+        "payload.keys.reduceRight((all, key) => api.asApp().requestJira(route`/rest/api/3/issue/${key}`, {method: 'DELETE'}), null);",
+    ] {
+        let definitions = format!(
+            "resolver.define('each', async ({{payload}}) => {{ {callback} return 'done'; }});"
+        );
+        let report = scan(&definitions, false);
+        assert_eq!(report.into_vulns().len(), 1, "{callback}");
+    }
+}

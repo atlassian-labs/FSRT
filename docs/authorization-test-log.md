@@ -30,6 +30,7 @@ the lower and upper bound when a group is partly suppressed.
 | 10 | callbacks that return are called (recall fix: ops in and before them were lost) | 666/253 | 94/75 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 34.139 | 0.087 | 17 reported FP rows (+25 suppressed by flow rules) | 0 (recall: +TPs found e.g. getStepAttachments, getCustomerIssues) |
 | 11 | object spreads are lowered (recall +4 ops) | 666/253 | 94/75 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 34.508 | 0.084 | 6 reported FP rows | 0 |
 | 12 | site-level lookups: assets workspace id, app license, JQL function computation | 661/252 | 94/75 | 92/44 | 36/36 | 538/538 | 56/29 | 76/16 | 205 | 34.339 | 0.087 | 5 reported FP rows | 1 row (jaanga workspace id; entry still reported) |
+| 13 | callbacks of forEach, find, some, every, flatMap, sort, reduce, finally are called (recall) | 662/252 | 94/75 | 92/44 | 36/36 | 538/538 | 57/30 | 76/16 | 205 | 34.603 | 0.087 | 0 | 0 (+1 finding: asApp DELETE of a screen tab field) |
 
 ## Iteration tails
 
@@ -212,5 +213,19 @@ Unfiltered finding baseline:
   secret: 56 findings in 29 app(s)
   secret-logging: 76 findings in 16 app(s)
 Combined runtime per app: max 34.339s, p90 0.087s
+Baseline scans: 205 failed, 0 not completed
+```
+
+### 13 callbacks of forEach, find, some, every, flatMap, sort, reduce, finally are called (recall)
+```
+Unfiltered finding baseline:
+  auth-header: 94 findings in 75 app(s)
+  authentication: 92 findings in 44 app(s)
+  authorization: 662 findings in 252 app(s)
+  permission: 36 findings in 36 app(s)
+  runtime-version: 538 findings in 538 app(s)
+  secret: 57 findings in 30 app(s)
+  secret-logging: 76 findings in 16 app(s)
+Combined runtime per app: max 34.603s, p90 0.087s
 Baseline scans: 205 failed, 0 not completed
 ```
