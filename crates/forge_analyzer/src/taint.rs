@@ -87,6 +87,9 @@ pub trait TaintPolicy: Sized {
     type Facts: FlowFacts;
     /// Whether resolver request arguments are sources for this policy.
     const TAINT_RESOLVER_INPUT: bool = false;
+    /// Seed every formal argument of the current Forge entrypoint, including
+    /// non-resolver functions such as events and queue consumers.
+    const TAINT_ENTRYPOINT_INPUTS: bool = false;
 
     fn intrinsic_value(&self, intrinsic: &Intrinsic) -> FlowValue<Self::Facts>;
     /// Observe the state before the instruction, never a joined function exit.
@@ -278,6 +281,8 @@ impl<F> UnresolvedCall<'_, F> {
 pub struct TaintReader<'a, P: TaintPolicy> {
     dataflow: &'a TaintDataflow<P>,
     frame: &'a FlowState<P::Facts>,
+    pub env: &'a Environment,
+    pub body: &'a Body,
 }
 
 impl<P: TaintPolicy> TaintReader<'_, P> {
@@ -1278,6 +1283,11 @@ impl<'a, P: TaintPolicy> Program<'a, P> {
             .map(|(&binding, value)| (binding, value.clone()))
             .collect();
         let mut initial = self.bindings[&def].frame(self.env, def, &self.functions, captures);
+        if def == self.entry && P::TAINT_ENTRYPOINT_INPUTS {
+            for &id in &self.bindings[&def].args {
+                initial.set(id, FlowValue::from_taint(Taint::Yes).into());
+            }
+        }
         if def == self.entry
             && self.tainted_request
             && let Some(&id) = self.bindings[&def].args.first()
@@ -1403,6 +1413,8 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
             let values = TaintReader {
                 dataflow,
                 frame: &frame,
+                env,
+                body,
             };
             if dataflow.policy.is_violation(inst, &values) {
                 block_findings.insert(location);

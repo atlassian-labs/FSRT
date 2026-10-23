@@ -1359,6 +1359,24 @@ impl FunctionAnalyzer<'_> {
                 let is_as_app = authn.first() == Some(&PropPath::MemberCall("asApp".into()));
                 get_intrinsic(first_arg, is_as_app, last, self.suspicious_remotes)
             }
+            // The custom entity store reads through `storage.entity(<name>)`
+            // and `kvs.entity(<name>)` before the read method.
+            [
+                PropPath::Def(def),
+                PropPath::MemberCall(ref entity),
+                PropPath::Static(ref s),
+                ..,
+            ] if *entity == *"entity" && *s == *"getSecret" && is_secret_store(self.res, def) => {
+                Some(Intrinsic::SecretRead)
+            }
+            [
+                PropPath::Def(def),
+                PropPath::MemberCall(ref entity),
+                PropPath::Static(ref s),
+                ..,
+            ] if *entity == *"entity" && is_storage_read(s) && is_secret_store(self.res, def) => {
+                Some(Intrinsic::StorageRead)
+            }
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
                 if let Some(api) = self.res.is_imported_from(def, "@forge/api") {
                     match api {
@@ -2227,16 +2245,10 @@ impl FunctionAnalyzer<'_> {
             }
 
             Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
+            // `new` is lowered through `lower_call`, so a constructed value
+            // keeps its callee binding and its arguments in the IR.
             Expr::New(NewExpr { callee, args, .. }) => {
-                if let Expr::Ident(ident) = &**callee {
-                    // remove the clone
-                    return self.lower_call(
-                        CalleeRef::Expr(callee),
-                        args.clone().unwrap_or_default().as_slice(),
-                    );
-                }
-
-                Operand::UNDEF
+                self.lower_call(CalleeRef::Expr(callee), args.as_deref().unwrap_or_default())
             }
             Expr::Seq(SeqExpr { exprs, .. }) => {
                 if let Some((last, rest)) = exprs.split_last() {
@@ -2839,7 +2851,11 @@ impl Visit for LocalDefiner<'_> {
 
     fn visit_decl(&mut self, n: &Decl) {
         match n {
-            Decl::Class(_) => {}
+            Decl::Class(ClassDecl { ident, .. }) => {
+                let def = self.res.get_or_insert_sym(ident.to_id(), self.module);
+                self.res.resolver.declared_bindings.insert(def);
+                ident.visit_with(self);
+            }
             Decl::Fn(FnDecl { ident, .. }) => {
                 ident.visit_with(self);
             }
