@@ -388,7 +388,9 @@ impl<'cx> Runner<'cx> for SecretLoggingChecker {
                 interp
                     .callstack()
                     .iter()
-                    .map(|frame| interp.env().def_name(frame.calling_function).to_owned()),
+                    .map(|frame| interp.env().def_name(frame.calling_function))
+                    .filter(|name| !super::is_callback_frame(name))
+                    .map(str::to_owned),
             );
             self.vulns.push(SecretLoggingVuln {
                 file: interp.entry().file.clone(),

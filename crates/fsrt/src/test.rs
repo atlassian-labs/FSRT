@@ -13,6 +13,7 @@ use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceFile, SourceMap};
 use time::{Date, Month};
 
+mod authorization_constant_returns;
 mod captured_values;
 mod legacy_callbacks;
 mod secret_logging;
@@ -2876,8 +2877,7 @@ fn manifest_evidence_formats_bindings_without_changing_findings() {
     - { key: alias, handler: index.run }
 "#,
             vec![
-                "Modules: [jira:globalPage: first-page (resolver.function)]\nFunction: main\nHandler: index.run",
-                "Modules: [jira:globalPage: second-page (resolver.function)]\nFunction: alias\nHandler: index.run",
+                "Modules: [jira:globalPage: first-page (resolver.function)]\nFunction: main\nHandler: index.run\nModules: [jira:globalPage: second-page (resolver.function)]\nFunction: alias\nHandler: index.run",
             ],
         ),
         (
@@ -2947,3 +2947,402 @@ permissions: { scopes: [] }
         assert!(scan_manifest_evidence(manifest, scanner).has_no_vulns());
     }
 }
+
+// WorklogPro's manifest shape: three function keys expose the same Resolver
+// through different surfaces. Multiple operations in a definition share a hash.
+fn alias_manifest(aliases: bool) -> String {
+    let alias_modules = if aliases {
+        r#"
+  jira:globalPage:
+    - key: global-page
+      resolver: { function: resolvert }
+  jira:issueAction:
+    - key: issue-action
+      resolver: { function: resolveraction }
+"#
+    } else {
+        ""
+    };
+    let alias_functions = if aliases {
+        "    - { key: resolvert, handler: index.handler }\n    - { key: resolveraction, handler: index.handler }\n"
+    } else {
+        ""
+    };
+    format!(
+        "modules:\n  jira:projectPage:\n    - key: project-page\n      resolver: {{ function: resolver }}\n{alias_modules}  function:\n    - {{ key: resolver, handler: index.handler }}\n{alias_functions}app: {{ id: test-app }}\npermissions: {{ scopes: [] }}\n"
+    )
+}
+
+fn scan_alias_fixture(aliases: bool) -> Report {
+    let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+    project.add_file(
+        "src/index.js",
+        r#"
+        import api, { route } from '@forge/api';
+        import Resolver from '@forge/resolver';
+        const resolver = new Resolver();
+        resolver.define('searchProjectScopes', async () => {
+            const first = await api.asApp().requestJira(route`/rest/api/3/issue/ONE`);
+            const second = await api.asApp().requestJira(route`/rest/api/3/issue/TWO`);
+            return [await first.json(), await second.json()];
+        });
+        resolver.define('updateJiraIssueDates', async () => {
+            return api.asApp().requestJira(route`/rest/api/3/issue/ONE`, { method: 'PUT' });
+        });
+        export const handler = resolver.getDefinitions();
+        "#,
+    );
+    project.manifest_file_content = Some(alias_manifest(aliases));
+    // These tests count operations that share one entry.
+    let report = scan_directory_test_with_args(
+        project,
+        Args::parse_from([
+            "fsrt",
+            "--scanners",
+            "authorization",
+            "--authorization-report-operations",
+        ]),
+    );
+    assert!(!report.has_errors(), "{report:#?}");
+    report
+}
+
+#[test]
+fn authorization_dedup_preserves_operations_hashes_and_binding_evidence() {
+    let single = scan_alias_fixture(false);
+    let aliases = scan_alias_fixture(true);
+    assert_eq!(single.into_vulns().len(), 3, "{single:#?}");
+    assert_eq!(aliases.into_vulns().len(), 3, "{aliases:#?}");
+    let hashes = |report: &Report| {
+        let mut names = report
+            .into_vulns()
+            .iter()
+            .map(|v| v.check_name().to_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    assert_eq!(hashes(&single), hashes(&aliases));
+    // Both operations in searchProjectScopes intentionally retain their legacy ID.
+    assert_eq!(
+        hashes(&aliases).into_iter().collect::<HashSet<_>>().len(),
+        2
+    );
+    let findings = serde_json::to_value(aliases.into_vulns()).unwrap();
+    for finding in findings.as_array().unwrap() {
+        let proof = finding["proof"].as_str().unwrap();
+        for binding in ["resolver", "resolvert", "resolveraction"] {
+            assert!(proof.contains(&format!("Function: {binding}\n")), "{proof}");
+        }
+        for module in ["jira:projectPage", "jira:globalPage", "jira:issueAction"] {
+            assert!(proof.contains(module), "{proof}");
+        }
+        assert_eq!(proof.matches("Unauthorized API call").count(), 1);
+    }
+}
+
+#[test]
+fn authorization_dedup_keeps_distinct_exported_handlers() {
+    let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+    project.add_file(
+        "src/index.js",
+        r#"
+        import api, { route } from '@forge/api';
+        export async function first() {
+            return api.asApp().requestJira(route`/rest/api/3/issue/ONE`, { method: 'POST' });
+        }
+        export async function second() {
+            return api.asApp().requestJira(route`/rest/api/3/issue/TWO`, { method: 'POST' });
+        }
+        "#,
+    );
+    project.manifest_file_content = Some(
+        r#"
+modules:
+  jira:globalPage:
+    - { key: first-page, resolver: { function: first } }
+    - { key: second-page, resolver: { function: second } }
+  function:
+    - { key: first, handler: index.first }
+    - { key: second, handler: index.second }
+app: { id: test-app }
+permissions: { scopes: [] }
+"#
+        .to_owned(),
+    );
+    let report = scan_directory_test_with_args(
+        project,
+        Args::parse_from(["fsrt", "--scanners", "authorization"]),
+    );
+    assert!(!report.has_errors(), "{report:#?}");
+    assert_eq!(report.into_vulns().len(), 2, "{report:#?}");
+    assert_eq!(
+        report
+            .into_vulns()
+            .iter()
+            .map(|v| v.check_name())
+            .collect::<HashSet<_>>()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn authorization_dedup_does_not_change_authentication_alias_reports() {
+    let report = scan_manifest_evidence(
+        r#"
+modules:
+  webtrigger:
+    - { key: first-trigger, function: main }
+    - { key: second-trigger, function: alias }
+  function:
+    - { key: main, handler: index.run }
+    - { key: alias, handler: index.run }
+app: { id: test-app }
+permissions: { scopes: [] }
+"#,
+        "authentication",
+    );
+    assert_eq!(report.into_vulns().len(), 2, "{report:#?}");
+}
+
+fn scan_resolver_permission_presence(definitions: &str) -> Report {
+    let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+    project.add_file(
+        "src/index.js",
+        format!(
+            "import Resolver from '@forge/resolver';
+             import api, {{route, authorize}} from '@forge/api';
+             const resolver = new Resolver();
+             async function read() {{
+                 const response = await api.asApp().requestJira(route`/rest/api/3/issue/DEMO-1`);
+                 return response.json();
+             }}
+             {definitions}
+             export const handler = resolver.getDefinitions();"
+        ),
+    );
+    project.manifest_file_content = Some(alias_manifest(false));
+    let report = scan_directory_test_with_args(
+        project,
+        Args::parse_from(["fsrt", "--scanners", "authorization"]),
+    );
+    assert!(!report.has_errors(), "{report:#?}");
+    report
+}
+
+#[test]
+fn authorization_permission_presence_accepts_later_and_conditional_checks() {
+    // Explicitly retain the legacy broadness: constructor-only, ignored and
+    // wrong-resource checks qualify, including checks on only one branch.
+    for check in [
+        "authorize();",
+        "await authorize().onJiraIssue(payload.otherIssue).canEdit();",
+        "if (payload.check) authorize();",
+        "if (payload.skip) return result; authorize();",
+        "function check() { authorize(); return false; } await check();",
+        "function check() { authorize(); return false; } function forward() { return check(); } await forward();",
+        "try { authorize(); } catch (error) {}",
+    ] {
+        let report = scan_resolver_permission_presence(&format!(
+            "resolver.define('readThenCheck', async ({{payload}}) => {{
+                const result = await read(); {check} return result;
+            }});"
+        ));
+        assert!(report.contains_authz_vuln(0), "{check}\n{report:#?}");
+    }
+}
+
+#[test]
+fn authorization_permission_presence_ignores_unreachable_and_unrecognized_checks() {
+    for check in [
+        "",
+        "function unused() { authorize(); }",
+        "const unused = () => authorize();",
+        "if (false) authorize();",
+        "return result; authorize();",
+        "function fakeAuthorize() { return true; } fakeAuthorize();",
+        "function noCheck() { return false; authorize(); } noCheck();",
+    ] {
+        let report = scan_resolver_permission_presence(&format!(
+            "resolver.define('unchecked', async () => {{
+                const result = await read(); {check} return result;
+            }});"
+        ));
+        assert!(report.contains_authz_vuln(1), "{check}\n{report:#?}");
+    }
+}
+
+#[test]
+fn authorization_permission_presence_only_exempts_proven_rest_gets() {
+    for (operation, count) in [
+        ("api.asApp().requestJira(route`/rest/api/3/issue/ONE`)", 0),
+        (
+            "api.asApp().requestJira(route`/rest/api/3/issue/ONE`, {method: 'GET'})",
+            0,
+        ),
+        (
+            "api.asApp().requestConfluence(route`/wiki/api/v2/pages/1`)",
+            0,
+        ),
+        (
+            "api.asApp().requestBitbucket(route`/2.0/repositories/example/repo`)",
+            0,
+        ),
+        (
+            "api.asApp().requestJira(route`/rest/api/3/issue/ONE`, {method: 'POST'})",
+            1,
+        ),
+        (
+            "api.asApp().requestJira(route`/rest/api/3/issue/ONE`, {method: 'PUT'})",
+            1,
+        ),
+        (
+            "api.asApp().requestJira(route`/rest/api/3/issue/ONE`, {method: 'DELETE'})",
+            1,
+        ),
+        (
+            "api.asApp().requestJira(route`/rest/api/3/issue/ONE`, payload.options)",
+            1,
+        ),
+        (
+            "api.asApp().requestJira(route`/rest/api/3/issue/ONE`, {method: 'GET', ...payload.options})",
+            1,
+        ),
+        ("api.asApp().requestGraph('/graphql', {method: 'GET'})", 1),
+    ] {
+        let report = scan_resolver_permission_presence(&format!(
+            "resolver.define('operationThenCheck', async ({{payload}}) => {{
+                const result = await {operation}; authorize(); return result;
+            }});"
+        ));
+        assert!(
+            report.contains_authz_vuln(count),
+            "{operation}\n{report:#?}"
+        );
+    }
+    let report = scan_resolver_permission_presence(
+        "resolver.define('writes', async () => {
+            await api.asApp().requestJira(route`/rest/api/3/issue/ONE`, {method: 'POST'});
+            const result = await read();
+            authorize();
+            await api.asApp().requestJira(route`/rest/api/3/issue/TWO`, {method: 'POST'});
+            return result;
+        });",
+    );
+    assert!(report.contains_authz_vuln(1), "{report:#?}");
+}
+
+#[test]
+fn authorization_permission_presence_is_scoped_to_each_resolver() {
+    for (checked, unchecked) in [("a", "b"), ("b", "a")] {
+        let with_check = format!(
+            "resolver.define('{checked}', async () => {{
+                const result = await read(); authorize(); return result;
+            }});"
+        );
+        let without_check = format!("resolver.define('{unchecked}', async () => read());");
+        for definitions in [
+            format!("{with_check}\n{without_check}"),
+            format!("{without_check}\n{with_check}"),
+        ] {
+            let report = scan_resolver_permission_presence(&definitions);
+            assert!(report.contains_authz_vuln(1), "{definitions}\n{report:#?}");
+            assert!(
+                report.into_vulns()[0]
+                    .description()
+                    .contains(&format!("handler.{unchecked}")),
+                "{report:#?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn authorization_permission_presence_covers_qagenie_precheck_issue_lookup() {
+    // Reduced from QAGenie src/index.js:620, 4898, 4913. Retain the original
+    // permission argument shape and denial/error paths, not an idealized guard.
+    let report = scan_resolver_permission_presence(
+        r#"
+        async function getProjectIdFromIssue(issueKey) {
+            const response = await api.asApp().requestJira(
+                route`/rest/api/3/issue/${issueKey}?fields=project`);
+            if (!response.ok) throw new Error('Failed to fetch issue');
+            const data = await response.json();
+            return data.fields.project.id;
+        }
+        async function checkProjectBrowsePermission(projectId) {
+            try {
+                const auth = authorize();
+                const check = await auth.onJira([
+                    {permissions: ['BROWSE_PROJECTS'], projects: [projectId]}
+                ]);
+                if (!Array.isArray(check) || check.length === 0) return false;
+                const result = check[0];
+                const allowedProjects = Array.isArray(result.projects) ? result.projects : [];
+                return allowedProjects.includes(Number(projectId));
+            } catch (error) {
+                return false;
+            }
+        }
+        resolver.define('uploadAttachments', async ({payload}) => {
+            const {issueKey, fileName, fileBase64} = payload;
+            try {
+                if (!issueKey || !fileBase64) throw new Error('Missing input');
+                const projectId = await getProjectIdFromIssue(issueKey);
+                const hasAccess = await checkProjectBrowsePermission(projectId);
+                if (!hasAccess) throw new Error('Forbidden');
+                const form = new FormData();
+                form.append('file', new Blob([fileBase64]), fileName);
+                const response = await api.asApp().requestJira(
+                    route`/rest/api/3/issue/${issueKey}/attachments`,
+                    {method: 'POST', body: form});
+                if (!response.ok) throw new Error(await response.text());
+                return {success: true};
+            } catch (error) {
+                return {success: false, error: error.message};
+            }
+        });
+        "#,
+    );
+    assert!(report.contains_authz_vuln(0), "{report:#?}");
+}
+
+#[test]
+fn authorization_permission_presence_follows_imports_but_requires_a_resolver_root() {
+    for is_resolver in [true, false] {
+        let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+        let body = "const response = await api.asApp().requestJira(route`/rest/api/3/issue/ONE`); check(); return response.json();";
+        let entry = if is_resolver {
+            format!(
+                "const resolver = new Resolver(); resolver.define('read', async () => {{ {body} }}); export const handler = resolver.getDefinitions();"
+            )
+        } else {
+            format!("export async function handler() {{ {body} }}")
+        };
+        project.add_file("src/index.js", format!(
+            "import Resolver from '@forge/resolver'; import api, {{route}} from '@forge/api'; import {{check}} from './permissions'; {entry}"
+        ));
+        project.add_file(
+            "src/permissions.js",
+            "import {authorize} from '@forge/api'; export function check() { authorize(); }",
+        );
+        project.manifest_file_content = Some(alias_manifest(false));
+        let report = scan_directory_test_with_args(
+            project,
+            Args::parse_from(["fsrt", "--scanners", "authorization"]),
+        );
+        assert!(!report.has_errors(), "{report:#?}");
+        assert!(
+            report.contains_authz_vuln(if is_resolver { 0 } else { 1 }),
+            "resolver={is_resolver}\n{report:#?}"
+        );
+    }
+}
+
+mod authorization_entrypoints;
+mod authorization_flow;
+mod authorization_grouping;
+mod authorization_metadata_routes;
+mod authorization_principal;
+mod authorization_requests;

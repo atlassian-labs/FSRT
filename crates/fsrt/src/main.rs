@@ -103,6 +103,18 @@ impl SecretLoggingArgs {
     }
 }
 
+/// Flags of the authorization scanner. Every flag is prefixed with the scanner's
+/// name, and `--help` lists the group under its own heading.
+#[derive(clap::Args, Debug)]
+#[command(next_help_heading = "Authorization (--scanners authorization)")]
+struct AuthorizationArgs {
+    /// Report every privileged operation as a finding of its own. By default an
+    /// entry (a resolver definition or handler) is one finding, identified by its
+    /// first operation, whose proof lists the other operations.
+    #[arg(long = "authorization-report-operations", default_value_t = false)]
+    report_operations: bool,
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
@@ -167,6 +179,9 @@ pub struct Args {
 
     #[command(flatten)]
     secret_logging: SecretLoggingArgs,
+
+    #[command(flatten)]
+    authorization: AuthorizationArgs,
 }
 
 impl Args {
@@ -658,6 +673,19 @@ pub(crate) fn scan_directory<'a>(
         }
     }
 
+    // Manifest function aliases share an exported handler. Analyze that handler
+    // once for authorization, retaining every invokable binding as evidence.
+    // Do not deduplicate check_name: distinct operations can share its legacy hash.
+    let mut authorization_proofs: HashMap<_, Vec<String>> = HashMap::new();
+    if run_authorization_scanner {
+        for func in proj.funcs.iter().filter(|func| func.invokable) {
+            authorization_proofs
+                .entry((func.def_id, &func.path, func.func_name))
+                .or_default()
+                .push(func.manifest_proof(manifest::BindingKind::Invokable));
+        }
+    }
+
     for func in &proj.funcs {
         if let Some(interp) = &mut secret_logging_interp
             && let Err(err) = interp.run_checker(
@@ -693,8 +721,12 @@ pub(crate) fn scan_directory<'a>(
         }
 
         if func.invokable {
-            if let Some(interp) = &mut authz_interp {
-                let mut checker = AuthZChecker::new(opts.enable_aec_mode);
+            if let Some(interp) = &mut authz_interp
+                && let Some(proofs) =
+                    authorization_proofs.remove(&(func.def_id, &func.path, func.func_name))
+            {
+                let mut checker = AuthZChecker::new(opts.enable_aec_mode)
+                    .per_operation(opts.authorization.report_operations);
                 debug!("checking {:?} at {:?}", func.func_name, &func.path);
                 if let Err(err) = interp.run_checker(
                     func.def_id,
@@ -707,10 +739,7 @@ pub(crate) fn scan_directory<'a>(
                         func.func_name, func.path,
                     );
                 }
-                reporter.add_vulnerabilities_with_proof(
-                    checker.into_vulns(),
-                    &func.manifest_proof(manifest::BindingKind::Invokable),
-                );
+                reporter.add_vulnerabilities_with_proof(checker.into_vulns(), &proofs.join("\n"));
             }
         } else if func.webtrigger
             && let Some(interp) = &mut authn_interp

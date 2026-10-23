@@ -37,6 +37,10 @@ impl Vulnerability {
     pub fn description(&self) -> &str {
         &self.description
     }
+
+    pub fn proof(&self) -> &str {
+        &self.proof
+    }
 }
 
 pub trait IntoVuln {
