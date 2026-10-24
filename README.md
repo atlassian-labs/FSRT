@@ -124,6 +124,30 @@ Callee summaries do not propagate writes to outer bindings back to callers.
 Findings identify the sink function, unique IR body, and instruction location,
 not a source line or a runtime secret value.
 
+### Secret storage
+
+The `secret-storage` scanner reports `setSecret` and `getSecret` calls that a
+non-admin can reach without an authorization check. It is scoped to the Forge
+admin resolver exposure: the platform restricts an admin page's own resolver to
+admin users, so a finding requires that one resolver be shared between an admin
+page and a module any authenticated user can reach, which voids that
+restriction. It is disabled by default; select it explicitly, or set
+`CHECK_SECRET_STORAGE=1` where the argument list is fixed:
+
+```sh
+fsrt --scanners secret-storage ./my-forge-app
+CHECK_SECRET_STORAGE=1 fsrt ./my-forge-app
+```
+
+One finding is reported per call site rather than per path to it, naming the
+entry points that reach it. Secrets keyed by the caller's own
+`context.accountId` are per-user credentials and are not reported; a key built
+from anything else, including an account id taken from the payload, still is.
+
+Findings are reported at `Medium` and are meant for manual triage: reaching a
+secret is not always a vulnerability, and the scan cannot see authorization
+performed through an unresolved helper.
+
 ## Installation
 
 You will need to install [Rust] to compile `FSRT`. You can install `Rust` through [Rustup] or through your distro's package manager. You will also

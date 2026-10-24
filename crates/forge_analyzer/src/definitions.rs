@@ -1327,6 +1327,37 @@ impl FunctionAnalyzer<'_> {
             {
                 Some(Intrinsic::SecretRead)
             }
+            [PropPath::Def(def), PropPath::Static(ref method)]
+                if *method == *"setSecret" && is_secret_store(self.res, def) =>
+            {
+                Some(Intrinsic::SecretWrite)
+            }
+            // import api from '@forge/api'; api.storage.setSecret(...)
+            // import * as api from '@forge/api'; api.storage.setSecret(...)
+            //
+            // Both directions, so this path matches the named-import arms above.
+            // A `getSecret` here does now count as evidence of authentication in
+            // `AuthenticateChecker`, exactly as it already does for
+            // `import { storage } from '@forge/api'`; treating the same call
+            // differently based on how the module was imported was the real defect.
+            [
+                PropPath::Def(def),
+                PropPath::Static(ref storage),
+                PropPath::Static(ref method),
+                ..,
+            ] if *storage == *"storage"
+                && (*method == *"setSecret" || *method == *"getSecret")
+                && self
+                    .res
+                    .is_imported_from(def, "@forge/api")
+                    .is_some_and(|imp| matches!(imp, ImportKind::Default | ImportKind::Star)) =>
+            {
+                if *method == *"setSecret" {
+                    Some(Intrinsic::SecretWrite)
+                } else {
+                    Some(Intrinsic::SecretRead)
+                }
+            }
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" || *name == *"forgeFetch" => {
                 Some(Intrinsic::Fetch)
             }

@@ -35,7 +35,8 @@ use forge_analyzer::{
     checkers::{
         AuthHeaderChecker, AuthZChecker, AuthenticateChecker, DEFAULT_EXCLUDED_SECRET_SUFFIXES,
         DEFAULT_SECRET_SUFFIXES, ForgeRuntimeVersionPolicyChecker, PermissionChecker,
-        PermissionVuln, SecretChecker, SecretLoggingChecker, SecretSuffixes, SecretType,
+        PermissionVuln, SecretChecker, SecretLoggingChecker, SecretStorageChecker, SecretSuffixes,
+        SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -61,12 +62,16 @@ enum Scanner {
     Secret,
     SecretLogging,
     RuntimeVersion,
+    /// Off by default: must be requested with `--scanners secret-storage` or
+    /// `CHECK_SECRET_STORAGE=1`. It knowingly over-reports and its findings are
+    /// meant for manual triage.
+    SecretStorage,
 }
 
 impl Scanner {
     /// Opt-in scanners only run when selected with `--scanners`.
     fn enabled_by_default(self) -> bool {
-        !matches!(self, Self::SecretLogging)
+        !matches!(self, Self::SecretLogging | Self::SecretStorage)
     }
 }
 
@@ -145,7 +150,7 @@ pub struct Args {
     cached_permissions_path: Option<PathBuf>,
 
     /// Comma separated list of scanners to enable. Defaults to all of them except
-    /// secret-logging, which only runs when selected.
+    /// secret-logging and secret-storage, which only run when selected.
     #[arg(long, value_delimiter = ',')]
     scanners: Vec<Scanner>,
 
@@ -192,6 +197,11 @@ struct ResolvedEntryPoint<'a> {
     webtrigger: bool,
     invokable: bool,
     admin: bool,
+    /// Registered both by a module the platform restricts to admins and by one any
+    /// authenticated user can reach, so that restriction no longer applies.
+    shared_admin_resolver: bool,
+    /// The admin-gated module types behind that sharing.
+    admin_module_types: Vec<&'static str>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -571,6 +581,10 @@ pub(crate) fn scan_directory<'a>(
     let run_authorization_scanner = opts.scanner_enabled(Scanner::Authorization);
     let run_auth_header_scanner = opts.scanner_enabled(Scanner::AuthHeader);
     let run_secret_scanner = opts.scanner_enabled(Scanner::Secret);
+    // The env var lets the scan be turned on where the argument list is fixed,
+    // such as the compliance scanner's runner.
+    let run_secret_storage_scanner = opts.scanner_enabled(Scanner::SecretStorage)
+        || std::env::var_os("CHECK_SECRET_STORAGE").is_some_and(|value| !value.is_empty());
     let run_secret_logging_scanner = opts.scanner_enabled(Scanner::SecretLogging);
     let scan_functions =
         opts.scan_functions || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
@@ -586,6 +600,8 @@ pub(crate) fn scan_directory<'a>(
                 invokable: entrypoint.invokable,
                 web_trigger: entrypoint.web_trigger,
                 admin: entrypoint.admin,
+                shared_admin_resolver: entrypoint.shared_admin_resolver,
+                admin_module_types: entrypoint.admin_module_types,
             })
         });
 
@@ -736,6 +752,56 @@ pub(crate) fn scan_directory<'a>(
                 &func.manifest_proof(manifest::BindingKind::WebTrigger),
             );
         }
+    }
+
+    // Optional Forge secret storage scan.
+    //
+    // Scoped to admin resolvers shared with another module. The platform restricts
+    // an admin page's own resolver to admin users, so an admin-only entry point has
+    // nothing for the app to authorize, and a resolver exposed solely by ordinary
+    // modules was never admin-restricted. Sharing one resolver between an admin
+    // page and another module is what removes a restriction that was there.
+    if let Some(mut secret_storage_interp) =
+        run_secret_storage_scanner.then(|| interpreters.create::<SecretStorageChecker>(true))
+    {
+        // Analyze each entry point, and each resolver property, independently: a
+        // shared helper must be walked again for every entry point that reaches it,
+        // so that both its sinks and its authorization checks are accounted for.
+        secret_storage_interp.set_isolate_entries(true);
+
+        // One checker across every entry point, so a helper reached from many
+        // resolvers is reported once rather than once per path.
+        let mut checker = SecretStorageChecker::new();
+        for func in &proj.funcs {
+            if !func.shared_admin_resolver {
+                continue;
+            }
+            // The admin-gated types come from the loader rather than the bindings,
+            // since `jira:adminPage` is never recorded as one and the report would
+            // otherwise name only the non-admin side of the sharing.
+            let mut modules = func
+                .module_bindings
+                .iter()
+                .map(|binding| binding.module_type)
+                .collect::<Vec<_>>();
+            modules.extend(func.admin_module_types.iter().copied());
+            modules.sort_unstable();
+            modules.dedup();
+            checker.set_entry_modules(modules);
+            debug!(
+                "checking secret storage in {:?} at {:?}",
+                func.func_name, &func.path
+            );
+            if let Err(err) = secret_storage_interp.run_checker(
+                func.def_id,
+                &mut checker,
+                func.path.clone(),
+                func.func_name.to_string(),
+            ) {
+                warn!("error while running secret storage checker: {err}");
+            }
+        }
+        reporter.add_vulnerabilities(checker.into_vulns());
     }
 
     // Optional full-function auth-header scan. When enabled, scan all function and
