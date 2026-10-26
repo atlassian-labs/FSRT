@@ -13,6 +13,7 @@ use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceFile, SourceMap};
 use time::{Date, Month};
 
+mod authentication_check_presence;
 mod captured_values;
 mod legacy_callbacks;
 mod resolver_registration;
@@ -216,9 +217,7 @@ pub(crate) fn scan_directory_test_with_args(
     forge_test_proj: MockForgeProject<'_>,
     mut args: Args,
 ) -> forge_analyzer::reporter::Report {
-    let secret_packages: Vec<PackageData> = std::fs::File::open("../../secretdata.yaml")
-        .map(|f| serde_yaml::from_reader(f).expect("Failed to deserialize packages"))
-        .unwrap_or_else(|_| vec![]);
+    let secret_packages = crate::builtin_packages();
 
     match scan_directory(PathBuf::new(), &mut args, forge_test_proj, &secret_packages) {
         Ok(report) => report,
