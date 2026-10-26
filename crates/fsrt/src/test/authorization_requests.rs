@@ -38,9 +38,11 @@ fn request_method_is_read_from_inline_and_const_options() {
             "api.asApp().requestJira(route`/rest/api/3/field`, read)",
             0,
         ),
+        // The route carries caller data: a write that carries none is not reported
+        // by any policy (authorization_flow.rs).
         (
             "const write = { method: 'POST' };",
-            "api.asApp().requestJira(route`/rest/api/3/field`, write)",
+            "api.asApp().requestJira(route`/rest/api/3/field/${payload.key}`, write)",
             1,
         ),
         (

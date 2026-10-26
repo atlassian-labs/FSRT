@@ -66,7 +66,7 @@ fn metadata_routes_are_reported_for_other_methods_and_unproven_methods() {
         "api.asApp().requestJira(route`/rest/api/3/project/search`, {method: payload.method})",
         "api.asApp().requestJira(route`/rest/api/3/project/search`, payload.options)",
         "api.asApp().requestJira(route`/rest/api/3/project/search`, {...payload.options})",
-        "api.asApp().requestConfluence(route`/wiki/api/v2/spaces`, {method: 'POST'})",
+        "api.asApp().requestConfluence(route`/wiki/api/v2/spaces`, {method: 'POST', body: JSON.stringify(payload.space)})",
     ] {
         let report = scan_resolver(&returns(request));
         assert!(report.contains_authz_vuln(1), "{request}\n{report:#?}");
@@ -88,7 +88,7 @@ fn resources_and_unproven_routes_are_reported() {
         "api.asApp().requestConfluence(route`/wiki/api/v2/pages/${payload.id}`)",
         "api.asApp().requestJira(route`/rest/api/3/myself/${payload.id}`)",
         "api.asApp().requestJira(route`/rest/servicedeskapi/servicedesk/${payload.id}/queue`)",
-        "api.asApp().requestJira(route`/rest/api/3/jql/parse`, {method: 'PUT'})",
+        "api.asApp().requestJira(route`/rest/api/3/jql/parse`, {method: 'PUT', body: JSON.stringify(payload.queries)})",
         "api.asApp().requestJira(route`/rest/atlassian-connect/1/addons/${payload.key}/properties/${payload.name}`)",
         "api.asApp().requestJira(route`/rest/servicedeskapi/assets/workspace/${payload.id}`)",
     ] {
@@ -151,7 +151,10 @@ fn a_license_route_built_in_a_constant_is_metadata_only_for_gets() {
     for (options, finding) in [
         ("", 0),
         (", {method: 'GET'}", 0),
-        (", {method: 'PUT', body: JSON.stringify({})}", 1),
+        (
+            ", {method: 'PUT', body: JSON.stringify(payload.license)}",
+            1,
+        ),
         (", payload.options", 1),
     ] {
         let mut project = MockForgeProject::files_from_string("// src/index.js\n");

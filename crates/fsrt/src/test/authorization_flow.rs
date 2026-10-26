@@ -132,9 +132,9 @@ fn context_binding_is_not_credited_when_anything_else_reaches_the_request() {
              return parent.json();",
             1,
         ),
-        // Context never makes a write safe.
+        // Context never makes a write that carries caller data safe.
         (
-            "await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.issue.key}`, {method: 'PUT', body: JSON.stringify({fields: {}})});
+            "await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.issue.key}`, {method: 'PUT', body: JSON.stringify({fields: payload.fields})});
              return {ok: true};",
             1,
         ),
@@ -349,6 +349,308 @@ fn a_write_is_not_excused_by_what_it_returns() {
             1,
         ),
     ]);
+}
+
+#[test]
+fn a_write_that_carries_no_caller_data_is_not_reported() {
+    check(&[
+        // Constant route and body.
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/field`, {method: 'POST', body: JSON.stringify({name: 'Rank', type: 'text'})});
+             return {ok: true};",
+            0,
+        ),
+        // The platform context may choose the target and the content.
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.issue.key}`, {method: 'PUT', body: JSON.stringify({fields: {}})});
+             return {ok: true};",
+            0,
+        ),
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.issue.key}/comment`, {method: 'POST', body: JSON.stringify({body: context.extension.issue.id})});
+             return {ok: true};",
+            0,
+        ),
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue/ONE-1`, {method: 'PATCH', body: JSON.stringify({id: context.accountId})});
+             return {ok: true};",
+            0,
+        ),
+        // What a write returns does not make it a different write.
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issuetype`, {method: 'POST', body: JSON.stringify({name: 'Test'})});
+             return response.json();",
+            0,
+        ),
+        // A POST that reads (a search with a fixed query) is a POST all the same.
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/search/jql`, {method: 'POST', body: JSON.stringify({jql: 'project = ONE'})});
+             return response.json();",
+            0,
+        ),
+        // GraphQL has no method the scanner reads: it is judged by what it sends.
+        (
+            "const response = await api.asApp().requestGraph('/graphql', {method: 'POST', body: JSON.stringify({query: 'mutation { ping }'})});
+             return response.json();",
+            0,
+        ),
+    ]);
+}
+
+#[test]
+fn a_write_that_carries_caller_or_stored_data_is_reported() {
+    check(&[
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`, {method: 'PUT', body: JSON.stringify({fields: {}})});
+             return {ok: true};",
+            1,
+        ),
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.issue.key}`, {method: 'PUT', body: JSON.stringify(payload.fields)});
+             return {ok: true};",
+            1,
+        ),
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue/ONE-1`, {method: 'POST', body: JSON.stringify({id: context.extension.issue.id, extra: payload.extra})});
+             return {ok: true};",
+            1,
+        ),
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue`, {method: payload.method, body: '{}'});
+             return {ok: true};",
+            1,
+        ),
+        // Data the app stored may have been put there by another caller.
+        (
+            "const stored = await storage.get('draft');
+             await api.asApp().requestJira(route`/rest/api/3/issue`, {method: 'POST', body: JSON.stringify(stored)});
+             return {ok: true};",
+            1,
+        ),
+        (
+            "const key = await storage.get('key');
+             await api.asApp().requestJira(route`/rest/api/3/issue/${key}`, {method: 'PUT', body: '{}'});
+             return {ok: true};",
+            1,
+        ),
+        // So may what an asUser or a fetch request returned.
+        (
+            "const other = await (await api.asUser().requestJira(route`/rest/api/3/issue/${context.extension.issue.key}`)).json();
+             await api.asApp().requestJira(route`/rest/api/3/issue`, {method: 'POST', body: JSON.stringify(other)});
+             return {ok: true};",
+            1,
+        ),
+        (
+            "const other = await (await fetch('https://example.com/draft')).json();
+             await api.asApp().requestJira(route`/rest/api/3/issue`, {method: 'POST', body: JSON.stringify(other)});
+             return {ok: true};",
+            1,
+        ),
+        // A method the analysis cannot read may be a DELETE: the finding is kept.
+        (
+            "let method = 'POST';
+             await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.issue.key}`, {method, body: JSON.stringify({fields: {}})});
+             return {ok: true};",
+            1,
+        ),
+        (
+            "const options = { ['method']: 'DELETE' };
+             await api.asApp().requestJira(route`/rest/api/3/issue/ONE-1`, options);
+             return {ok: true};",
+            1,
+        ),
+        // A fixed DELETE is deliberately kept, with or without context.
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issuetype/10001`, {method: 'DELETE'});
+             return {ok: true};",
+            1,
+        ),
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.issue.key}`, {method: 'DELETE'});
+             return {ok: true};",
+            1,
+        ),
+    ]);
+}
+
+#[test]
+fn a_write_helper_is_judged_by_what_each_call_gives_it() {
+    let helpers = "async function create(data) {
+        return api.asApp().requestJira(route`/rest/api/3/issue`, {method: 'POST', body: JSON.stringify(data)});
+    }";
+    let fixed = scan_with(helpers, "await create({fields: {summary: 'x'}}); return 1;");
+    assert!(fixed.contains_authz_vuln(0), "{fixed:#?}");
+    let from_payload = scan_with(helpers, "await create(payload.issue); return 1;");
+    assert!(from_payload.contains_authz_vuln(1), "{from_payload:#?}");
+    let both = scan_with(
+        helpers,
+        "await create({fields: {summary: 'x'}}); await create(payload.issue); return 1;",
+    );
+    assert!(both.contains_authz_vuln(1), "{both:#?}");
+}
+
+#[test]
+fn a_write_the_analysis_cannot_follow_keeps_the_finding() {
+    let write =
+        "await api.asApp().requestJira(route`/rest/api/3/field`, {method: 'POST', body: '{}'});";
+    for (name, tail) in [
+        (
+            "request escape",
+            "console.log(Object.keys(arguments[0])); return 1;",
+        ),
+        (
+            "class",
+            "class Box { value() { return 1; } } return new Box().value();",
+        ),
+        (
+            "function value",
+            "const get = payload.flag ? () => 1 : () => 2; return get();",
+        ),
+        (
+            "dynamic import",
+            "const module = await import('./other'); return module.run().length;",
+        ),
+    ] {
+        let report = scan(&format!("{write} {tail}"));
+        assert!(report.contains_authz_vuln(1), "{name}\n{report:#?}");
+    }
+    // The same write, followed, is not reported.
+    let report = scan(&format!("{write} return 1;"));
+    assert!(report.contains_authz_vuln(0), "{report:#?}");
+}
+
+#[test]
+fn a_get_is_not_judged_by_the_write_rule() {
+    check(&[
+        // No context in it: the unscoped read is kept.
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/filter/search`);
+             return response.json();",
+            1,
+        ),
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/ONE-1`, {method: 'GET'});
+             return response.json();",
+            1,
+        ),
+        // Caller data in a read is kept as before.
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/${payload.key}`);
+             return response.json();",
+            1,
+        ),
+    ]);
+}
+
+#[test]
+fn a_property_whose_key_the_caller_does_not_choose_is_not_reported() {
+    check(&[
+        // The app's property on the issue or project the caller has open.
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.issue.key}/properties/app-config`);
+             return response.json();",
+            0,
+        ),
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/project/${context.extension.project.key}/properties`);
+             return response.json();",
+            0,
+        ),
+        // Fixed keys: the app's own.
+        (
+            "const response = await api.asApp().requestJira(route`/rest/forge/1/app/properties/config`);
+             return response.json();",
+            0,
+        ),
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/ONE-1/properties/config`);
+             return response.json();",
+            0,
+        ),
+        (
+            "const response = await api.asApp().requestConfluence(route`/wiki/api/v2/pages/${context.extension.content.id}/properties`);
+             return response.json();",
+            0,
+        ),
+        // The value may come from the caller: only the key is judged.
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.issue.key}/properties/settings`, {method: 'PUT', body: JSON.stringify(payload.value)});
+             return {ok: true};",
+            0,
+        ),
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/project/${context.extension.project.key}/properties/settings`, {method: 'PUT', body: JSON.stringify({value: payload.value})});
+             return {ok: true};",
+            0,
+        ),
+        // Any method: a property the app owns is deleted by the app.
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.issue.key}/properties/settings`, {method: 'DELETE'});
+             return {ok: true};",
+            0,
+        ),
+    ]);
+}
+
+#[test]
+fn a_property_route_with_caller_data_in_it_is_reported() {
+    check(&[
+        // The key, the entity and the query string are all the route.
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.issue.key}/properties/${payload.key}`);
+             return response.json();",
+            1,
+        ),
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/${payload.issue}/properties/app-config`);
+             return response.json();",
+            1,
+        ),
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/project/${context.extension.project.key}/properties?keys=${payload.keys}`);
+             return response.json();",
+            1,
+        ),
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue/${payload.issue}/properties/settings`, {method: 'PUT', body: '{}'});
+             return {ok: true};",
+            1,
+        ),
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue/${context.extension.issue.key}/properties/${payload.key}`, {method: 'DELETE'});
+             return {ok: true};",
+            1,
+        ),
+        // Not the caller's context.
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/${context.jobId}/properties/app-config`);
+             return response.json();",
+            1,
+        ),
+        // A route the scanner cannot read is not taken for a property route.
+        (
+            "const path = 'issue/ONE-1/properties/config';
+             const response = await api.asApp().requestJira(route`/rest/api/3/${path}`);
+             return response.json();",
+            1,
+        ),
+        // Other routes of the same entity are not properties.
+        (
+            "const response = await api.asApp().requestJira(route`/rest/api/3/issue/ONE-1/comment`);
+             return response.json();",
+            1,
+        ),
+    ]);
+}
+
+#[test]
+fn a_property_the_analysis_cannot_follow_keeps_the_finding() {
+    let read = "const response = await api.asApp().requestJira(route`/rest/api/3/issue/ONE-1/properties/config`);
+                const data = await response.json();";
+    let report = scan(&format!(
+        "{read} console.log(Object.keys(arguments[0])); return data;"
+    ));
+    assert!(report.contains_authz_vuln(1), "{report:#?}");
 }
 
 #[test]

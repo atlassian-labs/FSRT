@@ -3339,8 +3339,8 @@ fn scan_alias_fixture(aliases: bool) -> Report {
             const second = await api.asApp().requestJira(route`/rest/api/3/issue/TWO`);
             return [await first.json(), await second.json()];
         });
-        resolver.define('updateJiraIssueDates', async () => {
-            return api.asApp().requestJira(route`/rest/api/3/issue/ONE`, { method: 'PUT' });
+        resolver.define('updateJiraIssueDates', async ({ payload }) => {
+            return api.asApp().requestJira(route`/rest/api/3/issue/ONE`, { method: 'PUT', body: JSON.stringify(payload) });
         });
         export const handler = resolver.getDefinitions();
         "#,

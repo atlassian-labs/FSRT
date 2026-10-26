@@ -131,6 +131,20 @@ pub(super) fn is_query_analysis_post(route: &RouteText) -> bool {
         .any(|pattern| matches(pattern, &segments))
 }
 
+/// Whether `route` names entity or app properties: one of its path segments is
+/// `properties` (`/rest/api/3/issue/{id}/properties/{key}`, `/rest/forge/1/app/properties`,
+/// `/wiki/api/v2/pages/{id}/properties`). The segment is what the products call
+/// them, so this is a test of the route's shape and not a table of routes: a table
+/// would list every entity type of every product. A segment with a computed part
+/// (`/${path}`) is not known to be one.
+pub(super) fn is_property_route(route: &RouteText) -> bool {
+    route
+        .path_segments()
+        .iter()
+        .flatten()
+        .any(|segment| segment.eq_ignore_ascii_case("properties"))
+}
+
 /// Whether a GET of `route` reads instance configuration metadata.
 pub(super) fn is_instance_metadata(route: &RouteText) -> bool {
     let segments = route.path_segments();
@@ -172,6 +186,41 @@ mod tests {
             "/rest/api/3/jql/function/computation?orderBy=key",
         ] {
             assert!(is_instance_metadata(&route(yes)), "{yes}");
+        }
+    }
+
+    #[test]
+    fn a_properties_segment_names_entity_and_app_properties() {
+        for yes in [
+            "/rest/api/3/issue/$/properties/$",
+            "/rest/api/3/issue/ONE-1/properties",
+            "/rest/api/3/project/$/properties?propertyKeys=a",
+            "/rest/api/3/issue/properties/multi",
+            "/rest/forge/1/app/properties/$",
+            "/rest/forge/1/app/properties",
+            "/wiki/api/v2/pages/$/properties/$",
+            "/rest/atlassian-connect/1/addons/com.example.app/properties/$",
+            "/REST/api/3/issue/$/Properties/$",
+            // A computed entity before the segment: the route still ends in properties.
+            "/rest/api/3/$/properties",
+        ] {
+            assert!(is_property_route(&route(yes)), "{yes}");
+        }
+    }
+
+    #[test]
+    fn other_routes_and_computed_segments_are_not_property_routes() {
+        for no in [
+            "/rest/api/3/issue/$",
+            "/rest/api/3/issue/$/property",
+            "/rest/api/3/issue/$/propertiesX",
+            "/rest/api/3/issue/$/properties$",
+            "/rest/api/3/issue/$properties",
+            "/rest/api/3/$",
+            "/rest/api/3/search?jql=properties",
+            "/rest/api/3/search?jql=$/properties",
+        ] {
+            assert!(!is_property_route(&route(no)), "{no}");
         }
     }
 

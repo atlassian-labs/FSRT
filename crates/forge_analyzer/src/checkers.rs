@@ -329,8 +329,9 @@ impl AuthZChecker {
                     flow.response_exposed(site)?,
                 ))
             });
+        let api_call = matches!(kind, ApiCall);
         let reason = suppression(interp.env(), def, loc)
-            .or_else(|| flow_suppression(interp.env(), def, loc, facts));
+            .or_else(|| flow_suppression(interp.env(), def, loc, api_call, facts));
         self.candidates.push(Candidate {
             def,
             loc,
@@ -406,36 +407,68 @@ fn suppression(env: &Environment, def: DefId, loc: Location) -> Option<&'static 
     }
 }
 
-/// Reads that the flow analysis shows cannot be used by the caller to obtain data
-/// they could not read: the request is bound to the module context the platform
-/// supplied and nothing the caller sent, or its response goes nowhere the caller
-/// can see it. Writes are never exempted by what they return.
+/// What the flow analysis shows about the data a request carries and where its
+/// response goes. Every rule needs known facts: a flow the analysis gave up on
+/// keeps the finding.
+///
+/// Reads that the caller cannot use to obtain data they could not read: the request
+/// is bound to the module context the platform supplied and nothing the caller
+/// sent, or its response goes nowhere the caller can see it. Writes are never
+/// exempted by what they return.
+///
+/// Requests that carry nothing the caller chose, judged by what they take and not by
+/// what they return: a write whose route and body come from constants and the
+/// platform context only (`no-caller-data-write`), and an entity or app property
+/// whose key the caller does not choose (`own-property-key`). Both apply to calls to
+/// an Atlassian API only: a remote call is judged by the remote.
 fn flow_suppression(
     env: &Environment,
     def: DefId,
     loc: Location,
+    api_call: bool,
     facts: Option<(u8, u8, bool)>,
 ) -> Option<&'static str> {
+    use authz_flow::origin::{CONTEXT, EXTERNAL, PAYLOAD};
+
     let (route_origin, body_origin, exposed) = facts?;
-    let request = env.def_ref(def).as_body()?.authz_requests.get(&loc)?;
-    let read = match request.method(env)? {
-        HttpMethod::Get => true,
-        HttpMethod::Post => request
-            .route(env)
-            .is_some_and(authz_routes::is_read_only_post),
+    let request = env.def_ref(def).as_body()?.authz_requests.get(&loc);
+    let method = request.and_then(|request| request.method(env));
+    let route = request.and_then(|request| request.route(env));
+    let sent = route_origin | body_origin;
+    let read = match method {
+        Some(HttpMethod::Get) => true,
+        Some(HttpMethod::Post) => route.is_some_and(authz_routes::is_read_only_post),
         _ => false,
     };
-    if !read {
+    if read {
+        if sent & CONTEXT != 0 && sent & (PAYLOAD | EXTERNAL) == 0 {
+            return Some("context-bound-read");
+        }
+        if !exposed {
+            return Some("unexposed-read-response");
+        }
+    }
+    if !api_call {
         return None;
     }
-    let sent = route_origin | body_origin;
-    if sent & authz_flow::origin::CONTEXT != 0
-        && sent & (authz_flow::origin::PAYLOAD | authz_flow::origin::EXTERNAL) == 0
-    {
-        return Some("context-bound-read");
+    // A write that carries nothing the caller sent, or the app stored, in its route or
+    // body: the caller chooses neither what it does nor to what. A POST, PUT or PATCH
+    // is one, and so is a request with no HTTP method of its own (GraphQL). A DELETE is
+    // kept even then, and so is a REST request whose method the analysis could not
+    // prove (an options object it cannot read, a method passed to a wrapper): it may be
+    // a DELETE or a GET, and unknown facts are the most privileged alternative.
+    let write = !matches!(
+        (request, method),
+        (Some(_), None | Some(HttpMethod::Get | HttpMethod::Delete))
+    );
+    if write && sent & (PAYLOAD | EXTERNAL) == 0 {
+        return Some("no-caller-data-write");
     }
-    if !exposed {
-        return Some("unexposed-read-response");
+    // The key of a property the app keeps on the page the caller has open names
+    // the app's own data. The value may still come from the caller: only the route
+    // is judged.
+    if route.is_some_and(authz_routes::is_property_route) && route_origin & PAYLOAD == 0 {
+        return Some("own-property-key");
     }
     None
 }
