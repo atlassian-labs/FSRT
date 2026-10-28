@@ -1,5 +1,6 @@
 use crate::checkers::AuthZVulnKind::{ApiCall, RemoteCall};
 use crate::interp::ProjectionVec;
+use crate::request::{HttpMethod, RouteText};
 use crate::utils::projvec_from_str;
 use crate::{
     definitions::{Const, DefId, Environment, IntrinsicName, Value},
@@ -8,8 +9,8 @@ use crate::{
         WithCallStack,
     },
     ir::{
-        Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
-        Projection, Rvalue, VarId, VarKind, Variable,
+        Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Literal, Location, Operand,
+        Projection, Rvalue, STARTING_BLOCK, Successors, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     utils::{add_elements_to_intrinsic_struct, convert_lit_to_raw, translate_request_type},
@@ -31,6 +32,9 @@ use std::{
 use time::{Date, Month, OffsetDateTime};
 use tracing::{debug, info, warn};
 
+mod authz_flow;
+mod authz_principal;
+mod authz_routes;
 mod secret_logging;
 pub use secret_logging::{
     DEFAULT_EXCLUDED_SECRET_SUFFIXES, DEFAULT_SECRET_SUFFIXES, SecretLoggingChecker,
@@ -246,6 +250,30 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
 pub struct AuthZChecker {
     vulns: Vec<AuthZVuln>,
     check_remotes: bool,
+    constant_return_resolver: bool,
+    resolver_permission_present: bool,
+    principal: Option<authz_principal::Reachability>,
+    suppressed_helpers: HashSet<DefId>,
+    /// The root being checked.
+    root: Option<DefId>,
+    /// The instruction being visited.
+    at: Option<(DefId, Location)>,
+    /// Privileged operations found by the current root, in discovery order.
+    candidates: Vec<Candidate>,
+    /// Candidates already audited per finding id, for stable ordinals.
+    audited: HashMap<String, u32>,
+    /// Report each privileged operation as its own finding, instead of one finding
+    /// per entry that lists them.
+    per_operation: bool,
+}
+
+/// A privileged operation the walk reached without a recognised check. The
+/// policy decides at the end of the root whether to report it.
+struct Candidate {
+    def: DefId,
+    loc: Location,
+    callstack: Vec<Frame>,
+    kind: AuthZVulnKind,
 }
 
 impl AuthZChecker {
@@ -253,13 +281,275 @@ impl AuthZChecker {
         Self {
             vulns: vec![],
             check_remotes,
+            constant_return_resolver: false,
+            resolver_permission_present: false,
+            principal: None,
+            suppressed_helpers: HashSet::new(),
+            root: None,
+            at: None,
+            candidates: Vec::new(),
+            audited: HashMap::new(),
+            per_operation: false,
         }
+    }
+
+    /// Report every privileged operation as a finding of its own. By default an
+    /// entry is one finding, identified by its first operation, whose proof lists
+    /// the others.
+    pub fn per_operation(mut self, per_operation: bool) -> Self {
+        self.per_operation = per_operation;
+        self
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthZVuln> {
         // TODO: make this an associated function on the Checker trait.
         self.vulns.into_iter()
     }
+
+    /// Record a privileged operation at the instruction being visited.
+    fn found<'cx>(&mut self, interp: &Interp<'cx, Self>, kind: AuthZVulnKind) {
+        let Some((def, loc)) = self.at else {
+            warn!("privileged operation outside an instruction");
+            return;
+        };
+        self.candidates.push(Candidate {
+            def,
+            loc,
+            callstack: interp.callstack(),
+            kind,
+        });
+    }
+
+    /// Report or suppress each operation the root reached, in discovery order,
+    /// and audit the decision. Suppressions never reach the report.
+    fn decide<'cx>(&mut self, interp: &Interp<'cx, Self>) {
+        // A helper is retried for later roots only while nothing on its call path
+        // is reported; otherwise the report already exposes it.
+        let mut retry = HashSet::new();
+        let mut exposed = HashSet::new();
+        let mut reported = Vec::new();
+        let candidates = mem::take(&mut self.candidates);
+        let mut flow = None;
+        if !candidates.is_empty()
+            && matches!(interp.entry().kind, EntryKind::Resolver(..))
+            && let Some(root) = self.root
+        {
+            flow = Some(authz_flow::analyze(interp.env(), root));
+        }
+        for candidate in candidates {
+            let helpers: Vec<_> = candidate
+                .callstack
+                .iter()
+                .map(|frame| frame.calling_function)
+                .collect();
+            let vuln = AuthZVuln::new(
+                candidate.callstack,
+                interp.env(),
+                interp.entry(),
+                candidate.kind,
+            );
+            let check_name = vuln.check_name();
+            let ordinal = self.audited.entry(check_name.clone()).or_default();
+            *ordinal += 1;
+            let site = (candidate.def, candidate.loc);
+            let facts = flow
+                .as_mut()
+                .and_then(|flow| flow.as_mut().ok())
+                .and_then(|flow| {
+                    Some((
+                        flow.route_origin(site)?,
+                        flow.body_origin(site)?,
+                        flow.response_exposed(site)?,
+                    ))
+                });
+            let reason = suppression(interp.env(), candidate.def, candidate.loc)
+                .or_else(|| flow_suppression(interp.env(), candidate.def, candidate.loc, facts));
+            audit(
+                interp,
+                candidate.def,
+                candidate.loc,
+                &check_name,
+                *ordinal,
+                reason.unwrap_or("reported"),
+                flow.as_ref().map(|flow| flow.as_ref().err()),
+                facts,
+            );
+            if reason.is_some() {
+                retry.extend(helpers);
+            } else {
+                exposed.extend(helpers);
+                let mut vuln = vuln;
+                vuln.operation = describe(interp.env(), candidate.def, candidate.loc);
+                reported.push(vuln);
+            }
+        }
+        self.suppressed_helpers
+            .extend(retry.difference(&exposed).copied());
+        if self.per_operation || reported.len() < 2 {
+            self.vulns.extend(reported);
+        } else {
+            // One finding per entry: the first operation names it, as it did before
+            // every operation was reported, and the proof lists the rest.
+            let mut reported = reported.into_iter();
+            let mut first = reported.next().unwrap();
+            first.others = reported.map(|vuln| (vuln.operation, vuln.stack)).collect();
+            self.vulns.push(first);
+        }
+    }
+}
+
+/// Why a candidate is not reported, from what the request itself says. Every
+/// rule needs a proven GET: unknown facts keep the finding.
+fn suppression(env: &Environment, def: DefId, loc: Location) -> Option<&'static str> {
+    let request = env.def_ref(def).as_body()?.authz_requests.get(&loc)?;
+    match request.method(env)? {
+        HttpMethod::Get if authz_routes::is_instance_metadata(request.route(env)?) => {
+            Some("instance-metadata-route")
+        }
+        HttpMethod::Post if authz_routes::is_query_analysis_post(request.route(env)?) => {
+            Some("query-analysis-route")
+        }
+        _ => None,
+    }
+}
+
+/// Reads that the flow analysis shows cannot be used by the caller to obtain data
+/// they could not read: the request is bound to the module context the platform
+/// supplied and nothing the caller sent, or its response goes nowhere the caller
+/// can see it. Writes are never exempted by what they return.
+fn flow_suppression(
+    env: &Environment,
+    def: DefId,
+    loc: Location,
+    facts: Option<(u8, u8, bool)>,
+) -> Option<&'static str> {
+    let (route_origin, body_origin, exposed) = facts?;
+    let request = env.def_ref(def).as_body()?.authz_requests.get(&loc)?;
+    let read = match request.method(env)? {
+        HttpMethod::Get => true,
+        HttpMethod::Post => request
+            .route(env)
+            .is_some_and(authz_routes::is_read_only_post),
+        _ => false,
+    };
+    if !read {
+        return None;
+    }
+    let sent = route_origin | body_origin;
+    if sent & authz_flow::origin::CONTEXT != 0
+        && sent & (authz_flow::origin::PAYLOAD | authz_flow::origin::EXTERNAL) == 0
+    {
+        return Some("context-bound-read");
+    }
+    if !exposed {
+        return Some("unexposed-read-response");
+    }
+    None
+}
+
+/// The method and route of an operation, as the proof shows it.
+fn describe(env: &Environment, def: DefId, loc: Location) -> String {
+    let request = env
+        .def_ref(def)
+        .as_body()
+        .and_then(|body| body.authz_requests.get(&loc));
+    let method = request
+        .and_then(|request| request.method(env))
+        .map_or("?", HttpMethod::as_str);
+    let route = request
+        .and_then(|request| request.route(env))
+        .map_or_else(|| "(route not known)".to_owned(), RouteText::display);
+    let function = env.def_name(def);
+    if is_callback_frame(function) {
+        format!("{method} {route} in a callback")
+    } else {
+        format!("{method} {route} in {function}")
+    }
+}
+
+/// One machine-readable line per decision, enabled with
+/// `FORGE_LOG=authz_audit=debug`. Suppression is never evidence of authorization.
+fn audit<'cx>(
+    interp: &Interp<'cx, AuthZChecker>,
+    def: DefId,
+    loc: Location,
+    check_name: &str,
+    ordinal: u32,
+    decision: &str,
+    flow: Option<Option<&String>>,
+    facts: Option<(u8, u8, bool)>,
+) {
+    if !tracing::enabled!(target: "authz_audit", tracing::Level::DEBUG) {
+        return;
+    }
+    let env = interp.env();
+    let request = env
+        .def_ref(def)
+        .as_body()
+        .and_then(|body| body.authz_requests.get(&loc));
+    let method = request
+        .and_then(|request| request.method(env))
+        .map_or("?", HttpMethod::as_str);
+    let route = request
+        .and_then(|request| request.route(env))
+        .map(RouteText::display);
+    debug!(
+        target: "authz_audit",
+        record = %serde_json::json!({
+            "check": check_name,
+            "ordinal": ordinal,
+            "entry": format!("{:?}", interp.entry().kind),
+            "function": env.def_name(def),
+            "method": method,
+            "route": route,
+            "holes": request
+                .and_then(|request| request.route(env))
+                .map(|route| route.pieces().iter().any(|piece| matches!(piece, crate::request::Piece::Hole))),
+            "decision": decision,
+            "flow": flow.map(|gap| gap.map_or("complete", |reason| reason.as_str())),
+            "route_origin": facts.map(|facts| facts.0),
+            "body_origin": facts.map(|facts| facts.1),
+            "response_exposed": facts.map(|facts| facts.2),
+        })
+    );
+}
+
+// Presence is a reporting policy, not proof of an enforced permission check.
+// Follow the same recognized intrinsics and resolvable calls as the legacy
+// checker, but only through reachable blocks in this resolver's call graph.
+// A visited set bounds loops/recursion; uncalled helpers confer no exemption.
+fn resolver_has_authorize(env: &Environment, root: DefId) -> bool {
+    let mut pending = vec![(root, STARTING_BLOCK)];
+    let mut visited = HashSet::new();
+    while let Some((def, block_id)) = pending.pop() {
+        if !visited.insert((def, block_id)) {
+            continue;
+        }
+        let Some(body) = env.def_ref(def).as_body().copied() else {
+            continue;
+        };
+        let block = body.block(block_id);
+        for inst in block.iter() {
+            match inst.rvalue() {
+                Rvalue::Intrinsic(Intrinsic::Authorize(_), _) => return true,
+                Rvalue::Call(callee, _) => {
+                    if let Some((callee, _)) = body.resolve_call(env, callee) {
+                        pending.push((callee, STARTING_BLOCK));
+                    }
+                }
+                _ => {}
+            }
+        }
+        match block.successors() {
+            Successors::Return => {}
+            Successors::One(next) => pending.push((def, next)),
+            Successors::Two(first, second) => {
+                pending.push((def, first));
+                pending.push((def, second));
+            }
+        }
+    }
+    false
 }
 
 impl Default for AuthZChecker {
@@ -268,7 +558,7 @@ impl Default for AuthZChecker {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum AuthZVulnKind {
     ApiCall,
     RemoteCall(String),
@@ -280,6 +570,16 @@ pub struct AuthZVuln {
     entry_func: String,
     file: PathBuf,
     kind: AuthZVulnKind,
+    /// What the operation is, for the proof: `GET /rest/api/3/issue/${}`.
+    operation: String,
+    /// The other operations of the same entry, when they share one finding.
+    others: Vec<(String, String)>,
+}
+
+/// A callback given to `map`, `filter` and the like runs where it is written, so
+/// its frame is part of the function that wrote it and not a call a finding names.
+pub(crate) fn is_callback_frame(name: &str) -> bool {
+    name == "__CALLBACK"
 }
 
 impl AuthZVuln {
@@ -303,7 +603,8 @@ impl AuthZVuln {
                 callstack
                     .into_iter()
                     .rev()
-                    .map(|frame| env.def_name(frame.calling_function)),
+                    .map(|frame| env.def_name(frame.calling_function))
+                    .filter(|name| !is_callback_frame(name)),
             ),
             " -> ",
         )
@@ -313,6 +614,8 @@ impl AuthZVuln {
             entry_func,
             file,
             kind,
+            operation: String::new(),
+            others: Vec::new(),
         }
     }
 }
@@ -323,8 +626,10 @@ impl fmt::Display for AuthZVuln {
     }
 }
 
-impl IntoVuln for AuthZVuln {
-    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+impl AuthZVuln {
+    /// The stable finding id. Operations with the same entry and call chain
+    /// share it, so it identifies a chain rather than one request.
+    fn check_name(&self) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
@@ -335,14 +640,37 @@ impl IntoVuln for AuthZVuln {
             .for_each(|comp| comp.hash(&mut hasher));
         self.entry_func.hash(&mut hasher);
         self.stack.hash(&mut hasher);
+        format!("Custom-Check-Authorization-{}", hasher.finish())
+    }
+}
+
+impl IntoVuln for AuthZVuln {
+    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+        let check_name = self.check_name();
+        let more = if self.others.is_empty() {
+            String::new()
+        } else {
+            let lines = self
+                .others
+                .iter()
+                .map(|(operation, stack)| format!("\n- {operation} (via {stack})"))
+                .collect::<String>();
+            format!(
+                "\nThe same entry has {} more privileged operation(s):{lines}",
+                self.others.len()
+            )
+        };
         let (proof, req_id) = match self.kind {
             ApiCall => (
-                format!("Unauthorized API call via asApp() found via {}", self.stack),
+                format!(
+                    "Unauthorized API call via asApp() found via {}{more}",
+                    self.stack
+                ),
                 "Requirement 1.2",
             ),
             RemoteCall(remote) => (
                 format!(
-                    "Unauthorized call to forge remote `{}` with app system token found via {}",
+                    "Unauthorized call to forge remote `{}` with app system token found via {}{more}",
                     remote, self.stack
                 ),
                 "AEC Requirement 1.14",
@@ -350,7 +678,7 @@ impl IntoVuln for AuthZVuln {
         };
 
         Vulnerability {
-            check_name: format!("Custom-Check-Authorization-{}", hasher.finish()),
+            check_name,
             description: format!(
                 "Authorization bypass detected through {} in {:?}.",
                 self.entry_func, self.file
@@ -376,6 +704,100 @@ impl<'cx> Runner<'cx> for AuthZChecker {
 
     const NAME: &'static str = "Authorization";
 
+    fn visit_body(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        body: &'cx Body,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        let is_root = interp.callstack().is_empty();
+        if is_root {
+            self.root = Some(def);
+            self.principal = authz_principal::analyze(interp.env(), def);
+            let is_resolver = matches!(interp.entry().kind, EntryKind::Resolver(..));
+            self.constant_return_resolver = is_resolver && body.authz_constant_returns;
+            self.resolver_permission_present =
+                is_resolver && resolver_has_authorize(interp.env(), def);
+        }
+        let old_body = interp.body();
+        interp.set_body(body);
+        let result = self.visit_block(
+            interp,
+            def,
+            STARTING_BLOCK,
+            body.block(STARTING_BLOCK),
+            state,
+        );
+        interp.set_body(old_body);
+        if is_root {
+            self.decide(interp);
+            // Retain recursion protection during this traversal, but let a later
+            // resolver expose the same helper's result. Other history is unchanged.
+            interp.retry_checker_functions(self.suppressed_helpers.drain());
+            self.constant_return_resolver = false;
+            self.resolver_permission_present = false;
+            self.principal = None;
+        }
+        result
+    }
+
+    fn visit_inst(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        loc: Location,
+        inst: &'cx Inst,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        self.at = Some((def, loc));
+        if self
+            .principal
+            .as_ref()
+            .is_some_and(|facts| facts.excludes(def, loc.block))
+        {
+            self.suppressed_helpers.insert(def);
+            self.suppressed_helpers.extend(
+                interp
+                    .callstack()
+                    .iter()
+                    .map(|frame| frame.calling_function),
+            );
+            if matches!(
+                inst.rvalue(),
+                Rvalue::Call(..)
+                    | Rvalue::Intrinsic(Intrinsic::ApiCall(_) | Intrinsic::ApiCustomField, _)
+            ) {
+                debug!(entry = ?interp.entry(), function = ?def, operation = ?loc,
+                    reason = "principal-branch-unreachable", "Skipped unreachable authorization path");
+            }
+            return ControlFlow::Continue(*state);
+        }
+        if (self.constant_return_resolver || self.resolver_permission_present)
+            && interp
+                .body()
+                .authz_requests
+                .get(&loc)
+                .is_some_and(|request| request.method(interp.env()) == Some(HttpMethod::Get))
+        {
+            self.suppressed_helpers.extend(
+                interp
+                    .callstack()
+                    .iter()
+                    .map(|frame| frame.calling_function),
+            );
+            let reason = if self.resolver_permission_present {
+                "resolver-permission-present-get-policy"
+            } else {
+                "constant-return-resolver-get"
+            };
+            debug!(entry = ?interp.entry(), function = ?def, operation = ?loc,
+                reason, authorization_verified = false, "Suppressed authorization finding");
+            return ControlFlow::Continue(*state);
+        }
+        self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
+    }
+
     fn visit_intrinsic(
         &mut self,
         interp: &Interp<'cx, Self>,
@@ -395,16 +817,9 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                     if !self.check_remotes {
                         ControlFlow::Continue(*state)
                     } else if let Some(remote_name) = remote {
-                        let vuln = AuthZVuln::new(
-                            interp.callstack(),
-                            interp.env(),
-                            interp.entry(),
-                            RemoteCall(remote_name.clone()),
-                        );
-
                         info!("Found a remote vuln!");
-                        self.vulns.push(vuln);
-                        ControlFlow::Break(())
+                        self.found(interp, RemoteCall(remote_name.clone()));
+                        ControlFlow::Continue(*state)
                     } else {
                         warn!("Privileged remote missing ID");
                         ControlFlow::Continue(*state)
@@ -419,19 +834,15 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                 | IntrinsicName::RequestGraph
                 | IntrinsicName::RequestCompass(_)
                 | IntrinsicName::Other => {
-                    let vuln =
-                        AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
                     info!("Found a vuln!");
-                    self.vulns.push(vuln);
-                    ControlFlow::Break(())
+                    self.found(interp, ApiCall);
+                    ControlFlow::Continue(*state)
                 }
             },
             Intrinsic::ApiCustomField if *state < AuthorizeState::CustomFieldOnly => {
-                let vuln =
-                    AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
                 info!("Found a vuln!");
-                self.vulns.push(vuln);
-                ControlFlow::Break(())
+                self.found(interp, ApiCall);
+                ControlFlow::Continue(*state)
             }
             Intrinsic::SecretFunction(_)
             | Intrinsic::ApiCall(_)
@@ -650,7 +1061,8 @@ impl AuthNVuln {
                 callstack
                     .into_iter()
                     .rev()
-                    .map(|frame| env.def_name(frame.calling_function)),
+                    .map(|frame| env.def_name(frame.calling_function))
+                    .filter(|name| !is_callback_frame(name)),
             ),
             " -> ",
         )
@@ -846,7 +1258,8 @@ impl SecretVuln {
                 callstack
                     .into_iter()
                     .rev()
-                    .map(|frame| env.def_name(frame.calling_function)),
+                    .map(|frame| env.def_name(frame.calling_function))
+                    .filter(|name| !is_callback_frame(name)),
             ),
             " -> ",
         )
@@ -1053,7 +1466,8 @@ impl AuthHeaderVuln {
                 callstack
                     .into_iter()
                     .rev()
-                    .map(|frame| env.def_name(frame.calling_function)),
+                    .map(|frame| env.def_name(frame.calling_function))
+                    .filter(|name| !is_callback_frame(name)),
             ),
             " -> ",
         )
