@@ -2255,7 +2255,7 @@ pub struct ForgeRuntimeVersionPolicyVuln {
 impl IntoVuln for ForgeRuntimeVersionPolicyVuln {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
         Vulnerability {
-            check_name: format!("custom-check-forge-runtime-{}", self.runtime),
+            check_name: format!("Custom-Check-forge-runtime-{}", self.runtime),
             description: "The Forge app uses an end-of-life Node.js that is a likely exposure path for [CVE-2026-111497](https://nvd.nist.gov/vuln/detail/cve-2026-111497): an app-controlled Forge Remote can return a malicious `Content-Encoding: br` response to an outbound fetch.".to_owned(),
             recommendation: "Update app.runtime.name in manifest.yml to a supported Node.js runtime. See https://developer.atlassian.com/platform/forge/function-reference/nodejs-runtime/.",
             proof: format!(
