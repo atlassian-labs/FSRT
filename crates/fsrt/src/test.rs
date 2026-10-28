@@ -520,8 +520,8 @@ fn forge_runtime_version_policy_flags_nodejs20() {
 
     let scan_result = scan_directory_test(test_forge_project);
     assert!(scan_result.vuln_description_contains(
-        "Forge Runtime Version Policy Checker",
-        "end-of-life Node.js runtime"
+        "custom-check-forge-runtime-nodejs20.x",
+        "end-of-life Node.js"
     ));
 }
 
@@ -546,8 +546,8 @@ fn forge_runtime_version_policy_allows_nodejs22() {
 
     let scan_result = scan_directory_test(test_forge_project);
     assert!(!scan_result.vuln_description_contains(
-        "Forge Runtime Version Policy Checker",
-        "end-of-life Node.js runtime"
+        "custom-check-forge-runtime-nodejs22.x",
+        "end-of-life Node.js"
     ));
 }
 
@@ -561,6 +561,31 @@ fn forge_runtime_version_policy_flags_runtime_after_support_ends() {
         ForgeRuntimeVersionPolicyChecker::check_at(Some("nodejs20.x"), date(2026, Month::May, 1));
 
     assert!(result.is_some());
+}
+
+#[test]
+fn forge_runtime_version_policy_reports_version_specific_critical_findings() {
+    for runtime in ["nodejs18.x", "nodejs20.x"] {
+        let finding =
+            ForgeRuntimeVersionPolicyChecker::check_at(Some(runtime), date(2026, Month::May, 1))
+                .expect("runtime must be past its support end date");
+        let mut reporter = forge_analyzer::reporter::Reporter::new();
+        reporter.add_app(String::new(), String::new());
+        reporter.add_vulnerabilities([finding]);
+        let report = serde_json::to_value(reporter.into_vulns()).unwrap();
+
+        assert_eq!(
+            report[0]["check_name"],
+            format!("custom-check-forge-runtime-{runtime}")
+        );
+        assert_eq!(report[0]["severity"], "Critical");
+        assert_eq!(
+            report[0]["proof"],
+            format!(
+                "Unsupported Forge runtime found in manifest.yml: app.runtime.name = {runtime}"
+            )
+        );
+    }
 }
 
 #[test]
