@@ -520,7 +520,7 @@ fn forge_runtime_version_policy_flags_nodejs20() {
 
     let scan_result = scan_directory_test(test_forge_project);
     assert!(scan_result.vuln_description_contains(
-        "custom-check-forge-runtime-nodejs20.x",
+        "Custom-Check-forge-runtime-nodejs20.x",
         "end-of-life Node.js"
     ));
 }
@@ -546,7 +546,7 @@ fn forge_runtime_version_policy_allows_nodejs22() {
 
     let scan_result = scan_directory_test(test_forge_project);
     assert!(!scan_result.vuln_description_contains(
-        "custom-check-forge-runtime-nodejs22.x",
+        "Custom-Check-forge-runtime-nodejs22.x",
         "end-of-life Node.js"
     ));
 }
@@ -576,7 +576,7 @@ fn forge_runtime_version_policy_reports_version_specific_critical_findings() {
 
         assert_eq!(
             report[0]["check_name"],
-            format!("custom-check-forge-runtime-{runtime}")
+            format!("Custom-Check-forge-runtime-{runtime}")
         );
         assert_eq!(report[0]["severity"], "Critical");
         assert_eq!(
