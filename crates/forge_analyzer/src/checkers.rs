@@ -1171,7 +1171,7 @@ impl IntoVuln for AuthHeaderVuln {
                 severity: Severity::Critical,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
-                marketplace_security_requirement: "Requirement 10.0",
+                marketplace_security_requirement: "Requirement 11.0",
                 date: reporter.current_date(),
             },
         }
@@ -2262,14 +2262,14 @@ pub struct ForgeRuntimeVersionPolicyVuln {
 impl IntoVuln for ForgeRuntimeVersionPolicyVuln {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
         Vulnerability {
-            check_name: "Forge Runtime Version Policy Checker".to_owned(),
-            description: "The Forge app uses an end-of-life Node.js runtime.".to_owned(),
-            recommendation: "Update app.runtime.name in manifest.yml to a supported Node.js runtime.",
+            check_name: format!("Custom-Check-forge-runtime-{}", self.runtime),
+            description: "The Forge app uses an end-of-life Node.js that is a likely exposure path for [CVE-2026-111497](https://nvd.nist.gov/vuln/detail/cve-2026-111497): an app-controlled Forge Remote can return a malicious `Content-Encoding: br` response to an outbound fetch. Note this is Critical given the CVE.".to_owned(),
+            recommendation: "Update app.runtime.name in manifest.yml to a supported Node.js runtime. See https://developer.atlassian.com/platform/forge/function-reference/nodejs-runtime/.",
             proof: format!(
                 "Unsupported Forge runtime found in manifest.yml: app.runtime.name = {}",
                 self.runtime
             ),
-            severity: Severity::Low,
+            severity: Severity::Critical,
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
             marketplace_security_requirement: "Requirement 10.0",
