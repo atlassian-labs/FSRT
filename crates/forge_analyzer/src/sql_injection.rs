@@ -1,17 +1,38 @@
+//! SQL injection, as a policy on the shared taint tracker in `crate::taint`.
+//!
+//! A value is either attacker controlled (`Taint::Yes`) or not. Sources are the
+//! module payload and request envelope of a Forge invocation, storage and API
+//! reads, network responses, and the rows `@forge/sql` returns; a sink is the
+//! query text of `sql.prepare`, `sql.executeRaw` or `migrationRunner.enqueue`.
+//! Numeric conversion, a placeholder list and an exact allowlist check keep a
+//! value's provenance but make its text safe.
+//!
+//! A value the analysis cannot classify is `UNKNOWN`, which is trusted for now:
+//! it never produces a finding. `UNKNOWN_IS_UNTRUSTED` is the one switch to
+//! change that. Findings no longer say which source reached the query.
+//!
+//! The tracker copies values rather than sharing them, so a write through an
+//! alias of an object does not reach the object it aliases.
+
 use crate::{
-    definitions::{DefId, Environment},
+    definitions::{DefId, Environment, ImportKind},
     interp::{
-        Checker, EntryKind, EntryPoint, Frame, Interp, JoinSemiLattice, Runner, WithCallStack,
+        Checker, EntryKind, EntryPoint, Frame, Interp, InvocationContract, JoinSemiLattice, Runner,
+        WithCallStack,
     },
     ir::{
-        Base, BinOp, CallPathPart, Inst, Intrinsic, Literal, Location, Operand, Projection, Rvalue,
-        UnOp, VarId, VarKind, Variable,
+        Base, BasicBlockId, BinOp, Body, CallPathPart, Inst, Intrinsic, Literal, Location, Operand,
+        Projection, Rvalue, Terminator, UnOp, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
+    taint::{
+        BlockSite, EntryInput, FlowValue, InstSite, Taint, TaintDataflow, TaintPolicy, TaintReader,
+        TrackedValue, UnresolvedCall, visit_taint_call,
+    },
 };
 use smallvec::SmallVec;
 use std::{
-    cmp::max,
+    cell::RefCell,
     collections::{HashMap, HashSet},
     fmt,
     ops::ControlFlow,
@@ -20,11 +41,20 @@ use std::{
 };
 use swc_core::common::SourceMap;
 
-use crate::definitions::ImportKind;
-use crate::taint_flow::{
-    self as taint, Classification, FlowPolicy, FlowState, OriginSite, PolicyFacts, TaintDataflow,
-    semantics::*,
-    sources::{FORGE_SOURCES, SourceContext, SourceDefinition},
+mod semantics;
+use semantics::*;
+
+/// Whether a value that is neither shown trusted nor known to be attacker
+/// controlled counts as attacker controlled. Off, such a value never produces a
+/// finding; on, it is reported as if it were untrusted. This is the only place
+/// the choice is made: every source of an unknown value goes through `UNKNOWN`.
+pub const UNKNOWN_IS_UNTRUSTED: bool = false;
+
+/// The facts of a value the analysis cannot classify.
+const UNKNOWN: Taint = if UNKNOWN_IS_UNTRUSTED {
+    Taint::Yes
+} else {
+    Taint::No
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -42,51 +72,17 @@ impl SqlSink {
             Self::MigrationEnqueue => "migrationRunner.enqueue",
         }
     }
-}
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum SqlTextSafety {
-    #[default]
-    Trusted,
-    /// The value may still be attacker-controlled, but JavaScript semantics
-    /// guarantee that its string representation cannot contain SQL syntax.
-    Numeric,
-    Unknown,
-    Untrusted,
-}
-
-impl JoinSemiLattice for SqlTextSafety {
-    const BOTTOM: Self = Self::Trusted;
-
-    fn join_changed(&mut self, other: &Self) -> bool {
-        let old = *self;
-        *self = max(*self, *other);
-        old != *self
-    }
-
-    fn join(&self, other: &Self) -> Self {
-        max(*self, *other)
-    }
-}
-
-pub type SqlState = FlowState<SqlTextSafety>;
-pub type SqlDataflow = TaintDataflow<SqlPolicy>;
-pub struct SqlPolicy;
-
-impl PolicyFacts for SqlTextSafety {
-    fn from_classification(classification: Classification) -> Self {
-        match classification {
-            Classification::Trusted => Self::Trusted,
-            Classification::Unknown => Self::Unknown,
-            Classification::Untrusted => Self::Untrusted,
+    /// The position of the query text among the sink's arguments.
+    fn query_index(self) -> usize {
+        match self {
+            Self::Prepare | Self::ExecuteRaw => 0,
+            Self::MigrationEnqueue => 1,
         }
     }
-    fn is_unknown(&self) -> bool {
-        *self == Self::Unknown
-    }
 }
 
-fn sql_sink(env: &Environment, body: &crate::ir::Body, location: Location) -> Option<SqlSink> {
+fn sql_sink(env: &Environment, body: &Body, location: Location) -> Option<SqlSink> {
     let facts = body.call_facts(location)?;
     // Match the actual terminal method, never an earlier known path component.
     let CallPathPart::Property(method) = facts.path.last()? else {
@@ -109,131 +105,322 @@ fn sql_sink(env: &Environment, body: &crate::ir::Body, location: Location) -> Op
     }
 }
 
-static SQL_SOURCES: &[SourceDefinition] = &[SourceDefinition {
-    id: "forge.sql.result",
-    label: "Forge SQL result",
-    classification: Classification::Untrusted,
-    matches: |ctx: &SourceContext<'_>| {
-        if ctx.call.is_none() {
-            return false;
-        }
-        if sql_sink(ctx.env, ctx.body, ctx.location) == Some(SqlSink::ExecuteRaw) {
-            return true;
-        }
-        ctx.call
-            .and_then(|(callee, _)| method_receiver(callee))
-            .is_some_and(|(receiver, method)| {
-                method == "execute"
-                    && originates_from_prepare(ctx.env, ctx.body, &receiver, &mut HashSet::new())
-            })
-    },
-}];
+/// Taint on main's tracker, with a value's facts meaning "may put SQL syntax of
+/// an attacker's choosing into query text". Provenance records only that a value
+/// derives from a source: numeric conversion, a placeholder list and an
+/// allowlist check clear the facts and keep the provenance.
+#[derive(Default)]
+pub struct SqlPolicy {
+    /// The allowlisted variables each block is entered with, by body and block.
+    guards: RefCell<HashMap<(DefId, BasicBlockId), Vec<Variable>>>,
+    /// Whether a `join` call builds a list of `?` placeholders, by call site.
+    placeholder_lists: RefCell<HashMap<(DefId, Location), bool>>,
+}
 
-impl FlowPolicy for SqlPolicy {
-    type Facts = SqlTextSafety;
-    fn sources() -> &'static [SourceDefinition] {
-        SQL_SOURCES
-    }
-    fn variable_facts<'cx, C: Runner<'cx, State = SqlState>>(
-        interp: &Interp<'cx, C>,
-        def: DefId,
-        variable: &Variable,
-        state: &SqlState,
-    ) -> Option<SqlTextSafety> {
-        if state.is_refined(interp.body(), def, variable) {
-            Some(SqlTextSafety::Trusted)
-        } else if is_proven_local_array_length(interp, def, variable) {
-            Some(SqlTextSafety::Numeric)
-        } else {
-            None
-        }
-    }
-    fn rvalue_facts<'cx, C: Runner<'cx, State = SqlState>>(
-        interp: &Interp<'cx, C>,
-        def: DefId,
-        location: Location,
-        rvalue: &Rvalue,
-    ) -> Option<SqlTextSafety> {
-        match rvalue {
-            Rvalue::Unary(UnOp::Neg | UnOp::Plus | UnOp::BitNot, _)
-            | Rvalue::Bin(
-                BinOp::Sub
-                | BinOp::Mul
-                | BinOp::Div
-                | BinOp::Exp
-                | BinOp::Mod
-                | BinOp::BitOr
-                | BinOp::BitAnd
-                | BinOp::BitXor
-                | BinOp::Lshift
-                | BinOp::Rshift
-                | BinOp::RshiftLogical,
-                _,
-                _,
-            ) => Some(SqlTextSafety::Numeric),
-            Rvalue::Intrinsic(
-                Intrinsic::Authorize(_) | Intrinsic::SecretFunction(_) | Intrinsic::EnvRead,
-                _,
-            ) => Some(SqlTextSafety::Trusted),
-            Rvalue::Call(callee, operands) => {
-                if matches!(
-                    sql_sink(interp.env(), interp.body(), location),
-                    Some(SqlSink::Prepare | SqlSink::MigrationEnqueue)
-                ) || is_placeholder_list_call(interp, def, callee, operands)
-                {
-                    Some(SqlTextSafety::Trusted)
-                } else if interp.body().resolve_call(interp.env(), callee).is_none()
-                    && is_numeric_builtin_call(interp, callee)
-                {
-                    Some(SqlTextSafety::Numeric)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-    fn branch_refinement<'cx, C: Runner<'cx, State = SqlState>>(
-        interp: &Interp<'cx, C>,
-        def: DefId,
-        condition: &Operand,
-    ) -> Option<(Variable, bool)> {
-        exact_allowlist_guard(interp, def, condition)
+impl SqlPolicy {
+    fn is_placeholder_list(&self, call: &UnresolvedCall<'_, Taint>) -> bool {
+        let site = call.site();
+        *self
+            .placeholder_lists
+            .borrow_mut()
+            .entry(site)
+            .or_insert_with(|| {
+                is_placeholder_list_call(
+                    call.env(),
+                    call.body(),
+                    site.0,
+                    call.callee(),
+                    call.operands(),
+                )
+            })
     }
 }
 
-fn source_labels<'cx, C: Runner<'cx, State = SqlState>>(
-    interp: &Interp<'cx, C>,
-    value: &taint::TaintValue,
-    source_map: &SourceMap,
-) -> Vec<String> {
-    let mut labels = value
-        .origins
-        .iter()
-        .filter_map(|origin| {
-            let rule = SQL_SOURCES
-                .iter()
-                .chain(FORGE_SOURCES)
-                .find(|rule| rule.id == origin.source)?;
-            let body = interp.env().def_ref(origin.function).expect_body();
-            Some(match origin.site {
-                OriginSite::Argument(arg) => format!(
-                    "{} `{}` at {}",
-                    rule.label,
-                    interp.env().def_name(arg),
-                    argument_source_location(source_map, body, arg, &interp.entry().file)
-                ),
-                OriginSite::Instruction(location) => format!(
-                    "{} at {}",
-                    rule.label,
-                    source_location(source_map, body, location, &interp.entry().file)
-                ),
-            })
+/// The root of a Forge `context` object. Only these paths are known trusted;
+/// everything else in it is unclassified.
+fn approved_context_paths(ordinary: bool) -> Vec<Vec<&'static str>> {
+    let mut paths = vec![
+        vec!["installContext"],
+        vec!["installation", "ari", "installationId"],
+    ];
+    for name in [
+        "active",
+        "billingPeriod",
+        "ccpEntitlementId",
+        "ccpEntitlementSlug",
+        "isEvaluation",
+        "subscriptionEndDate",
+        "supportEntitlementNumber",
+        "trialEndDate",
+        "type",
+    ] {
+        paths.push(vec!["license", name]);
+    }
+    if ordinary {
+        paths.extend([
+            vec!["principal", "accountId"],
+            vec!["license", "isActive"],
+            vec!["license", "capabilitySet"],
+        ]);
+    } else {
+        paths.push(vec!["accountId"]);
+    }
+    paths
+}
+
+/// A context object, or the same object at `prefix` of a larger one.
+fn context_value(
+    mut value: TrackedValue<Taint>,
+    prefix: &[&str],
+    ordinary: bool,
+) -> TrackedValue<Taint> {
+    let unknown = || FlowValue::from_taint(UNKNOWN);
+    if !prefix.is_empty() {
+        value = value.with_field(prefix, unknown());
+    }
+    for path in approved_context_paths(ordinary) {
+        let path: Vec<&str> = prefix.iter().copied().chain(path).collect();
+        value = value.with_field(&path, FlowValue::default());
+    }
+    value
+}
+
+impl TaintPolicy for SqlPolicy {
+    type Facts = Taint;
+
+    fn intrinsic_value(&self, intrinsic: &Intrinsic) -> FlowValue<Taint> {
+        FlowValue::from_taint(match intrinsic {
+            Intrinsic::Authorize(_) | Intrinsic::SecretFunction(_) | Intrinsic::EnvRead => {
+                Taint::No
+            }
+            Intrinsic::Fetch
+            | Intrinsic::ApiCall(_)
+            | Intrinsic::SafeCall(_)
+            | Intrinsic::ApiCustomField
+            | Intrinsic::UserFieldAccess
+            | Intrinsic::StorageRead
+            | Intrinsic::SecretRead => Taint::Yes,
+            _ => UNKNOWN,
         })
-        .collect::<Vec<_>>();
-    labels.sort();
-    labels.dedup();
-    labels
+    }
+
+    fn is_violation(&self, _inst: &Inst, _values: &TaintReader<'_, Self>) -> bool {
+        false
+    }
+
+    fn is_violation_at(
+        &self,
+        site: &InstSite<'_>,
+        inst: &Inst,
+        values: &TaintReader<'_, Self>,
+    ) -> bool {
+        let Rvalue::Call(_, operands) = inst.rvalue() else {
+            return false;
+        };
+        let Some(sink) = sql_sink(site.env, site.body, site.location) else {
+            return false;
+        };
+        // A sink without its query argument has a query nothing is known of.
+        operands
+            .get(sink.query_index())
+            .map_or(UNKNOWN == Taint::Yes, |query| {
+                values.operand(query).facts == Taint::Yes
+            })
+    }
+
+    fn tracks_fields(&self) -> bool {
+        true
+    }
+
+    fn binary_value(
+        &self,
+        op: BinOp,
+        left: FlowValue<Taint>,
+        right: FlowValue<Taint>,
+    ) -> FlowValue<Taint> {
+        match op {
+            BinOp::Or | BinOp::And | BinOp::NullishCoalesce => left.join(&right),
+            // Arithmetic yields a number, whose text cannot contain SQL syntax.
+            BinOp::Sub
+            | BinOp::Mul
+            | BinOp::Div
+            | BinOp::Exp
+            | BinOp::Mod
+            | BinOp::BitOr
+            | BinOp::BitAnd
+            | BinOp::BitXor
+            | BinOp::Lshift
+            | BinOp::Rshift
+            | BinOp::RshiftLogical => left.combine(&right).with_facts(Taint::No),
+            _ if crate::taint::binary_taint(op, Taint::Yes, Taint::Yes) == Taint::No => {
+                left.combine(&right).with_facts(Taint::No)
+            }
+            _ => left.combine(&right),
+        }
+    }
+
+    fn unary_value(&self, _op: UnOp, value: FlowValue<Taint>) -> FlowValue<Taint> {
+        // `!x` is a boolean and `-x`, `+x` and `~x` are numbers.
+        value.with_facts(Taint::No)
+    }
+
+    fn global_call_value(&self, name: &str, path: &[Projection]) -> Option<FlowValue<Taint>> {
+        let numeric = match path {
+            // `Array(n)` is an array of empty slots, not text.
+            [] => matches!(name, "Number" | "parseInt" | "parseFloat" | "Array"),
+            [Projection::Known(method)] if name == "Math" => matches!(
+                method.as_ref(),
+                "abs"
+                    | "acos"
+                    | "acosh"
+                    | "asin"
+                    | "asinh"
+                    | "atan"
+                    | "atan2"
+                    | "atanh"
+                    | "cbrt"
+                    | "ceil"
+                    | "clz32"
+                    | "cos"
+                    | "cosh"
+                    | "exp"
+                    | "expm1"
+                    | "floor"
+                    | "fround"
+                    | "hypot"
+                    | "imul"
+                    | "log"
+                    | "log10"
+                    | "log1p"
+                    | "log2"
+                    | "max"
+                    | "min"
+                    | "pow"
+                    | "random"
+                    | "round"
+                    | "sign"
+                    | "sin"
+                    | "sinh"
+                    | "sqrt"
+                    | "tan"
+                    | "tanh"
+                    | "trunc"
+            ),
+            _ => false,
+        };
+        numeric.then(FlowValue::default)
+    }
+
+    fn method_value(&self, call: &UnresolvedCall<'_, Taint>) -> Option<FlowValue<Taint>> {
+        let (env, body) = (call.env(), call.body());
+        match sql_sink(env, body, call.site().1) {
+            // A statement is built and not yet run, so its text is checked
+            // where it is prepared; a migration's text where it is enqueued.
+            Some(SqlSink::Prepare | SqlSink::MigrationEnqueue) => {
+                return Some(FlowValue::default());
+            }
+            Some(SqlSink::ExecuteRaw) => return Some(FlowValue::from_taint(Taint::Yes)),
+            None => {}
+        }
+        // The rows of a prepared statement come from the database.
+        if call.method == "execute"
+            && method_receiver(call.callee()).is_some_and(|(receiver, _)| {
+                originates_from_prepare(env, body, &receiver, &mut HashSet::new())
+            })
+        {
+            return Some(FlowValue::from_taint(Taint::Yes));
+        }
+        if call.method == "join" && self.is_placeholder_list(call) {
+            return Some(FlowValue::default());
+        }
+        if UNKNOWN_IS_UNTRUSTED && is_unmodelled_call(env, body, call.callee()) {
+            let inputs = call
+                .args
+                .iter()
+                .fold(call.receiver.clone(), |value, arg| value.combine(arg));
+            return Some(inputs.with_facts(Taint::Yes));
+        }
+        None
+    }
+
+    fn adds_arguments_to_receiver(&self, method: &str) -> bool {
+        method == "push"
+    }
+
+    fn entry_argument(&self, input: &EntryInput<'_>) -> Option<TrackedValue<Taint>> {
+        let unknown = || TrackedValue::from(FlowValue::from_taint(UNKNOWN));
+        let value = match (input.contract, input.position) {
+            // The module's payload is attacker data in full.
+            (InvocationContract::ForgeFunction, 0) => {
+                TrackedValue::from(FlowValue::from_taint(Taint::Yes))
+            }
+            (InvocationContract::ForgeFunction, 1) => context_value(unknown(), &[], true),
+            // An envelope: its payload is attacker data, its context is the
+            // platform's, and anything else on it is unclassified.
+            (InvocationContract::ResolverCallback, 0) => context_value(
+                unknown().with_field(&["payload"], FlowValue::from_taint(Taint::Yes)),
+                &["context"],
+                false,
+            ),
+            _ => unknown(),
+        };
+        Some(if input.supported {
+            value
+        } else if value.aggregate().facts == Taint::Yes {
+            // A pattern or default the IR does not model may bind anything.
+            TrackedValue::from(FlowValue::from_taint(Taint::Yes))
+        } else {
+            unknown()
+        })
+    }
+
+    fn safe_on_entry(&self, site: &BlockSite<'_>, block: BasicBlockId) -> Vec<Variable> {
+        let key = (site.def, block);
+        if let Some(found) = self.guards.borrow().get(&key) {
+            return found.clone();
+        }
+        let found = allowlisted_on_entry(site.env, site.body, site.def, block);
+        self.guards.borrow_mut().insert(key, found.clone());
+        found
+    }
+}
+
+/// The variable a block is entered with only after an exact allowlist check.
+fn allowlisted_on_entry(
+    env: &Environment,
+    body: &Body,
+    def: DefId,
+    block: BasicBlockId,
+) -> Vec<Variable> {
+    let &[predecessor] = body.predecessors(block) else {
+        return Vec::new();
+    };
+    let Terminator::If { cond, cons, alt } = &body.block(predecessor).term else {
+        return Vec::new();
+    };
+    if cons == alt {
+        return Vec::new();
+    }
+    match exact_allowlist_guard(env, body, def, cond) {
+        Some((candidate, allowed_when_true))
+            if block == if allowed_when_true { *cons } else { *alt } =>
+        {
+            vec![candidate]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Whether the call's result has no model: a bare call, or a method of an
+/// undeclared global such as `JSON`.
+fn is_unmodelled_call(env: &Environment, body: &Body, callee: &Operand) -> bool {
+    let Operand::Var(variable) = callee else {
+        return true;
+    };
+    variable.projections.is_empty()
+        || matches!(variable.base, Base::Var(var)
+            if matches!(body.vars.get(var), Some(VarKind::GlobalRef(binding))
+                if env.is_undeclared_global(*binding)))
 }
 
 fn literal_string(operand: &Operand) -> Option<&str> {
@@ -251,8 +438,9 @@ fn is_placeholder_separator(operand: &Operand) -> bool {
     literal_string(operand).is_some()
 }
 
-fn is_fresh_array_variable<'cx, C: Runner<'cx, State = SqlState>>(
-    interp: &Interp<'cx, C>,
+fn is_fresh_array_variable(
+    env: &Environment,
+    body: &Body,
     def: DefId,
     variable: &Variable,
     visiting: &mut HashSet<(DefId, VarId)>,
@@ -263,23 +451,21 @@ fn is_fresh_array_variable<'cx, C: Runner<'cx, State = SqlState>>(
     if !visiting.insert((def, var)) {
         return false;
     }
-    if placeholder_collection_is_modified_or_escapes(interp.body(), variable, "fill") {
+    if placeholder_collection_is_modified_or_escapes(body, variable, "fill") {
         visiting.remove(&(def, var));
         return false;
     }
-    let definitions = variable_definitions_with_aliases(interp.body(), variable);
+    let definitions = variable_definitions_with_aliases(body, variable);
     let result = !definitions.is_empty()
         && definitions.into_iter().all(|(_, rvalue)| match rvalue {
             Rvalue::Array(_) => true,
             Rvalue::Read(Operand::Var(source)) => {
-                is_fresh_array_variable(interp, def, source, visiting)
+                is_fresh_array_variable(env, body, def, source, visiting)
             }
             Rvalue::Phi(values) => values.iter().all(|(source, _)| {
-                is_fresh_array_variable(interp, def, &Variable::new(*source), visiting)
+                is_fresh_array_variable(env, body, def, &Variable::new(*source), visiting)
             }),
-            Rvalue::Call(callee, _) => {
-                unresolved_global_named(interp.env(), interp.body(), callee, "Array")
-            }
+            Rvalue::Call(callee, _) => unresolved_global_named(env, body, callee, "Array"),
             _ => false,
         });
     visiting.remove(&(def, var));
@@ -287,7 +473,7 @@ fn is_fresh_array_variable<'cx, C: Runner<'cx, State = SqlState>>(
 }
 
 fn placeholder_collection_is_modified_or_escapes(
-    body: &crate::ir::Body,
+    body: &Body,
     variable: &Variable,
     allowed_method: &str,
 ) -> bool {
@@ -330,8 +516,9 @@ fn placeholder_collection_is_modified_or_escapes(
         })
 }
 
-fn is_placeholder_sequence_variable<'cx, C: Runner<'cx, State = SqlState>>(
-    interp: &Interp<'cx, C>,
+fn is_placeholder_sequence_variable(
+    env: &Environment,
+    body: &Body,
     def: DefId,
     variable: &Variable,
     visiting: &mut HashSet<(DefId, VarId)>,
@@ -342,21 +529,21 @@ fn is_placeholder_sequence_variable<'cx, C: Runner<'cx, State = SqlState>>(
     if !visiting.insert((def, var)) {
         return false;
     }
-    if placeholder_collection_is_modified_or_escapes(interp.body(), variable, "join") {
+    if placeholder_collection_is_modified_or_escapes(body, variable, "join") {
         visiting.remove(&(def, var));
         return false;
     }
-    let definitions = variable_definitions_with_aliases(interp.body(), variable);
+    let definitions = variable_definitions_with_aliases(body, variable);
     let result = !definitions.is_empty()
         && definitions.into_iter().all(|(_, rvalue)| match rvalue {
             Rvalue::Array(elements) => {
                 !elements.is_empty() && elements.iter().all(is_placeholder_fragment)
             }
             Rvalue::Read(Operand::Var(source)) => {
-                is_placeholder_sequence_variable(interp, def, source, visiting)
+                is_placeholder_sequence_variable(env, body, def, source, visiting)
             }
             Rvalue::Phi(values) => values.iter().all(|(source, _)| {
-                is_placeholder_sequence_variable(interp, def, &Variable::new(*source), visiting)
+                is_placeholder_sequence_variable(env, body, def, &Variable::new(*source), visiting)
             }),
             Rvalue::Call(callee, operands) => {
                 let Some((receiver, "fill")) = method_receiver(callee) else {
@@ -364,7 +551,7 @@ fn is_placeholder_sequence_variable<'cx, C: Runner<'cx, State = SqlState>>(
                 };
                 operands.len() == 1
                     && is_placeholder_fragment(&operands[0])
-                    && is_fresh_array_variable(interp, def, &receiver, &mut HashSet::new())
+                    && is_fresh_array_variable(env, body, def, &receiver, &mut HashSet::new())
             }
             _ => false,
         });
@@ -372,8 +559,9 @@ fn is_placeholder_sequence_variable<'cx, C: Runner<'cx, State = SqlState>>(
     result
 }
 
-fn is_placeholder_list_call<'cx, C: Runner<'cx, State = SqlState>>(
-    interp: &Interp<'cx, C>,
+fn is_placeholder_list_call(
+    env: &Environment,
+    body: &Body,
     def: DefId,
     callee: &Operand,
     operands: &[Operand],
@@ -383,16 +571,16 @@ fn is_placeholder_list_call<'cx, C: Runner<'cx, State = SqlState>>(
     };
     operands.len() <= 1
         && operands.first().is_none_or(is_placeholder_separator)
-        && is_placeholder_sequence_variable(interp, def, &receiver, &mut HashSet::new())
+        && is_placeholder_sequence_variable(env, body, def, &receiver, &mut HashSet::new())
 }
 
 fn constant_string_collection(
     env: &Environment,
     def: DefId,
-    body: &crate::ir::Body,
+    body: &Body,
     variable: &Variable,
 ) -> Option<HashSet<String>> {
-    fn variable_binding(env: &Environment, body: &crate::ir::Body, var: VarId) -> Option<DefId> {
+    fn variable_binding(env: &Environment, body: &Body, var: VarId) -> Option<DefId> {
         match body.vars.get(var)? {
             VarKind::GlobalRef(binding) | VarKind::LocalDef(binding) => {
                 Some(env.resolve_alias(*binding))
@@ -401,7 +589,7 @@ fn constant_string_collection(
         }
     }
 
-    fn collection_is_mutated(env: &Environment, body: &crate::ir::Body, binding: DefId) -> bool {
+    fn collection_is_mutated(env: &Environment, body: &Body, binding: DefId) -> bool {
         body.iter_blocks_enumerated()
             .flat_map(|(_, block)| block.iter())
             .any(|inst| {
@@ -429,7 +617,7 @@ fn constant_string_collection(
     fn from_operand(
         env: &Environment,
         def: DefId,
-        body: &crate::ir::Body,
+        body: &Body,
         operand: &Operand,
         visiting: &mut HashSet<(DefId, VarId)>,
     ) -> Option<HashSet<String>> {
@@ -442,7 +630,7 @@ fn constant_string_collection(
     fn from_rvalue(
         env: &Environment,
         def: DefId,
-        body: &crate::ir::Body,
+        body: &Body,
         rvalue: &Rvalue,
         visiting: &mut HashSet<(DefId, VarId)>,
     ) -> Option<HashSet<String>> {
@@ -482,7 +670,7 @@ fn constant_string_collection(
     fn from_variable(
         env: &Environment,
         def: DefId,
-        body: &crate::ir::Body,
+        body: &Body,
         variable: &Variable,
         visiting: &mut HashSet<(DefId, VarId)>,
     ) -> Option<HashSet<String>> {
@@ -551,13 +739,15 @@ fn constant_string_collection(
     from_variable(env, def, body, variable, &mut HashSet::new())
 }
 
-fn exact_allowlist_guard<'cx, C: Runner<'cx, State = SqlState>>(
-    interp: &Interp<'cx, C>,
+fn exact_allowlist_guard(
+    env: &Environment,
+    body: &Body,
     def: DefId,
     condition: &Operand,
 ) -> Option<(Variable, bool)> {
-    fn inspect<'cx, C: Runner<'cx, State = SqlState>>(
-        interp: &Interp<'cx, C>,
+    fn inspect(
+        env: &Environment,
+        body: &Body,
         def: DefId,
         operand: &Operand,
         allowed_when_true: bool,
@@ -572,11 +762,12 @@ fn exact_allowlist_guard<'cx, C: Runner<'cx, State = SqlState>>(
         if !visiting.insert(var) {
             return None;
         }
-        let definitions = variable_definitions_with_aliases(interp.body(), variable);
+        let definitions = variable_definitions_with_aliases(body, variable);
         for (_, rvalue) in definitions {
             match rvalue {
                 Rvalue::Unary(UnOp::Not, inner) => {
-                    if let Some(result) = inspect(interp, def, inner, !allowed_when_true, visiting)
+                    if let Some(result) =
+                        inspect(env, body, def, inner, !allowed_when_true, visiting)
                     {
                         visiting.remove(&var);
                         return Some(result);
@@ -586,8 +777,7 @@ fn exact_allowlist_guard<'cx, C: Runner<'cx, State = SqlState>>(
                     let Some((receiver, "has" | "includes")) = method_receiver(callee) else {
                         continue;
                     };
-                    let constants =
-                        constant_string_collection(interp.env(), def, interp.body(), &receiver);
+                    let constants = constant_string_collection(env, def, body, &receiver);
                     if constants.is_none() {
                         continue;
                     }
@@ -598,7 +788,9 @@ fn exact_allowlist_guard<'cx, C: Runner<'cx, State = SqlState>>(
                     return Some((candidate.clone(), allowed_when_true));
                 }
                 Rvalue::Read(inner) => {
-                    if let Some(result) = inspect(interp, def, inner, allowed_when_true, visiting) {
+                    if let Some(result) =
+                        inspect(env, body, def, inner, allowed_when_true, visiting)
+                    {
                         visiting.remove(&var);
                         return Some(result);
                     }
@@ -610,12 +802,12 @@ fn exact_allowlist_guard<'cx, C: Runner<'cx, State = SqlState>>(
         None
     }
 
-    inspect(interp, def, condition, true, &mut HashSet::new())
+    inspect(env, body, def, condition, true, &mut HashSet::new())
 }
 
 fn originates_from_prepare(
     env: &Environment,
-    body: &crate::ir::Body,
+    body: &Body,
     variable: &Variable,
     visiting: &mut HashSet<Variable>,
 ) -> bool {
@@ -636,7 +828,7 @@ fn originates_from_prepare(
         })
 }
 
-fn variable_name(env: &Environment, body: &crate::ir::Body, variable: &Variable) -> String {
+fn variable_name(env: &Environment, body: &Body, variable: &Variable) -> String {
     let Base::Var(var) = variable.base else {
         return format!("{variable:?}");
     };
@@ -728,29 +920,9 @@ fn render_query_operand(env: &Environment, def: DefId, operand: &Operand) -> Str
     render(env, def, operand, &mut HashSet::new())
 }
 
-fn argument_source_location(
-    source_map: &SourceMap,
-    body: &crate::ir::Body,
-    def: DefId,
-    fallback_file: &PathBuf,
-) -> String {
-    let Some(span) = body.argument_span(def) else {
-        return format!("{fallback_file:?}");
-    };
-    let Ok(position) = source_map.try_lookup_char_pos(span.lo) else {
-        return format!("{fallback_file:?}");
-    };
-    format!(
-        "{}:{}:{}",
-        position.file.name,
-        position.line,
-        position.col_display + 1
-    )
-}
-
 fn source_location(
     source_map: &SourceMap,
-    body: &crate::ir::Body,
+    body: &Body,
     location: Location,
     fallback_file: &PathBuf,
 ) -> String {
@@ -777,25 +949,21 @@ fn source_location(
 #[derive(Debug)]
 pub struct SqlInjectionVuln {
     sink: SqlSink,
-    taint: SqlTextSafety,
     paths: Vec<String>,
     sink_location: String,
     sink_function: String,
     query: String,
-    sources: Vec<String>,
 }
 
 impl SqlInjectionVuln {
     fn new(
         sink: SqlSink,
-        taint: SqlTextSafety,
         callstack: Vec<Frame>,
         env: &Environment,
         entry: &EntryPoint,
         def: DefId,
         sink_location: String,
         query: &Operand,
-        sources: Vec<String>,
         source_map: &SourceMap,
     ) -> Self {
         let entry_func = match &entry.kind {
@@ -825,25 +993,14 @@ impl SqlInjectionVuln {
         let path = propagation.join(" -> ");
         Self {
             sink,
-            taint,
             paths: vec![path],
             sink_location,
             sink_function: env.def_name(def).to_owned(),
             query: render_query_operand(env, def, query),
-            sources,
         }
     }
 
     fn merge(&mut self, mut other: Self) {
-        self.taint = self.taint.join(&other.taint);
-        for source in other.sources.drain(..) {
-            if self.sources.len() == 8 {
-                break;
-            }
-            if !self.sources.contains(&source) {
-                self.sources.push(source);
-            }
-        }
         for path in other.paths.drain(..) {
             if self.paths.len() == 8 {
                 break;
@@ -852,7 +1009,6 @@ impl SqlInjectionVuln {
                 self.paths.push(path);
             }
         }
-        self.sources.sort();
     }
 }
 
@@ -870,45 +1026,18 @@ impl IntoVuln for SqlInjectionVuln {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
         let sink_name = self.sink.api_name();
         let location = format!("{} in {}", self.sink_location, self.sink_function);
-        let source_text = if self.sources.is_empty() {
-            "unresolved dynamic origin".to_owned()
-        } else {
-            self.sources.join(", ")
-        };
-        let (severity, description, proof) = match self.taint {
-            SqlTextSafety::Untrusted => (
-                Severity::High,
-                format!(
-                    "Confirmed untrusted data is incorporated into SQL query text passed to {sink_name} at {location}."
-                ),
-                format!(
-                    "Source: {source_text}. Propagation path: {}. Query argument at {location}: `{}`. Binding: the value is part of SQL text, so bindParams does not repair interpolation already present in the query. Limitation: FSRT models locally resolvable calls and supported IR operations; review the reported source and path in application context.",
-                    self.paths.join("; "),
-                    self.query
-                ),
-            ),
-            SqlTextSafety::Unknown => (
-                Severity::Low,
-                format!(
-                    "Dynamic SQL query text passed to {sink_name} at {location} has an unresolved origin."
-                ),
-                format!(
-                    "Unresolved dynamic origin reaches {sink_name}. Propagation path: {}. Query argument at {location}: `{}`. Binding: placeholders with bindParams protect values, but interpolated SQL structure does not. Limitation: FSRT could not prove the dynamic component trusted or attacker-controlled within locally resolvable calls and supported IR operations.",
-                    self.paths.join("; "),
-                    self.query
-                ),
-            ),
-            SqlTextSafety::Trusted | SqlTextSafety::Numeric => {
-                unreachable!("SQL-safe values do not produce a finding")
-            }
-        };
-
         Vulnerability {
             check_name: "forge-sql-injection".to_string(),
-            description,
+            description: format!(
+                "Confirmed untrusted data is incorporated into SQL query text passed to {sink_name} at {location}."
+            ),
             recommendation: "Use placeholders and bindParams for values. For identifiers or SQL structure that cannot be bound, select only from IR-provable trusted constant alternatives.",
-            proof,
-            severity,
+            proof: format!(
+                "Propagation path: {}. Query argument at {location}: `{}`. Binding: the value is part of SQL text, so bindParams does not repair interpolation already present in the query. Limitation: FSRT models locally resolvable calls and supported IR operations; review the reported source and path in application context.",
+                self.paths.join("; "),
+                self.query
+            ),
+            severity: Severity::High,
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
             marketplace_security_requirement: "CWE-89",
@@ -953,8 +1082,8 @@ impl SqlInjectionChecker {
 }
 
 impl<'cx> Runner<'cx> for SqlInjectionChecker {
-    type State = SqlState;
-    type Dataflow = SqlDataflow;
+    type State = Vec<Taint>;
+    type Dataflow = TaintDataflow<SqlPolicy>;
 
     const NAME: &'static str = "SQLInjection";
 
@@ -980,37 +1109,21 @@ impl<'cx> Runner<'cx> for SqlInjectionChecker {
         state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
         let Some(sink) = sql_sink(interp.env(), interp.body(), loc) else {
-            return self.super_visit_call(interp, def, callee, arguments, loc, state);
+            return visit_taint_call(self, interp, def, callee, loc, state);
         };
-        let operands = arguments;
-        let query_index = match sink {
-            SqlSink::Prepare | SqlSink::ExecuteRaw => 0,
-            SqlSink::MigrationEnqueue => 1,
-        };
-        let final_state = interp
-            .func_state(def)
-            .map_or_else(|| state.clone(), |analysis| analysis.join(state));
-        let query_taint = operands
-            .get(query_index)
-            .map(|operand| {
-                taint::classify_operand::<SqlPolicy, Self>(interp, def, operand, &final_state)
-            })
-            .unwrap_or_else(taint::FlowValue::unknown);
-        let query_value = query_taint;
-        let query_taint = query_value.facts;
-        if !matches!(query_taint, SqlTextSafety::Trusted | SqlTextSafety::Numeric) {
-            let query = operands.get(query_index).cloned().unwrap_or(Operand::UNDEF);
-            let sources = source_labels(interp, &query_value.taint, &self.source_map);
+        if interp.instruction_has_finding(def, loc) {
+            let query = arguments
+                .get(sink.query_index())
+                .cloned()
+                .unwrap_or(Operand::UNDEF);
             let vuln = SqlInjectionVuln::new(
                 sink,
-                query_taint,
                 interp.callstack(),
                 interp.env(),
                 interp.entry(),
                 def,
                 source_location(&self.source_map, interp.body(), loc, &interp.entry().file),
                 &query,
-                sources,
                 &self.source_map,
             );
             let key = (def, loc, sink);

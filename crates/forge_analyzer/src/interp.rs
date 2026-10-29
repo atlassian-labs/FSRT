@@ -63,8 +63,6 @@ pub trait WithCallStack {
 }
 
 pub trait Dataflow<'cx>: Sized {
-    const REQUIRE_CALLEE_STATE_COVERS_CALLER: bool = true;
-    const JOIN_FUNCTION_RETURN_STATES: bool = false;
     type State: JoinSemiLattice + Clone;
 
     fn with_interp<C: Runner<'cx, State = Self::State>>(interp: &Interp<'cx, C>) -> Self;
@@ -252,19 +250,11 @@ pub trait Dataflow<'cx>: Sized {
     ) {
         match block.successors() {
             Successors::Return => {
-                let old_state = interp.func_state(def);
-                let updated_state = if C::JOIN_FUNCTION_RETURN_STATES {
-                    let mut final_state = old_state.clone().unwrap_or(Self::State::BOTTOM);
-                    let changed = final_state.join_changed(&state);
-                    (old_state.is_none() || changed).then_some(final_state)
-                } else {
-                    old_state
-                        .as_ref()
-                        .is_none_or(|old_state| old_state < &state)
-                        .then_some(state)
-                };
-                if let Some(updated_state) = updated_state {
-                    interp.set_func_state(def, updated_state);
+                if interp
+                    .func_state(def)
+                    .is_none_or(|old_state| old_state < state)
+                {
+                    interp.set_func_state(def, state);
                     let calls = interp.called_from(def);
                     let name = interp.env().def_name(def);
                     debug!("{name} {def:?} is called from {calls:?}");
@@ -310,9 +300,6 @@ pub trait Runner<'cx>: Sized {
     fn dataflow(&self, interp: &Interp<'cx, Self>) -> Self::Dataflow {
         Self::Dataflow::with_interp(interp)
     }
-    const REQUIRE_CALLEE_STATE_COVERS_CALLER: bool =
-        Self::Dataflow::REQUIRE_CALLEE_STATE_COVERS_CALLER;
-    const JOIN_FUNCTION_RETURN_STATES: bool = Self::Dataflow::JOIN_FUNCTION_RETURN_STATES;
 
     fn visit_intrinsic(
         &mut self,
@@ -350,9 +337,7 @@ pub trait Runner<'cx>: Sized {
         };
 
         let func_state = interp.func_state(callee).unwrap_or(Self::State::BOTTOM);
-        if (Self::REQUIRE_CALLEE_STATE_COVERS_CALLER && func_state < *curr_state)
-            || !interp.checker_visit(callee)
-        {
+        if func_state < *curr_state || !interp.checker_visit(callee) {
             return ControlFlow::Continue(curr_state.clone());
         }
         interp.push_frame(caller, loc.block, loc.stmt as usize);
@@ -1183,15 +1168,6 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         RefMut::map(states, |states| {
             states.entry((def, block)).or_insert(C::State::BOTTOM)
         })
-    }
-
-    pub(crate) fn join_block_state(
-        &self,
-        def: DefId,
-        block: BasicBlockId,
-        state: &C::State,
-    ) -> bool {
-        self.block_state_mut(def, block).join_changed(state)
     }
 
     #[inline]

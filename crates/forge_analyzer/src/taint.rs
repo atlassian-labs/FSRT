@@ -30,10 +30,12 @@ pub use value::{FlowFacts, FlowValue};
 
 use crate::{
     definitions::{DefId, DefKind, Environment, ImportKind},
-    interp::{Dataflow, EntryKind, Interp, JoinSemiLattice, Runner},
+    interp::{
+        Dataflow, EntryKind, InputCategory, Interp, InvocationContract, JoinSemiLattice, Runner,
+    },
     ir::{
         Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Literal, Location, Operand,
-        Projection, Rvalue, STARTING_BLOCK, Successors, Terminator, UnOp, VarId, VarKind,
+        Projection, Rvalue, STARTING_BLOCK, Successors, Terminator, UnOp, VarId, VarKind, Variable,
     },
 };
 
@@ -138,6 +140,80 @@ pub trait TaintPolicy: Sized {
     ) -> Option<FlowValue<Self::Facts>> {
         None
     }
+
+    /// Whether an unresolved method call adds its arguments to the receiver,
+    /// as `list.push(x)` does. The receiver then also holds what the call was
+    /// given, in every position. The default models no such method.
+    fn adds_arguments_to_receiver(&self, _method: &str) -> bool {
+        false
+    }
+
+    /// `is_violation` for a sink that is recognized by where it is, rather than
+    /// by its instruction alone, such as a call to a function imported from a
+    /// particular package. The default recognizes none.
+    fn is_violation_at(
+        &self,
+        _site: &InstSite<'_>,
+        _inst: &Inst,
+        _values: &TaintReader<'_, Self>,
+    ) -> bool {
+        false
+    }
+
+    /// The value of a unary operation. Operators whose result carries only
+    /// metadata, such as `!`, are clean by default.
+    fn unary_value(&self, op: UnOp, value: FlowValue<Self::Facts>) -> FlowValue<Self::Facts> {
+        if unary_taint(op, Taint::Yes) == Taint::No {
+            value.with_facts(Self::Facts::from_taint(Taint::No))
+        } else {
+            value
+        }
+    }
+
+    /// The value a policy gives the entrypoint's argument at `input.position`,
+    /// in place of the clean default. Helpers take their callers' values.
+    fn entry_argument(&self, _input: &EntryInput<'_>) -> Option<TrackedValue<Self::Facts>> {
+        None
+    }
+
+    /// Variables whose facts are safe on entry to `block`, such as a value
+    /// that only a successful allowlist check reaches. The block's input is
+    /// the join of its predecessors, so a guarantee some predecessor does not
+    /// establish is not kept at a join.
+    fn safe_on_entry(&self, _site: &BlockSite<'_>, _block: BasicBlockId) -> Vec<Variable> {
+        Vec::new()
+    }
+}
+
+/// The body and instruction a policy is asked about.
+#[derive(Clone, Copy)]
+pub struct InstSite<'a> {
+    pub env: &'a Environment,
+    pub body: &'a Body,
+    pub def: DefId,
+    pub location: Location,
+}
+
+/// The body whose block is being entered.
+#[derive(Clone, Copy)]
+pub struct BlockSite<'a> {
+    pub env: &'a Environment,
+    pub body: &'a Body,
+    pub def: DefId,
+}
+
+/// An argument of the entrypoint, and how the platform invokes the entrypoint.
+pub struct EntryInput<'a> {
+    pub contract: InvocationContract,
+    pub category: InputCategory,
+    /// The entrypoint's body.
+    pub body: &'a Body,
+    /// Position among the entrypoint's declared arguments.
+    pub position: usize,
+    /// The argument's binding. Its default value or pattern is not modelled
+    /// when the argument is unsupported.
+    pub argument: DefId,
+    pub supported: bool,
 }
 
 /// An unmodelled call, as `TaintPolicy::method_value` sees it.
@@ -181,6 +257,23 @@ impl<F> UnresolvedCall<'_, F> {
 
     pub fn function(&self) -> &str {
         self.env.def_name(self.def)
+    }
+
+    pub fn env(&self) -> &Environment {
+        self.env
+    }
+
+    pub fn body(&self) -> &Body {
+        self.body
+    }
+
+    pub fn callee(&self) -> &Operand {
+        self.callee
+    }
+
+    /// The call's argument operands, in source order.
+    pub fn operands(&self) -> &[Operand] {
+        self.operands
     }
 
     /// The most characters a `slice`, `substring` or `substr` method call can
@@ -400,6 +493,9 @@ impl Queue {
         Some(key)
     }
 }
+
+/// The property that holds what a method such as `push` added to its receiver.
+const ADDED_ELEMENTS: &str = "*";
 
 /// Known property names along a path, such as `["auth", "password"]`.
 type FieldPath = SmallVec<[Atom; 2]>;
@@ -765,6 +861,89 @@ impl<P: TaintPolicy> TaintDataflow<P> {
         }
     }
 
+    /// Add the arguments of a call such as `list.push(x)` to its receiver,
+    /// when the policy says the method does so.
+    fn write_through_receiver(
+        &self,
+        site: Site<'_>,
+        frame: &mut FlowState<P::Facts>,
+        callee: &Operand,
+        args: &[Operand],
+    ) {
+        let Operand::Var(callee_var) = callee else {
+            return;
+        };
+        let (Some((_, receiver)), Some(id)) =
+            (callee_var.projections.split_last(), callee_var.as_var_id())
+        else {
+            return;
+        };
+        if !callee_name(site.env, site.body, callee)
+            .is_some_and(|method| self.policy.adds_arguments_to_receiver(method))
+        {
+            return;
+        }
+        let written = args.iter().fold(FlowValue::default(), |value, arg| {
+            value.combine(&self.read(frame, arg))
+        });
+        // Whichever position holds them, they sit beside the receiver's own
+        // value, which still says what it did of properties such as `length`.
+        let mut path = receiver.to_vec();
+        path.push(Projection::Known(ADDED_ELEMENTS.into()));
+        let mut added = Variable::new(id);
+        added.projections.extend(path.iter().cloned());
+        let current = self.read(frame, &Operand::Var(added));
+        self.assign(frame, id, &path, current.join(&written).into());
+        if let Some(binding) = variable_def(&site.body.vars[id]) {
+            let value = frame.value(id);
+            for &alias in &site.layout.aliases[&binding] {
+                frame.set(alias, value.clone());
+            }
+        }
+    }
+
+    /// Apply the policy's entry guarantees: each named variable keeps its
+    /// provenance but its facts become clean, as for any other copy of it.
+    fn mark_safe_on_entry(
+        &self,
+        site: Site<'_>,
+        block: BasicBlockId,
+        frame: &mut FlowState<P::Facts>,
+    ) {
+        let block_site = BlockSite {
+            env: site.env,
+            body: site.body,
+            def: site.def,
+        };
+        for variable in self.policy.safe_on_entry(&block_site, block) {
+            let Some(id) = variable.as_var_id() else {
+                continue;
+            };
+            let current = self.value(frame, &Operand::Var(variable.clone()));
+            let clean =
+                |value: &FlowValue<P::Facts>| value.with_facts(P::Facts::from_taint(Taint::No));
+            let safe = TrackedValue {
+                root: clean(&current.root),
+                fields: current.fields.as_ref().map(|fields| {
+                    Rc::new(
+                        fields
+                            .iter()
+                            .map(|(path, value)| (path.clone(), clean(value)))
+                            .collect::<FieldMap<_>>(),
+                    )
+                }),
+            };
+            self.assign(frame, id, &variable.projections, safe.clone());
+            if let Some(binding) = variable_def(&site.body.vars[id])
+                && variable.projections.is_empty()
+            {
+                for &alias in &site.layout.aliases[&binding] {
+                    frame.set(alias, safe.clone());
+                }
+            }
+        }
+    }
+
     fn lodash_call(
         &self,
         env: &Environment,
@@ -1002,6 +1181,7 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
             entry,
             P::TAINT_RESOLVER_INPUT && matches!(interp.entry.kind, EntryKind::Resolver(..)),
             interp.call_uncalled,
+            (interp.entry.contract, interp.entry.input_category),
         );
         let mut solver = Solver::new(&program);
         solver.run();
@@ -1038,14 +1218,7 @@ impl<P: TaintPolicy> TaintDataflow<P> {
         match rvalue {
             Rvalue::Read(op) => self.value(frame, op),
             Rvalue::Array(elements) => self.array_value(frame, elements),
-            Rvalue::Unary(op, operand) => {
-                let value = read(operand);
-                if unary_taint(*op, Taint::Yes) == Taint::No {
-                    value.with_facts(P::Facts::from_taint(Taint::No)).into()
-                } else {
-                    value.into()
-                }
-            }
+            Rvalue::Unary(op, operand) => self.policy.unary_value(*op, read(operand)).into(),
             Rvalue::Bin(op, left, right) => self
                 .policy
                 .binary_value(*op, read(left), read(right))
@@ -1158,7 +1331,7 @@ impl<P: TaintPolicy> TaintDataflow<P> {
 }
 
 /// What the solver reads but never changes.
-struct Program<'a, P> {
+struct Program<'a, P: TaintPolicy> {
     dataflow: &'a TaintDataflow<P>,
     env: &'a Environment,
     bindings: BTreeMap<DefId, Bindings>,
@@ -1175,6 +1348,8 @@ struct Program<'a, P> {
     entry: DefId,
     /// Whether the entrypoint's first argument is a resolver request source.
     tainted_request: bool,
+    /// The policy's value for each entrypoint argument, by argument binding.
+    seeds: BTreeMap<DefId, TrackedValue<P::Facts>>,
 }
 
 impl<'a, P: TaintPolicy> Program<'a, P> {
@@ -1184,6 +1359,7 @@ impl<'a, P: TaintPolicy> Program<'a, P> {
         entry: DefId,
         tainted_request: bool,
         call_uncalled: bool,
+        (contract, category): (InvocationContract, InputCategory),
     ) -> Self {
         let bindings: BTreeMap<_, _> = env
             .bodies()
@@ -1289,6 +1465,26 @@ impl<'a, P: TaintPolicy> Program<'a, P> {
         if call_uncalled {
             roots.extend(env.get_all_functions_and_closures());
         }
+        let seeds = env
+            .def_ref(entry)
+            .as_body()
+            .into_iter()
+            .flat_map(|entry_body| {
+                entry_body.argument_defs.iter().enumerate().filter_map(
+                    move |(position, &argument)| {
+                        let input = EntryInput {
+                            contract,
+                            category,
+                            body: entry_body,
+                            position,
+                            argument,
+                            supported: !entry_body.unsupported_arguments.contains(&argument),
+                        };
+                        Some((argument, dataflow.policy.entry_argument(&input)?))
+                    },
+                )
+            })
+            .collect();
         Self {
             dataflow,
             env,
@@ -1300,6 +1496,7 @@ impl<'a, P: TaintPolicy> Program<'a, P> {
             roots: roots.into(),
             entry,
             tainted_request,
+            seeds,
         }
     }
 
@@ -1319,6 +1516,15 @@ impl<'a, P: TaintPolicy> Program<'a, P> {
             && let Some(&id) = self.bindings[&def].args.first()
         {
             initial.set(id, FlowValue::from_taint(Taint::Yes).into());
+        }
+        if def == self.entry && !self.seeds.is_empty() {
+            let body = self.env.def_ref(def).expect_body();
+            for (id, kind) in body.vars.iter_enumerated() {
+                if let Some(seed) = variable_def(kind).and_then(|binding| self.seeds.get(&binding))
+                {
+                    initial.set(id, seed.clone());
+                }
+            }
         }
         initial
     }
@@ -1432,7 +1638,11 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
             let targets = previous_edges.values().copied().collect();
             (BTreeMap::new(), BTreeSet::new(), targets)
         };
+        let fresh = resume.is_none();
         let (start, mut frame) = resume.unwrap_or_else(|| (0, self.inputs[&key].clone()));
+        if fresh {
+            dataflow.mark_safe_on_entry(site, bb, &mut frame);
+        }
         let mut returning = true;
         for (idx, inst) in block.iter().enumerate().skip(start) {
             let location = Location::new(bb, idx as u32);
@@ -1440,7 +1650,18 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
                 dataflow,
                 frame: &frame,
             };
-            if dataflow.policy.is_violation(inst, &values) {
+            if dataflow.policy.is_violation(inst, &values)
+                || dataflow.policy.is_violation_at(
+                    &InstSite {
+                        env,
+                        body,
+                        def,
+                        location,
+                    },
+                    inst,
+                    &values,
+                )
+            {
                 block_findings.insert(location);
             }
             let value = if let Rvalue::Call(callee, args) = inst.rvalue()
@@ -1455,6 +1676,9 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
                 };
                 value.clone()
             } else {
+                if let Rvalue::Call(callee, args) = inst.rvalue() {
+                    dataflow.write_through_receiver(site, &mut frame, callee, args);
+                }
                 dataflow.transfer(site, &frame, location, inst.rvalue())
             };
             if let Inst::Assign(var, _) = inst
