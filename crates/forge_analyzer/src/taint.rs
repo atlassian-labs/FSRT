@@ -344,8 +344,9 @@ fn variable_def(kind: &VarKind) -> Option<DefId> {
 pub fn visit_taint_call<'cx, C: Runner<'cx, State = Vec<Taint>>>(
     checker: &mut C,
     interp: &Interp<'cx, C>,
+    caller: DefId,
     callee: &Operand,
-    block: BasicBlockId,
+    loc: Location,
     state: &[Taint],
 ) -> ControlFlow<(), Vec<Taint>> {
     if let Some((def, body)) = interp.body().resolve_call(interp.env(), callee)
@@ -354,7 +355,7 @@ pub fn visit_taint_call<'cx, C: Runner<'cx, State = Vec<Taint>>>(
             .borrow()
             .contains(&(def, STARTING_BLOCK))
     {
-        interp.push_frame(def, block);
+        interp.push_frame(caller, loc.block, loc.stmt as usize);
         let result = checker.visit_body(interp, def, body, &Vec::new());
         interp.pop_frame();
         result?;
@@ -433,9 +434,9 @@ struct Bindings {
     /// The location of each temporary's only whole assignment, so literal
     /// arguments such as `-4` can be read back out of the IR.
     temps: BTreeMap<VarId, Option<Location>>,
-    /// Array literals of strings, such as `['token']`, which lower to index
-    /// writes like `%a["0"] = "token"` to a fresh local that is never assigned
-    /// whole. `None` once any other write is seen.
+    /// Array literals of strings, such as `['token']`, which lower to one
+    /// compact `Array` assigned to a fresh temporary. `None` once any other
+    /// write is seen.
     strings: BTreeMap<VarId, Option<SmallVec<[Atom; 2]>>>,
 }
 
@@ -469,7 +470,7 @@ impl Bindings {
                                 .and_modify(|location| *location = None)
                                 .or_insert(Some(Location::new(bb, idx as u32)));
                         }
-                        strings.insert(id, None);
+                        strings.insert(id, string_elements(rvalue));
                     }
                     (
                         [Projection::Known(index)],
@@ -611,6 +612,20 @@ impl Bindings {
         }
         captures
     }
+}
+
+/// The elements of a compact array literal made only of strings.
+fn string_elements(rvalue: &Rvalue) -> Option<SmallVec<[Atom; 2]>> {
+    let Rvalue::Array(elements) = rvalue else {
+        return None;
+    };
+    elements
+        .iter()
+        .map(|element| match element {
+            Operand::Lit(Literal::Str(element)) => Some(element.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A dotted lodash path such as `'auth.token'`. Bracketed indexes are not parsed.
@@ -1022,6 +1037,7 @@ impl<P: TaintPolicy> TaintDataflow<P> {
         let read = |operand| self.read(frame, operand);
         match rvalue {
             Rvalue::Read(op) => self.value(frame, op),
+            Rvalue::Array(elements) => self.array_value(frame, elements),
             Rvalue::Unary(op, operand) => {
                 let value = read(operand);
                 if unary_taint(*op, Taint::Yes) == Taint::No {
@@ -1053,6 +1069,26 @@ impl<P: TaintPolicy> TaintDataflow<P> {
                         .into()
                 }),
         }
+    }
+
+    /// A compact array literal holds each element at its index, as the
+    /// per-index writes to a fresh local that it replaces did.
+    fn array_value(
+        &self,
+        frame: &FlowState<P::Facts>,
+        elements: &[Operand],
+    ) -> TrackedValue<P::Facts> {
+        let id = VarId::from(0usize);
+        let mut array = FlowState {
+            vars: Rc::new(vec![TrackedValue::default()]),
+            reachable: true,
+            ..FlowState::default()
+        };
+        for (index, element) in elements.iter().enumerate() {
+            let path = [Projection::Known(index.to_string().into())];
+            self.assign(&mut array, id, &path, self.value(frame, element));
+        }
+        array.value(id)
     }
 
     /// Preserve data through unmodelled transformations, including methods
