@@ -1,6 +1,6 @@
 use crate::{Args, Scanner, forge_project::ForgeProjectTrait, scan_directory};
 use clap::{CommandFactory, Parser};
-use forge_analyzer::reporter::Report;
+use forge_analyzer::reporter::{Report, Severity};
 use forge_analyzer::{checkers::ForgeRuntimeVersionPolicyChecker, definitions::PackageData};
 use forge_loader::manifest::{ForgeManifest, FunctionMod};
 use std::fmt;
@@ -14,7 +14,9 @@ use swc_core::common::{FileName, SourceFile, SourceMap};
 use time::{Date, Month};
 
 mod captured_values;
+mod commonjs_secrets;
 mod legacy_callbacks;
+mod native_fetch;
 mod secret_logging;
 mod secret_logging_storage;
 mod taint_regressions;
@@ -37,6 +39,8 @@ trait ReportExt {
     fn contains_api_token_vuln(&self, expected_len: usize) -> bool;
 
     fn contains_container_token_vuln(&self, expected_len: usize) -> bool;
+
+    fn contains_sql_vuln(&self, severity: Severity, expected_len: usize) -> bool;
 }
 
 impl ReportExt for Report {
@@ -108,6 +112,16 @@ impl ReportExt for Report {
     #[inline]
     fn contains_vulns(&self, expected_len: i32) -> bool {
         self.into_vulns().len() == expected_len as usize
+    }
+
+    fn contains_sql_vuln(&self, severity: Severity, expected_len: usize) -> bool {
+        self.into_vulns()
+            .iter()
+            .filter(|vuln| {
+                vuln.check_name() == "forge-sql-injection" && vuln.severity() == severity
+            })
+            .count()
+            == expected_len
     }
 }
 
@@ -182,12 +196,13 @@ impl<'a> ForgeProjectTrait<'a> for MockForgeProject<'a> {
     fn load_file(
         &self,
         p: impl AsRef<Path>,
-        _: Arc<SourceMap>,
+        source_map: Arc<SourceMap>,
     ) -> std::io::Result<Arc<SourceFile>> {
-        self.files_name_to_source
+        let source = self
+            .files_name_to_source
             .get(p.as_ref())
-            .cloned()
-            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+        Ok(source_map.new_source_file(source.name.clone(), source.src.as_ref().clone()))
     }
 
     fn get_paths(&self) -> HashSet<PathBuf> {
@@ -309,6 +324,7 @@ fn scanners_help_lists_possible_values() {
         "permission",
         "secret",
         "secret-logging",
+        "sql-injection",
     ] {
         assert!(help.contains(scanner), "help omitted scanner {scanner}");
     }
@@ -320,7 +336,7 @@ fn constant_branches_preserve_only_hardcoded_secret_findings() {
         let mut project = MockForgeProject::files_from_string("// src/index.js\n");
         project.add_file(
             "src/index.js",
-            &format!(
+            format!(
                 "import {{ fetch }} from '@forge/api';
                 import {{ kvs }} from '@forge/kvs';
                 export async function run() {{
@@ -2623,6 +2639,1484 @@ providers:
 }
 
 // -----------------------------------------------------------------------------
+// Forge SQL injection checker integration tests.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn sql_injection_candidate_gate_uses_lowered_sink_recognition() {
+    use forge_analyzer::sql_injection::SqlInjectionChecker;
+    use forge_permission_resolver::permissions_resolver::PermMap;
+
+    let cases = [
+        ("export function run(payload) { return payload; }", false),
+        (
+            "import sql from '@forge/sql'; export function run(payload) { return payload; }",
+            false,
+        ),
+        (
+            "import sql from 'another-sql-library'; export function run(payload) { sql.executeRaw(payload.query); }",
+            false,
+        ),
+        (
+            "function customLibrary() { return { executeRaw() {} }; } const sql = customLibrary(); export function run(payload) { sql.executeRaw(payload.query); }",
+            false,
+        ),
+        (
+            "import sql from '@forge/sql'; export function run() { sql.prepare('SELECT 1'); }",
+            true,
+        ),
+        (
+            "export function run(payload) { sql.executeRaw(payload.query); }",
+            false,
+        ),
+        (
+            "export function run(payload) { sql.prepare(payload.query); }",
+            false,
+        ),
+        (
+            "import { migrationRunner as migrations } from '@forge/sql'; export function run(payload) { migrations.enqueue('migration', payload.query); }",
+            true,
+        ),
+        (
+            "const sql_1 = tslib_1.__importStar(require('@forge/sql')); export function run(payload) { sql_1.default.executeRaw(payload.query); }",
+            false,
+        ),
+        (
+            "const { sql } = require('@forge/sql'); let storage; storage = { sql, isForge: true }; export function run(payload) { storage.sql.prepare(payload.query); }",
+            true,
+        ),
+        (
+            "const { sql } = require('another-sql-library'); const storage = { sql }; export function run(payload) { storage.sql.prepare(payload.query); }",
+            false,
+        ),
+        (
+            "export function run(payload, require) { const { sql } = require('@forge/sql'); sql.prepare(payload.query); }",
+            false,
+        ),
+        (
+            "const { migrationRunner: migrations } = require('@forge/sql'); const storage = { migrations }; export function run(payload) { storage.migrations.enqueue('migration', payload.query); }",
+            true,
+        ),
+        (
+            "import sql from '@forge/sql'; function helper(query) { sql.executeRaw(query); } export function run(payload) { helper(payload.query); }",
+            true,
+        ),
+        (
+            "import sql from '@forge/sql'; export function run(payload) { return payload.queries.map(query => sql.executeRaw(query)); }",
+            true,
+        ),
+    ];
+    for (source, expected) in cases {
+        let files = format!("// src/index.js\n{source}");
+        let project = MockForgeProject::files_from_string(&files);
+        let permissions = HashSet::new();
+        let mut perm_map = PermMap::new(&permissions, &crate::CacheConfig::default());
+        let lowered = project
+            .with_files_and_sourceroot(
+                Path::new("src"),
+                project.get_paths(),
+                &[],
+                &mut perm_map,
+                &HashSet::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            SqlInjectionChecker::has_candidate_sinks(&lowered.env),
+            expected,
+            "unexpected SQL candidate gate result for: {source}",
+        );
+    }
+}
+
+#[test]
+fn sql_injection_requires_provenance_for_every_sink() {
+    use forge_analyzer::sql_injection::SqlInjectionChecker;
+    use forge_permission_resolver::permissions_resolver::PermMap;
+    for (setup, call, high) in [
+        ("", "migrationRunner.enqueue('id', payload.query)", 0),
+        ("", "fake_migrationRunner.enqueue('id', payload.query)", 0),
+        ("", "client.migrationRunner.enqueue('id', payload.query)", 0),
+        (
+            "import { migrationRunner } from 'other-library';",
+            "migrationRunner.enqueue('id', payload.query)",
+            0,
+        ),
+        (
+            "import { queue as migrationRunner } from '@forge/sql';",
+            "migrationRunner.enqueue('id', payload.query)",
+            0,
+        ),
+        (
+            "import { migrationRunner as runner } from '@forge/sql';",
+            "runner.enqueue('id', payload.query)",
+            1,
+        ),
+        (
+            "import * as forge from '@forge/sql';",
+            "forge.migrationRunner.enqueue('id', payload.query)",
+            1,
+        ),
+        (
+            "const forge = require('@forge/sql');",
+            "forge.migrationRunner.enqueue('id', payload.query)",
+            1,
+        ),
+        (
+            "import { migrationRunner as runner } from '@forge/sql'; const storage = { runner };",
+            "storage.runner.enqueue('id', payload.query)",
+            1,
+        ),
+        (
+            "import sql from '@forge/sql';",
+            "sql.prepare[payload.method](payload.query)",
+            0,
+        ),
+        (
+            "import sql from '@forge/sql';",
+            "sql[payload.receiver].prepare(payload.query)",
+            0,
+        ),
+        (
+            "import sql from '@forge/sql';",
+            "sql.factory().prepare(payload.query)",
+            0,
+        ),
+        (
+            "import sql from '@forge/sql';",
+            "sql.factory().executeRaw(payload.query)",
+            0,
+        ),
+        (
+            "import { migrationRunner as runner } from '@forge/sql'; runner.enqueue = customEnqueue;",
+            "runner.enqueue('id', payload.query)",
+            0,
+        ),
+        (
+            "function factory() { return unknownClient; } const migrationRunner = factory();",
+            "migrationRunner.enqueue('id', payload.query)",
+            0,
+        ),
+    ] {
+        let source =
+            format!("// src/index.js\n{setup}\nexport function run(payload) {{ {call}; }}");
+        let project = MockForgeProject::files_from_string(&source);
+        let permissions = HashSet::new();
+        let mut perm_map = PermMap::new(&permissions, &crate::CacheConfig::default());
+        let lowered = project
+            .with_files_and_sourceroot(
+                Path::new("src"),
+                project.get_paths(),
+                &[],
+                &mut perm_map,
+                &HashSet::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            SqlInjectionChecker::has_candidate_sinks(&lowered.env),
+            high > 0,
+            "{source}"
+        );
+        // Separately force reporting to run so a gate rejection cannot conceal
+        // accidental sink matching during analysis.
+        let source = format!(
+            "{source}\nimport confirmedSql from '@forge/sql';\nexport function safe() {{ confirmedSql.prepare('SELECT 1'); }}"
+        );
+        let report = scan_directory_test_with_args(
+            MockForgeProject::files_from_string(&source),
+            Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+        );
+        assert!(!report.has_errors(), "{source}: {report:#?}");
+        assert!(
+            report.contains_sql_vuln(Severity::High, high),
+            "{source}: {report:#?}"
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::Low, 0),
+            "{source}: {report:#?}"
+        );
+    }
+}
+
+#[test]
+fn sql_injection_tracks_commonjs_imports_through_storage_objects() {
+    for setup in [
+        "const { sql, migrationRunner } = require('@forge/sql'); storage = { sql, migrationRunner, isForge: true };",
+        "const { sql, migrationRunner } = require('@forge/sql'); let storage; storage = { sql, migrationRunner, isForge: true };",
+        "const { sql: db, migrationRunner: runner } = require('@forge/sql'); const storage = { sql: db, migrationRunner: runner };",
+        "const forge = require('@forge/sql'); const storage = { sql: forge.sql, migrationRunner: forge.migrationRunner };",
+        "import sql, { migrationRunner } from '@forge/sql'; const storage = { sql, migrationRunner };",
+        "const { sql, migrationRunner } = require('@forge/sql'); const backend = { sql, migrationRunner }; const storage = backend;",
+        "let storage; if (process.env.ENV_TYPE === 'forge') { const { sql, migrationRunner } = require('@forge/sql'); storage = { sql, migrationRunner, isForge: true }; } else { storage = { isForge: false }; }",
+    ] {
+        let source = format!(
+            "// src/index.js\n{setup}\nexport function run(payload) {{
+                storage.sql.prepare(payload.query);
+                storage.sql.executeRaw(payload.query);
+                storage.migrationRunner.enqueue('migration', payload.query);
+            }}"
+        );
+        let report = scan_directory_test_with_args(
+            MockForgeProject::files_from_string(&source),
+            Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::High, 3),
+            "{setup}: {report:#?}"
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::Low, 0),
+            "{setup}: {report:#?}"
+        );
+    }
+}
+
+#[test]
+fn sql_injection_tracks_function_local_commonjs_imports() {
+    let report = scan_directory_test_with_args(
+        MockForgeProject::files_from_string(
+            "// src/index.js
+            export function run(payload) {
+                const { sql, migrationRunner: migrations } = require('@forge/sql');
+                const storage = { sql, migrations };
+                storage.sql.prepare(payload.query);
+                storage.sql.executeRaw(payload.query);
+                storage.migrations.enqueue('migration', payload.query);
+                storage.sql.prepare('SELECT 1');
+            }",
+        ),
+        Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+    );
+    assert!(!report.has_errors(), "{report:#?}");
+    assert!(report.contains_sql_vuln(Severity::High, 3), "{report:#?}");
+    assert!(report.contains_sql_vuln(Severity::Low, 0), "{report:#?}");
+}
+
+#[test]
+fn sql_injection_rejects_unproven_commonjs_receivers() {
+    for setup in [
+        "const { sql } = require('another-sql-library'); const storage = { sql };",
+        "const name = '@forge/sql'; const { sql } = require(name); const storage = { sql };",
+        "function require(name) { return arbitraryClient; } const { sql } = require('@forge/sql'); const storage = { sql };",
+        "let require; const { sql } = require('@forge/sql'); const storage = { sql };",
+        "require = customLoader; const { sql } = require('@forge/sql'); const storage = { sql };",
+        "let { sql } = require('@forge/sql'); sql = otherClient; const storage = { sql };",
+        "const { sql } = require('@forge/sql'); let storage = { sql }; storage = otherStorage;",
+        "const { sql } = require('@forge/sql'); const storage = { sql }; storage.sql = otherClient;",
+        "const { sql } = require('@forge/sql'); const storage = { sql }; const alias = storage; alias.sql = otherClient;",
+        "const { sql } = require('@forge/sql'); const storage = { sql }; mutate(storage);",
+        "const { sql } = require('@forge/sql'); const storage = { sql, ...otherStorage };",
+        "const { sql } = require('@forge/sql'); const storage = { sql, get sql() { return otherClient; } };",
+        "const { sql } = require('@forge/sql'); const storage = { sql }; storage[key] = otherClient;",
+        "const { sql } = require('@forge/sql'); let storage; if (condition) storage = { sql }; else storage = { sql: otherClient };",
+    ] {
+        // Ensure reporting runs even when the uncertain calls aren't candidates.
+        let source = format!(
+            "// src/index.js\nimport confirmedSql from '@forge/sql';\n{setup}\nexport function run(payload) {{
+                confirmedSql.prepare('SELECT 1');
+                storage.sql.prepare(payload.query);
+                storage.sql.executeRaw(payload.query);
+            }}"
+        );
+        let report = scan_directory_test_with_args(
+            MockForgeProject::files_from_string(&source),
+            Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+        );
+        assert!(!report.has_errors(), "{setup}: {report:#?}");
+        assert!(
+            report.contains_sql_vuln(Severity::High, 0),
+            "{setup}: {report:#?}"
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::Low, 0),
+            "{setup}: {report:#?}"
+        );
+    }
+}
+
+#[test]
+fn sql_injection_requires_confirmed_forge_sql_imports() {
+    // Keep a confirmed safe sink in each fixture so unresolved calls are tested
+    // during reporting even when the candidate gate would otherwise skip them.
+    for (setup, receiver, high) in [
+        ("import db from '@forge/sql';", "db", 2),
+        ("import * as db from '@forge/sql';", "db", 2),
+        ("import db from 'another-sql-library';", "db", 0),
+        ("", "unresolvedClient", 0),
+        ("const db = require('@forge/sql');", "db", 2),
+        (
+            "const db = tslib_1.__importStar(require('@forge/sql'));",
+            "db.default",
+            0,
+        ),
+    ] {
+        let source = format!(
+            "// src/index.js\n\
+             import confirmedSql from '@forge/sql';\n\
+             {setup}\n\
+             export function run(payload) {{\n\
+                 confirmedSql.prepare('SELECT 1');\n\
+                 {receiver}.prepare(payload.query);\n\
+                 {receiver}.executeRaw(payload.query);\n\
+             }}"
+        );
+        let report = scan_directory_test_with_args(
+            MockForgeProject::files_from_string(&source),
+            Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+        );
+        assert!(!report.has_errors(), "{setup}: {report:#?}");
+        assert!(
+            report.contains_sql_vuln(Severity::High, high),
+            "{setup}: {report:#?}"
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::Low, 0),
+            "{setup}: {report:#?}"
+        );
+    }
+}
+
+#[test]
+fn sql_injection_reports_direct_payload_interpolation() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            await sql.executeRaw(`SELECT * FROM users WHERE id = '${payload.id}'`);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_accepts_literals_and_bound_values() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            await sql.executeRaw('ALTER TABLE users ADD COLUMN active BOOLEAN');
+            await sql.prepare('SELECT * FROM users WHERE id = ?')
+                .bindParams(payload.id)
+                .execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_accepts_constant_query_variable_with_bound_parameter() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export const deleteStandupUpdate = async (id) => {
+            try {
+                const query = `DELETE FROM standup_update WHERE id = ?`;
+                await sql.prepare(query).bindParams(id).execute();
+            } catch (error) {
+                console.error(error);
+            }
+        };
+        export async function run(payload) {
+            await deleteStandupUpdate(payload.id);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_accepts_numeric_result_interpolation() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const requestedLimit = typeof payload.limit === 'number' ? payload.limit : 20;
+            const requestedOffset = typeof payload.offset === 'number' ? payload.offset : 0;
+            const limit = Math.min(Math.max(Math.floor(requestedLimit), 1), 100);
+            const offset = Math.max(Math.floor(requestedOffset), 0);
+            await sql.prepare(`SELECT * FROM users LIMIT ${limit} OFFSET ${offset}`).execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_accepts_numeric_builtins_arithmetic_and_local_returns() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function safeOffset(value) {
+            return Number(value) * 10;
+        }
+        export async function run(payload) {
+            const parsed = parseInt(payload.limit, 10);
+            const floated = parseFloat(payload.ratio);
+            const bounded = Math.min(Math.max(Math.floor(parsed), 1), 100);
+            const offset = safeOffset(payload.page);
+            await sql.prepare(
+                'SELECT * FROM users LIMIT ' + bounded +
+                ' OFFSET ' + offset +
+                ' /* ratio ' + floated + ' */'
+            ).execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_does_not_trust_string_conversion_or_shadowed_numeric_builtins() {
+    let string_conversion = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const value = String(payload.value);
+            await sql.prepare(`SELECT * FROM users WHERE name = '${value}'`).execute();
+        }",
+    );
+    assert!(scan_directory_test(string_conversion).contains_sql_vuln(Severity::High, 1));
+
+    let shadowed_number = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function Number(value) {
+            return value;
+        }
+        export async function run(payload) {
+            const value = Number(payload.value);
+            await sql.prepare(`SELECT * FROM users WHERE name = '${value}'`).execute();
+        }",
+    );
+    assert!(scan_directory_test(shadowed_number).contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_reports_unresolved_dynamic_query_as_low() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run() {
+            const query = unresolvedLibrary.buildQuery('value');
+            await sql.executeRaw(query);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, unknown_sql_findings(1)));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_tracks_local_function_arguments_and_returns() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function makeQuery(id) {
+            return `SELECT * FROM users WHERE id = '${id}'`;
+        }
+        async function executeQuery(id) {
+            await sql.executeRaw(makeQuery(id));
+        }
+        export async function run(payload) {
+            await executeQuery(payload.id);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+    assert!(report.into_vulns().iter().any(|finding| {
+        finding.check_name() == "forge-sql-injection"
+            && finding.proof().contains("call from")
+            && finding.proof().contains("src/index.js:")
+    }));
+}
+
+#[test]
+fn sql_injection_tracks_payload_through_projected_object_arguments() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import sql from '@forge/sql';
+        const resolver = new Resolver();
+        function buildQuery({ projectId }) {
+            return `UPDATE projects SET enabled = TRUE WHERE id = '${projectId}'`;
+        }
+        async function editProject(options) {
+            await sql.prepare(buildQuery(options));
+        }
+        resolver.define('edit', async ({ payload }) => {
+            await editProject({ projectId: payload.projectId });
+        });
+        export const run = resolver.getDefinitions();",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_accepts_numeric_result_through_deep_options() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import sql from '@forge/sql';
+        const resolver = new Resolver();
+        async function exec(query, params = []) {
+            return await sql.prepare(query).bindParams(...params).execute();
+        }
+        async function list(accountId, options = {}) {
+            const page = Math.max(1, options.page || 1);
+            const offset = parseInt(page, 10);
+            return await exec(`SELECT * FROM reminders WHERE account_id = ? LIMIT 10 OFFSET ${offset}`, [accountId]);
+        }
+        resolver.define('list', async ({ payload }) => list('account', { page: payload.page }));
+        export const run = resolver.getDefinitions();",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_ignores_transpiled_sql_calls_without_import_provenance() {
+    let safe = MockForgeProject::files_from_string(
+        "// src/index.js
+        const GET_ROWS = 'SELECT * FROM example';
+        const sql_1 = tslib_1.__importStar(require('@forge/sql'));
+        export async function run() {
+            await sql_1.default.executeRaw(GET_ROWS);
+        }",
+    );
+    let safe_report = scan_directory_test(safe);
+    assert!(safe_report.contains_sql_vuln(Severity::High, 0));
+    assert!(safe_report.contains_sql_vuln(Severity::Low, 0));
+
+    let unsafe_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        const sql_1 = tslib_1.__importStar(require('@forge/sql'));
+        export async function run(payload) {
+            await sql_1.default.executeRaw(`SELECT * FROM example WHERE id = '${payload.id}'`);
+        }",
+    );
+    let unsafe_report = scan_directory_test(unsafe_project);
+    // The module string is present in source, but this wrapper does not retain
+    // confirmed import provenance in CallFacts, so both queries are ignored.
+    assert!(unsafe_report.contains_sql_vuln(Severity::High, 0));
+    assert!(unsafe_report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_supports_esm_import_aliases() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import forgeSql from '@forge/sql';
+        import { migrationRunner as migrations } from '@forge/sql';
+        export async function run(payload) {
+            await forgeSql.executeRaw(`SELECT * FROM users WHERE id = ${payload.id}`);
+            migrations.enqueue('create-index', `CREATE INDEX ${payload.name} ON users(id)`);
+        }",
+    );
+
+    assert!(scan_directory_test(project).contains_sql_vuln(Severity::High, 2));
+}
+
+#[test]
+fn sql_injection_only_flags_unbound_limit_and_offset_in_mixed_query() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const conditions = ['project_key = ?'];
+            const params = [payload.projectKey];
+            if (payload.entityType) {
+                conditions.push('entity_type = ?');
+                params.push(payload.entityType);
+            }
+            if (payload.entityId !== undefined) {
+                conditions.push('entity_id = ?');
+                params.push(payload.entityId);
+            }
+            const where = conditions.join(' AND ');
+            const limit = payload.limit ?? 50;
+            const offset = payload.offset ?? 0;
+            await sql.prepare(`SELECT COUNT(*) AS cnt FROM audit_log WHERE ${where}`)
+                .bindParams(...params)
+                .execute();
+            await sql.prepare(`SELECT * FROM audit_log WHERE ${where} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`)
+                .bindParams(...params)
+                .execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_does_not_match_confirmed_other_sql_package() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from 'another-sql-library';
+        export async function run(payload) {
+            await sql.executeRaw(`SELECT * FROM users WHERE id = '${payload.id}'`);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_treats_unclassified_entry_argument_as_unknown() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload, context, event) {
+            await sql.executeRaw(`SELECT * FROM users WHERE id = '${event.userId}'`);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, unknown_sql_findings(1)));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_treats_api_and_storage_results_as_untrusted() {
+    let api_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import api from '@forge/api';
+        import sql from '@forge/sql';
+        export async function run() {
+            const response = await api.asUser().requestJira('/rest/api/3/issue/ABC-1');
+            await sql.executeRaw(`SELECT * FROM issues WHERE summary = '${response.summary}'`);
+        }",
+    );
+    let api_report = scan_directory_test(api_project);
+    assert!(api_report.contains_sql_vuln(Severity::High, 1));
+
+    let storage_project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import { kvs } from '@forge/kvs';
+        import sql from '@forge/sql';
+        export async function run() {
+            const filter = await kvs.get('saved-filter');
+            await sql.executeRaw(`SELECT * FROM users WHERE ${filter}`);
+        }",
+    );
+    let storage_report = scan_directory_test(storage_project);
+    assert!(storage_report.contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_tracks_destructuring_and_containers() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const { id } = payload;
+            const container = { values: [id] };
+            const [value] = container.values;
+            await sql.executeRaw(`SELECT * FROM users WHERE id = '${value}'`);
+        }",
+    );
+
+    assert!(scan_directory_test(project).contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_joins_trusted_and_untrusted_branches() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            let table = 'active_users';
+            if (payload.includeArchived) {
+                table = payload.table;
+            }
+            await sql.executeRaw(`SELECT * FROM ${table}`);
+        }",
+    );
+
+    assert!(scan_directory_test(project).contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_reports_dynamic_branch_alternatives() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import { storage } from '@forge/api';
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const date = await storage.get('date');
+            let whereClause = '';
+            if (payload.filtered) {
+                whereClause = ` WHERE due_date >= '${date}'`;
+            }
+            await sql.prepare(`SELECT * FROM issues${whereClause}`).execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    let finding = report
+        .into_vulns()
+        .iter()
+        .find(|finding| finding.check_name() == "forge-sql-injection")
+        .expect("expected SQL injection finding");
+    assert_eq!(finding.severity(), Severity::High);
+    assert!(finding.proof().contains("one of"));
+    assert!(finding.proof().contains("due_date"));
+}
+
+#[test]
+fn sql_injection_uses_strong_updates_for_definite_assignments() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            let query = payload.query;
+            query = 'SELECT * FROM users';
+            await sql.executeRaw(query);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.has_no_vulns(), "{:#?}", report.into_vulns());
+}
+
+#[test]
+fn sql_injection_preserves_constant_structure_across_local_arguments() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        async function remove(table, column, value) {
+            await sql.prepare(`DELETE FROM ${table} WHERE ${column} = ?`)
+                .bindParams(value)
+                .execute();
+        }
+        export async function run(payload) {
+            await remove('users', 'id', payload.id);
+        }",
+    );
+
+    assert!(scan_directory_test(project).has_no_vulns());
+}
+
+#[test]
+fn sql_injection_resolves_cross_file_module_constants() {
+    let project = MockForgeProject::files_from_string(
+        "// src/constants.js
+        export const DELETE_CHUNK_SIZE = 5000;
+        // src/remove.js
+        import sql from '@forge/sql';
+        import { DELETE_CHUNK_SIZE } from './constants';
+        export async function remove(table, column, value) {
+            await sql.prepare(`DELETE FROM ${table} WHERE ${column} = ? LIMIT ${DELETE_CHUNK_SIZE}`)
+                .bindParams(value)
+                .execute();
+        }
+        // src/index.js
+        import { remove } from './remove';
+        export async function run(payload) {
+            await remove('users', 'id', payload.id);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.has_no_vulns(), "{:#?}", report.into_vulns());
+}
+
+#[test]
+fn sql_injection_tracks_transformed_payload_through_cross_file_helpers() {
+    let project = MockForgeProject::files_from_string(
+        "// src/db.js
+        import sql from '@forge/sql';
+        export function escapeValue(value) {
+            return String(value).replace(/'/g, \"''\");
+        }
+        export async function queryRows(query) {
+            return await sql.executeRaw(query);
+        }
+        // src/service.js
+        import { escapeValue, queryRows } from './db.js';
+        export async function save(payload) {
+            return await queryRows(`SELECT * FROM users WHERE id = '${escapeValue(payload.id)}'`);
+        }
+        // src/index.js
+        import Resolver from '@forge/resolver';
+        import { save } from './service.js';
+        const resolver = new Resolver();
+        resolver.define('save', async ({ payload }) => save(payload));
+        export const run = resolver.getDefinitions();",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(
+        report.contains_sql_vuln(Severity::High, 1),
+        "{:#?}",
+        report.into_vulns()
+    );
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_tracks_storage_read_variants() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import { storage } from '@forge/api';
+        import { kvs } from '@forge/kvs';
+        import sql from '@forge/sql';
+        export async function run() {
+            const first = await storage.getSecret('fragment');
+            const second = await kvs.query().where('key', 'startsWith', 'filter').getMany();
+            await sql.executeRaw(`SELECT * FROM users ${first}`);
+            await sql.executeRaw(`SELECT * FROM groups ${second.results[0].value}`);
+        }",
+    );
+
+    assert!(scan_directory_test(project).contains_sql_vuln(Severity::High, 2));
+}
+
+#[test]
+fn sql_injection_checks_migration_runner_query_argument() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import { migrationRunner } from '@forge/sql';
+        export async function run(payload) {
+            migrationRunner.enqueue('migration-1', `CREATE INDEX ${payload.indexName} ON users(id)`);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_tracks_concatenation_aliases_and_string_transformations() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const id = payload.id.trim().toLowerCase();
+            const query = 'SELECT * FROM users WHERE id = ' + id;
+            await sql.executeRaw(query);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_accepts_ir_proven_constant_alternatives() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const table = payload.type === 'active' ? 'active_users' : 'archived_users';
+            await sql.executeRaw(`SELECT * FROM ${table}`);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_preserves_fixed_structure_separately_from_returned_parameters() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function buildFilter(filtered, status) {
+            const clauses = ['tenant_id = ?'];
+            const params = [status];
+            if (filtered) {
+                clauses.push('active = TRUE');
+            }
+            return {
+                sql: clauses.join(' AND '),
+                params,
+            };
+        }
+        export async function run(payload) {
+            const filter = buildFilter(payload.filtered, payload.status);
+            await sql.prepare(`SELECT * FROM users WHERE ${filter.sql}`)
+                .bindParams(...filter.params)
+                .execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_rejects_untrusted_text_in_returned_structural_fragment() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function buildFilter(fragment, status) {
+            const clauses = ['tenant_id = ?'];
+            const params = [status];
+            clauses.push(fragment);
+            return {
+                sql: clauses.join(' AND '),
+                params,
+            };
+        }
+        export async function run(payload) {
+            const filter = buildFilter(payload.fragment, payload.status);
+            await sql.prepare(`SELECT * FROM users WHERE ${filter.sql}`)
+                .bindParams(...filter.params)
+                .execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_accepts_exact_array_and_set_identifier_allowlists() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        const VALID_COLUMNS = new Set(['name', 'email']);
+        async function update(column, value) {
+            if (!VALID_COLUMNS.has(column)) {
+                throw new Error('invalid column');
+            }
+            await sql.prepare(`UPDATE users SET ${column} = ?`).bindParams(value).execute();
+        }
+        export async function run(payload) {
+            const allowedSort = ['name', 'email', 'updated_at'];
+            const sort = allowedSort.includes(payload.sortBy) ? payload.sortBy : 'updated_at';
+            await sql.prepare(`SELECT * FROM users ORDER BY ${sort}`).execute();
+            await update(payload.column, payload.value);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_accepts_allowlisted_destructured_default_binding() {
+    let allowlisted = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        async function search(criteria = {}) {
+            const { sortBy } = criteria;
+            const allowedSort = ['name', 'email'];
+            const column = allowedSort.includes(sortBy) ? sortBy : 'updated_at';
+            await sql.prepare(`SELECT 1 FROM users ORDER BY ${column}`).execute();
+        }
+        export async function run(payload) {
+            await search(payload);
+        }",
+    );
+    assert!(scan_directory_test(allowlisted).contains_sql_vuln(Severity::High, 0));
+
+    let unguarded = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        async function search(criteria = {}) {
+            const { sortBy } = criteria;
+            await sql.prepare(`SELECT 1 FROM users ORDER BY ${sortBy}`).execute();
+        }
+        export async function run(payload) {
+            await search(payload);
+        }",
+    );
+    assert!(scan_directory_test(unguarded).contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_adds_pushed_values_beside_a_numeric_length() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const clauses = ['tenant_id = ?'];
+            clauses.push(payload.fragment);
+            await sql.prepare(`SELECT 1 FROM t WHERE ${clauses.join(' AND ')} LIMIT ${clauses.length}`).execute();
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1), "{report:#?}");
+
+    let length_only = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const params = [];
+            params.push(payload.value);
+            await sql.prepare(`SELECT 1 FROM t WHERE a = $${params.length}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(length_only).contains_sql_vuln(Severity::High, 0));
+}
+
+#[test]
+fn sql_injection_rejects_dynamic_or_shadowed_identifier_allowlists() {
+    let dynamic_allowlist = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const allowed = ['name'];
+            allowed.push(payload.additionalColumn);
+            if (!allowed.includes(payload.column)) {
+                throw new Error('invalid column');
+            }
+            await sql.prepare(`SELECT * FROM users ORDER BY ${payload.column}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(dynamic_allowlist).contains_sql_vuln(Severity::High, 1));
+
+    let shadowed_set = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function Set() {
+            return { has: () => true };
+        }
+        const allowed = new Set(['name']);
+        export async function run(payload) {
+            if (!allowed.has(payload.column)) {
+                throw new Error('invalid column');
+            }
+            await sql.prepare(`SELECT * FROM users ORDER BY ${payload.column}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(shadowed_set).contains_sql_vuln(Severity::High, 1));
+
+    let reassigned_after_check = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const allowed = ['name', 'email'];
+            let column = payload.column;
+            if (!allowed.includes(column)) {
+                throw new Error('invalid column');
+            }
+            column = payload.replacement;
+            await sql.prepare(`SELECT * FROM users ORDER BY ${column}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(reassigned_after_check).contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_accepts_literal_placeholder_list_generation() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function buildPlaceholders(count) {
+            return new Array(count).fill('?').join(', ');
+        }
+        function buildQuery(values) {
+            const placeholders = values.map(() => '?').join(', ');
+            return `DELETE FROM users WHERE id IN (${placeholders})`;
+        }
+        export async function run(payload) {
+            const mapped = payload.ids.map(() => '?').join(',');
+            const rows = new Array(payload.rowCount).fill('(?, ?)').join(', ');
+            const wrapped = payload.ids.map(() => 'UUID_TO_BIN(?,1)').join(',');
+            const defaultJoined = payload.ids.map(() => '?').join();
+            const built = buildPlaceholders(payload.ids.length);
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${mapped})`)
+                .bindParams(...payload.ids).execute();
+            await sql.prepare(`INSERT INTO pairs VALUES ${rows}`)
+                .bindParams(...payload.values).execute();
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${wrapped})`)
+                .bindParams(...payload.ids).execute();
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${defaultJoined})`)
+                .bindParams(...payload.ids).execute();
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${built})`)
+                .bindParams(...payload.ids).execute();
+            await sql.prepare(buildQuery(payload.ids))
+                .bindParams(...payload.ids).execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_accepts_local_array_length_for_placeholder_indexes() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            let query = 'SELECT * FROM users WHERE 1=1';
+            const params = [];
+            if (payload.name) {
+                query += ` AND name = $${params.length + 1}`;
+                params.push(payload.name);
+            }
+            if (payload.email) {
+                query += ` AND email = $${params.length + 1}`;
+                params.push(payload.email);
+            }
+            query += ` LIMIT 25 OFFSET $${params.length + 1}`;
+            params.push(payload.startAt);
+            await sql.prepare(query).bindParams(...params).execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_does_not_trust_unproven_length_properties() {
+    let payload_property = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            await sql.prepare(`SELECT * FROM users LIMIT ${payload.length}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(payload_property).contains_sql_vuln(Severity::High, 1));
+
+    let object_property = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const options = { length: payload.fragment };
+            await sql.prepare(`SELECT * FROM users LIMIT ${options.length}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(object_property).contains_sql_vuln(Severity::High, 1));
+
+    let reassigned_array = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            let params = [];
+            params = payload.params;
+            await sql.prepare(`SELECT * FROM users LIMIT ${params.length}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(reassigned_array).contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_rejects_dynamic_placeholder_tokens_separators_and_constructors() {
+    let dynamic_token = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const placeholders = new Array(payload.count).fill(payload.fragment).join(',');
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${placeholders})`).execute();
+        }",
+    );
+    assert!(scan_directory_test(dynamic_token).contains_sql_vuln(Severity::High, 1));
+
+    let dynamic_separator = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const placeholders = new Array(payload.count).fill('?').join(payload.separator);
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${placeholders})`).execute();
+        }",
+    );
+    assert!(scan_directory_test(dynamic_separator).contains_sql_vuln(Severity::High, 1));
+
+    let mutated_sequence = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const placeholders = new Array(payload.count).fill('?');
+            placeholders.push(payload.fragment);
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${placeholders.join(',')})`)
+                .execute();
+        }",
+    );
+    assert!(scan_directory_test(mutated_sequence).contains_sql_vuln(Severity::High, 1));
+
+    let filtered_values = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const values = payload.fragments.filter(() => '?').join(',');
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${values})`).execute();
+        }",
+    );
+    let report = scan_directory_test(filtered_values);
+    assert!(report.contains_sql_vuln(Severity::High, unknown_sql_findings(1)));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+
+    let shadowed_array = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function Array(value) {
+            return value;
+        }
+        export async function run(payload) {
+            const placeholders = new Array(payload.fragment).fill('?').join(',');
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${placeholders})`).execute();
+        }",
+    );
+    let report = scan_directory_test(shadowed_array);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_reports_each_distinct_sink_location_once() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            await sql.executeRaw(`SELECT * FROM users WHERE id = ${payload.id}`);
+            await sql.executeRaw(`SELECT * FROM projects WHERE id = ${payload.projectId}`);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 2));
+}
+
+#[test]
+fn sql_injection_ignores_unsupported_execute_api() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            await sql.execute(`SELECT * FROM users WHERE id = ${payload.id}`);
+        }",
+    );
+
+    assert!(scan_directory_test(project).has_no_vulns());
+}
+
+#[test]
+fn sql_injection_scanner_respects_scanner_selection() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            await sql.executeRaw(`SELECT * FROM users WHERE id = ${payload.id}`);
+        }",
+    );
+
+    let secret_args = Args::parse_from(["fsrt", "--scanners", "secret"]);
+    assert!(scan_directory_test_with_args(project.clone(), secret_args).has_no_vulns());
+
+    let sql_args = Args::parse_from(["fsrt", "--scanners", "sql-injection"]);
+    assert!(scan_directory_test_with_args(project, sql_args).contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_report_contains_sink_query_and_cwe() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            await sql.executeRaw(`SELECT * FROM users WHERE id = ${payload.id}`);
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    let finding = report
+        .into_vulns()
+        .iter()
+        .find(|finding| finding.check_name() == "forge-sql-injection")
+        .unwrap();
+    assert!(finding.description().contains("sql.executeRaw"));
+    assert!(finding.description().contains("src/index.js"));
+    assert!(finding.proof().contains("Query argument"));
+    assert!(finding.proof().contains("payload"));
+    assert_eq!(finding.marketplace_security_requirement(), "CWE-89");
+    let serialized = serde_json::to_value(finding).unwrap();
+    assert!(serialized.get("confidence").is_none());
+}
+
+#[test]
+fn sql_injection_resolver_context_is_property_sensitive() {
+    let trusted = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import sql from '@forge/sql';
+        const resolver = new Resolver();
+        resolver.define('safe', async ({ context }) => {
+            await sql.executeRaw(`SELECT * FROM ${context.accountId}`);
+        });
+        export const run = resolver.getDefinitions();",
+    );
+    assert!(scan_directory_test(trusted).has_no_vulns());
+
+    let unknown = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import sql from '@forge/sql';
+        const resolver = new Resolver();
+        resolver.define('unknown', async ({ context }) => {
+            await sql.executeRaw(`SELECT * FROM ${context.extension.foo}`);
+        });
+        export const run = resolver.getDefinitions();",
+    );
+    assert!(
+        scan_directory_test(unknown).contains_sql_vuln(Severity::High, unknown_sql_findings(1))
+    );
+}
+
+#[test]
+fn sql_injection_isolates_resolver_callbacks_and_merges_sink_origins() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import sql from '@forge/sql';
+        const resolver = new Resolver();
+        async function execute(query) {
+            await sql.executeRaw(query);
+        }
+        resolver.define('safe', async ({ context }) => {
+            await execute(`SELECT * FROM ${context.accountId}`);
+        });
+        resolver.define('first', async ({ payload }) => {
+            await execute(`SELECT * FROM ${payload.table}`);
+        });
+        resolver.define('second', async ({ payload }) => {
+            await execute(`SELECT * FROM ${payload.otherTable}`);
+        });
+        export const run = resolver.getDefinitions();",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+    assert!(report.into_vulns().iter().any(|finding| {
+        finding.check_name() == "forge-sql-injection"
+            && finding.proof().contains("run.first")
+            && finding.proof().contains("run.second")
+    }));
+}
+
+#[test]
+fn sql_injection_tracks_request_and_external_response_reads() {
+    let request = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(req) {
+            const body = await req.json();
+            await sql.prepare(`DELETE FROM users WHERE id = ${body.id}`);
+        }",
+    );
+    assert!(scan_directory_test(request).contains_sql_vuln(Severity::High, 1));
+
+    let network = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run() {
+            const response = await fetch('external-data');
+            const body = await response.json();
+            await sql.executeRaw(`SELECT * FROM users WHERE id = ${body.id}`);
+        }",
+    );
+    let report = scan_directory_test(network);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_tracks_api_sources_through_local_returns() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import api from '@forge/api';
+        import sql from '@forge/sql';
+        async function getSummary() {
+            const issue = await api.asApp().requestJira('/rest/api/3/issue/ABC-1');
+            return issue.fields.summary;
+        }
+        export async function run() {
+            await sql.executeRaw(`SELECT * FROM issues WHERE summary = '${await getSummary()}'`);
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_tracks_prepared_statement_results() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run() {
+            const rows = await sql.prepare('SELECT name FROM users').execute();
+            await sql.executeRaw(`SELECT * FROM audit WHERE actor = '${rows[0].name}'`);
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_reports_unresolved_computed_properties_as_low() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload, context, object, dynamicKey) {
+            const fragment = object[dynamicKey];
+            await sql.executeRaw(`SELECT * FROM users ${fragment}`);
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, unknown_sql_findings(1)));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_does_not_match_proven_local_receiver() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        function customLibrary() {
+            return { executeRaw() {} };
+        }
+        const sql = customLibrary();
+        export async function run(payload) {
+            await sql.executeRaw(`not SQL ${payload.id}`);
+        }",
+    );
+    assert!(scan_directory_test(project).has_no_vulns());
+}
+
+#[test]
+fn sql_injection_ignores_migration_id_argument() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import { migrationRunner } from '@forge/sql';
+        export async function run(payload) {
+            migrationRunner.enqueue(payload.id, 'CREATE TABLE users (id INT)');
+        }",
+    );
+    assert!(scan_directory_test(project).has_no_vulns());
+}
+
+// -----------------------------------------------------------------------------
 // Unit tests for `forge_analyzer::checkers::is_atlassian_url`.
 //
 // `is_atlassian_url` decides whether a fetch URL targets an Atlassian endpoint.
@@ -2971,4 +4465,612 @@ permissions: { scopes: [] }
     for scanner in ["authentication", "authorization"] {
         assert!(scan_manifest_evidence(manifest, scanner).has_no_vulns());
     }
+}
+
+#[test]
+fn sql_injection_tracks_returned_api_data_through_wrapped_fields() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import api from '@forge/api';
+        import sql from '@forge/sql';
+        function wrap(value) { return { fragment: value }; }
+        async function load() {
+            const issue = await api.asApp().requestJira('/rest/api/3/issue/ABC-1');
+            return wrap(issue.fields.summary);
+        }
+        export async function run(payload) {
+            const result = await load();
+            await sql.executeRaw(`SELECT ${result.fragment}`);
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1), "{report:#?}");
+}
+
+#[test]
+fn sql_injection_reports_the_last_assigned_untrusted_value() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import api from '@forge/api';
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            let fragment = payload.table;
+            const response = await api.asApp().requestJira('/rest/api/3/issue/ABC-1');
+            fragment = response.fields.summary;
+            await sql.prepare(`SELECT ${fragment}`);
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_numeric_provenance_does_not_promote_unknown_sql_to_high() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function number(value) { return Number(value); }
+        export async function run(payload, unknown) {
+            const limit = number(payload.limit);
+            await sql.prepare(`SELECT ${unknown} LIMIT ${limit}`);
+            await sql.prepare(`SELECT ${payload.column} LIMIT ${limit}`);
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::Low, 0), "{report:#?}");
+    assert!(
+        report.contains_sql_vuln(Severity::High, 1 + unknown_sql_findings(1)),
+        "{report:#?}"
+    );
+}
+
+#[test]
+fn sql_injection_tracks_payload_through_cross_file_projected_arguments() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import sql from '@forge/sql';
+        import { build } from './helper';
+        const resolver = new Resolver();
+        resolver.define('search', async ({ payload }) => {
+            const options = { field: payload.field };
+            const alias = options;
+            await sql.prepare(build(alias));
+        });
+        export const run = resolver.getDefinitions();
+        // src/helper.js
+        export function build({ field }) {
+            const values = [field];
+            return `SELECT ${values.join(',')}`;
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1), "{report:#?}");
+}
+
+#[test]
+fn sql_injection_reports_either_untrusted_branch_alternative() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import api, { storage } from '@forge/api';
+        import sql from '@forge/sql';
+        function identity(value) { return value; }
+        export async function run(flag) {
+            let fragment;
+            if (flag) { fragment = await storage.get('fragment'); }
+            else { fragment = await api.asApp().requestJira('/rest/api/3/issue/ABC-1'); }
+            await sql.prepare(identity(fragment));
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1), "{report:#?}");
+}
+
+#[test]
+fn sql_injection_reports_concatenation_of_many_sources() {
+    let mut source = String::from(
+        "// src/index.js\nimport { storage } from '@forge/api';\nimport sql from '@forge/sql';\nexport async function run() {\n",
+    );
+    for index in 0..12 {
+        source.push_str(&format!(
+            "const v{index} = await storage.get('key{index}');\n"
+        ));
+    }
+    source.push_str("await sql.prepare(");
+    source.push_str(
+        &(0..12)
+            .map(|index| format!("v{index}"))
+            .collect::<Vec<_>>()
+            .join(" + "),
+    );
+    source.push_str(");\n}");
+    let report = scan_directory_test(MockForgeProject::files_from_string(&source));
+    assert!(report.contains_sql_vuln(Severity::High, 1), "{report:#?}");
+}
+
+#[test]
+fn sql_injection_recursive_returns_reach_a_bounded_fixed_point() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function recurse(value, again) {
+            if (again) { return recurse(value, false); }
+            return value;
+        }
+        export async function run(payload) {
+            await sql.prepare(recurse(payload.query, true));
+        }",
+    );
+    let report = scan_directory_test(project);
+    // The solver follows the recursive return, so the payload reaches the sink.
+    assert!(report.contains_sql_vuln(Severity::High, 1), "{report:#?}");
+}
+
+#[test]
+fn sql_injection_keeps_shadowed_query_bindings_independent() {
+    for (body, high) in [
+        (
+            "let query = payload.query; { let query = 'SELECT 1'; } sql.executeRaw(query);",
+            1,
+        ),
+        (
+            "let query = 'SELECT 1'; { let query = payload.query; } sql.executeRaw(query);",
+            0,
+        ),
+        (
+            "let query = payload.query; { let query = 'SELECT 1'; query = payload.other; } query = 'SELECT 1'; sql.executeRaw(query);",
+            0,
+        ),
+    ] {
+        let source = format!(
+            "// src/index.js\nimport sql from '@forge/sql'; export function run(payload) {{ {body} }}"
+        );
+        let report = scan_directory_test_with_args(
+            MockForgeProject::files_from_string(&source),
+            Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::High, high),
+            "{body}: {report:#?}"
+        );
+        assert!(
+            report.contains_sql_vuln(Severity::Low, 0),
+            "{body}: {report:#?}"
+        );
+    }
+}
+
+/// The findings an input of unknown trust produces: none, unless the SQL
+/// scanner treats unknown values as untrusted.
+fn unknown_sql_findings(count: usize) -> usize {
+    if forge_analyzer::sql_injection::UNKNOWN_IS_UNTRUSTED {
+        count
+    } else {
+        0
+    }
+}
+
+fn assert_sql_contract_findings(source: &str, high: usize, unknown: usize) {
+    let high = high + unknown_sql_findings(unknown);
+    let report = scan_directory_test_with_args(
+        MockForgeProject::files_from_string(source),
+        Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+    );
+    assert!(!report.has_errors(), "{source}\n{report:#?}");
+    let found = report
+        .into_vulns()
+        .iter()
+        .filter(|vuln| vuln.check_name() == "forge-sql-injection")
+        .count();
+    assert_eq!(found, high, "{source}\n{report:#?}");
+    assert!(
+        report.contains_sql_vuln(Severity::High, high),
+        "{source}\n{report:#?}"
+    );
+}
+
+fn assert_ordinary_contract_findings(body: &str, high: usize, low: usize) {
+    assert_sql_contract_findings(
+        &format!(
+            "// src/index.js\nimport sql from '@forge/sql';\nexport function run(data, metadata, extra) {{ {body} }}"
+        ),
+        high,
+        low,
+    );
+}
+
+#[test]
+fn sql_contract_positional_inputs_and_exact_context_paths() {
+    for path in [
+        "installContext",
+        "installation.ari.installationId",
+        "principal.accountId",
+        "license.active",
+        "license.billingPeriod",
+        "license.ccpEntitlementId",
+        "license.ccpEntitlementSlug",
+        "license.isEvaluation",
+        "license.subscriptionEndDate",
+        "license.supportEntitlementNumber",
+        "license.trialEndDate",
+        "license.type",
+        "license.isActive",
+        "license.capabilitySet",
+        "['installContext']",
+        "['principal']['accountId']",
+    ] {
+        assert_ordinary_contract_findings(
+            &format!("sql.prepare(metadata.{path});").replace(".[", "["),
+            0,
+            0,
+        );
+    }
+    for path in [
+        "",
+        ".accountId",
+        ".license",
+        ".installation",
+        ".principal",
+        ".jobId",
+        ".principal.accountId.other",
+        ".installation.contexts[0].cloudId",
+        ".license.future",
+        "[extra].accountId",
+        ".installContext.toString()",
+    ] {
+        assert_ordinary_contract_findings(&format!("sql.prepare(metadata{path});"), 0, 1);
+    }
+    for path in [
+        "",
+        ".context.accountId",
+        ".license.active",
+        ".installation.ari.installationId",
+        ".principal.accountId",
+        "[extra].accountId",
+    ] {
+        assert_ordinary_contract_findings(&format!("sql.prepare(data{path});"), 1, 0);
+    }
+    assert_ordinary_contract_findings("sql.prepare(extra.context.accountId);", 0, 1);
+}
+
+#[test]
+fn sql_contract_resolver_apis_and_renaming() {
+    for (name, instance, arg) in [
+        ("Callback", "registry", "input"),
+        ("CompletelyDifferent", "definitions", "other"),
+    ] {
+        for registration in [
+            format!(
+                "import {name} from '@forge/resolver'; const {instance} = new {name}(); {instance}.define('query', {arg} => sql.prepare({arg}.payload.table)); export const run = {instance}.getDefinitions();"
+            ),
+            format!(
+                "import {{ makeResolver as {name} }} from '@forge/resolver'; export const run = {name}({{ query: {arg} => sql.prepare({arg}.payload.table) }});"
+            ),
+            format!(
+                "import {{ makeResolver as {name} }} from '@forge/resolver'; export const run = {name}({{ query({arg}) {{ sql.prepare({arg}.payload.table); }} }});"
+            ),
+            format!(
+                "import {name} from '@forge/resolver'; const {instance} = new {name}(); function callback({arg}) {{ sql.prepare({arg}.payload.table); }} {instance}.define('query', callback); export const run = {instance}.getDefinitions();"
+            ),
+            format!(
+                "import {{ makeResolver as {name} }} from '@forge/resolver'; function callback({arg}) {{ sql.prepare({arg}.payload.table); }} export const run = {name}({{ query: callback }});"
+            ),
+        ] {
+            assert_sql_contract_findings(
+                &format!("// src/index.js\nimport sql from '@forge/sql'; {registration}"),
+                1,
+                0,
+            );
+        }
+    }
+}
+
+#[test]
+fn sql_contract_resolver_imported_callbacks() {
+    for register in [
+        "import R from '@forge/resolver'; const registry = new R(); registry.define('query', renamed); export const run = registry.getDefinitions();",
+        "import {makeResolver as create} from '@forge/resolver'; export const run = create({query: renamed});",
+    ] {
+        assert_sql_contract_findings(
+            &format!(
+                "// src/index.js\nimport {{ callback as renamed }} from './callback'; {register}\n// src/callback.js\nimport sql from '@forge/sql'; export const callback = (input) => sql.prepare(input.payload.table);"
+            ),
+            1,
+            0,
+        );
+    }
+}
+
+#[test]
+fn sql_contract_resolver_context_and_computed_access() {
+    for (path, high, low) in [
+        ("context.accountId", 0, 0),
+        ("context.installContext", 0, 0),
+        ("context.installation.ari.installationId", 0, 0),
+        ("context.license.active", 0, 0),
+        ("context.license.type", 0, 0),
+        ("context.license.isActive", 0, 1),
+        ("context.license.capabilitySet", 0, 1),
+        ("context.principal.accountId", 0, 1),
+        ("context", 0, 1),
+        ("context.license", 0, 1),
+        ("context[key].accountId", 0, 1),
+        ("payload.context.accountId", 1, 0),
+        ("[key].accountId", 1, 0),
+    ] {
+        let expression = format!("input.{path}").replace(".[", "[");
+        assert_sql_contract_findings(
+            &format!(
+                "// src/index.js\nimport sql from '@forge/sql'; import {{ makeResolver }} from '@forge/resolver'; export const run = makeResolver({{ query(input, key) {{ sql.prepare({expression}); }} }});"
+            ),
+            high,
+            low,
+        );
+    }
+}
+
+#[test]
+fn sql_contract_destructuring_helpers_and_returns() {
+    for source in [
+        "export function run(whatever, {principal: {accountId: renamed}}) { sql.prepare(renamed); }",
+        "function get(value) { return value.principal.accountId; } export function run(data, metadata) { sql.prepare(get(metadata)); }",
+        "function get(value) { return value; } export function run(data, metadata) { sql.prepare(get(metadata).principal.accountId); }",
+        "function get(value) { return {field: value.principal.accountId}; } export function run(data, metadata) { sql.prepare(get(metadata).field); }",
+        "export function run(data, metadata) { const alias = metadata; const {principal: {accountId: renamed}} = alias; sql.prepare(renamed); }",
+    ] {
+        assert_sql_contract_findings(
+            &format!("// src/index.js\nimport sql from '@forge/sql'; {source}"),
+            0,
+            0,
+        );
+    }
+    for source in [
+        "function helper(context) { return context.accountId; } export function run(input) { sql.prepare(helper(input)); }",
+        "export function run({context: {accountId: renamed}}) { sql.prepare(renamed); }",
+        "function helper(payload, request, context) { return context.license.active; } export function run(input) { sql.prepare(helper('a', 'b', input)); }",
+    ] {
+        assert_sql_contract_findings(
+            &format!("// src/index.js\nimport sql from '@forge/sql'; {source}"),
+            1,
+            0,
+        );
+    }
+}
+
+#[test]
+fn sql_contract_overwrites_aliases_and_escapes() {
+    for body in [
+        "metadata = data; sql.prepare(metadata.principal.accountId);",
+        "metadata.principal.accountId = data.table; sql.prepare(metadata.principal.accountId);",
+        "if (extra) metadata = data; sql.prepare(metadata.principal.accountId);",
+    ] {
+        assert_ordinary_contract_findings(body, 1, 0);
+    }
+    // Known gap: values are copied, not shared, so a write through an alias
+    // does not reach the object it aliases.
+    for body in [
+        "const alias = metadata; alias.principal = data; sql.prepare(metadata.principal.accountId);",
+        "const alias = metadata.principal; alias.accountId = data.table; sql.prepare(metadata.principal.accountId);",
+    ] {
+        assert_ordinary_contract_findings(body, 0, 0);
+    }
+    for body in [
+        "escape(metadata); sql.prepare(metadata.principal.accountId);",
+        "const alias = metadata; escape(alias); sql.prepare(metadata.principal.accountId);",
+        "metadata[extra] = extra; sql.prepare(metadata.principal.accountId);",
+        "metadata = extra; sql.prepare(metadata.principal.accountId);",
+    ] {
+        assert_ordinary_contract_findings(body, 0, 1);
+    }
+}
+
+#[test]
+fn sql_contract_local_call_cannot_acquire_platform_trust() {
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; import Resolver from '@forge/resolver'; const registry = new Resolver(); function callback(input) { sql.prepare(input.context.accountId); } registry.define('registered', callback); registry.define('caller', input => callback({context: input.payload})); export const run = registry.getDefinitions();",
+        1,
+        0,
+    );
+}
+
+#[test]
+fn sql_contract_unsupported_registration_is_not_name_inference() {
+    for registration in [
+        "function makeResolver(value) { return value; } export const run = makeResolver({query: ({context}) => sql.prepare(context.accountId)});",
+        "import {makeResolver} from '@forge/resolver'; export const run = makeResolver({[key]: ({payload}) => sql.prepare(payload.query)});",
+        "import {makeResolver} from '@forge/resolver'; export const run = makeResolver({...unknown, query: ({payload}) => sql.prepare(payload.query)});",
+        "import R from '@forge/resolver'; const r = new R(); r.define(key, ({payload}) => sql.prepare(payload.query)); export const run = r.getDefinitions();",
+        "import R from '@forge/resolver'; const r = new R(); r.define('query', ({payload}) => sql.prepare(payload.query)); export const run = r;",
+        "import R from 'other-library'; const r = new R(); r.define('query', ({payload}) => sql.prepare(payload.query)); export const run = r.getDefinitions();",
+    ] {
+        assert_sql_contract_findings(
+            &format!("// src/index.js\nimport sql from '@forge/sql'; {registration}"),
+            0,
+            0,
+        );
+    }
+}
+
+#[test]
+fn sql_contract_shorthand_callbacks_and_optional_access() {
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; import {makeResolver as make} from '@forge/resolver'; function query({payload: renamed}) { sql.prepare(renamed.context.license.active); } export const run = make({query});",
+        1,
+        0,
+    );
+    assert_ordinary_contract_findings("sql.prepare(metadata?.principal?.accountId);", 0, 0);
+    assert_ordinary_contract_findings("sql.prepare(data?.context?.accountId);", 1, 0);
+    for signature in [
+        "data, metadata = arbitrary",
+        "data, {principal: {accountId} = arbitrary}",
+        "data, {...metadata}",
+        "data, {[key]: metadata}",
+    ] {
+        assert_sql_contract_findings(
+            &format!(
+                "// src/index.js\nimport sql from '@forge/sql'; export function run({signature}) {{ sql.prepare(metadata.principal.accountId); }}"
+            ),
+            0,
+            1,
+        );
+    }
+}
+
+#[test]
+fn sql_contract_branch_guarantees_and_helper_effects() {
+    assert_ordinary_contract_findings(
+        "let selected; if(extra) selected = metadata; else selected = extra; sql.prepare(selected.principal.accountId);",
+        0,
+        1,
+    );
+    assert_ordinary_contract_findings(
+        "let selected; if(extra) selected = metadata; else selected = metadata; sql.prepare(selected.principal.accountId);",
+        0,
+        0,
+    );
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; function mutate(value) { unknown(value); } export function run(data, metadata) { mutate(metadata); sql.prepare(metadata.principal.accountId); }",
+        0,
+        1,
+    );
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; function read(value, stop) { if(stop) return value.principal.accountId; return read(value, true); } export function run(data, metadata) { sql.prepare(read(metadata, data.stop)); }",
+        0,
+        0,
+    );
+}
+
+#[test]
+fn sql_contract_alias_identity_survives_lost_schema_and_wrappers() {
+    // Known gap: a write through an alias does not reach the aliased object.
+    assert_ordinary_contract_findings(
+        "const selected = extra ? metadata : extra; selected.principal = data; sql.prepare(metadata.principal.accountId);",
+        0,
+        0,
+    );
+    assert_ordinary_contract_findings(
+        "const wrapper = {context: metadata}; escape(wrapper); sql.prepare(metadata.principal.accountId);",
+        0,
+        1,
+    );
+    assert_ordinary_contract_findings(
+        "const copied = metadata.principal.accountId; escape(metadata); sql.prepare(copied);",
+        0,
+        0,
+    );
+    assert_ordinary_contract_findings(
+        "const wrapper = {copied: metadata.principal.accountId}; escape(metadata); sql.prepare(wrapper.copied);",
+        0,
+        0,
+    );
+}
+
+#[test]
+fn sql_contract_static_alias_writes_override_defaults() {
+    assert_ordinary_contract_findings(
+        "const alias = metadata.principal; alias.accountId = 'fixed'; sql.prepare(metadata.principal.accountId);",
+        0,
+        0,
+    );
+    assert_ordinary_contract_findings(
+        "metadata.license = data; sql.prepare(metadata.license.active);",
+        1,
+        0,
+    );
+    assert_ordinary_contract_findings(
+        "metadata.principal.accountId = 'fixed'; escape(metadata); sql.prepare(metadata.principal.accountId);",
+        0,
+        1,
+    );
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; function escapeWrapped(value) { const holder = {ref: value}; unknown(holder); } export function run(data, metadata) { escapeWrapped(metadata); sql.prepare(metadata.principal.accountId); }",
+        0,
+        1,
+    );
+}
+
+#[test]
+fn sql_contract_recursive_calls_propagate_actual_arguments() {
+    assert_ordinary_contract_findings(
+        "if (data.again) return run('fixed', {principal: {accountId: data.table}}, false); sql.prepare(metadata.principal.accountId);",
+        1,
+        0,
+    );
+    assert_ordinary_contract_findings(
+        "let selected = metadata; if (extra) selected = {principal: {accountId: data.table}}; sql.prepare(selected.principal.accountId);",
+        1,
+        0,
+    );
+}
+
+#[test]
+fn sql_contract_mutated_registration_bindings_are_unclassified() {
+    for source in [
+        "import Resolver from '@forge/resolver'; let r = new Resolver(); r.define('query', ({payload}) => sql.prepare(payload.table)); export const run = r.getDefinitions(); r = other;",
+        "import Resolver from '@forge/resolver'; const r = new Resolver(); r.define('query', ({payload}) => sql.prepare(payload.table)); r.define = other; export const run = r.getDefinitions();",
+        "import Resolver from '@forge/resolver'; const r = new Resolver(); let callback = ({payload}) => sql.prepare(payload.table); r.define('query', callback); callback = other; export const run = r.getDefinitions();",
+    ] {
+        assert_sql_contract_findings(
+            &format!("// src/index.js\nimport sql from '@forge/sql'; {source}"),
+            0,
+            0,
+        );
+    }
+}
+
+#[test]
+fn sql_contract_static_callback_aliases_and_handler_objects() {
+    for declarations in [
+        "function original(input) { sql.prepare(input.payload.table); } const renamed = original; const handlers = {query: renamed}; export const run = make(handlers);",
+        "const handlers = { query(input) { sql.prepare(input.payload.table); } }; export const run = make(handlers);",
+        "const handlers = { query: input => sql.prepare(input.payload.table) }; export const run = make(handlers);",
+        "const handlers = { query: function(input) { sql.prepare(input.payload.table); } }; export const run = make(handlers);",
+        "function original(input) { sql.prepare(input.payload.table); } const renamed = original; const registry = new Resolver(); registry.define('query', renamed); export const run = registry.getDefinitions();",
+    ] {
+        assert_sql_contract_findings(
+            &format!(
+                "// src/index.js\nimport sql from '@forge/sql'; import Resolver, {{makeResolver as make}} from '@forge/resolver'; {declarations}"
+            ),
+            1,
+            0,
+        );
+    }
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; function handler(arbitrary) { sql.prepare(arbitrary.table); } export const run = handler;",
+        1,
+        0,
+    );
+    assert_sql_contract_findings(
+        "// src/index.js\nimport * as callbacks from './callback'; import {makeResolver as make} from '@forge/resolver'; export const run = make({query: callbacks.query});\n// src/callback.js\nimport sql from '@forge/sql'; export function query(input) { sql.prepare(input.payload.table); }",
+        1,
+        0,
+    );
+}
+
+#[test]
+fn sql_contract_joined_scalar_paths_do_not_trust_descendants() {
+    assert_ordinary_contract_findings(
+        "const selected = extra ? metadata.installContext : metadata.principal.accountId; sql.prepare(selected);",
+        0,
+        0,
+    );
+    assert_ordinary_contract_findings(
+        "const selected = extra ? metadata.installContext : metadata.principal.accountId; sql.prepare(selected.accountId);",
+        0,
+        1,
+    );
+}
+
+#[test]
+fn sql_contract_nested_object_writes_keep_the_target_path() {
+    assert_ordinary_contract_findings(
+        "metadata.principal = {accountId: 'fixed'}; sql.prepare(metadata.accountId);",
+        0,
+        1,
+    );
+    assert_ordinary_contract_findings(
+        "metadata.principal = {accountId: data.table}; sql.prepare(metadata.principal.accountId);",
+        1,
+        0,
+    );
 }
