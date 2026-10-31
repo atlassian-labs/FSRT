@@ -3950,6 +3950,104 @@ fn sql_injection_preserves_fixed_structure_separately_from_returned_parameters()
 }
 
 #[test]
+fn sql_injection_accepts_literal_placeholder_list_generation() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function buildPlaceholders(count) {
+            return new Array(count).fill('?').join(', ');
+        }
+        function buildQuery(values) {
+            const placeholders = values.map(() => '?').join(', ');
+            return `DELETE FROM users WHERE id IN (${placeholders})`;
+        }
+        export async function run(payload) {
+            const mapped = payload.ids.map(() => '?').join(',');
+            const rows = new Array(payload.rowCount).fill('(?, ?)').join(', ');
+            const wrapped = payload.ids.map(() => 'UUID_TO_BIN(?,1)').join(',');
+            const defaultJoined = payload.ids.map(() => '?').join();
+            const built = buildPlaceholders(payload.ids.length);
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${mapped})`)
+                .bindParams(...payload.ids).execute();
+            await sql.prepare(`INSERT INTO pairs VALUES ${rows}`)
+                .bindParams(...payload.values).execute();
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${wrapped})`)
+                .bindParams(...payload.ids).execute();
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${defaultJoined})`)
+                .bindParams(...payload.ids).execute();
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${built})`)
+                .bindParams(...payload.ids).execute();
+            await sql.prepare(buildQuery(payload.ids))
+                .bindParams(...payload.ids).execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_accepts_local_array_length_for_placeholder_indexes() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            let query = 'SELECT * FROM users WHERE 1=1';
+            const params = [];
+            if (payload.name) {
+                query += ` AND name = $${params.length + 1}`;
+                params.push(payload.name);
+            }
+            if (payload.email) {
+                query += ` AND email = $${params.length + 1}`;
+                params.push(payload.email);
+            }
+            query += ` LIMIT 25 OFFSET $${params.length + 1}`;
+            params.push(payload.startAt);
+            await sql.prepare(query).bindParams(...params).execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_does_not_trust_unproven_length_properties() {
+    let payload_property = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            await sql.prepare(`SELECT * FROM users LIMIT ${payload.length}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(payload_property).contains_sql_vuln(Severity::High, 1));
+
+    let object_property = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const options = { length: payload.fragment };
+            await sql.prepare(`SELECT * FROM users LIMIT ${options.length}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(object_property).contains_sql_vuln(Severity::High, 1));
+
+    let reassigned_array = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            let params = [];
+            params = payload.params;
+            await sql.prepare(`SELECT * FROM users LIMIT ${params.length}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(reassigned_array).contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
 fn sql_injection_reports_each_distinct_sink_location_once() {
     let project = MockForgeProject::files_from_string(
         "// src/index.js

@@ -4,7 +4,8 @@
 //! module payload and request envelope of a Forge invocation, storage and API
 //! reads, network responses, and the rows `@forge/sql` returns; a sink is the
 //! query text of `sql.prepare`, `sql.executeRaw` or `migrationRunner.enqueue`.
-//! Numeric conversion keeps a value's provenance but makes its text safe.
+//! Numeric conversion and a placeholder list keep a value's provenance but make
+//! its text safe.
 //!
 //! A value the analysis cannot classify is `UNKNOWN`, which is trusted for now:
 //! it never produces a finding. `UNKNOWN_IS_UNTRUSTED` is the one switch to
@@ -20,8 +21,8 @@ use crate::{
         WithCallStack,
     },
     ir::{
-        Base, BinOp, Body, CallPathPart, Inst, Intrinsic, Location, Operand, Projection, Rvalue,
-        UnOp, VarId, VarKind, Variable,
+        Base, BinOp, Body, CallPathPart, Inst, Intrinsic, Literal, Location, Operand, Projection,
+        Rvalue, UnOp, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     taint::{
@@ -31,6 +32,7 @@ use crate::{
 };
 use smallvec::SmallVec;
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     fmt,
     ops::ControlFlow,
@@ -105,10 +107,32 @@ fn sql_sink(env: &Environment, body: &Body, location: Location) -> Option<SqlSin
 
 /// Taint on main's tracker, with a value's facts meaning "may put SQL syntax of
 /// an attacker's choosing into query text". Provenance records only that a value
-/// derives from a source: numeric conversion clears the facts and keep the
-/// provenance.
+/// derives from a source: numeric conversion and a placeholder list clear the
+/// facts and keep the provenance.
 #[derive(Default)]
-pub struct SqlPolicy {}
+pub struct SqlPolicy {
+    /// Whether a `join` call builds a list of `?` placeholders, by call site.
+    placeholder_lists: RefCell<HashMap<(DefId, Location), bool>>,
+}
+
+impl SqlPolicy {
+    fn is_placeholder_list(&self, call: &UnresolvedCall<'_, Taint>) -> bool {
+        let site = call.site();
+        *self
+            .placeholder_lists
+            .borrow_mut()
+            .entry(site)
+            .or_insert_with(|| {
+                is_placeholder_list_call(
+                    call.env(),
+                    call.body(),
+                    site.0,
+                    call.callee(),
+                    call.operands(),
+                )
+            })
+    }
+}
 
 impl TaintPolicy for SqlPolicy {
     type Facts = Taint;
@@ -255,6 +279,9 @@ impl TaintPolicy for SqlPolicy {
         {
             return Some(FlowValue::from_taint(Taint::Yes));
         }
+        if call.method == "join" && self.is_placeholder_list(call) {
+            return Some(FlowValue::default());
+        }
         if UNKNOWN_IS_UNTRUSTED && is_unmodelled_call(env, body, call.callee()) {
             let inputs = call
                 .args
@@ -288,6 +315,165 @@ fn is_unmodelled_call(env: &Environment, body: &Body, callee: &Operand) -> bool 
         || matches!(variable.base, Base::Var(var)
             if matches!(body.vars.get(var), Some(VarKind::GlobalRef(binding))
                 if env.is_undeclared_global(*binding)))
+}
+
+fn literal_string(operand: &Operand) -> Option<&str> {
+    match operand {
+        Operand::Lit(Literal::Str(value) | Literal::JSXText(value)) => Some(value.as_ref()),
+        _ => None,
+    }
+}
+
+fn is_placeholder_fragment(operand: &Operand) -> bool {
+    literal_string(operand).is_some_and(|value| value.contains('?'))
+}
+
+fn is_placeholder_separator(operand: &Operand) -> bool {
+    literal_string(operand).is_some()
+}
+
+fn is_fresh_array_variable(
+    env: &Environment,
+    body: &Body,
+    def: DefId,
+    variable: &Variable,
+    visiting: &mut HashSet<(DefId, VarId)>,
+) -> bool {
+    let Base::Var(var) = variable.base else {
+        return false;
+    };
+    if !visiting.insert((def, var)) {
+        return false;
+    }
+    if placeholder_collection_is_modified_or_escapes(env, body, variable, "fill") {
+        visiting.remove(&(def, var));
+        return false;
+    }
+    if array_literal_elements(env, body, variable).is_some() {
+        visiting.remove(&(def, var));
+        return true;
+    }
+    let definitions = variable_definitions_with_aliases(body, variable);
+    let result = !definitions.is_empty()
+        && definitions.into_iter().all(|(_, rvalue)| match rvalue {
+            Rvalue::Read(Operand::Var(source)) => {
+                is_fresh_array_variable(env, body, def, source, visiting)
+            }
+            Rvalue::Phi(values) => values.iter().all(|(source, _)| {
+                is_fresh_array_variable(env, body, def, &Variable::new(*source), visiting)
+            }),
+            Rvalue::Call(callee, _) => unresolved_global_named(env, body, callee, "Array"),
+            _ => false,
+        });
+    visiting.remove(&(def, var));
+    result
+}
+
+fn placeholder_collection_is_modified_or_escapes(
+    env: &Environment,
+    body: &Body,
+    variable: &Variable,
+    allowed_method: &str,
+) -> bool {
+    let Base::Var(root) = variable.base else {
+        return true;
+    };
+    // The writes that make up an array literal are the literal itself.
+    let is_literal = array_literal_elements(env, body, variable).is_some();
+    let aliases = body.binding_variables(variable).map_or_else(
+        || HashSet::from([root]),
+        |aliases| aliases.iter().copied().collect(),
+    );
+    let is_alias =
+        |candidate: &Variable| matches!(candidate.base, Base::Var(var) if aliases.contains(&var));
+
+    body.iter_blocks_enumerated()
+        .flat_map(|(_, block)| block.iter())
+        .any(|inst| {
+            if let Inst::Assign(target, _) = inst
+                && !target.projections.is_empty()
+                && is_alias(target)
+                && !is_literal
+            {
+                return true;
+            }
+            let Some((callee, operands)) = inst.rvalue().as_call() else {
+                return false;
+            };
+            if operands
+                .iter()
+                .any(|operand| matches!(operand, Operand::Var(value) if is_alias(value)))
+            {
+                return true;
+            }
+            method_receiver(callee).is_some_and(|(receiver, method)| {
+                if !is_alias(&receiver) {
+                    return false;
+                }
+                method != allowed_method
+                    || (allowed_method == "fill"
+                        && (operands.len() != 1 || !is_placeholder_fragment(&operands[0])))
+            })
+        })
+}
+
+fn is_placeholder_sequence_variable(
+    env: &Environment,
+    body: &Body,
+    def: DefId,
+    variable: &Variable,
+    visiting: &mut HashSet<(DefId, VarId)>,
+) -> bool {
+    let Base::Var(var) = variable.base else {
+        return false;
+    };
+    if !visiting.insert((def, var)) {
+        return false;
+    }
+    if placeholder_collection_is_modified_or_escapes(env, body, variable, "join") {
+        visiting.remove(&(def, var));
+        return false;
+    }
+    if let Some(elements) = array_literal_elements(env, body, variable) {
+        visiting.remove(&(def, var));
+        return !elements.is_empty() && elements.iter().all(is_placeholder_fragment);
+    }
+    let definitions = variable_definitions_with_aliases(body, variable);
+    let result = !definitions.is_empty()
+        && definitions.into_iter().all(|(_, rvalue)| match rvalue {
+            Rvalue::Read(Operand::Var(source)) => {
+                is_placeholder_sequence_variable(env, body, def, source, visiting)
+            }
+            Rvalue::Phi(values) => values.iter().all(|(source, _)| {
+                is_placeholder_sequence_variable(env, body, def, &Variable::new(*source), visiting)
+            }),
+            Rvalue::Call(callee, operands) => {
+                let Some((receiver, "fill")) = method_receiver(callee) else {
+                    return false;
+                };
+                operands.len() == 1
+                    && is_placeholder_fragment(&operands[0])
+                    && is_fresh_array_variable(env, body, def, &receiver, &mut HashSet::new())
+            }
+            _ => false,
+        });
+    visiting.remove(&(def, var));
+    result
+}
+
+fn is_placeholder_list_call(
+    env: &Environment,
+    body: &Body,
+    def: DefId,
+    callee: &Operand,
+    operands: &[Operand],
+) -> bool {
+    let Some((receiver, "join")) = method_receiver(callee) else {
+        return false;
+    };
+    operands.len() <= 1
+        && operands.first().is_none_or(is_placeholder_separator)
+        && is_placeholder_sequence_variable(env, body, def, &receiver, &mut HashSet::new())
 }
 
 fn originates_from_prepare(

@@ -65,6 +65,28 @@ pub(crate) fn array_literal_elements(
 /// The name lowering gives the local that holds an array literal.
 const ARRAY_LITERAL_NAME: &str = "__ARRAY";
 
+pub(crate) fn unresolved_global_named(
+    env: &Environment,
+    body: &Body,
+    operand: &Operand,
+    expected: &str,
+) -> bool {
+    let Operand::Var(variable) = operand else {
+        return false;
+    };
+    let Base::Var(var) = variable.base else {
+        return false;
+    };
+    if !variable.projections.is_empty() {
+        return false;
+    }
+    let Some(VarKind::GlobalRef(binding)) = body.vars.get(var) else {
+        return false;
+    };
+    let binding = env.resolve_alias(*binding);
+    matches!(env.def_ref(binding), DefKind::Undefined) && env.def_name(binding) == expected
+}
+
 pub(crate) fn method_receiver(callee: &Operand) -> Option<(Variable, &str)> {
     let Operand::Var(variable) = callee else {
         return None;
