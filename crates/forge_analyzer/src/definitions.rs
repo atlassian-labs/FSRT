@@ -1,6 +1,7 @@
 #![allow(dead_code, unused)]
 
 mod facts;
+mod imports;
 
 use std::borrow::BorrowMut;
 use std::hash::Hash;
@@ -1847,6 +1848,7 @@ impl FunctionAnalyzer<'_> {
             _ => None,
         });
         let facts = CallFacts {
+            recovered_import: Default::default(),
             import: root.and_then(|def| self.res.as_foreign_import(def)),
             root,
             path: props
