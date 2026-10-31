@@ -294,6 +294,10 @@ impl TaintPolicy for SqlPolicy {
         None
     }
 
+    fn adds_arguments_to_receiver(&self, method: &str) -> bool {
+        method == "push"
+    }
+
     fn entry_argument(&self, input: &EntryInput<'_>) -> Option<TrackedValue<Taint>> {
         // What the platform passes first, a function's payload or a resolver's
         // request, is attacker data. Nothing else about the invocation is classified.

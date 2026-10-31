@@ -3950,6 +3950,33 @@ fn sql_injection_preserves_fixed_structure_separately_from_returned_parameters()
 }
 
 #[test]
+fn sql_injection_rejects_untrusted_text_in_returned_structural_fragment() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function buildFilter(fragment, status) {
+            const clauses = ['tenant_id = ?'];
+            const params = [status];
+            clauses.push(fragment);
+            return {
+                sql: clauses.join(' AND '),
+                params,
+            };
+        }
+        export async function run(payload) {
+            const filter = buildFilter(payload.fragment, payload.status);
+            await sql.prepare(`SELECT * FROM users WHERE ${filter.sql}`)
+                .bindParams(...filter.params)
+                .execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
 fn sql_injection_accepts_exact_array_and_set_identifier_allowlists() {
     let project = MockForgeProject::files_from_string(
         "// src/index.js
@@ -4003,6 +4030,32 @@ fn sql_injection_accepts_allowlisted_destructured_default_binding() {
         }",
     );
     assert!(scan_directory_test(unguarded).contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_adds_pushed_values_beside_a_numeric_length() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const clauses = ['tenant_id = ?'];
+            clauses.push(payload.fragment);
+            await sql.prepare(`SELECT 1 FROM t WHERE ${clauses.join(' AND ')} LIMIT ${clauses.length}`).execute();
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1), "{report:#?}");
+
+    let length_only = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const params = [];
+            params.push(payload.value);
+            await sql.prepare(`SELECT 1 FROM t WHERE a = $${params.length}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(length_only).contains_sql_vuln(Severity::High, 0));
 }
 
 #[test]
@@ -4149,6 +4202,67 @@ fn sql_injection_does_not_trust_unproven_length_properties() {
         }",
     );
     assert!(scan_directory_test(reassigned_array).contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_rejects_dynamic_placeholder_tokens_separators_and_constructors() {
+    let dynamic_token = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const placeholders = new Array(payload.count).fill(payload.fragment).join(',');
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${placeholders})`).execute();
+        }",
+    );
+    assert!(scan_directory_test(dynamic_token).contains_sql_vuln(Severity::High, 1));
+
+    let dynamic_separator = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const placeholders = new Array(payload.count).fill('?').join(payload.separator);
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${placeholders})`).execute();
+        }",
+    );
+    assert!(scan_directory_test(dynamic_separator).contains_sql_vuln(Severity::High, 1));
+
+    let mutated_sequence = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const placeholders = new Array(payload.count).fill('?');
+            placeholders.push(payload.fragment);
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${placeholders.join(',')})`)
+                .execute();
+        }",
+    );
+    assert!(scan_directory_test(mutated_sequence).contains_sql_vuln(Severity::High, 1));
+
+    let filtered_values = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const values = payload.fragments.filter(() => '?').join(',');
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${values})`).execute();
+        }",
+    );
+    let report = scan_directory_test(filtered_values);
+    assert!(report.contains_sql_vuln(Severity::High, unknown_sql_findings(1)));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+
+    let shadowed_array = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function Array(value) {
+            return value;
+        }
+        export async function run(payload) {
+            const placeholders = new Array(payload.fragment).fill('?').join(',');
+            await sql.prepare(`SELECT * FROM users WHERE id IN (${placeholders})`).execute();
+        }",
+    );
+    let report = scan_directory_test(shadowed_array);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
 }
 
 #[test]
