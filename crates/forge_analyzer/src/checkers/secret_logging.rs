@@ -14,9 +14,7 @@ use tracing::warn;
 use crate::{
     definitions::DefId,
     interp::{Checker, Interp, JoinSemiLattice, Runner, WithCallStack},
-    ir::{
-        BasicBlockId, BinOp, ConsoleMethod, Inst, Intrinsic, Location, Operand, Projection, Rvalue,
-    },
+    ir::{BinOp, ConsoleMethod, Inst, Intrinsic, Location, Operand, Projection, Rvalue},
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     taint::{
         FlowFacts, FlowValue, Taint, TaintDataflow, TaintPolicy, TaintReader, UnresolvedCall,
@@ -349,6 +347,7 @@ impl<'cx> Runner<'cx> for SecretLoggingChecker {
         _interp: &Interp<'cx, Self>,
         _intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -358,12 +357,13 @@ impl<'cx> Runner<'cx> for SecretLoggingChecker {
     fn visit_call(
         &mut self,
         interp: &Interp<'cx, Self>,
+        caller: DefId,
         callee: &'cx Operand,
         _args: &'cx [Operand],
-        block: BasicBlockId,
+        loc: Location,
         state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
-        visit_taint_call(self, interp, callee, block, state)
+        visit_taint_call(self, interp, caller, callee, loc, state)
     }
 
     fn visit_inst(
@@ -399,7 +399,7 @@ impl<'cx> Runner<'cx> for SecretLoggingChecker {
                 sink: *sink,
             });
         }
-        self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
+        self.visit_rvalue(interp, inst.rvalue(), def, loc, state)
     }
 }
 
