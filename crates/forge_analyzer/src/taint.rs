@@ -183,6 +183,23 @@ impl<F> UnresolvedCall<'_, F> {
         self.env.def_name(self.def)
     }
 
+    pub fn env(&self) -> &Environment {
+        self.env
+    }
+
+    pub fn body(&self) -> &Body {
+        self.body
+    }
+
+    pub fn callee(&self) -> &Operand {
+        self.callee
+    }
+
+    /// The call's argument operands, in source order.
+    pub fn operands(&self) -> &[Operand] {
+        self.operands
+    }
+
     /// The most characters a `slice`, `substring` or `substr` method call can
     /// return, when its bounds are literals or offsets from the receiver's own
     /// `length`: `key.slice(-4)` and `key.substring(key.length - 4)` return at
