@@ -167,6 +167,14 @@ pub trait TaintPolicy: Sized {
             value
         }
     }
+
+    /// Variables whose facts are safe on entry to `block`, such as a value
+    /// that only a successful allowlist check reaches. The block's input is
+    /// the join of its predecessors, so a guarantee some predecessor does not
+    /// establish is not kept at a join.
+    fn safe_on_entry(&self, _site: &BlockSite<'_>, _block: BasicBlockId) -> Vec<Variable> {
+        Vec::new()
+    }
 }
 
 /// The body and instruction a policy is asked about.
@@ -176,6 +184,14 @@ pub struct InstSite<'a> {
     pub body: &'a Body,
     pub def: DefId,
     pub location: Location,
+}
+
+/// The body whose block is being entered.
+#[derive(Clone, Copy)]
+pub struct BlockSite<'a> {
+    pub env: &'a Environment,
+    pub body: &'a Body,
+    pub def: DefId,
 }
 
 /// An unmodelled call, as `TaintPolicy::method_value` sees it.
@@ -850,6 +866,48 @@ impl<P: TaintPolicy> TaintDataflow<P> {
         }
     }
 
+    /// Apply the policy's entry guarantees: each named variable keeps its
+    /// provenance but its facts become clean, as for any other copy of it.
+    fn mark_safe_on_entry(
+        &self,
+        site: Site<'_>,
+        block: BasicBlockId,
+        frame: &mut FlowState<P::Facts>,
+    ) {
+        let block_site = BlockSite {
+            env: site.env,
+            body: site.body,
+            def: site.def,
+        };
+        for variable in self.policy.safe_on_entry(&block_site, block) {
+            let Some(id) = variable.as_var_id() else {
+                continue;
+            };
+            let current = self.value(frame, &Operand::Var(variable.clone()));
+            let clean =
+                |value: &FlowValue<P::Facts>| value.with_facts(P::Facts::from_taint(Taint::No));
+            let safe = TrackedValue {
+                root: clean(&current.root),
+                fields: current.fields.as_ref().map(|fields| {
+                    Rc::new(
+                        fields
+                            .iter()
+                            .map(|(path, value)| (path.clone(), clean(value)))
+                            .collect::<FieldMap<_>>(),
+                    )
+                }),
+            };
+            self.assign(frame, id, &variable.projections, safe.clone());
+            if let Some(binding) = variable_def(&site.body.vars[id])
+                && variable.projections.is_empty()
+            {
+                for &alias in &site.layout.aliases[&binding] {
+                    frame.set(alias, safe.clone());
+                }
+            }
+        }
+    }
+
     fn lodash_call(
         &self,
         env: &Environment,
@@ -1489,7 +1547,11 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
             let targets = previous_edges.values().copied().collect();
             (BTreeMap::new(), BTreeSet::new(), targets)
         };
+        let fresh = resume.is_none();
         let (start, mut frame) = resume.unwrap_or_else(|| (0, self.inputs[&key].clone()));
+        if fresh {
+            dataflow.mark_safe_on_entry(site, bb, &mut frame);
+        }
         let mut returning = true;
         for (idx, inst) in block.iter().enumerate().skip(start) {
             let location = Location::new(bb, idx as u32);
