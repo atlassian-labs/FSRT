@@ -55,8 +55,9 @@ use crate::ir::VarId;
 use crate::{
     ctx::ModId,
     ir::{
-        Base, BasicBlockId, Body, ConsoleMethod, Inst, Intrinsic, Literal, Operand, Projection,
-        RETURN_VAR, Rvalue, STARTING_BLOCK, Template, Terminator, VarKind, Variable,
+        Base, BasicBlockId, Body, CallFacts, CallPathPart, ConsoleMethod, Inst, Intrinsic, Literal,
+        Location, Operand, Projection, RETURN_VAR, Rvalue, STARTING_BLOCK, Template, Terminator,
+        VarKind, Variable,
     },
 };
 
@@ -1736,7 +1737,7 @@ impl FunctionAnalyzer<'_> {
         self.lower_expr(expr, None)
     }
 
-    fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
+    fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread], span: Span) -> Operand {
         // Model fulfillment as a call with the resolved value. Inlining the
         // callback's statements discarded its parameter and confused callback
         // returns with returns from the enclosing function.
@@ -1792,7 +1793,7 @@ impl FunctionAnalyzer<'_> {
                             .callee
                             .as_expr()
                             .map_or(CalleeRef::Import, |e| CalleeRef::Expr(e));
-                        self.lower_call(inner_callee, &inner_call.args);
+                        self.lower_call(inner_callee, &inner_call.args, inner_call.span);
                     }
                     match &**expr {
                         Expr::Arrow(ArrowExpr { body, .. }) => match &**body {
@@ -1836,7 +1837,34 @@ impl FunctionAnalyzer<'_> {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
         };
-        let res = self.body.push_tmp(self.block, call, None);
+        let root = props.iter().find_map(|part| match part {
+            PropPath::Def(def) => Some(*def),
+            _ => None,
+        });
+        let facts = CallFacts {
+            import: root.and_then(|def| self.res.as_foreign_import(def)),
+            root,
+            path: props
+                .into_iter()
+                .map(|part| match part {
+                    PropPath::Def(def) => CallPathPart::Binding(def),
+                    PropPath::Static(name) => CallPathPart::Property(name),
+                    PropPath::MemberCall(name) => CallPathPart::MemberCall(name),
+                    PropPath::Unknown(id) => CallPathPart::Unresolved(id),
+                    PropPath::Computed(id) => CallPathPart::Computed(id),
+                    PropPath::Private(id) => CallPathPart::Private(id),
+                    PropPath::Expr(_) => CallPathPart::Expression,
+                    PropPath::This => CallPathPart::This,
+                    PropPath::Super => CallPathPart::Super,
+                })
+                .collect(),
+        };
+        let location = Location::new(
+            self.block,
+            self.body.blockbuilders[self.block].insts.len() as u32,
+        );
+        self.body.set_call_facts(location, facts);
+        let res = self.body.push_tmp_spanned(self.block, call, None, span);
         Operand::with_var(res)
     }
 
@@ -2211,8 +2239,11 @@ impl FunctionAnalyzer<'_> {
                         }
                         SimpleAssignTarget::OptChain(OptChainExpr { optional, base, .. }) => {
                             match &**base {
-                                OptChainBase::Call(OptCall { callee, args, .. }) => {
-                                    let callee = self.lower_call(callee.as_ref().into(), args);
+                                OptChainBase::Call(OptCall {
+                                    callee, args, span, ..
+                                }) => {
+                                    let callee =
+                                        self.lower_call(callee.as_ref().into(), args, *span);
                                     let lval = self.body.coerce_to_lval(self.block, callee, None);
                                     self.push_curr_inst(Inst::Assign(
                                         lval,
@@ -2273,13 +2304,18 @@ impl FunctionAnalyzer<'_> {
                 Operand::with_var(phi)
             }
 
-            Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
-            Expr::New(NewExpr { callee, args, .. }) => {
+            Expr::Call(CallExpr {
+                callee, args, span, ..
+            }) => self.lower_call(callee.into(), args, *span),
+            Expr::New(NewExpr {
+                callee, args, span, ..
+            }) => {
                 if let Expr::Ident(ident) = &**callee {
                     // remove the clone
                     return self.lower_call(
                         CalleeRef::Expr(callee),
                         args.clone().unwrap_or_default().as_slice(),
+                        *span,
                     );
                 }
 
@@ -2360,9 +2396,9 @@ impl FunctionAnalyzer<'_> {
             | Expr::TsSatisfies(TsSatisfiesExpr { expr, .. }) => self.lower_expr(expr, None),
             Expr::PrivateName(PrivateName { name, .. }) => todo!(),
             Expr::OptChain(OptChainExpr { base, .. }) => match &**base {
-                OptChainBase::Call(OptCall { callee, args, .. }) => {
-                    self.lower_call(callee.as_ref().into(), args)
-                }
+                OptChainBase::Call(OptCall {
+                    callee, args, span, ..
+                }) => self.lower_call(callee.as_ref().into(), args, *span),
                 OptChainBase::Member(MemberExpr { obj, prop, .. }) => {
                     // TODO: create separate basic blocks
                     self.lower_member(obj, prop)
