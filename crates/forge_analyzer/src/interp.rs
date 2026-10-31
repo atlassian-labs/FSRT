@@ -1701,6 +1701,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     /// Sets the current entry point for tracing/reporting purposes.
+    pub fn set_input_category(&mut self, category: InputCategory) {
+        self.entry.input_category = category;
+    }
+
     pub fn set_entry(&mut self, file: PathBuf, function: String) {
         self.entry = EntryPoint {
             file,

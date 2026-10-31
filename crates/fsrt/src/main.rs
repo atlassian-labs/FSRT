@@ -190,6 +190,9 @@ struct ResolvedEntryPoint<'a> {
     path: PathBuf,
     module: ModId,
     def_id: DefId,
+    invocation_def: DefId,
+    product_events: Vec<&'a str>,
+    scheduled: bool,
     webtrigger: bool,
     invokable: bool,
     admin: bool,
@@ -701,6 +704,13 @@ pub(crate) fn scan_directory<'a>(
             // SQL source state is entrypoint-specific. A fresh interpreter prevents
             // one resolver or trigger from tainting an unrelated entrypoint.
             let mut sql_interp = interpreters.create::<SqlInjectionChecker>(false);
+            sql_interp.set_input_category(if func.webtrigger {
+                forge_analyzer::interp::InputCategory::WebRequest
+            } else if !func.product_events.is_empty() {
+                forge_analyzer::interp::InputCategory::ProductEvent
+            } else {
+                forge_analyzer::interp::InputCategory::Payload
+            });
             if let Err(err) = sql_interp.run_checker_with_contract(
                 func.def_id,
                 &mut sql_checker,
