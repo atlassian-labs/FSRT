@@ -147,6 +147,55 @@ impl SqlPolicy {
     }
 }
 
+/// The root of a Forge `context` object. Only these paths are known trusted;
+/// everything else in it is unclassified.
+fn approved_context_paths(ordinary: bool) -> Vec<Vec<&'static str>> {
+    let mut paths = vec![
+        vec!["installContext"],
+        vec!["installation", "ari", "installationId"],
+    ];
+    for name in [
+        "active",
+        "billingPeriod",
+        "ccpEntitlementId",
+        "ccpEntitlementSlug",
+        "isEvaluation",
+        "subscriptionEndDate",
+        "supportEntitlementNumber",
+        "trialEndDate",
+        "type",
+    ] {
+        paths.push(vec!["license", name]);
+    }
+    if ordinary {
+        paths.extend([
+            vec!["principal", "accountId"],
+            vec!["license", "isActive"],
+            vec!["license", "capabilitySet"],
+        ]);
+    } else {
+        paths.push(vec!["accountId"]);
+    }
+    paths
+}
+
+/// A context object, or the same object at `prefix` of a larger one.
+fn context_value(
+    mut value: TrackedValue<Taint>,
+    prefix: &[&str],
+    ordinary: bool,
+) -> TrackedValue<Taint> {
+    let unknown = || FlowValue::from_taint(UNKNOWN);
+    if !prefix.is_empty() {
+        value = value.with_field(prefix, unknown());
+    }
+    for path in approved_context_paths(ordinary) {
+        let path: Vec<&str> = prefix.iter().copied().chain(path).collect();
+        value = value.with_field(&path, FlowValue::default());
+    }
+    value
+}
+
 impl TaintPolicy for SqlPolicy {
     type Facts = Taint;
 
@@ -310,15 +359,30 @@ impl TaintPolicy for SqlPolicy {
     }
 
     fn entry_argument(&self, input: &EntryInput<'_>) -> Option<TrackedValue<Taint>> {
-        // What the platform passes first, a function's payload or a resolver's
-        // request, is attacker data. Nothing else about the invocation is classified.
+        let unknown = || TrackedValue::from(FlowValue::from_taint(UNKNOWN));
         let value = match (input.contract, input.position) {
-            (InvocationContract::ForgeFunction | InvocationContract::ResolverCallback, 0) => {
-                FlowValue::from_taint(Taint::Yes)
+            // The module's payload is attacker data in full.
+            (InvocationContract::ForgeFunction, 0) => {
+                TrackedValue::from(FlowValue::from_taint(Taint::Yes))
             }
-            _ => FlowValue::from_taint(UNKNOWN),
+            (InvocationContract::ForgeFunction, 1) => context_value(unknown(), &[], true),
+            // An envelope: its payload is attacker data, its context is the
+            // platform's, and anything else on it is unclassified.
+            (InvocationContract::ResolverCallback, 0) => context_value(
+                unknown().with_field(&["payload"], FlowValue::from_taint(Taint::Yes)),
+                &["context"],
+                false,
+            ),
+            _ => unknown(),
         };
-        Some(TrackedValue::from(value))
+        Some(if input.supported {
+            value
+        } else if value.aggregate().facts == Taint::Yes {
+            // A pattern or default the IR does not model may bind anything.
+            TrackedValue::from(FlowValue::from_taint(Taint::Yes))
+        } else {
+            unknown()
+        })
     }
 
     fn safe_on_entry(&self, site: &BlockSite<'_>, block: BasicBlockId) -> Vec<Variable> {

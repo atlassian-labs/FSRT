@@ -4337,6 +4337,35 @@ fn sql_injection_report_contains_sink_query_and_cwe() {
 }
 
 #[test]
+fn sql_injection_resolver_context_is_property_sensitive() {
+    let trusted = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import sql from '@forge/sql';
+        const resolver = new Resolver();
+        resolver.define('safe', async ({ context }) => {
+            await sql.executeRaw(`SELECT * FROM ${context.accountId}`);
+        });
+        export const run = resolver.getDefinitions();",
+    );
+    assert!(scan_directory_test(trusted).has_no_vulns());
+
+    let unknown = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import sql from '@forge/sql';
+        const resolver = new Resolver();
+        resolver.define('unknown', async ({ context }) => {
+            await sql.executeRaw(`SELECT * FROM ${context.extension.foo}`);
+        });
+        export const run = resolver.getDefinitions();",
+    );
+    assert!(
+        scan_directory_test(unknown).contains_sql_vuln(Severity::High, unknown_sql_findings(1))
+    );
+}
+
+#[test]
 fn sql_injection_isolates_resolver_callbacks_and_merges_sink_origins() {
     let project = MockForgeProject::files_from_string(
         "// src/index.js
@@ -5000,4 +5029,354 @@ fn unknown_sql_findings(count: usize) -> usize {
     } else {
         0
     }
+}
+
+fn assert_sql_contract_findings(source: &str, high: usize, unknown: usize) {
+    let high = high + unknown_sql_findings(unknown);
+    let report = scan_directory_test_with_args(
+        MockForgeProject::files_from_string(source),
+        Args::parse_from(["fsrt", "--scanners", "sql-injection"]),
+    );
+    assert!(!report.has_errors(), "{source}\n{report:#?}");
+    let found = report
+        .into_vulns()
+        .iter()
+        .filter(|vuln| vuln.check_name() == "forge-sql-injection")
+        .count();
+    assert_eq!(found, high, "{source}\n{report:#?}");
+    assert!(
+        report.contains_sql_vuln(Severity::High, high),
+        "{source}\n{report:#?}"
+    );
+}
+
+fn assert_ordinary_contract_findings(body: &str, high: usize, low: usize) {
+    assert_sql_contract_findings(
+        &format!(
+            "// src/index.js\nimport sql from '@forge/sql';\nexport function run(data, metadata, extra) {{ {body} }}"
+        ),
+        high,
+        low,
+    );
+}
+
+#[test]
+fn sql_contract_positional_inputs_and_exact_context_paths() {
+    for path in [
+        "installContext",
+        "installation.ari.installationId",
+        "principal.accountId",
+        "license.active",
+        "license.billingPeriod",
+        "license.ccpEntitlementId",
+        "license.ccpEntitlementSlug",
+        "license.isEvaluation",
+        "license.subscriptionEndDate",
+        "license.supportEntitlementNumber",
+        "license.trialEndDate",
+        "license.type",
+        "license.isActive",
+        "license.capabilitySet",
+        "['installContext']",
+        "['principal']['accountId']",
+    ] {
+        assert_ordinary_contract_findings(
+            &format!("sql.prepare(metadata.{path});").replace(".[", "["),
+            0,
+            0,
+        );
+    }
+    for path in [
+        "",
+        ".accountId",
+        ".license",
+        ".installation",
+        ".principal",
+        ".jobId",
+        ".principal.accountId.other",
+        ".installation.contexts[0].cloudId",
+        ".license.future",
+        "[extra].accountId",
+        ".installContext.toString()",
+    ] {
+        assert_ordinary_contract_findings(&format!("sql.prepare(metadata{path});"), 0, 1);
+    }
+    for path in [
+        "",
+        ".context.accountId",
+        ".license.active",
+        ".installation.ari.installationId",
+        ".principal.accountId",
+        "[extra].accountId",
+    ] {
+        assert_ordinary_contract_findings(&format!("sql.prepare(data{path});"), 1, 0);
+    }
+    assert_ordinary_contract_findings("sql.prepare(extra.context.accountId);", 0, 1);
+}
+
+#[test]
+fn sql_contract_resolver_apis_and_renaming() {
+    for (name, instance, arg) in [
+        ("Callback", "registry", "input"),
+        ("CompletelyDifferent", "definitions", "other"),
+    ] {
+        let registration = format!(
+            "import {name} from '@forge/resolver'; const {instance} = new {name}(); {instance}.define('query', {arg} => sql.prepare({arg}.payload.table)); export const run = {instance}.getDefinitions();"
+        );
+        assert_sql_contract_findings(
+            &format!("// src/index.js\nimport sql from '@forge/sql'; {registration}"),
+            1,
+            0,
+        );
+    }
+}
+
+#[test]
+fn sql_contract_resolver_context_and_computed_access() {
+    for (path, high, low) in [
+        ("context.accountId", 0, 0),
+        ("context.installContext", 0, 0),
+        ("context.installation.ari.installationId", 0, 0),
+        ("context.license.active", 0, 0),
+        ("context.license.type", 0, 0),
+        ("context.license.isActive", 0, 1),
+        ("context.license.capabilitySet", 0, 1),
+        ("context.principal.accountId", 0, 1),
+        ("context", 0, 1),
+        ("context.license", 0, 1),
+        ("context[key].accountId", 0, 1),
+        ("payload.context.accountId", 1, 0),
+        ("[key].accountId", 1, 0),
+    ] {
+        let expression = format!("input.{path}").replace(".[", "[");
+        assert_sql_contract_findings(
+            &format!(
+                "// src/index.js\nimport sql from '@forge/sql'; import Resolver from '@forge/resolver'; const registry = new Resolver(); registry.define('query', (input, key) => {{ sql.prepare({expression}); }}); export const run = registry.getDefinitions();"
+            ),
+            high,
+            low,
+        );
+    }
+}
+
+#[test]
+fn sql_contract_destructuring_helpers_and_returns() {
+    for source in [
+        "export function run(whatever, {principal: {accountId: renamed}}) { sql.prepare(renamed); }",
+        "function get(value) { return value.principal.accountId; } export function run(data, metadata) { sql.prepare(get(metadata)); }",
+        "function get(value) { return value; } export function run(data, metadata) { sql.prepare(get(metadata).principal.accountId); }",
+        "function get(value) { return {field: value.principal.accountId}; } export function run(data, metadata) { sql.prepare(get(metadata).field); }",
+        "export function run(data, metadata) { const alias = metadata; const {principal: {accountId: renamed}} = alias; sql.prepare(renamed); }",
+    ] {
+        assert_sql_contract_findings(
+            &format!("// src/index.js\nimport sql from '@forge/sql'; {source}"),
+            0,
+            0,
+        );
+    }
+    for source in [
+        "function helper(context) { return context.accountId; } export function run(input) { sql.prepare(helper(input)); }",
+        "export function run({context: {accountId: renamed}}) { sql.prepare(renamed); }",
+        "function helper(payload, request, context) { return context.license.active; } export function run(input) { sql.prepare(helper('a', 'b', input)); }",
+    ] {
+        assert_sql_contract_findings(
+            &format!("// src/index.js\nimport sql from '@forge/sql'; {source}"),
+            1,
+            0,
+        );
+    }
+}
+
+#[test]
+fn sql_contract_overwrites_aliases_and_escapes() {
+    for body in [
+        "metadata = data; sql.prepare(metadata.principal.accountId);",
+        "metadata.principal.accountId = data.table; sql.prepare(metadata.principal.accountId);",
+        "if (extra) metadata = data; sql.prepare(metadata.principal.accountId);",
+    ] {
+        assert_ordinary_contract_findings(body, 1, 0);
+    }
+    // Known gap: values are copied, not shared, so a write through an alias
+    // does not reach the object it aliases.
+    for body in [
+        "const alias = metadata; alias.principal = data; sql.prepare(metadata.principal.accountId);",
+        "const alias = metadata.principal; alias.accountId = data.table; sql.prepare(metadata.principal.accountId);",
+    ] {
+        assert_ordinary_contract_findings(body, 0, 0);
+    }
+    for body in [
+        "escape(metadata); sql.prepare(metadata.principal.accountId);",
+        "const alias = metadata; escape(alias); sql.prepare(metadata.principal.accountId);",
+        "metadata[extra] = extra; sql.prepare(metadata.principal.accountId);",
+        "metadata = extra; sql.prepare(metadata.principal.accountId);",
+    ] {
+        assert_ordinary_contract_findings(body, 0, 1);
+    }
+}
+
+#[test]
+fn sql_contract_local_call_cannot_acquire_platform_trust() {
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; import Resolver from '@forge/resolver'; const registry = new Resolver(); function callback(input) { sql.prepare(input.context.accountId); } registry.define('registered', callback); registry.define('caller', input => callback({context: input.payload})); export const run = registry.getDefinitions();",
+        1,
+        0,
+    );
+}
+
+#[test]
+fn sql_contract_unsupported_registration_is_not_name_inference() {
+    for registration in [
+        "function makeResolver(value) { return value; } export const run = makeResolver({query: ({context}) => sql.prepare(context.accountId)});",
+        "import {makeResolver} from '@forge/resolver'; export const run = makeResolver({[key]: ({payload}) => sql.prepare(payload.query)});",
+        "import {makeResolver} from '@forge/resolver'; export const run = makeResolver({...unknown, query: ({payload}) => sql.prepare(payload.query)});",
+        "import R from '@forge/resolver'; const r = new R(); r.define(key, ({payload}) => sql.prepare(payload.query)); export const run = r.getDefinitions();",
+        "import R from '@forge/resolver'; const r = new R(); r.define('query', ({payload}) => sql.prepare(payload.query)); export const run = r;",
+        "import R from 'other-library'; const r = new R(); r.define('query', ({payload}) => sql.prepare(payload.query)); export const run = r.getDefinitions();",
+    ] {
+        assert_sql_contract_findings(
+            &format!("// src/index.js\nimport sql from '@forge/sql'; {registration}"),
+            0,
+            0,
+        );
+    }
+}
+
+#[test]
+fn sql_contract_destructured_callbacks_and_optional_access() {
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; import Resolver from '@forge/resolver'; const registry = new Resolver(); registry.define('query', ({payload: renamed}) => { sql.prepare(renamed.context.license.active); }); export const run = registry.getDefinitions();",
+        1,
+        0,
+    );
+    assert_ordinary_contract_findings("sql.prepare(metadata?.principal?.accountId);", 0, 0);
+    assert_ordinary_contract_findings("sql.prepare(data?.context?.accountId);", 1, 0);
+    for signature in [
+        "data, metadata = arbitrary",
+        "data, {principal: {accountId} = arbitrary}",
+        "data, {...metadata}",
+        "data, {[key]: metadata}",
+    ] {
+        assert_sql_contract_findings(
+            &format!(
+                "// src/index.js\nimport sql from '@forge/sql'; export function run({signature}) {{ sql.prepare(metadata.principal.accountId); }}"
+            ),
+            0,
+            1,
+        );
+    }
+}
+
+#[test]
+fn sql_contract_branch_guarantees_and_helper_effects() {
+    assert_ordinary_contract_findings(
+        "let selected; if(extra) selected = metadata; else selected = extra; sql.prepare(selected.principal.accountId);",
+        0,
+        1,
+    );
+    assert_ordinary_contract_findings(
+        "let selected; if(extra) selected = metadata; else selected = metadata; sql.prepare(selected.principal.accountId);",
+        0,
+        0,
+    );
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; function mutate(value) { unknown(value); } export function run(data, metadata) { mutate(metadata); sql.prepare(metadata.principal.accountId); }",
+        0,
+        1,
+    );
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; function read(value, stop) { if(stop) return value.principal.accountId; return read(value, true); } export function run(data, metadata) { sql.prepare(read(metadata, data.stop)); }",
+        0,
+        0,
+    );
+}
+
+#[test]
+fn sql_contract_alias_identity_survives_lost_schema_and_wrappers() {
+    // Known gap: a write through an alias does not reach the aliased object.
+    assert_ordinary_contract_findings(
+        "const selected = extra ? metadata : extra; selected.principal = data; sql.prepare(metadata.principal.accountId);",
+        0,
+        0,
+    );
+    assert_ordinary_contract_findings(
+        "const wrapper = {context: metadata}; escape(wrapper); sql.prepare(metadata.principal.accountId);",
+        0,
+        1,
+    );
+    assert_ordinary_contract_findings(
+        "const copied = metadata.principal.accountId; escape(metadata); sql.prepare(copied);",
+        0,
+        0,
+    );
+    assert_ordinary_contract_findings(
+        "const wrapper = {copied: metadata.principal.accountId}; escape(metadata); sql.prepare(wrapper.copied);",
+        0,
+        0,
+    );
+}
+
+#[test]
+fn sql_contract_static_alias_writes_override_defaults() {
+    assert_ordinary_contract_findings(
+        "const alias = metadata.principal; alias.accountId = 'fixed'; sql.prepare(metadata.principal.accountId);",
+        0,
+        0,
+    );
+    assert_ordinary_contract_findings(
+        "metadata.license = data; sql.prepare(metadata.license.active);",
+        1,
+        0,
+    );
+    assert_ordinary_contract_findings(
+        "metadata.principal.accountId = 'fixed'; escape(metadata); sql.prepare(metadata.principal.accountId);",
+        0,
+        1,
+    );
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; function escapeWrapped(value) { const holder = {ref: value}; unknown(holder); } export function run(data, metadata) { escapeWrapped(metadata); sql.prepare(metadata.principal.accountId); }",
+        0,
+        1,
+    );
+}
+
+#[test]
+fn sql_contract_recursive_calls_propagate_actual_arguments() {
+    assert_ordinary_contract_findings(
+        "if (data.again) return run('fixed', {principal: {accountId: data.table}}, false); sql.prepare(metadata.principal.accountId);",
+        1,
+        0,
+    );
+    assert_ordinary_contract_findings(
+        "let selected = metadata; if (extra) selected = {principal: {accountId: data.table}}; sql.prepare(selected.principal.accountId);",
+        1,
+        0,
+    );
+}
+
+#[test]
+fn sql_contract_joined_scalar_paths_do_not_trust_descendants() {
+    assert_ordinary_contract_findings(
+        "const selected = extra ? metadata.installContext : metadata.principal.accountId; sql.prepare(selected);",
+        0,
+        0,
+    );
+    assert_ordinary_contract_findings(
+        "const selected = extra ? metadata.installContext : metadata.principal.accountId; sql.prepare(selected.accountId);",
+        0,
+        1,
+    );
+}
+
+#[test]
+fn sql_contract_nested_object_writes_keep_the_target_path() {
+    assert_ordinary_contract_findings(
+        "metadata.principal = {accountId: 'fixed'}; sql.prepare(metadata.accountId);",
+        0,
+        1,
+    );
+    assert_ordinary_contract_findings(
+        "metadata.principal = {accountId: data.table}; sql.prepare(metadata.principal.accountId);",
+        1,
+        0,
+    );
 }
