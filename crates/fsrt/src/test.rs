@@ -3362,6 +3362,103 @@ fn sql_injection_accepts_constant_query_variable_with_bound_parameter() {
 }
 
 #[test]
+fn sql_injection_accepts_numeric_result_interpolation() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const requestedLimit = typeof payload.limit === 'number' ? payload.limit : 20;
+            const requestedOffset = typeof payload.offset === 'number' ? payload.offset : 0;
+            const limit = Math.min(Math.max(Math.floor(requestedLimit), 1), 100);
+            const offset = Math.max(Math.floor(requestedOffset), 0);
+            await sql.prepare(`SELECT * FROM users LIMIT ${limit} OFFSET ${offset}`).execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_accepts_numeric_builtins_arithmetic_and_local_returns() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function safeOffset(value) {
+            return Number(value) * 10;
+        }
+        export async function run(payload) {
+            const parsed = parseInt(payload.limit, 10);
+            const floated = parseFloat(payload.ratio);
+            const bounded = Math.min(Math.max(Math.floor(parsed), 1), 100);
+            const offset = safeOffset(payload.page);
+            await sql.prepare(
+                'SELECT * FROM users LIMIT ' + bounded +
+                ' OFFSET ' + offset +
+                ' /* ratio ' + floated + ' */'
+            ).execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
+fn sql_injection_does_not_trust_string_conversion_or_shadowed_numeric_builtins() {
+    let string_conversion = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const value = String(payload.value);
+            await sql.prepare(`SELECT * FROM users WHERE name = '${value}'`).execute();
+        }",
+    );
+    assert!(scan_directory_test(string_conversion).contains_sql_vuln(Severity::High, 1));
+
+    let shadowed_number = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function Number(value) {
+            return value;
+        }
+        export async function run(payload) {
+            const value = Number(payload.value);
+            await sql.prepare(`SELECT * FROM users WHERE name = '${value}'`).execute();
+        }",
+    );
+    assert!(scan_directory_test(shadowed_number).contains_sql_vuln(Severity::High, 1));
+
+    let shadowing_parameter = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function convert(payload, Number) {
+            return Number(payload.id);
+        }
+        export async function run(payload) {
+            const value = convert(payload, (id) => id);
+            await sql.prepare(`SELECT * FROM users WHERE id = ${value}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(shadowing_parameter).contains_sql_vuln(Severity::High, 1));
+
+    let global_number = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function convert(payload) {
+            return Number(payload.id);
+        }
+        export async function run(payload) {
+            const value = convert(payload);
+            await sql.prepare(`SELECT * FROM users WHERE id = ${value}`).execute();
+        }",
+    );
+    assert!(scan_directory_test(global_number).contains_sql_vuln(Severity::High, 0));
+}
+
+#[test]
 fn sql_injection_reports_unresolved_dynamic_query_as_low() {
     let project = MockForgeProject::files_from_string(
         "// src/index.js
@@ -3428,6 +3525,30 @@ fn sql_injection_tracks_payload_through_projected_object_arguments() {
 }
 
 #[test]
+fn sql_injection_accepts_numeric_result_through_deep_options() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import Resolver from '@forge/resolver';
+        import sql from '@forge/sql';
+        const resolver = new Resolver();
+        async function exec(query, params = []) {
+            return await sql.prepare(query).bindParams(...params).execute();
+        }
+        async function list(accountId, options = {}) {
+            const page = Math.max(1, options.page || 1);
+            const offset = parseInt(page, 10);
+            return await exec(`SELECT * FROM reminders WHERE account_id = ? LIMIT 10 OFFSET ${offset}`, [accountId]);
+        }
+        resolver.define('list', async ({ payload }) => list('account', { page: payload.page }));
+        export const run = resolver.getDefinitions();",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 0));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
+}
+
+#[test]
 fn sql_injection_ignores_transpiled_sql_calls_without_import_provenance() {
     let safe = MockForgeProject::files_from_string(
         "// src/index.js
@@ -3468,6 +3589,39 @@ fn sql_injection_supports_esm_import_aliases() {
     );
 
     assert!(scan_directory_test(project).contains_sql_vuln(Severity::High, 2));
+}
+
+#[test]
+fn sql_injection_only_flags_unbound_limit_and_offset_in_mixed_query() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        export async function run(payload) {
+            const conditions = ['project_key = ?'];
+            const params = [payload.projectKey];
+            if (payload.entityType) {
+                conditions.push('entity_type = ?');
+                params.push(payload.entityType);
+            }
+            if (payload.entityId !== undefined) {
+                conditions.push('entity_id = ?');
+                params.push(payload.entityId);
+            }
+            const where = conditions.join(' AND ');
+            const limit = payload.limit ?? 50;
+            const offset = payload.offset ?? 0;
+            await sql.prepare(`SELECT COUNT(*) AS cnt FROM audit_log WHERE ${where}`)
+                .bindParams(...params)
+                .execute();
+            await sql.prepare(`SELECT * FROM audit_log WHERE ${where} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`)
+                .bindParams(...params)
+                .execute();
+        }",
+    );
+
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::High, 1));
+    assert!(report.contains_sql_vuln(Severity::Low, 0));
 }
 
 #[test]
@@ -4383,6 +4537,26 @@ fn sql_injection_reports_the_last_assigned_untrusted_value() {
     );
     let report = scan_directory_test(project);
     assert!(report.contains_sql_vuln(Severity::High, 1));
+}
+
+#[test]
+fn sql_injection_numeric_provenance_does_not_promote_unknown_sql_to_high() {
+    let project = MockForgeProject::files_from_string(
+        "// src/index.js
+        import sql from '@forge/sql';
+        function number(value) { return Number(value); }
+        export async function run(payload, unknown) {
+            const limit = number(payload.limit);
+            await sql.prepare(`SELECT ${unknown} LIMIT ${limit}`);
+            await sql.prepare(`SELECT ${payload.column} LIMIT ${limit}`);
+        }",
+    );
+    let report = scan_directory_test(project);
+    assert!(report.contains_sql_vuln(Severity::Low, 0), "{report:#?}");
+    assert!(
+        report.contains_sql_vuln(Severity::High, 1 + unknown_sql_findings(1)),
+        "{report:#?}"
+    );
 }
 
 #[test]

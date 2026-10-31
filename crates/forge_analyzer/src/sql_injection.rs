@@ -4,6 +4,7 @@
 //! module payload and request envelope of a Forge invocation, storage and API
 //! reads, network responses, and the rows `@forge/sql` returns; a sink is the
 //! query text of `sql.prepare`, `sql.executeRaw` or `migrationRunner.enqueue`.
+//! Numeric conversion keeps a value's provenance but makes its text safe.
 //!
 //! A value the analysis cannot classify is `UNKNOWN`, which is trusted for now:
 //! it never produces a finding. `UNKNOWN_IS_UNTRUSTED` is the one switch to
@@ -15,11 +16,12 @@
 use crate::{
     definitions::{DefId, Environment, ImportKind},
     interp::{
-        Checker, EntryKind, EntryPoint, Frame, Interp, InvocationContract, Runner, WithCallStack,
+        Checker, EntryKind, EntryPoint, Frame, Interp, InvocationContract, JoinSemiLattice, Runner,
+        WithCallStack,
     },
     ir::{
-        Base, Body, CallPathPart, Inst, Intrinsic, Location, Operand, Projection, Rvalue, VarId,
-        VarKind, Variable,
+        Base, BinOp, Body, CallPathPart, Inst, Intrinsic, Location, Operand, Projection, Rvalue,
+        UnOp, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     taint::{
@@ -103,7 +105,8 @@ fn sql_sink(env: &Environment, body: &Body, location: Location) -> Option<SqlSin
 
 /// Taint on main's tracker, with a value's facts meaning "may put SQL syntax of
 /// an attacker's choosing into query text". Provenance records only that a value
-/// derives from a source.
+/// derives from a source: numeric conversion clears the facts and keep the
+/// provenance.
 #[derive(Default)]
 pub struct SqlPolicy {}
 
@@ -152,6 +155,85 @@ impl TaintPolicy for SqlPolicy {
 
     fn tracks_fields(&self) -> bool {
         true
+    }
+
+    fn binary_value(
+        &self,
+        op: BinOp,
+        left: FlowValue<Taint>,
+        right: FlowValue<Taint>,
+    ) -> FlowValue<Taint> {
+        match op {
+            BinOp::Or | BinOp::And | BinOp::NullishCoalesce => left.join(&right),
+            // Arithmetic yields a number, whose text cannot contain SQL syntax.
+            BinOp::Sub
+            | BinOp::Mul
+            | BinOp::Div
+            | BinOp::Exp
+            | BinOp::Mod
+            | BinOp::BitOr
+            | BinOp::BitAnd
+            | BinOp::BitXor
+            | BinOp::Lshift
+            | BinOp::Rshift
+            | BinOp::RshiftLogical => left.combine(&right).with_facts(Taint::No),
+            _ if crate::taint::binary_taint(op, Taint::Yes, Taint::Yes) == Taint::No => {
+                left.combine(&right).with_facts(Taint::No)
+            }
+            _ => left.combine(&right),
+        }
+    }
+
+    fn unary_value(&self, _op: UnOp, value: FlowValue<Taint>) -> FlowValue<Taint> {
+        // `!x` is a boolean and `-x`, `+x` and `~x` are numbers.
+        value.with_facts(Taint::No)
+    }
+
+    fn global_call_value(&self, name: &str, path: &[Projection]) -> Option<FlowValue<Taint>> {
+        let numeric = match path {
+            // `Array(n)` is an array of empty slots, not text.
+            [] => matches!(name, "Number" | "parseInt" | "parseFloat" | "Array"),
+            [Projection::Known(method)] if name == "Math" => matches!(
+                method.as_ref(),
+                "abs"
+                    | "acos"
+                    | "acosh"
+                    | "asin"
+                    | "asinh"
+                    | "atan"
+                    | "atan2"
+                    | "atanh"
+                    | "cbrt"
+                    | "ceil"
+                    | "clz32"
+                    | "cos"
+                    | "cosh"
+                    | "exp"
+                    | "expm1"
+                    | "floor"
+                    | "fround"
+                    | "hypot"
+                    | "imul"
+                    | "log"
+                    | "log10"
+                    | "log1p"
+                    | "log2"
+                    | "max"
+                    | "min"
+                    | "pow"
+                    | "random"
+                    | "round"
+                    | "sign"
+                    | "sin"
+                    | "sinh"
+                    | "sqrt"
+                    | "tan"
+                    | "tanh"
+                    | "trunc"
+            ),
+            _ => false,
+        };
+        numeric.then(FlowValue::default)
     }
 
     fn method_value(&self, call: &UnresolvedCall<'_, Taint>) -> Option<FlowValue<Taint>> {
