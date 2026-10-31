@@ -207,6 +207,8 @@ pub struct Body {
     pub blockbuilders: TiVec<BasicBlockId, BasicBlockBuilder>,
     instruction_spans: FxHashMap<Location, Span>,
     call_facts: FxHashMap<Location, CallFacts>,
+    assignment_locations: OnceCell<FxHashMap<Variable, Vec<Location>>>,
+    binding_var_groups: OnceCell<FxHashMap<DefId, Vec<VarId>>>,
     pub(crate) argument_defs: Vec<DefId>,
     pub(crate) argument_spans: FxHashMap<DefId, Span>,
 }
@@ -470,6 +472,8 @@ impl Body {
             blockbuilders: vec![BasicBlockBuilder { insts: Vec::new() }].into(),
             instruction_spans: FxHashMap::default(),
             call_facts: FxHashMap::default(),
+            assignment_locations: OnceCell::new(),
+            binding_var_groups: OnceCell::new(),
             argument_defs: Vec::new(),
             argument_spans: FxHashMap::default(),
         }
@@ -958,6 +962,65 @@ impl Body {
 
     pub(crate) fn set_call_facts(&mut self, location: Location, facts: CallFacts) {
         self.call_facts.insert(location, facts);
+    }
+
+    fn variable_binding(&self, variable: &Variable) -> Option<DefId> {
+        let Base::Var(var) = variable.base else {
+            return None;
+        };
+        match self.vars.get(var)? {
+            VarKind::Arg(binding) | VarKind::GlobalRef(binding) | VarKind::LocalDef(binding) => {
+                Some(*binding)
+            }
+            _ => None,
+        }
+    }
+
+    /// IR variables representing the same resolved source binding in this body.
+    /// Assignment versions retain distinct VarIds but share their original DefId.
+    /// Shadowed declarations have different DefIds even when their names match.
+    /// This groups binding references, not objects aliased by different bindings.
+    /// The lazy index is valid only after lowering and variable rewriting finish.
+    pub(crate) fn binding_variables(&self, variable: &Variable) -> Option<&[VarId]> {
+        let binding = self.variable_binding(variable)?;
+        let groups = self.binding_var_groups.get_or_init(|| {
+            let mut groups = FxHashMap::<DefId, Vec<VarId>>::default();
+            for (var, _) in self.vars.iter_enumerated() {
+                if let Some(binding) = self.variable_binding(&Variable::new(var)) {
+                    groups.entry(binding).or_default().push(var);
+                }
+            }
+            groups
+        });
+        groups.get(&binding).map(Vec::as_slice)
+    }
+
+    /// Indexed reads over finalized IR, like the cached predecessor/dominator data.
+    /// This is populated lazily by analyses, never during lowering or SSA rewriting.
+    pub(crate) fn assignments_to<'a>(
+        &'a self,
+        variable: &Variable,
+    ) -> impl Iterator<Item = (Location, &'a Rvalue)> + 'a {
+        let index = self.assignment_locations.get_or_init(|| {
+            let mut index = FxHashMap::<Variable, Vec<Location>>::default();
+            for (bb, block) in self.iter_blocks_enumerated() {
+                for (stmt, inst) in block.iter().enumerate() {
+                    if let Inst::Assign(target, _) = inst {
+                        index
+                            .entry(target.clone())
+                            .or_default()
+                            .push(Location::new(bb, stmt as u32));
+                    }
+                }
+            }
+            index
+        });
+        index.get(variable).into_iter().flatten().map(|location| {
+            (
+                *location,
+                self.block(location.block).insts[location.stmt as usize].rvalue(),
+            )
+        })
     }
 
     pub fn call_facts(&self, location: Location) -> Option<&CallFacts> {
