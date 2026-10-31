@@ -625,6 +625,8 @@ pub struct Definitions {
 #[derive(Debug, Clone, Default)]
 pub struct Environment {
     immutable_facts: facts::ImmutableFacts,
+    /// Object literals whose omitted properties prevent an import proof.
+    opaque_import_objects: HashSet<DefId>,
     exports: TiVec<ModId, Vec<(Atom, DefId)>>,
     pub global: TiVec<ModId, DefId>,
     pub defs: Definitions,
@@ -2098,6 +2100,17 @@ impl FunctionAnalyzer<'_> {
                     .res
                     .add_anonymous("__UNKNOWN", AnonType::Obj, self.module);
                 let class_var_id = self.body.add_var(VarKind::LocalDef(def_id));
+                if props.iter().any(|prop| {
+                    !matches!(prop,
+                        PropOrSpread::Prop(prop) if matches!(&**prop,
+                            Prop::Shorthand(_) | Prop::KeyValue(KeyValueProp {
+                                key: PropName::Ident(_) | PropName::Str(_), ..
+                            })
+                        )
+                    )
+                }) {
+                    self.res.opaque_import_objects.insert(def_id);
+                }
                 if let DefKind::GlobalObj(class_id) = self.res.defs.defs[def_id] {
                     self.res.defs.classes[class_id].coerces_to_default_tag =
                         coerces_to_default_tag_lit(&ObjectLit {
