@@ -319,7 +319,7 @@ pub trait Runner<'cx>: Sized {
     fn super_visit_call(
         &mut self,
         interp: &Interp<'cx, Self>,
-        _caller: DefId,
+        caller: DefId,
         callee: &'cx Operand,
         _args: &'cx [Operand],
         loc: Location,
@@ -333,7 +333,7 @@ pub trait Runner<'cx>: Sized {
         if func_state < *curr_state || !interp.checker_visit(callee) {
             return ControlFlow::Continue(curr_state.clone());
         }
-        interp.push_frame(callee, loc.block);
+        interp.push_frame(callee, caller, loc);
         let res = self.visit_body(interp, callee, body, curr_state);
         interp.pop_frame();
         // FIXME: Should probably join instead of relying on the caller to propogate state
@@ -443,9 +443,13 @@ pub trait Checker<'cx>: Sized + Runner<'cx> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Frame {
+    /// The function called, as `push_frame` has always recorded it.
     pub(crate) calling_function: DefId,
     pub(crate) block: BasicBlockId,
     pub(crate) inst_idx: usize,
+    /// The function that made the call, and the call instruction in it.
+    pub(crate) caller: DefId,
+    pub(crate) call_site: Location,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -1190,11 +1194,13 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    pub(crate) fn push_frame(&self, def: DefId, block: BasicBlockId) {
+    pub(crate) fn push_frame(&self, callee: DefId, caller: DefId, call_site: Location) {
         self.callstack.borrow_mut().push(Frame {
-            calling_function: def,
-            block,
+            calling_function: callee,
+            block: call_site.block,
             inst_idx: 0,
+            caller,
+            call_site,
         });
     }
 

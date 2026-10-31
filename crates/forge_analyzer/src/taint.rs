@@ -344,7 +344,7 @@ fn variable_def(kind: &VarKind) -> Option<DefId> {
 pub fn visit_taint_call<'cx, C: Runner<'cx, State = Vec<Taint>>>(
     checker: &mut C,
     interp: &Interp<'cx, C>,
-    _caller: DefId,
+    caller: DefId,
     callee: &Operand,
     loc: Location,
     state: &[Taint],
@@ -355,7 +355,7 @@ pub fn visit_taint_call<'cx, C: Runner<'cx, State = Vec<Taint>>>(
             .borrow()
             .contains(&(def, STARTING_BLOCK))
     {
-        interp.push_frame(def, loc.block);
+        interp.push_frame(def, caller, loc);
         let result = checker.visit_body(interp, def, body, &Vec::new());
         interp.pop_frame();
         result?;
