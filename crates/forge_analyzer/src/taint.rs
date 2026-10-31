@@ -33,7 +33,7 @@ use crate::{
     interp::{Dataflow, EntryKind, Interp, JoinSemiLattice, Runner},
     ir::{
         Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Literal, Location, Operand,
-        Projection, Rvalue, STARTING_BLOCK, Successors, Terminator, UnOp, VarId, VarKind,
+        Projection, Rvalue, STARTING_BLOCK, Successors, Terminator, UnOp, VarId, VarKind, Variable,
     },
 };
 
@@ -137,6 +137,13 @@ pub trait TaintPolicy: Sized {
         _call: &UnresolvedCall<'_, Self::Facts>,
     ) -> Option<FlowValue<Self::Facts>> {
         None
+    }
+
+    /// Whether an unresolved method call adds its arguments to the receiver,
+    /// as `list.push(x)` does. The receiver then also holds what the call was
+    /// given, in every position. The default models no such method.
+    fn adds_arguments_to_receiver(&self, _method: &str) -> bool {
+        false
     }
 
     /// `is_violation` for a sink that is recognized by where it is, rather than
@@ -448,6 +455,9 @@ impl Queue {
         Some(key)
     }
 }
+
+/// The property that holds what a method such as `push` added to its receiver.
+const ADDED_ELEMENTS: &str = "*";
 
 /// Known property names along a path, such as `["auth", "password"]`.
 type FieldPath = SmallVec<[Atom; 2]>;
@@ -796,6 +806,47 @@ impl<P: TaintPolicy> TaintDataflow<P> {
             self.read(frame, &Operand::Var(receiver))
         } else {
             self.read(frame, callee)
+        }
+    }
+
+    /// Add the arguments of a call such as `list.push(x)` to its receiver,
+    /// when the policy says the method does so.
+    fn write_through_receiver(
+        &self,
+        site: Site<'_>,
+        frame: &mut FlowState<P::Facts>,
+        callee: &Operand,
+        args: &[Operand],
+    ) {
+        let Operand::Var(callee_var) = callee else {
+            return;
+        };
+        let (Some((_, receiver)), Some(id)) =
+            (callee_var.projections.split_last(), callee_var.as_var_id())
+        else {
+            return;
+        };
+        if !callee_name(site.env, site.body, callee)
+            .is_some_and(|method| self.policy.adds_arguments_to_receiver(method))
+        {
+            return;
+        }
+        let written = args.iter().fold(FlowValue::default(), |value, arg| {
+            value.combine(&self.read(frame, arg))
+        });
+        // Whichever position holds them, they sit beside the receiver's own
+        // value, which still says what it did of properties such as `length`.
+        let mut path = receiver.to_vec();
+        path.push(Projection::Known(ADDED_ELEMENTS.into()));
+        let mut added = Variable::new(id);
+        added.projections.extend(path.iter().cloned());
+        let current = self.read(frame, &Operand::Var(added));
+        self.assign(frame, id, &path, current.join(&written).into());
+        if let Some(binding) = variable_def(&site.body.vars[id]) {
+            let value = frame.value(id);
+            for &alias in &site.layout.aliases[&binding] {
+                frame.set(alias, value.clone());
+            }
         }
     }
 
@@ -1472,6 +1523,9 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
                 };
                 value.clone()
             } else {
+                if let Rvalue::Call(callee, args) = inst.rvalue() {
+                    dataflow.write_through_receiver(site, &mut frame, callee, args);
+                }
                 dataflow.transfer(site, &frame, location, inst.rvalue())
             };
             if let Inst::Assign(var, _) = inst
