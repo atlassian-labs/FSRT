@@ -588,6 +588,8 @@ pub(crate) fn scan_directory<'a>(
                 invokable: entrypoint.invokable,
                 web_trigger: entrypoint.web_trigger,
                 admin: entrypoint.admin,
+                product_events: entrypoint.product_events,
+                scheduled: entrypoint.scheduled,
             })
         });
 
