@@ -1,6 +1,6 @@
 use crate::{Args, Scanner, forge_project::ForgeProjectTrait, scan_directory};
 use clap::{CommandFactory, Parser};
-use forge_analyzer::reporter::Report;
+use forge_analyzer::reporter::{Report, Severity};
 use forge_analyzer::{checkers::ForgeRuntimeVersionPolicyChecker, definitions::PackageData};
 use forge_loader::manifest::{ForgeManifest, FunctionMod};
 use std::fmt;
@@ -14,7 +14,9 @@ use swc_core::common::{FileName, SourceFile, SourceMap};
 use time::{Date, Month};
 
 mod captured_values;
+mod commonjs_secrets;
 mod legacy_callbacks;
+mod native_fetch;
 mod secret_logging;
 mod secret_logging_storage;
 mod taint_regressions;
