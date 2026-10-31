@@ -321,7 +321,7 @@ fn constant_branches_preserve_only_hardcoded_secret_findings() {
         let mut project = MockForgeProject::files_from_string("// src/index.js\n");
         project.add_file(
             "src/index.js",
-            &format!(
+            format!(
                 "import {{ fetch }} from '@forge/api';
                 import {{ kvs }} from '@forge/kvs';
                 export async function run() {{
