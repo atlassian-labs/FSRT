@@ -150,6 +150,16 @@ pub trait TaintPolicy: Sized {
     ) -> bool {
         false
     }
+
+    /// The value of a unary operation. Operators whose result carries only
+    /// metadata, such as `!`, are clean by default.
+    fn unary_value(&self, op: UnOp, value: FlowValue<Self::Facts>) -> FlowValue<Self::Facts> {
+        if unary_taint(op, Taint::Yes) == Taint::No {
+            value.with_facts(Self::Facts::from_taint(Taint::No))
+        } else {
+            value
+        }
+    }
 }
 
 /// The body and instruction a policy is asked about.
@@ -1061,14 +1071,7 @@ impl<P: TaintPolicy> TaintDataflow<P> {
         let read = |operand| self.read(frame, operand);
         match rvalue {
             Rvalue::Read(op) => self.value(frame, op),
-            Rvalue::Unary(op, operand) => {
-                let value = read(operand);
-                if unary_taint(*op, Taint::Yes) == Taint::No {
-                    value.with_facts(P::Facts::from_taint(Taint::No)).into()
-                } else {
-                    value.into()
-                }
-            }
+            Rvalue::Unary(op, operand) => self.policy.unary_value(*op, read(operand)).into(),
             Rvalue::Bin(op, left, right) => self
                 .policy
                 .binary_value(*op, read(left), read(right))
