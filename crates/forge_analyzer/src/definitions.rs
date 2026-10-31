@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 use swc_core::ecma::ast::{MethodKind, PrivateMethod};
 use swc_core::{
-    common::{DUMMY_SP, Span, SyntaxContext},
+    common::{DUMMY_SP, Span, Spanned, SyntaxContext},
     ecma::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
@@ -2680,6 +2680,7 @@ impl Visit for ArgDefiner<'_> {
             .res
             .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
         self.res.add_parent(defid, self.func);
+        self.body.argument_spans.entry(defid).or_insert(n.span);
         let var = self.body.get_or_insert_global(defid);
         self.body.push_assign(
             STARTING_BLOCK,
@@ -2758,6 +2759,8 @@ impl Visit for ArgDefiner<'_> {
                 let id = Atom::from(self.res.def_name(defid)).to_id();
                 (defid, id)
             };
+            self.body.argument_defs.push(defid);
+            self.body.argument_spans.insert(defid, pat.span());
             let var_id = self.body.add_arg(defid, id);
             // FIXME: use clone_from once we specialize
             self.current_arg = Variable::new(var_id);

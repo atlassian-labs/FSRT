@@ -207,6 +207,8 @@ pub struct Body {
     pub blockbuilders: TiVec<BasicBlockId, BasicBlockBuilder>,
     instruction_spans: FxHashMap<Location, Span>,
     call_facts: FxHashMap<Location, CallFacts>,
+    pub(crate) argument_defs: Vec<DefId>,
+    pub(crate) argument_spans: FxHashMap<DefId, Span>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -468,6 +470,8 @@ impl Body {
             blockbuilders: vec![BasicBlockBuilder { insts: Vec::new() }].into(),
             instruction_spans: FxHashMap::default(),
             call_facts: FxHashMap::default(),
+            argument_defs: Vec::new(),
+            argument_spans: FxHashMap::default(),
         }
     }
 
@@ -962,6 +966,10 @@ impl Body {
 
     pub(crate) fn instruction_span(&self, location: Location) -> Option<Span> {
         self.instruction_spans.get(&location).copied()
+    }
+
+    pub(crate) fn argument_span(&self, def: DefId) -> Option<Span> {
+        self.argument_spans.get(&def).copied()
     }
 
     #[inline]
