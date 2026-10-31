@@ -126,6 +126,10 @@ can produce warnings.
 Callee summaries do not propagate writes to outer bindings back to callers.
 Findings identify the sink function, unique IR body, and instruction location,
 not a source line or a runtime secret value.
+SQL-injection findings also name the kinds of source that reached the query
+text (module payload, resolver payload, fetch response, API call response, storage
+read, SQL result, secret read): the scanner's policy keeps those in its facts,
+so the shared engine is unchanged.
 
 ## Installation
 

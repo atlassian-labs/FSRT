@@ -19,6 +19,7 @@ mod legacy_callbacks;
 mod native_fetch;
 mod secret_logging;
 mod secret_logging_storage;
+mod sql_origins;
 mod taint_regressions;
 mod value_regressions;
 

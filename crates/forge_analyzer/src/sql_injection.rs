@@ -1,15 +1,21 @@
 //! SQL injection, as a policy on the shared taint tracker in `crate::taint`.
 //!
-//! A value is either attacker controlled (`Taint::Yes`) or not. Sources are the
-//! module payload and request envelope of a Forge invocation, storage and API
-//! reads, network responses, and the rows `@forge/sql` returns; a sink is the
-//! query text of `sql.prepare`, `sql.executeRaw` or `migrationRunner.enqueue`.
-//! Numeric conversion, a placeholder list and an exact allowlist check keep a
-//! value's provenance but make its text safe.
+//! A value is either attacker controlled or not. Sources are the module payload
+//! and request envelope of a Forge invocation, storage and API reads, network
+//! responses, and the rows `@forge/sql` returns; a sink is the query text of
+//! `sql.prepare`, `sql.executeRaw` or `migrationRunner.enqueue`. Numeric
+//! conversion, a placeholder list and an exact allowlist check keep a value's
+//! provenance but make its text safe.
+//!
+//! A value's facts are the `Origins` that make it attacker controlled, such as
+//! the module payload or a `fetch` response; a value with none is not. The
+//! tracker joins facts by union, so a finding names every kind of source that
+//! reached the query text, and a value made safe names none. The origins
+//! decide nothing: a value is reported exactly when it has any.
 //!
 //! A value the analysis cannot classify is `UNKNOWN`, which is trusted for now:
 //! it never produces a finding. `UNKNOWN_IS_UNTRUSTED` is the one switch to
-//! change that. Findings no longer say which source reached the query.
+//! change that, and such a value then has the `Unclassified` origin.
 //!
 //! The tracker copies values rather than sharing them, so a write through an
 //! alias of an object does not reach the object it aliases.
@@ -26,8 +32,8 @@ use crate::{
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     taint::{
-        BlockSite, EntryInput, FlowValue, InstSite, Taint, TaintDataflow, TaintPolicy, TaintReader,
-        TrackedValue, UnresolvedCall, visit_taint_call,
+        BlockSite, EntryInput, FlowFacts, FlowValue, InstSite, Taint, TaintDataflow, TaintPolicy,
+        TaintReader, TrackedValue, UnresolvedCall, visit_taint_call,
     },
 };
 use smallvec::SmallVec;
@@ -37,11 +43,14 @@ use std::{
     fmt,
     ops::ControlFlow,
     path::PathBuf,
+    rc::Rc,
     sync::Arc,
 };
 use swc_core::common::SourceMap;
 
+mod origin;
 mod semantics;
+pub use origin::{Origin, Origins};
 use semantics::*;
 
 /// Whether a value that is neither shown trusted nor known to be attacker
@@ -105,20 +114,39 @@ fn sql_sink(env: &Environment, body: &Body, location: Location) -> Option<SqlSin
     }
 }
 
+/// The origins that reach each sink the policy reports, by sink instruction.
+/// The policy records them where it decides a sink is a violation, and the
+/// checker reads them where it reports one. Cleared for each entrypoint.
+type SinkOrigins = Rc<RefCell<HashMap<(DefId, Location), Origins>>>;
+
 /// Taint on main's tracker, with a value's facts meaning "may put SQL syntax of
-/// an attacker's choosing into query text". Provenance records only that a value
-/// derives from a source: numeric conversion, a placeholder list and an
-/// allowlist check clear the facts and keep the provenance.
+/// an attacker's choosing into query text", and saying which sources do. The
+/// provenance records only that a value derives from a source: numeric
+/// conversion, a placeholder list and an allowlist check clear the facts and
+/// keep the provenance.
 #[derive(Default)]
 pub struct SqlPolicy {
     /// The allowlisted variables each block is entered with, by body and block.
     guards: RefCell<HashMap<(DefId, BasicBlockId), Vec<Variable>>>,
     /// Whether a `join` call builds a list of `?` placeholders, by call site.
     placeholder_lists: RefCell<HashMap<(DefId, Location), bool>>,
+    sink_origins: SinkOrigins,
+}
+
+/// A value that comes from `origin`, which makes it attacker controlled.
+fn source(origin: Origin) -> FlowValue<Origins> {
+    FlowValue::from_taint(Taint::Yes).with_facts(Origins::of(origin))
 }
 
 impl SqlPolicy {
-    fn is_placeholder_list(&self, call: &UnresolvedCall<'_, Taint>) -> bool {
+    fn with_sink_origins(sink_origins: SinkOrigins) -> Self {
+        Self {
+            sink_origins,
+            ..Self::default()
+        }
+    }
+
+    fn is_placeholder_list(&self, call: &UnresolvedCall<'_, Origins>) -> bool {
         let site = call.site();
         *self
             .placeholder_lists
@@ -170,10 +198,10 @@ fn approved_context_paths(ordinary: bool) -> Vec<Vec<&'static str>> {
 
 /// A context object, or the same object at `prefix` of a larger one.
 fn context_value(
-    mut value: TrackedValue<Taint>,
+    mut value: TrackedValue<Origins>,
     prefix: &[&str],
     ordinary: bool,
-) -> TrackedValue<Taint> {
+) -> TrackedValue<Origins> {
     let unknown = || FlowValue::from_taint(UNKNOWN);
     if !prefix.is_empty() {
         value = value.with_field(prefix, unknown());
@@ -186,22 +214,22 @@ fn context_value(
 }
 
 impl TaintPolicy for SqlPolicy {
-    type Facts = Taint;
+    type Facts = Origins;
 
-    fn intrinsic_value(&self, intrinsic: &Intrinsic) -> FlowValue<Taint> {
-        FlowValue::from_taint(match intrinsic {
+    fn intrinsic_value(&self, intrinsic: &Intrinsic) -> FlowValue<Origins> {
+        match intrinsic {
             Intrinsic::Authorize(_) | Intrinsic::SecretFunction(_) | Intrinsic::EnvRead => {
-                Taint::No
+                FlowValue::default()
             }
-            Intrinsic::Fetch
-            | Intrinsic::ApiCall(_)
+            Intrinsic::Fetch => source(Origin::Fetch),
+            Intrinsic::ApiCall(_)
             | Intrinsic::SafeCall(_)
             | Intrinsic::ApiCustomField
-            | Intrinsic::UserFieldAccess
-            | Intrinsic::StorageRead
-            | Intrinsic::SecretRead => Taint::Yes,
-            _ => UNKNOWN,
-        })
+            | Intrinsic::UserFieldAccess => source(Origin::ApiCall),
+            Intrinsic::StorageRead => source(Origin::StorageRead),
+            Intrinsic::SecretRead => source(Origin::SecretRead),
+            _ => FlowValue::from_taint(UNKNOWN),
+        }
     }
 
     fn is_violation(&self, _inst: &Inst, _values: &TaintReader<'_, Self>) -> bool {
@@ -221,11 +249,21 @@ impl TaintPolicy for SqlPolicy {
             return false;
         };
         // A sink without its query argument has a query nothing is known of.
-        operands
+        let origins = operands
             .get(sink.query_index())
-            .map_or(UNKNOWN == Taint::Yes, |query| {
-                values.operand(query).facts == Taint::Yes
-            })
+            .map_or(Origins::from_taint(UNKNOWN), |query| {
+                values.operand(query).facts
+            });
+        if origins.is_empty() {
+            return false;
+        }
+        // The state grows to a fixed point, so a later visit only adds origins.
+        self.sink_origins
+            .borrow_mut()
+            .entry((site.def, site.location))
+            .and_modify(|seen| *seen = seen.union(origins))
+            .or_insert(origins);
+        true
     }
 
     fn tracks_fields(&self) -> bool {
@@ -235,9 +273,9 @@ impl TaintPolicy for SqlPolicy {
     fn binary_value(
         &self,
         op: BinOp,
-        left: FlowValue<Taint>,
-        right: FlowValue<Taint>,
-    ) -> FlowValue<Taint> {
+        left: FlowValue<Origins>,
+        right: FlowValue<Origins>,
+    ) -> FlowValue<Origins> {
         match op {
             BinOp::Or | BinOp::And | BinOp::NullishCoalesce => left.join(&right),
             // Arithmetic yields a number, whose text cannot contain SQL syntax.
@@ -251,20 +289,20 @@ impl TaintPolicy for SqlPolicy {
             | BinOp::BitXor
             | BinOp::Lshift
             | BinOp::Rshift
-            | BinOp::RshiftLogical => left.combine(&right).with_facts(Taint::No),
+            | BinOp::RshiftLogical => left.combine(&right).with_facts(Origins::NONE),
             _ if crate::taint::binary_taint(op, Taint::Yes, Taint::Yes) == Taint::No => {
-                left.combine(&right).with_facts(Taint::No)
+                left.combine(&right).with_facts(Origins::NONE)
             }
             _ => left.combine(&right),
         }
     }
 
-    fn unary_value(&self, _op: UnOp, value: FlowValue<Taint>) -> FlowValue<Taint> {
+    fn unary_value(&self, _op: UnOp, value: FlowValue<Origins>) -> FlowValue<Origins> {
         // `!x` is a boolean and `-x`, `+x` and `~x` are numbers.
-        value.with_facts(Taint::No)
+        value.with_facts(Origins::NONE)
     }
 
-    fn global_call_value(&self, name: &str, path: &[Projection]) -> Option<FlowValue<Taint>> {
+    fn global_call_value(&self, name: &str, path: &[Projection]) -> Option<FlowValue<Origins>> {
         let numeric = match path {
             // `Array(n)` is an array of empty slots, not text.
             [] => matches!(name, "Number" | "parseInt" | "parseFloat" | "Array"),
@@ -311,7 +349,7 @@ impl TaintPolicy for SqlPolicy {
         numeric.then(FlowValue::default)
     }
 
-    fn method_value(&self, call: &UnresolvedCall<'_, Taint>) -> Option<FlowValue<Taint>> {
+    fn method_value(&self, call: &UnresolvedCall<'_, Origins>) -> Option<FlowValue<Origins>> {
         let (env, body) = (call.env(), call.body());
         match sql_sink(env, body, call.site().1) {
             // A statement is built and not yet run, so its text is checked
@@ -319,7 +357,7 @@ impl TaintPolicy for SqlPolicy {
             Some(SqlSink::Prepare | SqlSink::MigrationEnqueue) => {
                 return Some(FlowValue::default());
             }
-            Some(SqlSink::ExecuteRaw) => return Some(FlowValue::from_taint(Taint::Yes)),
+            Some(SqlSink::ExecuteRaw) => return Some(source(Origin::SqlResult)),
             None => {}
         }
         // The rows of a prepared statement come from the database.
@@ -328,7 +366,7 @@ impl TaintPolicy for SqlPolicy {
                 originates_from_prepare(env, body, &receiver, &mut HashSet::new())
             })
         {
-            return Some(FlowValue::from_taint(Taint::Yes));
+            return Some(source(Origin::SqlResult));
         }
         if call.method == "join" && self.is_placeholder_list(call) {
             return Some(FlowValue::default());
@@ -338,7 +376,8 @@ impl TaintPolicy for SqlPolicy {
                 .args
                 .iter()
                 .fold(call.receiver.clone(), |value, arg| value.combine(arg));
-            return Some(inputs.with_facts(Taint::Yes));
+            let facts = inputs.facts.union(Origins::of(Origin::Unclassified));
+            return Some(inputs.with_facts(facts));
         }
         None
     }
@@ -347,28 +386,30 @@ impl TaintPolicy for SqlPolicy {
         method == "push"
     }
 
-    fn entry_argument(&self, input: &EntryInput<'_>) -> Option<TrackedValue<Taint>> {
+    fn entry_argument(&self, input: &EntryInput<'_>) -> Option<TrackedValue<Origins>> {
         let unknown = || TrackedValue::from(FlowValue::from_taint(UNKNOWN));
         let value = match (input.contract, input.position) {
             // The module's payload is attacker data in full.
             (InvocationContract::ForgeFunction, 0) => {
-                TrackedValue::from(FlowValue::from_taint(Taint::Yes))
+                TrackedValue::from(source(Origin::ModulePayload))
             }
             (InvocationContract::ForgeFunction, 1) => context_value(unknown(), &[], true),
             // An envelope: its payload is attacker data, its context is the
             // platform's, and anything else on it is unclassified.
             (InvocationContract::ResolverCallback, 0) => context_value(
-                unknown().with_field(&["payload"], FlowValue::from_taint(Taint::Yes)),
+                unknown().with_field(&["payload"], source(Origin::ResolverPayload)),
                 &["context"],
                 false,
             ),
             _ => unknown(),
         };
+        let origins = value.aggregate().facts;
         Some(if input.supported {
             value
-        } else if value.aggregate().facts == Taint::Yes {
-            // A pattern or default the IR does not model may bind anything.
-            TrackedValue::from(FlowValue::from_taint(Taint::Yes))
+        } else if !origins.is_empty() {
+            // A pattern or default the IR does not model may bind anything the
+            // argument holds.
+            TrackedValue::from(FlowValue::from_taint(Taint::Yes).with_facts(origins))
         } else {
             unknown()
         })
@@ -950,6 +991,8 @@ fn source_location(
 pub struct SqlInjectionVuln {
     sink: SqlSink,
     paths: Vec<String>,
+    /// What made the query text attacker controlled, over every path.
+    origins: Origins,
     sink_location: String,
     sink_function: String,
     query: String,
@@ -964,6 +1007,7 @@ impl SqlInjectionVuln {
         def: DefId,
         sink_location: String,
         query: &Operand,
+        origins: Origins,
         source_map: &SourceMap,
     ) -> Self {
         let entry_func = match &entry.kind {
@@ -994,6 +1038,7 @@ impl SqlInjectionVuln {
         Self {
             sink,
             paths: vec![path],
+            origins,
             sink_location,
             sink_function: env.def_name(def).to_owned(),
             query: render_query_operand(env, def, query),
@@ -1001,6 +1046,7 @@ impl SqlInjectionVuln {
     }
 
     fn merge(&mut self, mut other: Self) {
+        self.origins = self.origins.union(other.origins);
         for path in other.paths.drain(..) {
             if self.paths.len() == 8 {
                 break;
@@ -1026,6 +1072,12 @@ impl IntoVuln for SqlInjectionVuln {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
         let sink_name = self.sink.api_name();
         let location = format!("{} in {}", self.sink_location, self.sink_function);
+        let labels = self.origins.labels();
+        let (heading, noun) = if labels.len() == 1 {
+            ("Origin", "origin")
+        } else {
+            ("Origins", "origins")
+        };
         Vulnerability {
             check_name: "forge-sql-injection".to_string(),
             description: format!(
@@ -1033,7 +1085,8 @@ impl IntoVuln for SqlInjectionVuln {
             ),
             recommendation: "Use placeholders and bindParams for values. For identifiers or SQL structure that cannot be bound, select only from IR-provable trusted constant alternatives.",
             proof: format!(
-                "Propagation path: {}. Query argument at {location}: `{}`. Binding: the value is part of SQL text, so bindParams does not repair interpolation already present in the query. Limitation: FSRT models locally resolvable calls and supported IR operations; review the reported source and path in application context.",
+                "{heading} of the untrusted data: {}. Propagation path: {}. Query argument at {location}: `{}`. Binding: the value is part of SQL text, so bindParams does not repair interpolation already present in the query. Limitation: FSRT models locally resolvable calls and supported IR operations; review the reported {noun} and path in application context.",
+                labels.join(", "),
                 self.paths.join("; "),
                 self.query
             ),
@@ -1050,6 +1103,8 @@ pub struct SqlInjectionChecker {
     vulns: Vec<SqlInjectionVuln>,
     seen: HashMap<(DefId, Location, SqlSink), usize>,
     source_map: Arc<SourceMap>,
+    /// Shared with the policy of the entrypoint being checked.
+    sink_origins: SinkOrigins,
 }
 
 impl SqlInjectionChecker {
@@ -1073,6 +1128,7 @@ impl SqlInjectionChecker {
             vulns: vec![],
             seen: HashMap::new(),
             source_map,
+            sink_origins: SinkOrigins::default(),
         }
     }
 
@@ -1086,6 +1142,12 @@ impl<'cx> Runner<'cx> for SqlInjectionChecker {
     type Dataflow = TaintDataflow<SqlPolicy>;
 
     const NAME: &'static str = "SQLInjection";
+
+    fn dataflow(&self, _interp: &Interp<'cx, Self>) -> Self::Dataflow {
+        // Each entrypoint is solved afresh, and so are the origins at its sinks.
+        self.sink_origins.borrow_mut().clear();
+        TaintDataflow::new(SqlPolicy::with_sink_origins(Rc::clone(&self.sink_origins)))
+    }
 
     fn visit_intrinsic(
         &mut self,
@@ -1116,6 +1178,8 @@ impl<'cx> Runner<'cx> for SqlInjectionChecker {
                 .get(sink.query_index())
                 .cloned()
                 .unwrap_or(Operand::UNDEF);
+            let origins = self.sink_origins.borrow().get(&(def, loc)).copied();
+            debug_assert!(origins.is_some(), "a sink finding without origins");
             let vuln = SqlInjectionVuln::new(
                 sink,
                 interp.callstack(),
@@ -1124,6 +1188,7 @@ impl<'cx> Runner<'cx> for SqlInjectionChecker {
                 def,
                 source_location(&self.source_map, interp.body(), loc, &interp.entry().file),
                 &query,
+                origins.unwrap_or(Origins::of(Origin::Unclassified)),
                 &self.source_map,
             );
             let key = (def, loc, sink);
