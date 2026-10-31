@@ -22,6 +22,7 @@ mod secret_logging;
 mod secret_logging_storage;
 mod sql_call_paths;
 mod sql_escapers;
+mod sql_origins;
 mod taint_regressions;
 mod value_regressions;
 
