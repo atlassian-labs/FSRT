@@ -4,8 +4,8 @@
 //! module payload and request envelope of a Forge invocation, storage and API
 //! reads, network responses, and the rows `@forge/sql` returns; a sink is the
 //! query text of `sql.prepare`, `sql.executeRaw` or `migrationRunner.enqueue`.
-//! Numeric conversion and a placeholder list keep a value's provenance but make
-//! its text safe.
+//! Numeric conversion, a placeholder list and an exact allowlist check keep a
+//! value's provenance but make its text safe.
 //!
 //! A value the analysis cannot classify is `UNKNOWN`, which is trusted for now:
 //! it never produces a finding. `UNKNOWN_IS_UNTRUSTED` is the one switch to
@@ -21,12 +21,12 @@ use crate::{
         WithCallStack,
     },
     ir::{
-        Base, BinOp, Body, CallPathPart, Inst, Intrinsic, Literal, Location, Operand, Projection,
-        Rvalue, UnOp, VarId, VarKind, Variable,
+        Base, BasicBlockId, BinOp, Body, CallPathPart, Inst, Intrinsic, Literal, Location, Operand,
+        Projection, Rvalue, Terminator, UnOp, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     taint::{
-        EntryInput, FlowValue, InstSite, Taint, TaintDataflow, TaintPolicy, TaintReader,
+        BlockSite, EntryInput, FlowValue, InstSite, Taint, TaintDataflow, TaintPolicy, TaintReader,
         TrackedValue, UnresolvedCall, visit_taint_call,
     },
 };
@@ -107,10 +107,12 @@ fn sql_sink(env: &Environment, body: &Body, location: Location) -> Option<SqlSin
 
 /// Taint on main's tracker, with a value's facts meaning "may put SQL syntax of
 /// an attacker's choosing into query text". Provenance records only that a value
-/// derives from a source: numeric conversion and a placeholder list clear the
-/// facts and keep the provenance.
+/// derives from a source: numeric conversion, a placeholder list and an
+/// allowlist check clear the facts and keep the provenance.
 #[derive(Default)]
 pub struct SqlPolicy {
+    /// The allowlisted variables each block is entered with, by body and block.
+    guards: RefCell<HashMap<(DefId, BasicBlockId), Vec<Variable>>>,
     /// Whether a `join` call builds a list of `?` placeholders, by call site.
     placeholder_lists: RefCell<HashMap<(DefId, Location), bool>>,
 }
@@ -303,6 +305,42 @@ impl TaintPolicy for SqlPolicy {
         };
         Some(TrackedValue::from(value))
     }
+
+    fn safe_on_entry(&self, site: &BlockSite<'_>, block: BasicBlockId) -> Vec<Variable> {
+        let key = (site.def, block);
+        if let Some(found) = self.guards.borrow().get(&key) {
+            return found.clone();
+        }
+        let found = allowlisted_on_entry(site.env, site.body, site.def, block);
+        self.guards.borrow_mut().insert(key, found.clone());
+        found
+    }
+}
+
+/// The variable a block is entered with only after an exact allowlist check.
+fn allowlisted_on_entry(
+    env: &Environment,
+    body: &Body,
+    def: DefId,
+    block: BasicBlockId,
+) -> Vec<Variable> {
+    let &[predecessor] = body.predecessors(block) else {
+        return Vec::new();
+    };
+    let Terminator::If { cond, cons, alt } = &body.block(predecessor).term else {
+        return Vec::new();
+    };
+    if cons == alt {
+        return Vec::new();
+    }
+    match exact_allowlist_guard(env, body, def, cond) {
+        Some((candidate, allowed_when_true))
+            if block == if allowed_when_true { *cons } else { *alt } =>
+        {
+            vec![candidate]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Whether the call's result has no model: a bare call, or a method of an
@@ -474,6 +512,241 @@ fn is_placeholder_list_call(
     operands.len() <= 1
         && operands.first().is_none_or(is_placeholder_separator)
         && is_placeholder_sequence_variable(env, body, def, &receiver, &mut HashSet::new())
+}
+
+fn constant_string_collection(
+    env: &Environment,
+    def: DefId,
+    body: &Body,
+    variable: &Variable,
+) -> Option<HashSet<String>> {
+    fn variable_binding(env: &Environment, body: &Body, var: VarId) -> Option<DefId> {
+        match body.vars.get(var)? {
+            VarKind::GlobalRef(binding) | VarKind::LocalDef(binding) => {
+                Some(env.resolve_alias(*binding))
+            }
+            _ => None,
+        }
+    }
+
+    fn collection_is_mutated(env: &Environment, body: &Body, binding: DefId) -> bool {
+        body.iter_blocks_enumerated()
+            .flat_map(|(_, block)| block.iter())
+            .any(|inst| {
+                if let Inst::Assign(target, _) = inst
+                    && !target.projections.is_empty()
+                    && let Base::Var(var) = target.base
+                    && variable_binding(env, body, var) == Some(binding)
+                {
+                    return true;
+                }
+                let Some((callee, _)) = inst.rvalue().as_call() else {
+                    return false;
+                };
+                let Some((receiver, method)) = method_receiver(callee) else {
+                    return false;
+                };
+                let Base::Var(var) = receiver.base else {
+                    return false;
+                };
+                variable_binding(env, body, var) == Some(binding)
+                    && matches!(method, "add" | "push" | "splice" | "unshift")
+            })
+    }
+
+    fn from_operand(
+        env: &Environment,
+        def: DefId,
+        body: &Body,
+        operand: &Operand,
+        visiting: &mut HashSet<(DefId, VarId)>,
+    ) -> Option<HashSet<String>> {
+        let Operand::Var(variable) = operand else {
+            return None;
+        };
+        from_variable(env, def, body, variable, visiting)
+    }
+
+    fn from_rvalue(
+        env: &Environment,
+        def: DefId,
+        body: &Body,
+        rvalue: &Rvalue,
+        visiting: &mut HashSet<(DefId, VarId)>,
+    ) -> Option<HashSet<String>> {
+        match rvalue {
+            Rvalue::Read(operand) => from_operand(env, def, body, operand, visiting),
+            Rvalue::Phi(values) => {
+                let mut constants = HashSet::new();
+                for (var, _) in values {
+                    constants.extend(from_variable(
+                        env,
+                        def,
+                        body,
+                        &Variable::new(*var),
+                        visiting,
+                    )?);
+                }
+                Some(constants)
+            }
+            Rvalue::Call(callee, operands)
+                if unresolved_global_named(env, body, callee, "Set") && operands.len() == 1 =>
+            {
+                from_operand(env, def, body, &operands[0], visiting)
+            }
+            _ => None,
+        }
+    }
+
+    fn from_variable(
+        env: &Environment,
+        def: DefId,
+        body: &Body,
+        variable: &Variable,
+        visiting: &mut HashSet<(DefId, VarId)>,
+    ) -> Option<HashSet<String>> {
+        let Base::Var(var) = variable.base else {
+            return None;
+        };
+        if !visiting.insert((def, var)) {
+            return None;
+        }
+
+        if let Some(elements) = array_literal_elements(env, body, variable) {
+            visiting.remove(&(def, var));
+            return elements
+                .iter()
+                .map(|element| match element {
+                    Operand::Lit(Literal::Str(value) | Literal::JSXText(value)) => {
+                        Some(value.to_string())
+                    }
+                    _ => None,
+                })
+                .collect::<Option<HashSet<_>>>()
+                .filter(|constants| !constants.is_empty());
+        }
+        let definitions = variable_definitions_with_aliases(body, variable);
+        let result = if definitions.is_empty() {
+            let binding = variable_binding(env, body, var)?;
+            let mut found = false;
+            let mut constants = HashSet::new();
+            for candidate_body in env.bodies() {
+                let Some(candidate_def) = candidate_body.owner() else {
+                    continue;
+                };
+                if collection_is_mutated(env, candidate_body, binding) {
+                    return None;
+                }
+                for inst in candidate_body
+                    .iter_blocks_enumerated()
+                    .flat_map(|(_, block)| block.iter())
+                {
+                    let Inst::Assign(target, rvalue) = inst else {
+                        continue;
+                    };
+                    let Base::Var(target_var) = target.base else {
+                        continue;
+                    };
+                    if !target.projections.is_empty()
+                        || variable_binding(env, candidate_body, target_var) != Some(binding)
+                    {
+                        continue;
+                    }
+                    found = true;
+                    constants.extend(from_rvalue(
+                        env,
+                        candidate_def,
+                        candidate_body,
+                        rvalue,
+                        visiting,
+                    )?);
+                }
+            }
+            found.then_some(constants)
+        } else {
+            if variable_binding(env, body, var)
+                .is_some_and(|binding| collection_is_mutated(env, body, binding))
+            {
+                visiting.remove(&(def, var));
+                return None;
+            }
+            let mut constants = HashSet::new();
+            for (_, rvalue) in definitions {
+                constants.extend(from_rvalue(env, def, body, rvalue, visiting)?);
+            }
+            Some(constants)
+        };
+        visiting.remove(&(def, var));
+        result.filter(|constants| !constants.is_empty())
+    }
+
+    from_variable(env, def, body, variable, &mut HashSet::new())
+}
+
+fn exact_allowlist_guard(
+    env: &Environment,
+    body: &Body,
+    def: DefId,
+    condition: &Operand,
+) -> Option<(Variable, bool)> {
+    fn inspect(
+        env: &Environment,
+        body: &Body,
+        def: DefId,
+        operand: &Operand,
+        allowed_when_true: bool,
+        visiting: &mut HashSet<VarId>,
+    ) -> Option<(Variable, bool)> {
+        let Operand::Var(variable) = operand else {
+            return None;
+        };
+        let Base::Var(var) = variable.base else {
+            return None;
+        };
+        if !visiting.insert(var) {
+            return None;
+        }
+        let definitions = variable_definitions_with_aliases(body, variable);
+        for (_, rvalue) in definitions {
+            match rvalue {
+                Rvalue::Unary(UnOp::Not, inner) => {
+                    if let Some(result) =
+                        inspect(env, body, def, inner, !allowed_when_true, visiting)
+                    {
+                        visiting.remove(&var);
+                        return Some(result);
+                    }
+                }
+                Rvalue::Call(callee, operands) if operands.len() == 1 => {
+                    let Some((receiver, "has" | "includes")) = method_receiver(callee) else {
+                        continue;
+                    };
+                    let constants = constant_string_collection(env, def, body, &receiver);
+                    if constants.is_none() {
+                        continue;
+                    }
+                    let Operand::Var(candidate) = &operands[0] else {
+                        continue;
+                    };
+                    visiting.remove(&var);
+                    return Some((candidate.clone(), allowed_when_true));
+                }
+                Rvalue::Read(inner) => {
+                    if let Some(result) =
+                        inspect(env, body, def, inner, allowed_when_true, visiting)
+                    {
+                        visiting.remove(&var);
+                        return Some(result);
+                    }
+                }
+                _ => {}
+            }
+        }
+        visiting.remove(&var);
+        None
+    }
+
+    inspect(env, body, def, condition, true, &mut HashSet::new())
 }
 
 fn originates_from_prepare(
