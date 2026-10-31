@@ -138,6 +138,27 @@ pub trait TaintPolicy: Sized {
     ) -> Option<FlowValue<Self::Facts>> {
         None
     }
+
+    /// `is_violation` for a sink that is recognized by where it is, rather than
+    /// by its instruction alone, such as a call to a function imported from a
+    /// particular package. The default recognizes none.
+    fn is_violation_at(
+        &self,
+        _site: &InstSite<'_>,
+        _inst: &Inst,
+        _values: &TaintReader<'_, Self>,
+    ) -> bool {
+        false
+    }
+}
+
+/// The body and instruction a policy is asked about.
+#[derive(Clone, Copy)]
+pub struct InstSite<'a> {
+    pub env: &'a Environment,
+    pub body: &'a Body,
+    pub def: DefId,
+    pub location: Location,
 }
 
 /// An unmodelled call, as `TaintPolicy::method_value` sees it.
@@ -1422,7 +1443,18 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
                 dataflow,
                 frame: &frame,
             };
-            if dataflow.policy.is_violation(inst, &values) {
+            if dataflow.policy.is_violation(inst, &values)
+                || dataflow.policy.is_violation_at(
+                    &InstSite {
+                        env,
+                        body,
+                        def,
+                        location,
+                    },
+                    inst,
+                    &values,
+                )
+            {
                 block_findings.insert(location);
             }
             let value = if let Rvalue::Call(callee, args) = inst.rvalue()
