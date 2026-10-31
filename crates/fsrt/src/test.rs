@@ -5354,6 +5354,97 @@ fn sql_contract_recursive_calls_propagate_actual_arguments() {
 }
 
 #[test]
+fn sql_contract_mutated_registration_bindings_are_unclassified() {
+    for source in [
+        "import Resolver from '@forge/resolver'; let r = new Resolver(); r.define('query', ({payload}) => sql.prepare(payload.table)); export const run = r.getDefinitions(); r = other;",
+        "import Resolver from '@forge/resolver'; const r = new Resolver(); r.define('query', ({payload}) => sql.prepare(payload.table)); r.define = other; export const run = r.getDefinitions();",
+    ] {
+        assert_sql_contract_findings(
+            &format!("// src/index.js\nimport sql from '@forge/sql'; {source}"),
+            0,
+            0,
+        );
+    }
+}
+
+#[test]
+fn sql_contract_follows_an_alias_of_the_registered_handler() {
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; import Resolver from '@forge/resolver'; const registry = new Resolver(); registry.define('query', input => sql.prepare(input.payload.table)); const handler = registry.getDefinitions(); const renamed = handler; export const run = renamed;",
+        1,
+        0,
+    );
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; function handler(arbitrary) { sql.prepare(arbitrary.table); } export const run = handler;",
+        1,
+        0,
+    );
+}
+
+fn make_resolver_source(declarations: &str) -> String {
+    format!(
+        "// src/index.js\nimport sql from '@forge/sql'; import {{ makeResolver as make }} from '@forge/resolver'; {declarations}"
+    )
+}
+
+#[test]
+fn sql_contract_make_resolver_registries_that_stay_a_literal_are_verified() {
+    for declarations in [
+        "const handlers = { query: input => sql.prepare(input.payload.table) }; export const run = make(handlers);",
+        "const handlers = { query(input) { sql.prepare(input.payload.table); } }; export const run = make(handlers);",
+        "const handlers = { query: function (input) { sql.prepare(input.payload.table); } }; export const run = make(handlers);",
+        "function query(input) { sql.prepare(input.payload.table); } const handlers = { query }; export const run = make(handlers);",
+        "function original(input) { sql.prepare(input.payload.table); } const handlers = { query: original }; export const run = make(handlers);",
+        "function original(input) { sql.prepare(input.payload.table); } const handlers = { query: original }; const known = handlers.query; export const run = make(handlers);",
+        "export const run = make({ query: input => sql.prepare(input.payload.table) });",
+        "function original(input) { sql.prepare(input.payload.table); } export const run = make({ query: original });",
+    ] {
+        assert_sql_contract_findings(&make_resolver_source(declarations), 1, 0);
+    }
+}
+
+#[test]
+fn sql_contract_make_resolver_registries_that_can_change_are_unclassified() {
+    for declarations in [
+        // reassigned after registration
+        "let handlers = { query: input => sql.prepare(input.payload.table) }; handlers = other; export const run = make(handlers);",
+        // a property written, by name or by key
+        "const handlers = { query: input => sql.prepare(input.payload.table) }; handlers.query = other; export const run = make(handlers);",
+        "const handlers = { query: input => sql.prepare(input.payload.table) }; handlers['query'] = other; export const run = make(handlers);",
+        // handed to a call, before or after the registration
+        "const handlers = { query: input => sql.prepare(input.payload.table) }; Object.assign(handlers, extra); export const run = make(handlers);",
+        "const handlers = { query: input => sql.prepare(input.payload.table) }; export const run = make(handlers); register(handlers);",
+        // the callback itself is replaced
+        "let original = input => sql.prepare(input.payload.table); const handlers = { query: original }; original = other; export const run = make(handlers);",
+        "let original = input => sql.prepare(input.payload.table); original = other; export const run = make({ query: original });",
+        // a literal that is not only identifier, shorthand, function and method properties
+        "const handlers = { ...base, query: input => sql.prepare(input.payload.table) }; export const run = make(handlers);",
+        "const handlers = { query: input => sql.prepare(input.payload.table), other: wrap(input => input) }; export const run = make(handlers);",
+        "const handlers = { get query() { return input => sql.prepare(input.payload.table); } }; export const run = make(handlers);",
+        // the handler, like a resolver instance, handed to a call
+        "const handler = make({ query: input => sql.prepare(input.payload.table) }); register(handler); export const run = handler;",
+    ] {
+        assert_sql_contract_findings(&make_resolver_source(declarations), 0, 0);
+    }
+    // The same rule for an ordinary resolver instance: a handler handed to a call.
+    assert_sql_contract_findings(
+        "// src/index.js\nimport sql from '@forge/sql'; import Resolver from '@forge/resolver'; const registry = new Resolver(); registry.define('query', input => sql.prepare(input.payload.table)); const handler = registry.getDefinitions(); register(handler); export const run = handler;",
+        0,
+        0,
+    );
+}
+
+#[test]
+fn sql_contract_follows_an_alias_of_a_make_resolver_handler() {
+    for declarations in [
+        "const handler = make({ query: input => sql.prepare(input.payload.table) }); const renamed = handler; export const run = renamed;",
+        "const handlers = { query: input => sql.prepare(input.payload.table) }; const handler = make(handlers); const renamed = handler; export const run = renamed;",
+    ] {
+        assert_sql_contract_findings(&make_resolver_source(declarations), 1, 0);
+    }
+}
+
+#[test]
 fn sql_contract_joined_scalar_paths_do_not_trust_descendants() {
     assert_ordinary_contract_findings(
         "const selected = extra ? metadata.installContext : metadata.principal.accountId; sql.prepare(selected);",

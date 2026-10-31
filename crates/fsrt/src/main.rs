@@ -712,7 +712,7 @@ pub(crate) fn scan_directory<'a>(
                 forge_analyzer::interp::InputCategory::Payload
             });
             if let Err(err) = sql_interp.run_checker_with_contract(
-                func.def_id,
+                func.invocation_def,
                 &mut sql_checker,
                 func.path.clone(),
                 func.func_name.to_owned(),

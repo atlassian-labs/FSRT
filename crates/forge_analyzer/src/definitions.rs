@@ -256,6 +256,15 @@ pub fn run_resolver(
         });
     }
 
+    // Verify registration bindings after all modules and callback definitions
+    // exist. Discovery may not rely on a binding that was subsequently replaced.
+    for (module, ast) in modules.iter_enumerated() {
+        ast.visit_with(&mut InvocationBindingValidator {
+            env: &mut environment,
+            module,
+        });
+    }
+
     // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump.
     let mut updated_vars: HashMap<VarId, VarId> = HashMap::new();
     for body in environment.bodies_mut() {
@@ -342,6 +351,28 @@ pub struct Class {
     /// when concatenated: no spread, accessor, method, computed key, or
     /// `toString`/`valueOf`/`__proto__` key. Defaults to `false` for anything unclassified.
     pub coerces_to_default_tag: bool,
+}
+
+/// Whether every property of this literal is one the lowering registers as a member:
+/// a shorthand, a method, or a key with an identifier, static member, function or arrow
+/// value. A spread, accessor, computed key or any other value could define or replace a
+/// member the lowering does not see, so the literal does not say what it registers.
+fn is_static_invocation_object(lit: &ObjectLit) -> bool {
+    lit.props.iter().all(|prop| match prop {
+        PropOrSpread::Prop(prop) => match &**prop {
+            Prop::Shorthand(_) => true,
+            Prop::KeyValue(prop) => {
+                prop.key.as_symbol().is_some()
+                    && matches!(
+                        &*prop.value,
+                        Expr::Ident(_) | Expr::Member(_) | Expr::Fn(_) | Expr::Arrow(_)
+                    )
+            }
+            Prop::Method(prop) => prop.key.as_symbol().is_some(),
+            _ => false,
+        },
+        PropOrSpread::Spread(_) => false,
+    })
 }
 
 /// Whether coercing this literal to a primitive yields `"[object Object]"`.
@@ -628,6 +659,15 @@ pub struct Environment {
     immutable_facts: facts::ImmutableFacts,
     /// Object literals whose omitted properties prevent an import proof.
     opaque_import_objects: HashSet<DefId>,
+    unstable_invocation_bindings: HashSet<DefId>,
+    invocation_aliases: HashMap<DefId, DefId>,
+    /// Object literals whose properties are all identifier, shorthand, function, arrow,
+    /// static member or method entries: the only registry shape whose members can be read
+    /// off the literal.
+    static_invocation_objects: HashSet<DefId>,
+    /// `resolver -> object` for each `makeResolver(object)` whose members were copied from
+    /// the object, which later code can still change.
+    resolver_objects: HashMap<DefId, DefId>,
     exports: TiVec<ModId, Vec<(Atom, DefId)>>,
     pub global: TiVec<ModId, DefId>,
     pub defs: Definitions,
@@ -637,6 +677,46 @@ pub struct Environment {
     /// `(resolver, object)` for each `makeResolver(object)` call, whose members are
     /// copied once all modules have been lowered.
     resolver_configs: Vec<(DefId, DefId)>,
+}
+
+struct InvocationBindingValidator<'a> {
+    env: &'a mut Environment,
+    module: ModId,
+}
+impl Visit for InvocationBindingValidator<'_> {
+    noop_visit_type!();
+    fn visit_assign_expr(&mut self, assignment: &AssignExpr) {
+        let binding = match &assignment.left {
+            AssignTarget::Simple(SimpleAssignTarget::Ident(binding)) => Some(&binding.id),
+            AssignTarget::Simple(SimpleAssignTarget::Member(member)) => member.obj.as_ident(),
+            _ => None,
+        };
+        if let Some(binding) = binding
+            && let Some(def) = self.env.sym_to_id(binding.to_id(), self.module)
+        {
+            let resolved = self.env.resolve_alias(def);
+            self.env.unstable_invocation_bindings.insert(resolved);
+        }
+        assignment.visit_children_with(self);
+    }
+    fn visit_call_expr(&mut self, call: &CallExpr) {
+        // `makeResolver(object)` is the registration itself; any other call may change
+        // the object it registered.
+        let registration = is_make_resolver(call, self.env, self.module);
+        for argument in &call.args {
+            if let Expr::Ident(binding) = &*argument.expr
+                && let Some(def) = self.env.sym_to_id(binding.to_id(), self.module)
+            {
+                let resolved = self.env.resolve_alias(def);
+                if matches!(self.env.def_ref(resolved), DefKind::Resolver(_))
+                    || (!registration && self.env.is_resolver_object(resolved))
+                {
+                    self.env.unstable_invocation_bindings.insert(resolved);
+                }
+            }
+        }
+        call.visit_children_with(self);
+    }
 }
 
 struct ImportCollector<'cx> {
@@ -3885,6 +3965,11 @@ impl Visit for Lowerer<'_> {
                 return;
             }
             match &**expr {
+                Expr::Ident(source) => {
+                    let target = self.get_or_insert_sym(id);
+                    let source = self.get_or_insert_sym(source.to_id());
+                    self.res.invocation_aliases.insert(target, source);
+                }
                 Expr::Lit(lit) => {}
                 Expr::Arrow(expr) => {
                     let def_id = self.def_function(id);
@@ -3932,6 +4017,9 @@ impl Visit for Lowerer<'_> {
                         .def_mut(def_id)
                         .expect_class()
                         .coerces_to_default_tag = coerces;
+                    if is_static_invocation_object(lit) {
+                        self.res.static_invocation_objects.insert(def_id);
+                    }
                     // TODO:add parent
                     for prop in props {
                         match prop {
@@ -4820,6 +4908,87 @@ impl Environment {
         None
     }
 
+    /// An exported resolver instance alone is not an invocation adapter.
+    pub fn invocation_target(&self, mut def: DefId) -> Option<DefId> {
+        let mut seen = HashSet::new();
+        while seen.insert(def) {
+            if self.unstable_invocation_bindings.contains(&def) {
+                return None;
+            }
+            if let Some(target) = self.invocation_aliases.get(&def) {
+                def = *target;
+                continue;
+            }
+            let target = self.resolve_alias(def);
+            if target == def {
+                return Some(def);
+            }
+            def = target;
+        }
+        None
+    }
+
+    pub fn invocation_binding_is_stable(&self, def: DefId) -> bool {
+        self.invocation_target(def).is_some()
+    }
+
+    pub fn verified_resolver_defs(&self, def: DefId) -> Vec<(Atom, DefId)> {
+        let Some(target) = self.invocation_target(def) else {
+            warn!("mutated resolver handler");
+            return vec![];
+        };
+        if !self.is_resolver_handler(def) {
+            return vec![];
+        }
+        let DefKind::Resolver(class) = self.def_ref(target) else {
+            warn!("unsupported resolver object");
+            return vec![];
+        };
+        // A `makeResolver(object)` registry was copied from the object, and later code can
+        // still change the object: it must be a literal that was never written or passed on.
+        if let Some(&object) = self.resolver_objects.get(&target)
+            && !(self.static_invocation_objects.contains(&object)
+                && self.invocation_target(object).is_some())
+        {
+            warn!("unsupported or mutated makeResolver object");
+            return vec![];
+        }
+        let members = &class.pub_members;
+        members
+            .iter()
+            .filter_map(|(name, callback)| {
+                if let Some(callback) = self.invocation_target(*callback)
+                    && self.def_ref(callback).as_body().is_some()
+                {
+                    return Some((name.clone(), callback));
+                }
+                warn!("unresolved or mutated resolver callback {name}");
+                None
+            })
+            .collect()
+    }
+
+    /// Whether `def` is an object some `makeResolver(object)` copied its members from.
+    fn is_resolver_object(&self, def: DefId) -> bool {
+        self.resolver_objects.values().any(|object| *object == def)
+    }
+
+    pub fn is_resolver_handler(&self, mut def: DefId) -> bool {
+        let mut seen = HashSet::new();
+        while seen.insert(def) {
+            if let Some(target) = self.invocation_aliases.get(&def) {
+                def = *target;
+                continue;
+            }
+            match self.def_ref(def) {
+                DefKind::ResolverHandler(_) => return true,
+                DefKind::ExportAlias(next) => def = next,
+                _ => return false,
+            }
+        }
+        false
+    }
+
     pub fn resolve_alias(&self, def: DefId) -> DefId {
         match self.def_ref(def) {
             DefKind::Arg
@@ -4848,6 +5017,7 @@ impl Environment {
                 continue;
             };
             let members = config.pub_members.clone();
+            self.resolver_objects.insert(resolver, object);
             self.def_mut(resolver).expect_class().pub_members = members;
         }
     }
