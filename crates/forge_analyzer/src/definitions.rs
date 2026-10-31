@@ -3127,6 +3127,35 @@ impl Visit for FunctionCollector<'_> {
     }
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
+        if let Some(Expr::Call(call)) = n.init.as_deref()
+            && is_make_resolver(call, self.res, self.module)
+        {
+            if let Some(binding) = n.name.as_ident()
+                && let Some(handler) = self.res.sym_to_id(binding.to_id(), self.module)
+                && let Some(properties) = make_resolver_properties(call)
+            {
+                let resolver = self.res.resolve_alias(handler);
+                for (name, callback) in properties {
+                    if let Some(def) = self.res.lookup_prop(resolver, &name) {
+                        let old_parent = self.parent.replace(def);
+                        match callback {
+                            StaticCallback::Expression(Expr::Arrow(arrow)) => {
+                                self.visit_arrow_expr(arrow)
+                            }
+                            StaticCallback::Expression(Expr::Fn(function)) => {
+                                self.handle_function(&function.function, Some(def))
+                            }
+                            StaticCallback::Method(function) => {
+                                self.handle_function(function, Some(def))
+                            }
+                            _ => {}
+                        }
+                        self.parent = old_parent;
+                    }
+                }
+            }
+            return;
+        }
         n.visit_children_with(self);
         let Some(BindingIdent { id, .. }) = n.name.as_ident() else {
             return;
@@ -3239,21 +3268,43 @@ impl Visit for FunctionCollector<'_> {
                 }
             }
             Some(Expr::Object(object_lit)) => {
-                object_lit.props.iter().for_each(|prop| {
-                    if let PropOrSpread::Prop(prop) = prop
-                        && let Prop::Method(MethodProp { key, function }) = &**prop
-                        && let Some(key_ident) = key.as_ident()
-                    {
-                        let former_parent = self.parent;
-                        self.parent = self.res.get_prop_from_ident(
-                            self.module,
-                            id.to_id(),
-                            &key_ident.clone().into(),
-                        );
-                        self.handle_function(function, None);
-                        self.parent = former_parent;
+                let Some(object) = self.res.sym_to_id(id, self.module) else {
+                    return;
+                };
+                for property in &object_lit.props {
+                    let PropOrSpread::Prop(property) = property else {
+                        continue;
+                    };
+                    let (name, callback) = match &**property {
+                        Prop::Method(property) => (
+                            property.key.as_symbol(),
+                            StaticCallback::Method(&property.function),
+                        ),
+                        Prop::KeyValue(property) => (
+                            property.key.as_symbol(),
+                            StaticCallback::Expression(&property.value),
+                        ),
+                        _ => continue,
+                    };
+                    let Some(def) = name.and_then(|name| self.res.lookup_prop(object, &name))
+                    else {
+                        continue;
+                    };
+                    let old_parent = self.parent.replace(def);
+                    match callback {
+                        StaticCallback::Method(function) => {
+                            self.handle_function(function, Some(def))
+                        }
+                        StaticCallback::Expression(Expr::Fn(function)) => {
+                            self.handle_function(&function.function, Some(def))
+                        }
+                        StaticCallback::Expression(Expr::Arrow(arrow)) => {
+                            self.visit_arrow_expr(arrow)
+                        }
+                        _ => {}
                     }
-                });
+                    self.parent = old_parent;
+                }
             }
             _ => {}
         }
@@ -3446,6 +3497,54 @@ fn static_callback_member(member: &MemberExpr, env: &Environment, module: ModId)
     env.lookup_prop(object, &property.sym)
 }
 
+fn is_make_resolver(call: &CallExpr, env: &Environment, module: ModId) -> bool {
+    let Some(Expr::Ident(callee)) = call.callee.as_expr().map(|expr| &**expr) else {
+        return false;
+    };
+    let Some(def) = env.sym_to_id(callee.to_id(), module) else {
+        return false;
+    };
+    matches!(env.def_ref(env.resolve_alias(def)), DefKind::Foreign(item)
+        if item.module_name == "@forge/resolver" && matches!(&item.kind, ImportKind::Named(name) if name == "makeResolver"))
+}
+
+enum StaticCallback<'a> {
+    Expression(&'a Expr),
+    Method(&'a Function),
+    Binding(&'a Ident),
+}
+fn make_resolver_properties(call: &CallExpr) -> Option<Vec<(Atom, StaticCallback<'_>)>> {
+    let [ExprOrSpread { spread: None, expr }] = call.args.as_slice() else {
+        return None;
+    };
+    let Expr::Object(object) = &**expr else {
+        return None;
+    };
+    object
+        .props
+        .iter()
+        .map(|property| {
+            let PropOrSpread::Prop(property) = property else {
+                return None;
+            };
+            match &**property {
+                Prop::KeyValue(property) => Some((
+                    property.key.as_symbol()?,
+                    StaticCallback::Expression(&property.value),
+                )),
+                Prop::Method(property) => Some((
+                    property.key.as_symbol()?,
+                    StaticCallback::Method(&property.function),
+                )),
+                Prop::Shorthand(binding) => {
+                    Some((binding.sym.clone(), StaticCallback::Binding(binding)))
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 fn as_resolver_def<'a>(
     call: &'a CallExpr,
     res: &Environment,
@@ -3592,6 +3691,66 @@ impl Visit for Lowerer<'_> {
         } = n
         {
             let id = id.to_id();
+            if let Expr::Call(call) = &**expr
+                && is_make_resolver(call, self.res, self.curr_mod)
+            {
+                if let [ExprOrSpread { spread: None, expr }] = call.args.as_slice()
+                    && let Expr::Ident(object) = &**expr
+                {
+                    let object = self.get_or_insert_sym(object.to_id());
+                    self.res.get_or_overwrite_sym(
+                        id,
+                        self.curr_mod,
+                        DefKind::ResolverHandler(object),
+                    );
+                    return;
+                }
+                let resolver = self.res.add_anonymous(
+                    "resolver definitions",
+                    AnonType::Unknown,
+                    self.curr_mod,
+                );
+                self.res.overwrite_def(resolver, DefKind::Resolver(()));
+                self.res.get_or_overwrite_sym(
+                    id,
+                    self.curr_mod,
+                    DefKind::ResolverHandler(resolver),
+                );
+                let Some(properties) = make_resolver_properties(call) else {
+                    warn!("unsupported makeResolver object (dynamic key, spread, or wrapper)");
+                    return;
+                };
+                for (name, callback) in properties {
+                    let callback = match callback {
+                        StaticCallback::Expression(Expr::Ident(id))
+                        | StaticCallback::Binding(id) => self.get_or_insert_sym(id.to_id()),
+                        StaticCallback::Expression(Expr::Member(member)) => {
+                            let Some(callback) =
+                                static_callback_member(member, self.res, self.curr_mod)
+                            else {
+                                warn!("unresolved resolver callback {name}");
+                                continue;
+                            };
+                            callback
+                        }
+                        StaticCallback::Expression(Expr::Fn(_) | Expr::Arrow(_))
+                        | StaticCallback::Method(_) => {
+                            self.res
+                                .add_anonymous(name.clone(), AnonType::Closure, self.curr_mod)
+                        }
+                        _ => {
+                            warn!("unsupported makeResolver callback {name}");
+                            continue;
+                        }
+                    };
+                    self.res
+                        .def_mut(resolver)
+                        .expect_class()
+                        .pub_members
+                        .push((name, callback));
+                }
+                return;
+            }
             match &**expr {
                 Expr::Lit(lit) => {}
                 Expr::Arrow(expr) => {

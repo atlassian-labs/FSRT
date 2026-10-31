@@ -120,3 +120,88 @@ fn define_with_a_dynamic_key_or_spread_registers_nothing() {
         assert_eq!(authz_findings(&source), 0, "{define}");
     }
 }
+
+const MAKE_RESOLVER_PREAMBLE: &str = "import { makeResolver } from '@forge/resolver';
+import api, { route } from '@forge/api';";
+
+const ISSUE_REQUEST: &str = "api.asApp().requestJira(route`/rest/api/3/issue/1`)";
+
+#[test]
+fn make_resolver_callbacks_are_analyzed() {
+    for properties in [
+        format!("getIssue: async () => {ISSUE_REQUEST}"),
+        format!("getIssue: async function () {{ return {ISSUE_REQUEST}; }}"),
+        format!("async getIssue() {{ return {ISSUE_REQUEST}; }}"),
+        "getIssue: getIssueHandler".to_string(),
+        "getIssue".to_string(),
+    ] {
+        let source = format!(
+            "{MAKE_RESOLVER_PREAMBLE}
+            async function getIssue() {{ return {ISSUE_REQUEST}; }}
+            function getIssueHandler() {{ return {ISSUE_REQUEST}; }}
+            export const handler = makeResolver({{ {properties} }});"
+        );
+        assert_eq!(authz_findings(&source), 1, "{properties}");
+    }
+}
+
+#[test]
+fn make_resolver_registers_every_property() {
+    let source = format!(
+        "{MAKE_RESOLVER_PREAMBLE}
+        async function named() {{ return {ISSUE_REQUEST}; }}
+        export const handler = makeResolver({{
+            named,
+            inline: async () => {ISSUE_REQUEST},
+            method() {{ return {ISSUE_REQUEST}; }},
+        }});"
+    );
+    assert_eq!(authz_findings(&source), 3);
+}
+
+#[test]
+fn make_resolver_follows_a_renamed_import() {
+    let source = format!(
+        "import {{ makeResolver as create }} from '@forge/resolver';
+        import api, {{ route }} from '@forge/api';
+        export const handler = create({{ getIssue: async () => {ISSUE_REQUEST} }});"
+    );
+    assert_eq!(authz_findings(&source), 1);
+}
+
+#[test]
+fn make_resolver_not_imported_from_forge_resolver_registers_nothing() {
+    let source = format!(
+        "import api, {{ route }} from '@forge/api';
+        function makeResolver(handlers) {{ return handlers; }}
+        export const handler = makeResolver({{ getIssue: async () => {ISSUE_REQUEST} }});"
+    );
+    assert_eq!(authz_findings(&source), 0);
+}
+
+#[test]
+fn make_resolver_with_a_dynamic_key_or_spread_registers_nothing_for_it() {
+    for properties in ["[key]: async () => REQUEST", "...handlers"] {
+        let properties = properties.replace("REQUEST", ISSUE_REQUEST);
+        let source = format!(
+            "{MAKE_RESOLVER_PREAMBLE}
+            const key = 'getIssue';
+            const handlers = {{}};
+            export const handler = makeResolver({{ {properties} }});"
+        );
+        assert_eq!(authz_findings(&source), 0, "{properties}");
+    }
+}
+
+#[test]
+fn arrow_property_of_an_object_literal_is_lowered() {
+    let source = format!(
+        "{PREAMBLE}
+        const helpers = {{
+            fetchIssue: async () => {ISSUE_REQUEST},
+        }};
+        resolver.define('getIssue', async () => helpers.fetchIssue());
+        {EPILOGUE}"
+    );
+    assert_eq!(authz_findings(&source), 1);
+}
