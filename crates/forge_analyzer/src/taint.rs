@@ -30,7 +30,9 @@ pub use value::{FlowFacts, FlowValue};
 
 use crate::{
     definitions::{DefId, DefKind, Environment, ImportKind},
-    interp::{Dataflow, EntryKind, Interp, JoinSemiLattice, Runner},
+    interp::{
+        Dataflow, EntryKind, InputCategory, Interp, InvocationContract, JoinSemiLattice, Runner,
+    },
     ir::{
         Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Literal, Location, Operand,
         Projection, Rvalue, STARTING_BLOCK, Successors, Terminator, UnOp, VarId, VarKind, Variable,
@@ -168,6 +170,12 @@ pub trait TaintPolicy: Sized {
         }
     }
 
+    /// The value a policy gives the entrypoint's argument at `input.position`,
+    /// in place of the clean default. Helpers take their callers' values.
+    fn entry_argument(&self, _input: &EntryInput<'_>) -> Option<TrackedValue<Self::Facts>> {
+        None
+    }
+
     /// Variables whose facts are safe on entry to `block`, such as a value
     /// that only a successful allowlist check reaches. The block's input is
     /// the join of its predecessors, so a guarantee some predecessor does not
@@ -192,6 +200,20 @@ pub struct BlockSite<'a> {
     pub env: &'a Environment,
     pub body: &'a Body,
     pub def: DefId,
+}
+
+/// An argument of the entrypoint, and how the platform invokes the entrypoint.
+pub struct EntryInput<'a> {
+    pub contract: InvocationContract,
+    pub category: InputCategory,
+    /// The entrypoint's body.
+    pub body: &'a Body,
+    /// Position among the entrypoint's declared arguments.
+    pub position: usize,
+    /// The argument's binding. Its default value or pattern is not modelled
+    /// when the argument is unsupported.
+    pub argument: DefId,
+    pub supported: bool,
 }
 
 /// An unmodelled call, as `TaintPolicy::method_value` sees it.
@@ -1145,6 +1167,7 @@ impl<'cx, P: TaintPolicy + Default> Dataflow<'cx> for TaintDataflow<P> {
             entry,
             P::TAINT_RESOLVER_INPUT && matches!(interp.entry.kind, EntryKind::Resolver(..)),
             interp.call_uncalled,
+            (interp.entry.contract, interp.entry.input_category),
         );
         let mut solver = Solver::new(&program);
         solver.run();
@@ -1273,7 +1296,7 @@ impl<P: TaintPolicy> TaintDataflow<P> {
 }
 
 /// What the solver reads but never changes.
-struct Program<'a, P> {
+struct Program<'a, P: TaintPolicy> {
     dataflow: &'a TaintDataflow<P>,
     env: &'a Environment,
     bindings: BTreeMap<DefId, Bindings>,
@@ -1290,6 +1313,8 @@ struct Program<'a, P> {
     entry: DefId,
     /// Whether the entrypoint's first argument is a resolver request source.
     tainted_request: bool,
+    /// The policy's value for each entrypoint argument, by argument binding.
+    seeds: BTreeMap<DefId, TrackedValue<P::Facts>>,
 }
 
 impl<'a, P: TaintPolicy> Program<'a, P> {
@@ -1299,6 +1324,7 @@ impl<'a, P: TaintPolicy> Program<'a, P> {
         entry: DefId,
         tainted_request: bool,
         call_uncalled: bool,
+        (contract, category): (InvocationContract, InputCategory),
     ) -> Self {
         let bindings: BTreeMap<_, _> = env
             .bodies()
@@ -1404,6 +1430,26 @@ impl<'a, P: TaintPolicy> Program<'a, P> {
         if call_uncalled {
             roots.extend(env.get_all_functions_and_closures());
         }
+        let seeds = env
+            .def_ref(entry)
+            .as_body()
+            .into_iter()
+            .flat_map(|entry_body| {
+                entry_body.argument_defs.iter().enumerate().filter_map(
+                    move |(position, &argument)| {
+                        let input = EntryInput {
+                            contract,
+                            category,
+                            body: entry_body,
+                            position,
+                            argument,
+                            supported: !entry_body.unsupported_arguments.contains(&argument),
+                        };
+                        Some((argument, dataflow.policy.entry_argument(&input)?))
+                    },
+                )
+            })
+            .collect();
         Self {
             dataflow,
             env,
@@ -1415,6 +1461,7 @@ impl<'a, P: TaintPolicy> Program<'a, P> {
             roots: roots.into(),
             entry,
             tainted_request,
+            seeds,
         }
     }
 
@@ -1434,6 +1481,15 @@ impl<'a, P: TaintPolicy> Program<'a, P> {
             && let Some(&id) = self.bindings[&def].args.first()
         {
             initial.set(id, FlowValue::from_taint(Taint::Yes).into());
+        }
+        if def == self.entry && !self.seeds.is_empty() {
+            let body = self.env.def_ref(def).expect_body();
+            for (id, kind) in body.vars.iter_enumerated() {
+                if let Some(seed) = variable_def(kind).and_then(|binding| self.seeds.get(&binding))
+                {
+                    initial.set(id, seed.clone());
+                }
+            }
         }
         initial
     }

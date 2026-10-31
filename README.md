@@ -107,7 +107,9 @@ scanner's `TaintPolicy`: its sources, property reads (`property_taint`, and
 sink predicate (`is_violation`). A runner selects `TaintDataflow<MyPolicy>`,
 passes its configured policy from `Runner::dataflow`, and can reuse
 `visit_taint_call` for interprocedural traversal. Both this scanner and the
-existing prototype-pollution checker use that engine; the defaults propagate
+existing prototype-pollution checker use that engine. A policy can also override the
+entry-argument, block-entry, unary, receiver-write and located-sink hooks, which do
+nothing by default; the defaults propagate
 taint conservatively. The predicate sees values before each instruction; only
 matching sink locations are retained for the diagnostic walk after analysis
 converges. Variable vectors are retained at block boundaries, rather than copied
