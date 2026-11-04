@@ -22,7 +22,7 @@ use crate::{
     },
     ir::{
         Base, BasicBlockId, BinOp, Body, CallPathPart, Inst, Intrinsic, Literal, Location, Operand,
-        Projection, Rvalue, Terminator, UnOp, VarId, VarKind, Variable,
+        Projection, Rvalue, STARTING_BLOCK, Terminator, UnOp, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     taint::{
@@ -41,6 +41,7 @@ use std::{
 };
 use swc_core::common::SourceMap;
 
+mod escaper;
 mod semantics;
 use semantics::*;
 
@@ -115,9 +116,19 @@ pub struct SqlPolicy {
     guards: RefCell<HashMap<(DefId, BasicBlockId), Vec<Variable>>>,
     /// Whether a `join` call builds a list of `?` placeholders, by call site.
     placeholder_lists: RefCell<HashMap<(DefId, Location), bool>>,
+    /// What reading each function says about whether it escapes its argument.
+    escapers: RefCell<HashMap<DefId, escaper::Verdict>>,
 }
 
 impl SqlPolicy {
+    fn escaper(&self, env: &Environment, def: DefId) -> escaper::Verdict {
+        *self
+            .escapers
+            .borrow_mut()
+            .entry(def)
+            .or_insert_with(|| escaper::judge(env, def))
+    }
+
     fn is_placeholder_list(&self, call: &UnresolvedCall<'_, Taint>) -> bool {
         let site = call.site();
         *self
@@ -315,7 +326,14 @@ impl TaintPolicy for SqlPolicy {
         if let Some(found) = self.guards.borrow().get(&key) {
             return found.clone();
         }
-        let found = allowlisted_on_entry(site.env, site.body, site.def, block);
+        let mut found = allowlisted_on_entry(site.env, site.body, site.def, block);
+        // What a verified escaper returns is one escaped literal whatever it was
+        // given, so its argument is clean from the first block on.
+        if block == STARTING_BLOCK
+            && let escaper::Verdict::Verified(parameter) = self.escaper(site.env, site.def)
+        {
+            found.push(Variable::new(parameter));
+        }
         self.guards.borrow_mut().insert(key, found.clone());
         found
     }
@@ -802,6 +820,71 @@ fn variable_name(env: &Environment, body: &Body, variable: &Variable) -> String 
         })
 }
 
+/// The helpers the query's text is built with that look like escapers but fail
+/// a check, as "`name`: the check it fails".
+fn failed_escapers(env: &Environment, def: DefId, query: &Operand) -> Vec<String> {
+    fn walk(
+        env: &Environment,
+        def: DefId,
+        operand: &Operand,
+        visiting: &mut HashSet<(DefId, VarId)>,
+        found: &mut Vec<String>,
+    ) {
+        let Operand::Var(variable) = operand else {
+            return;
+        };
+        let Base::Var(var) = variable.base else {
+            return;
+        };
+        if !variable.projections.is_empty() || !visiting.insert((def, var)) {
+            return;
+        }
+        let body = env.def_ref(def).expect_body();
+        for (_, rvalue) in variable_definitions_with_aliases(body, variable) {
+            match rvalue {
+                Rvalue::Read(source) => walk(env, def, source, visiting, found),
+                Rvalue::Bin(BinOp::Add, left, right) => {
+                    walk(env, def, left, visiting, found);
+                    walk(env, def, right, visiting, found);
+                }
+                Rvalue::Template(template) => {
+                    for expr in &template.exprs {
+                        walk(env, def, expr, visiting, found);
+                    }
+                }
+                Rvalue::Phi(values) => {
+                    for (source, _) in values {
+                        walk(
+                            env,
+                            def,
+                            &Operand::Var(Variable::new(*source)),
+                            visiting,
+                            found,
+                        );
+                    }
+                }
+                Rvalue::Call(callee, _) => {
+                    if let Some((callee_def, _)) = body.resolve_call(env, callee)
+                        && let escaper::Verdict::Rejected(check) = escaper::judge(env, callee_def)
+                    {
+                        let failed =
+                            format!("`{}`: {}", env.def_name(callee_def), check.describe());
+                        if !found.contains(&failed) {
+                            found.push(failed);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        visiting.remove(&(def, var));
+    }
+
+    let mut found = Vec::new();
+    walk(env, def, query, &mut HashSet::new(), &mut found);
+    found
+}
+
 fn render_query_operand(env: &Environment, def: DefId, operand: &Operand) -> String {
     fn render(
         env: &Environment,
@@ -905,6 +988,8 @@ pub struct SqlInjectionVuln {
     sink_location: String,
     sink_function: String,
     query: String,
+    /// Helpers the query is built with that look like escapers and fail a check.
+    failed_escapers: Vec<String>,
 }
 
 impl SqlInjectionVuln {
@@ -944,10 +1029,16 @@ impl SqlInjectionVuln {
             sink_location,
             sink_function: env.def_name(def).to_owned(),
             query: render_query_operand(env, def, query),
+            failed_escapers: failed_escapers(env, def, query),
         }
     }
 
     fn merge(&mut self, mut other: Self) {
+        for failed in other.failed_escapers.drain(..) {
+            if !self.failed_escapers.contains(&failed) {
+                self.failed_escapers.push(failed);
+            }
+        }
         for path in other.paths.drain(..) {
             if self.paths.len() == 8 {
                 break;
@@ -980,9 +1071,17 @@ impl IntoVuln for SqlInjectionVuln {
             ),
             recommendation: "Use placeholders and bindParams for values. For identifiers or SQL structure that cannot be bound, select only from IR-provable trusted constant alternatives.",
             proof: format!(
-                "Propagation path: {}. Query argument at {location}: `{}`. Binding: the value is part of SQL text, so bindParams does not repair interpolation already present in the query. Limitation: FSRT models locally resolvable calls and supported IR operations; review the reported source and path in application context.",
+                "Propagation path: {}. Query argument at {location}: `{}`.{} Binding: the value is part of SQL text, so bindParams does not repair interpolation already present in the query. Limitation: FSRT models locally resolvable calls and supported IR operations; review the reported source and path in application context.",
                 self.paths.join("; "),
-                self.query
+                self.query,
+                if self.failed_escapers.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " Escaper check failed, so its result is not treated as clean: {}.",
+                        self.failed_escapers.join("; ")
+                    )
+                }
             ),
             severity: Severity::High,
             app_key: reporter.app_key().to_owned(),
