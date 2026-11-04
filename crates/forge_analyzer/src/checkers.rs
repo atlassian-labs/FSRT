@@ -271,10 +271,33 @@ struct Candidate {
     loc: Location,
     callstack: Vec<Frame>,
     kind: AuthZVulnKind,
+    /// Whether the request is shown to write; see [`FindingClass`].
+    class: FindingClass,
     /// Why it is not reported; `None` reports it.
     reason: Option<&'static str>,
     /// Route origin, body origin and whether the response is exposed, when known.
     facts: Option<(u8, u8, bool)>,
+}
+
+/// Whether a finding is a request that changes data (`POST`, `PUT`, `PATCH`, `DELETE`).
+///
+/// Everything else is [`FindingClass::Other`]: `GET`, `HEAD`, `OPTIONS`, a request with no
+/// `method` (the platform default is `GET`), a `method` the analyzer cannot resolve to a
+/// literal, remote calls, and custom-field reads. A request is only ranked above the rest when
+/// the analyzer can show it writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FindingClass {
+    Write,
+    Other,
+}
+
+impl FindingClass {
+    fn from_method(method: &str) -> Self {
+        match method.to_ascii_uppercase().as_str() {
+            "POST" | "PUT" | "PATCH" | "DELETE" => Self::Write,
+            _ => Self::Other,
+        }
+    }
 }
 
 impl AuthZChecker {
@@ -298,13 +321,16 @@ impl AuthZChecker {
     }
 
     /// Record a privileged operation at the instruction being visited and apply the
-    /// policy to it. The walk ends at the first operation that is reported, as it did
-    /// before the policy existed; an operation the policy suppresses leaves the walk
-    /// running, so a later operation of the same entry can still be reported.
+    /// policy to it. The walk ends at the first reported operation that is shown to
+    /// write; an operation the policy suppresses, and a reported one that is not
+    /// shown to write (a GET, a request with no provable method, a remote call),
+    /// leave the walk running, so a later operation of the same entry can still be
+    /// reported and a write is preferred to a read (see [`AuthZChecker::decide`]).
     fn found<'cx>(
         &mut self,
         interp: &Interp<'cx, Self>,
         kind: AuthZVulnKind,
+        class: FindingClass,
         state: &AuthorizeState,
     ) -> ControlFlow<(), AuthorizeState> {
         let Some((def, loc)) = self.at else {
@@ -337,25 +363,39 @@ impl AuthZChecker {
             loc,
             callstack: interp.callstack(),
             kind,
+            class,
             reason,
             facts,
         });
-        if reason.is_some() {
-            ControlFlow::Continue(*state)
-        } else {
+        if reason.is_none() && class == FindingClass::Write {
             ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(*state)
         }
     }
 
     /// Report or drop each operation the root reached, in discovery order, and audit
     /// the decision. Suppressions never reach the report.
+    ///
+    /// An entry has at most one finding: the first reported operation that is shown to
+    /// write and, when there is none, the earliest reported operation. The others that
+    /// were not suppressed are audited as `superseded-by-write` or
+    /// `later-finding-of-entry` and are not reported.
     fn decide<'cx>(&mut self, interp: &Interp<'cx, Self>) {
         // A helper is retried for later roots only while nothing on its call path
         // is reported; otherwise the report already exposes it.
         let mut retry = HashSet::new();
         let mut exposed = HashSet::new();
         let flow = self.flow.take();
-        for candidate in mem::take(&mut self.candidates) {
+        let candidates = mem::take(&mut self.candidates);
+        let reportable = |candidate: &Candidate| candidate.reason.is_none();
+        let chosen = candidates
+            .iter()
+            .position(|candidate| reportable(candidate) && candidate.class == FindingClass::Write)
+            .or_else(|| candidates.iter().position(reportable));
+        let write_chosen =
+            chosen.is_some_and(|index| candidates[index].class == FindingClass::Write);
+        for (index, candidate) in candidates.into_iter().enumerate() {
             let helpers: Vec<_> = candidate
                 .callstack
                 .iter()
@@ -368,6 +408,12 @@ impl AuthZChecker {
                 candidate.kind,
             );
             let check_name = vuln.check_name();
+            let decision = match candidate.reason {
+                Some(reason) => reason,
+                None if Some(index) == chosen => "reported",
+                None if write_chosen => "superseded-by-write",
+                None => "later-finding-of-entry",
+            };
             let ordinal = self.audited.entry(check_name.clone()).or_default();
             *ordinal += 1;
             audit(
@@ -376,19 +422,55 @@ impl AuthZChecker {
                 candidate.loc,
                 &check_name,
                 *ordinal,
-                candidate.reason.unwrap_or("reported"),
+                decision,
                 flow.as_ref().map(|flow| flow.as_ref().err()),
                 candidate.facts,
             );
-            if candidate.reason.is_some() {
-                retry.extend(helpers);
-            } else {
+            if Some(index) == chosen {
                 exposed.extend(helpers);
                 self.vulns.push(vuln);
+            } else if candidate.reason.is_some() {
+                retry.extend(helpers);
             }
         }
         self.suppressed_helpers
             .extend(retry.difference(&exposed).copied());
+    }
+
+    /// The class of a `requestJira`-like call, from the `method` of its options object.
+    fn request_class<'cx>(
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        name: &IntrinsicName,
+        operands: Option<SmallVec<[Operand; 4]>>,
+    ) -> FindingClass {
+        // requestGraph takes (query, variables, options); the other request shims (route, options).
+        let options = if matches!(name, IntrinsicName::RequestGraph) {
+            2
+        } else {
+            1
+        };
+        let operands = operands.unwrap_or_default();
+        let Some(Operand::Var(Variable {
+            base: Base::Var(varid),
+            ..
+        })) = operands.get(options)
+        else {
+            return FindingClass::Other;
+        };
+        let object = match interp.get_value(def, *varid, None) {
+            Some(Value::Object(object)) => object,
+            _ => varid,
+        };
+        match interp.get_value(def, *object, Some(projvec_from_str("method"))) {
+            Some(Value::Const(Const::Literal(method))) => FindingClass::from_method(method),
+            Some(Value::Phi(methods)) => methods
+                .iter()
+                .map(|Const::Literal(method)| FindingClass::from_method(method))
+                .find(|class| *class == FindingClass::Write)
+                .unwrap_or(FindingClass::Other),
+            _ => FindingClass::Other,
+        }
     }
 }
 
@@ -700,9 +782,9 @@ impl<'cx> Runner<'cx> for AuthZChecker {
         &mut self,
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
-        _def: DefId,
+        def: DefId,
         state: &Self::State,
-        _operands: Option<SmallVec<[Operand; 4]>>,
+        operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         match intrinsic {
             Intrinsic::Authorize(_) => {
@@ -716,7 +798,12 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                         ControlFlow::Continue(*state)
                     } else if let Some(remote_name) = remote {
                         info!("Found a remote vuln!");
-                        self.found(interp, RemoteCall(remote_name.clone()), state)
+                        self.found(
+                            interp,
+                            RemoteCall(remote_name.clone()),
+                            FindingClass::Other,
+                            state,
+                        )
                     } else {
                         warn!("Privileged remote missing ID");
                         ControlFlow::Continue(*state)
@@ -732,12 +819,13 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                 | IntrinsicName::RequestCompass(_)
                 | IntrinsicName::Other => {
                     info!("Found a vuln!");
-                    self.found(interp, ApiCall, state)
+                    let class = Self::request_class(interp, def, name, operands);
+                    self.found(interp, ApiCall, class, state)
                 }
             },
             Intrinsic::ApiCustomField if *state < AuthorizeState::CustomFieldOnly => {
                 info!("Found a vuln!");
-                self.found(interp, ApiCall, state)
+                self.found(interp, ApiCall, FindingClass::Other, state)
             }
             Intrinsic::SecretFunction(_)
             | Intrinsic::ApiCall(_)
