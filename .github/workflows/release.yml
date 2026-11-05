@@ -43,14 +43,27 @@ jobs:
           - name: linux-x86_64
             os: ubuntu-latest                       # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
             archive: fsrt-linux-x86_64.tar.gz
+            binary: fsrt
+
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            archive: fsrt-linux-aarch64.tar.gz
+            binary: fsrt
 
           # - name: macos-x86_64
           #   os: macos-15-intel
           #   archive: fsrt-macos-x86_64.tar.gz
+          #   binary: fsrt
 
           - name: macos-aarch64
             os: macos-latest
             archive: fsrt-macos-aarch64.tar.gz
+            binary: fsrt
+
+          - name: windows-x86_64
+            os: windows-latest
+            archive: fsrt-windows-x86_64.zip
+            binary: fsrt.exe
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -66,13 +79,18 @@ jobs:
         run: cargo build --profile dist --locked -p fsrt
 
       - name: Package binary
+        shell: bash
         env:
           ARCHIVE: ${{ matrix.archive }}
+          BINARY: ${{ matrix.binary }}
         run: |
           mkdir dist
-          cp target/dist/fsrt dist/
+          cp "target/dist/$BINARY" dist/
           cp README.md LICENSE-APACHE LICENSE-MIT dist/
-          tar -czf "$ARCHIVE" -C dist .
+          case "$ARCHIVE" in
+            *.zip) (cd dist && 7z a -tzip "../$ARCHIVE" ./*) ;;
+            *) tar -czf "$ARCHIVE" -C dist . ;;
+          esac
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
