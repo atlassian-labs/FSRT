@@ -8,11 +8,14 @@ use crate::{
         WithCallStack,
     },
     ir::{
-        Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
+        Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Literal, Location, Operand,
         Projection, Rvalue, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    utils::{add_elements_to_intrinsic_struct, convert_lit_to_raw, translate_request_type},
+    utils::{
+        add_elements_to_intrinsic_struct, convert_lit_to_raw, get_defid_from_varkind,
+        translate_request_type,
+    },
     worklist::WorkList,
 };
 use core::fmt;
@@ -25,8 +28,14 @@ use regex::{Regex, RegexSet};
 use serde::Deserialize;
 use smallvec::SmallVec;
 use std::{
-    cmp::max, collections::HashMap, collections::HashSet, iter, mem, ops::ControlFlow,
-    path::PathBuf, sync::LazyLock,
+    cmp::max,
+    collections::HashMap,
+    collections::HashSet,
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
+    iter, mem,
+    ops::ControlFlow,
+    path::PathBuf,
+    sync::LazyLock,
 };
 use time::{Date, Month, OffsetDateTime};
 use tracing::{debug, info, warn};
@@ -102,6 +111,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
             | Intrinsic::EnvRead
             | Intrinsic::StorageRead
             | Intrinsic::SecretRead
+            | Intrinsic::SecretWrite
             | Intrinsic::ConsoleLog(_) => initial_state,
         }
     }
@@ -441,6 +451,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             | Intrinsic::ApiCustomField
             | Intrinsic::StorageRead
             | Intrinsic::SecretRead
+            | Intrinsic::SecretWrite
             | Intrinsic::ConsoleLog(_) => ControlFlow::Continue(*state),
         }
     }
@@ -448,6 +459,740 @@ impl<'cx> Runner<'cx> for AuthZChecker {
 
 impl Checker<'_> for AuthZChecker {
     type Vuln = AuthZVuln;
+}
+
+/// Resolves an operand to a single string, but only when it is unambiguous: a
+/// `Phi` with more than one distinct alternative yields `None` rather than an
+/// arbitrary pick, so a reported secret key is never one of several guesses.
+fn unambiguous_literal<'cx, C: Runner<'cx>>(
+    interp: &Interp<'cx, C>,
+    def: DefId,
+    operand: &Operand,
+) -> Option<String> {
+    let mut values = vec![];
+    match operand {
+        Operand::Lit(lit) => values.extend(convert_lit_to_raw(lit)),
+        Operand::Var(Variable {
+            base: Base::Var(varid),
+            ..
+        }) => {
+            if let Some(value) = interp.get_value(def, *varid, None) {
+                add_elements_to_intrinsic_struct(value, &mut values);
+            }
+        }
+        Operand::Var(_) => {}
+    }
+    values.dedup();
+    values.pop().filter(|_| values.is_empty())
+}
+
+/// Projection or parameter names that mark a value as the caller's own identity,
+/// or as attacker-controlled.
+const CONTEXT_NAMES: &[&str] = &["context"];
+const IDENTITY_NAMES: &[&str] = &["accountId", "accountID"];
+const UNTRUSTED_NAMES: &[&str] = &["payload", "body", "queryParameters"];
+
+/// What a secret key, or one part of one, is built from.
+///
+/// Two ways of combining matter and they are not the same. Parts of a single
+/// value — the holes of a template, the sides of a concatenation — are combined
+/// with [`KeyOrigin::or`]: the caller's identity anywhere in the key is what makes
+/// the key per-user. Alternative *sources* of one value — several assignments, phi
+/// alternatives, the arguments at every call site of a parameter — are combined
+/// with [`KeyOrigin::and`]: a value is only the caller's identity if it is the
+/// caller's identity on every path that can reach it.
+///
+/// Getting that second case wrong is what made an earlier version unsound: one
+/// per-user call site of a shared helper suppressed the findings for every other
+/// call site of the same helper, including ones passing an app-wide secret name.
+#[derive(Clone, Copy, Default)]
+struct KeyOrigin {
+    context: bool,
+    identity: bool,
+    untrusted: bool,
+    /// Part of the key could not be traced, because the budget or the depth limit
+    /// ran out. Poisons the verdict: an all-false origin is the identity element
+    /// of `or`, so without this an exhausted branch would silently erase the
+    /// untrusted evidence sitting behind it and the answer would depend on the
+    /// order the parts happened to be walked in.
+    exhausted: bool,
+}
+
+impl KeyOrigin {
+    /// Nothing could be learned about this part of the key.
+    const EXHAUSTED: Self = Self {
+        context: false,
+        identity: false,
+        untrusted: false,
+        exhausted: true,
+    };
+
+    fn of(name: &str) -> Self {
+        Self {
+            context: CONTEXT_NAMES.contains(&name),
+            identity: IDENTITY_NAMES.contains(&name),
+            untrusted: UNTRUSTED_NAMES.contains(&name),
+            exhausted: false,
+        }
+    }
+
+    /// Combines parts of one value.
+    fn or(self, other: Self) -> Self {
+        Self {
+            context: self.context || other.context,
+            identity: self.identity || other.identity,
+            untrusted: self.untrusted || other.untrusted,
+            exhausted: self.exhausted || other.exhausted,
+        }
+    }
+
+    /// Combines alternative sources of one value. Identity has to hold on every
+    /// alternative; anything untrusted on any alternative taints the result.
+    fn and(self, other: Self) -> Self {
+        Self {
+            context: self.context && other.context,
+            identity: self.identity && other.identity,
+            untrusted: self.untrusted || other.untrusted,
+            exhausted: self.exhausted || other.exhausted,
+        }
+    }
+
+    /// The key identifies the calling user and nothing else, and all of it was
+    /// traced. Anything untraced leaves the finding reported.
+    fn is_caller_identity(self) -> bool {
+        self.context && self.identity && !self.untrusted && !self.exhausted
+    }
+}
+
+/// Whether a secret key is derived from the calling user's own account id, e.g.
+/// ``storage.getSecret(`user-token:${context.accountId}`)``.
+///
+/// A resolver that reads or writes a secret keyed by the caller's own account id
+/// only ever touches that caller's own secret, so reaching it without an
+/// authorization check is not an exposure — it is how per-user credentials are
+/// meant to work, and it was the single largest source of false positives when
+/// this scan was run across the Marketplace.
+///
+/// Keys built from anything else stay reported. `payload.accountId` especially:
+/// an account id the caller supplies is an IDOR, not a per-user secret, which is
+/// why an untrusted name anywhere in the key cancels the suppression.
+///
+/// Suppression needs positive evidence on every path: an untraceable key, an
+/// exhausted budget or a single call site passing something else all leave the
+/// finding reported.
+fn derives_from_caller_identity<'cx, C: Runner<'cx>>(
+    interp: &Interp<'cx, C>,
+    def: DefId,
+    operand: &Operand,
+) -> bool {
+    // The walk re-explores: `active` guards cycles but is popped on the way out,
+    // so a value reachable by several paths is visited once per path. Both limits
+    // below therefore bite on real apps, and both report `exhausted` rather than
+    // silently contributing nothing.
+    let mut budget = 4096usize;
+    let mut active = HashSet::new();
+    key_origin(interp, def, operand, &mut active, &mut budget, 0).is_caller_identity()
+}
+
+/// Caps the recursion. `key_origin` and its helpers are mutually recursive, so a
+/// long chain of derived values would otherwise overflow the stack before the
+/// budget ran out — a dev-profile build aborts at a few thousand frames.
+const MAX_KEY_DEPTH: usize = 128;
+
+/// What `operand` in `def` is built from. `active` holds the variables currently
+/// being resolved, so a cycle yields no evidence rather than looping.
+fn key_origin<'cx, C: Runner<'cx>>(
+    interp: &Interp<'cx, C>,
+    def: DefId,
+    operand: &Operand,
+    active: &mut HashSet<(DefId, VarId)>,
+    budget: &mut usize,
+    depth: usize,
+) -> KeyOrigin {
+    if *budget == 0 || depth >= MAX_KEY_DEPTH {
+        return KeyOrigin::EXHAUSTED;
+    }
+    *budget -= 1;
+
+    let Operand::Var(var) = operand else {
+        // A literal contributes nothing either way.
+        return KeyOrigin::default();
+    };
+
+    // Projections are applied at this access, so they are part of this value.
+    let mut own = KeyOrigin::default();
+    for projection in &var.projections {
+        if let Projection::Known(name) = projection {
+            own = own.or(KeyOrigin::of(name));
+        }
+    }
+
+    let Base::Var(varid) = var.base else {
+        return own;
+    };
+    if !active.insert((def, varid)) {
+        // Already being resolved further up this path. The projections read here
+        // are still real evidence, so they are kept; the cycle itself yields none.
+        return own;
+    }
+    let source = variable_origin(interp, def, varid, active, budget, depth + 1);
+    active.remove(&(def, varid));
+    own.or(source)
+}
+
+/// What the variable itself holds, ignoring the projections read off it.
+fn variable_origin<'cx, C: Runner<'cx>>(
+    interp: &Interp<'cx, C>,
+    def: DefId,
+    varid: VarId,
+    active: &mut HashSet<(DefId, VarId)>,
+    budget: &mut usize,
+    depth: usize,
+) -> KeyOrigin {
+    let Some(&body) = interp.env().def_ref(def).as_body() else {
+        return KeyOrigin::default();
+    };
+    let Some(varkind) = body.vars.get(varid) else {
+        return KeyOrigin::default();
+    };
+    let var_def = get_defid_from_varkind(varkind);
+    let named = var_def
+        .map(|d| KeyOrigin::of(interp.env().def_name(d)))
+        .unwrap_or_default();
+
+    // A parameter holds whatever the callers passed in that position, so the
+    // arguments decide, combined with `and` across call sites. With no known call
+    // site the name is the only evidence there is, which is what recognises a
+    // destructured `({ context })` on an entry point.
+    if let Some(param) = var_def.and_then(|d| param_index(body, d)) {
+        let callers = interp.called_from(def);
+        if callers.is_empty() {
+            return named;
+        }
+        let mut combined: Option<KeyOrigin> = None;
+        for &(caller, loc) in callers {
+            let from_caller = interp
+                .env()
+                .def_ref(caller)
+                .as_body()
+                .and_then(|&caller_body| call_arguments(caller_body, loc))
+                .and_then(|args| args.get(param).cloned())
+                .map(|arg| key_origin(interp, caller, &arg, active, budget, depth + 1))
+                // No recoverable call site: nothing was learned, rather than
+                // "learned that it is not the caller's identity".
+                .unwrap_or(KeyOrigin::EXHAUSTED);
+            combined = Some(match combined {
+                None => from_caller,
+                Some(seen) => seen.and(from_caller),
+            });
+        }
+        return combined.unwrap_or_default();
+    }
+
+    // Otherwise the assignments to this variable are alternative sources.
+    let mut combined: Option<KeyOrigin> = None;
+    for rvalue in assignments_to(body, varid) {
+        let assigned = rvalue_origin(interp, def, body, rvalue, active, budget, depth + 1);
+        combined = Some(match combined {
+            None => assigned,
+            Some(seen) => seen.and(assigned),
+        });
+    }
+    match combined {
+        // Never assigned: the name is the only evidence.
+        None => named,
+        Some(origin) => named.or(origin),
+    }
+}
+
+/// What one assignment contributes. The parts of a composed value are combined
+/// with `or`; genuine alternatives within it with `and`.
+fn rvalue_origin<'cx, C: Runner<'cx>>(
+    interp: &Interp<'cx, C>,
+    def: DefId,
+    body: &'cx Body,
+    rvalue: &Rvalue,
+    active: &mut HashSet<(DefId, VarId)>,
+    budget: &mut usize,
+    depth: usize,
+) -> KeyOrigin {
+    match rvalue {
+        Rvalue::Read(op) | Rvalue::Unary(_, op) => {
+            key_origin(interp, def, op, active, budget, depth + 1)
+        }
+        Rvalue::Bin(_, lhs, rhs) => key_origin(interp, def, lhs, active, budget, depth + 1)
+            .or(key_origin(interp, def, rhs, active, budget, depth + 1)),
+        Rvalue::Template(template) => template
+            .exprs
+            .iter()
+            .map(|op| key_origin(interp, def, op, active, budget, depth + 1))
+            .fold(KeyOrigin::default(), KeyOrigin::or),
+        Rvalue::Phi(alternatives) => {
+            let mut combined: Option<KeyOrigin> = None;
+            for (alt, _) in alternatives {
+                let origin = key_origin(
+                    interp,
+                    def,
+                    &Operand::Var(Variable::from(*alt)),
+                    active,
+                    budget,
+                    depth + 1,
+                );
+                combined = Some(match combined {
+                    None => origin,
+                    Some(seen) => seen.and(origin),
+                });
+            }
+            combined.unwrap_or(KeyOrigin::EXHAUSTED)
+        }
+        // The value is a callee's return. Its parameters resolve through the call
+        // graph, so only the returned operands are followed here.
+        Rvalue::Call(callee, _) => {
+            let Some((callee_def, callee_body)) = body.resolve_call(interp.env(), callee) else {
+                // An unresolved callee is an untraced part of the key.
+                return KeyOrigin::EXHAUSTED;
+            };
+            let mut combined: Option<KeyOrigin> = None;
+            for returned in returned_operands(callee_body) {
+                let origin = key_origin(interp, callee_def, returned, active, budget, depth + 1);
+                combined = Some(match combined {
+                    None => origin,
+                    Some(seen) => seen.and(origin),
+                });
+            }
+            combined.unwrap_or(KeyOrigin::EXHAUSTED)
+        }
+        Rvalue::Intrinsic(..) => KeyOrigin::EXHAUSTED,
+    }
+}
+
+/// Every rvalue assigned to `varid` as a whole.
+fn assignments_to(body: &Body, varid: VarId) -> impl Iterator<Item = &Rvalue> {
+    body.blocks.iter().flat_map(move |block| {
+        block.insts.iter().filter_map(move |inst| match inst {
+            Inst::Assign(place, rvalue)
+                if place.base == Base::Var(varid) && place.projections.is_empty() =>
+            {
+                Some(rvalue)
+            }
+            _ => None,
+        })
+    })
+}
+
+/// The operands assigned to the return variable of a function body.
+fn returned_operands(body: &Body) -> impl Iterator<Item = &Operand> {
+    body.vars
+        .iter_enumerated()
+        .filter(|(_, kind)| matches!(kind, VarKind::Ret))
+        .flat_map(move |(varid, _)| {
+            assignments_to(body, varid).filter_map(|rvalue| match rvalue {
+                Rvalue::Read(op) => Some(op),
+                _ => None,
+            })
+        })
+}
+
+/// The arguments of the call instruction at a location.
+fn call_arguments(body: &Body, loc: Location) -> Option<&[Operand]> {
+    let inst = body.blocks.get(loc.block)?.insts.get(loc.stmt as usize)?;
+    match inst {
+        Inst::Assign(_, Rvalue::Call(_, args))
+        | Inst::Expr(Rvalue::Call(_, args))
+        | Inst::Assign(_, Rvalue::Intrinsic(_, args))
+        | Inst::Expr(Rvalue::Intrinsic(_, args)) => Some(args),
+        _ => None,
+    }
+}
+
+/// Identifies one secret storage call site: the function holding it, whether it
+/// reads or writes, the resolved key, and — when the key did not resolve — the
+/// variable and projections the key was read from.
+type SinkGroup = (
+    DefId,
+    SecretAccess,
+    Option<String>,
+    Option<(VarId, Vec<String>)>,
+);
+
+/// Whether a secret storage call reads or writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum SecretAccess {
+    Read,
+    Write,
+}
+
+/// Position of the parameter bound to `def`, if it is one of the function's
+/// parameters. Parameters get a `VarKind::Arg` variable in declaration order.
+fn param_index(body: &Body, def: DefId) -> Option<usize> {
+    body.vars
+        .iter()
+        .filter_map(|kind| match kind {
+            VarKind::Arg(arg) => Some(*arg),
+            _ => None,
+        })
+        .position(|arg| arg == def)
+}
+
+/// Reports Forge secret storage calls (`storage.setSecret` / `storage.getSecret`
+/// and their `@forge/kvs` equivalents) that are reachable from an app entry point
+/// without any authorization check in between.
+///
+/// This still over-reports — authorization performed through a helper the
+/// analyzer cannot resolve is invisible, so a guarded resolver can be reported —
+/// and its findings are meant for manual triage, which is why the scan is off by
+/// default behind `--scanners secret-storage`. Per-user credentials keyed by the
+/// caller's own `accountId` were the largest such class and are now suppressed;
+/// see [`derives_from_caller_identity`].
+pub struct SecretStorageChecker {
+    /// Manifest keys of the modules exposing the entry point currently being
+    /// walked. Set before each `run_checker` call, since one checker spans every
+    /// entry point so that findings can be grouped across them.
+    modules: Vec<&'static str>,
+    vulns: Vec<SecretStorageVuln>,
+}
+
+impl SecretStorageChecker {
+    pub fn new() -> Self {
+        Self {
+            modules: vec![],
+            vulns: vec![],
+        }
+    }
+
+    /// Names the modules that expose the entry point about to be walked.
+    pub fn set_entry_modules(&mut self, modules: Vec<&'static str>) {
+        self.modules = modules;
+    }
+
+    /// Returns one finding per secret storage call site, rather than one per path
+    /// that reaches it.
+    ///
+    /// A single shared helper is typically reachable from every resolver on the
+    /// entry point, so reporting per path turns one call site into dozens of rows
+    /// that all need the same triage decision. Grouping on the call site instead
+    /// collapses them, and the merged finding names the entry points that reach it
+    /// so nothing is lost.
+    ///
+    /// Sites are identified by (containing function, access kind, resolved key).
+    /// Two calls in one function that read the same key are indistinguishable to a
+    /// triager, so collapsing them is intended.
+    pub fn into_vulns(self) -> impl IntoIterator<Item = SecretStorageVuln> {
+        let mut grouped: BTreeMap<SinkGroup, SecretStorageVuln> = BTreeMap::new();
+        for vuln in self.vulns {
+            let group = (
+                vuln.sink,
+                vuln.access,
+                vuln.key.clone(),
+                vuln.key_var.clone(),
+            );
+            match grouped.entry(group) {
+                Entry::Vacant(slot) => {
+                    slot.insert(vuln);
+                }
+                Entry::Occupied(mut slot) => slot.get_mut().merge(vuln),
+            }
+        }
+        grouped.into_values().collect::<Vec<_>>()
+    }
+}
+
+impl Default for SecretStorageChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug)]
+pub struct SecretStorageVuln {
+    /// The function containing the secret storage call. Findings are grouped on it,
+    /// so a helper reached from many resolvers is reported once.
+    sink: DefId,
+    /// Name of `sink`, kept for the report and for a path-independent check name.
+    sink_name: String,
+    /// Shortest call path to the sink, used as the representative proof.
+    stack: String,
+    /// Every entry point that reaches this sink, ordered for a stable report.
+    entry_funcs: BTreeSet<String>,
+    file: PathBuf,
+    access: SecretAccess,
+    /// Union of the modules exposing the entry points that reach this sink.
+    modules: BTreeSet<&'static str>,
+    /// The secret key, when it resolves to a literal.
+    key: Option<String>,
+    /// Distinguishes call sites whose key did not resolve. `key: None` means the
+    /// key is unknown, not that two calls share one, so without this two different
+    /// secrets read in one function would merge into a single finding. The same
+    /// call reached by several paths keeps the same variable and projections, so
+    /// grouping across paths still collapses.
+    key_var: Option<(VarId, Vec<String>)>,
+}
+
+impl SecretStorageVuln {
+    fn new(
+        sink: DefId,
+        access: SecretAccess,
+        modules: Vec<&'static str>,
+        key: Option<String>,
+        key_var: Option<(VarId, Vec<String>)>,
+        callstack: Vec<Frame>,
+        env: &Environment,
+        entry: &EntryPoint,
+    ) -> Self {
+        let entry_func = match &entry.kind {
+            EntryKind::Function(func) => func.clone(),
+            EntryKind::Resolver(res, prop) => format!("{res}.{prop}"),
+            EntryKind::Empty => {
+                warn!("empty function");
+                String::new()
+            }
+        };
+        let file = entry.file.clone();
+        let stack = Itertools::intersperse(
+            iter::once(&*entry_func).chain(
+                callstack
+                    .into_iter()
+                    .rev()
+                    .map(|frame| env.def_name(frame.calling_function)),
+            ),
+            " -> ",
+        )
+        .collect();
+        Self {
+            sink,
+            sink_name: env.def_name(sink).to_owned(),
+            stack,
+            entry_funcs: BTreeSet::from([entry_func]),
+            file,
+            access,
+            modules: modules.into_iter().collect(),
+            key,
+            key_var,
+        }
+    }
+
+    /// Folds another path to the same call site into this finding, keeping the
+    /// shortest path as the proof. Ties break on the path itself so the report does
+    /// not depend on visit order.
+    fn merge(&mut self, other: Self) {
+        self.entry_funcs.extend(other.entry_funcs);
+        self.modules.extend(other.modules);
+        // `file` and `stack` both describe the entry point this finding is
+        // reported against, so they are chosen together: picking them separately
+        // let a finding name a file that neither the proof path nor the sink
+        // belonged to. Ordering on the file first keeps the check name derived
+        // from it independent of the order entry points happened to be walked in,
+        // and the shortest path breaks ties because it is the clearest proof.
+        let mine = (&self.file, self.stack.len(), &self.stack);
+        let theirs = (&other.file, other.stack.len(), &other.stack);
+        if theirs < mine {
+            self.file = other.file;
+            self.stack = other.stack;
+        }
+    }
+
+    fn api_name(&self) -> &'static str {
+        match self.access {
+            SecretAccess::Write => "setSecret",
+            SecretAccess::Read => "getSecret",
+        }
+    }
+
+    /// The entry points that reach this sink, abbreviated for the report.
+    fn entry_summary(&self) -> String {
+        const SHOWN: usize = 3;
+        let shown = self
+            .entry_funcs
+            .iter()
+            .take(SHOWN)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        match self.entry_funcs.len().saturating_sub(SHOWN) {
+            0 => shown,
+            rest => format!("{shown} and {rest} more"),
+        }
+    }
+}
+
+impl fmt::Display for SecretStorageVuln {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Secret storage exposed without authorization")
+    }
+}
+
+impl IntoVuln for SecretStorageVuln {
+    fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        // Identify the finding by its call site, not by the path taken to reach it.
+        // Paths change whenever the app adds a module or a resolver property, and a
+        // check name that moves with them would look like a new vulnerability each
+        // time.
+        //
+        // `file` is the entry point's, not the sink's — the analyzer does not map a
+        // definition back to its file — so this is not fully path-independent: it
+        // still moves if the smallest entry-point path among those reaching the
+        // sink changes. `merge` takes the smallest so that at least the walk order
+        // does not affect it.
+        let mut hasher = DefaultHasher::new();
+        self.file
+            .iter()
+            .skip_while(|comp| *comp != "src")
+            .for_each(|comp| comp.hash(&mut hasher));
+        self.sink_name.hash(&mut hasher);
+        self.api_name().hash(&mut hasher);
+        self.key.hash(&mut hasher);
+        // Only set when the key did not resolve, where there is no more stable
+        // discriminator available than the variable holding it.
+        self.key_var.hash(&mut hasher);
+
+        let key = self
+            .key
+            .as_deref()
+            .map(|key| format!(" for the secret {key:?}"))
+            .unwrap_or_default();
+        let reached_by = match self.entry_funcs.len() {
+            1 => format!("is reachable from {}", self.entry_summary()),
+            n => format!(
+                "is reachable from {n} entry points ({})",
+                self.entry_summary()
+            ),
+        };
+
+        Vulnerability {
+            check_name: format!("Custom-Check-Secret-Storage-{}", hasher.finish()),
+            description: format!(
+                "Forge secret storage call {}(){} in {} {} in {:?} with no authorization check. The resolver is exposed by {}: an admin page module shares it with a module any authenticated user can reach, so the platform's admin-only restriction on that resolver no longer applies and every function on it can be called by any user.",
+                self.api_name(),
+                key,
+                self.sink_name,
+                reached_by,
+                self.file,
+                Itertools::intersperse(self.modules.iter().copied(), " and ").collect::<String>(),
+            ),
+            recommendation: "Define a separate resolver for the admin module so that its functions are not reachable from other modules, and authorize the caller before reading or writing app secrets via the authorize API _https://developer.atlassian.com/platform/forge/runtime-reference/authorize-api/_.",
+            proof: format!(
+                "Unauthorized {}() call found via {}",
+                self.api_name(),
+                self.stack
+            ),
+            // Deliberately Medium rather than High, even though a confirmed finding is
+            // the same class as an AuthZ vuln: every High FSRT finding blocks
+            // Marketplace app approval, and this check knowingly over-reports and is
+            // triaged by hand. Raise it only once the false positive rate is known.
+            severity: Severity::Medium,
+            app_key: reporter.app_key().to_owned(),
+            app_name: reporter.app_name().to_owned(),
+            marketplace_security_requirement: "Requirement 1.2",
+            date: reporter.current_date(),
+        }
+    }
+}
+
+impl WithCallStack for SecretStorageVuln {
+    fn add_call_stack(&mut self, _stack: Vec<DefId>) {}
+}
+
+impl<'cx> Runner<'cx> for SecretStorageChecker {
+    type State = AuthorizeState;
+    type Dataflow = AuthorizeDataflow;
+
+    const NAME: &'static str = "SecretStorage";
+
+    // The sinks live inside callees, so a helper must be walked even when its
+    // summarised state is below the caller's. Otherwise an intermediate state such
+    // as `CustomFieldOnly`, which is not an authorization check, hides a helper
+    // that writes a secret.
+    const DESCEND_INTO_ALL_CALLS: bool = true;
+
+    fn visit_intrinsic(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        intrinsic: &'cx Intrinsic,
+        def: DefId,
+        state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
+    ) -> ControlFlow<(), Self::State> {
+        match *intrinsic {
+            Intrinsic::Authorize(_) => {
+                debug!("authorize intrinsic found");
+                ControlFlow::Continue(AuthorizeState::Yes)
+            }
+            Intrinsic::SecretRead | Intrinsic::SecretWrite if *state != AuthorizeState::Yes => {
+                // Name the secret in the finding, but only when the key resolves
+                // unambiguously — reporting one alternative of several would be
+                // misleading, e.g. for a helper called with a different key per
+                // call site.
+                let callstack = interp.callstack();
+                let key_operand = operands.as_deref().and_then(|ops| ops.first());
+                // A secret keyed by the caller's own account id is per-user, not
+                // an exposure, so it is not reported.
+                if let Some(op) = key_operand
+                    && derives_from_caller_identity(interp, def, op)
+                {
+                    debug!("secret key derives from the caller's account id; not reporting");
+                    return ControlFlow::Continue(*state);
+                }
+                let key = key_operand.and_then(|op| unambiguous_literal(interp, def, op));
+                // Only needed when the key did not resolve; see `key_var`.
+                // The projections matter as well as the base: two secrets read off
+                // one config object share a base variable but are different keys.
+                let key_var = match key_operand {
+                    Some(Operand::Var(Variable { base, projections })) if key.is_none() => {
+                        match base {
+                            Base::Var(varid) => Some((
+                                *varid,
+                                projections
+                                    .iter()
+                                    .map(|projection| match projection {
+                                        Projection::Known(name) => name.to_string(),
+                                        Projection::Computed(_) => "<computed>".to_owned(),
+                                    })
+                                    .collect(),
+                            )),
+                            Base::This | Base::Super => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let access = match *intrinsic {
+                    Intrinsic::SecretWrite => SecretAccess::Write,
+                    _ => SecretAccess::Read,
+                };
+                info!("Found an unauthorized secret storage call!");
+                self.vulns.push(SecretStorageVuln::new(
+                    def,
+                    access,
+                    self.modules.clone(),
+                    key,
+                    key_var,
+                    callstack,
+                    interp.env(),
+                    interp.entry(),
+                ));
+                // Unlike the AuthZ checker we keep walking, so an entry point
+                // that touches several distinct secrets reports each of them.
+                ControlFlow::Continue(*state)
+            }
+            Intrinsic::SecretRead
+            | Intrinsic::SecretWrite
+            | Intrinsic::StorageRead
+            | Intrinsic::ConsoleLog(_)
+            | Intrinsic::Fetch
+            | Intrinsic::SecretFunction(_)
+            | Intrinsic::ApiCall(_)
+            | Intrinsic::ApiCustomField
+            | Intrinsic::SafeCall(_)
+            | Intrinsic::EnvRead
+            | Intrinsic::UserFieldAccess => ControlFlow::Continue(*state),
+        }
+    }
+}
+
+impl Checker<'_> for SecretStorageChecker {
+    type Vuln = SecretStorageVuln;
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
@@ -507,6 +1252,9 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
             | Intrinsic::ApiCall(_)
             | Intrinsic::ApiCustomField
             | Intrinsic::UserFieldAccess
+            // A secret write says nothing about who the caller is, so unlike a
+            // read it must not count as authentication evidence.
+            | Intrinsic::SecretWrite
             | Intrinsic::SafeCall(_) => initial_state,
         }
     }
@@ -614,7 +1362,7 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
                 self.vulns.push(vuln);
                 ControlFlow::Break(())
             }
-            Intrinsic::SecretFunction(_) => ControlFlow::Continue(*state),
+            Intrinsic::SecretFunction(_) | Intrinsic::SecretWrite => ControlFlow::Continue(*state),
             Intrinsic::ApiCall(_) | Intrinsic::UserFieldAccess | Intrinsic::ApiCustomField => {
                 ControlFlow::Continue(*state)
             }

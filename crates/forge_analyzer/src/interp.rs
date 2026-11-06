@@ -286,6 +286,12 @@ pub trait Runner<'cx>: Sized {
 
     const VISIT_GLOBALS: bool = false;
 
+    /// Descend into a callee even when its summarised state is lower than the
+    /// caller's current state. Checkers looking for a sink inside callees need
+    /// this; by default such a call is skipped, which is sound only when the walk
+    /// exists purely to raise the state.
+    const DESCEND_INTO_ALL_CALLS: bool = false;
+
     const NAME: &'static str = "Runner";
 
     /// Build this runner's dataflow. Override it to pass runner configuration,
@@ -316,7 +322,9 @@ pub trait Runner<'cx>: Sized {
         };
 
         let func_state = interp.func_state(callee).unwrap_or(Self::State::BOTTOM);
-        if func_state < *curr_state || !interp.checker_visit(callee) {
+        if (!Self::DESCEND_INTO_ALL_CALLS && func_state < *curr_state)
+            || !interp.checker_visit(callee)
+        {
             return ControlFlow::Continue(curr_state.clone());
         }
         interp.push_frame(callee, block);
@@ -458,6 +466,7 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     pub(crate) instruction_findings: BTreeSet<(DefId, Location)>,
     dataflow_visited: FxHashSet<DefId>,
     checker_visited: RefCell<FxHashSet<DefId>>,
+    isolate_entries: bool,
     callstack: RefCell<Vec<Frame>>,
     pub(crate) runner_visited: RefCell<FxHashSet<(DefId, BasicBlockId)>>,
     pub value_manager: ValueManager,
@@ -675,6 +684,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             instruction_findings: BTreeSet::new(),
             dataflow_visited: FxHashSet::default(),
             checker_visited: RefCell::new(FxHashSet::default()),
+            isolate_entries: false,
             callstack: RefCell::new(Vec::new()),
             value_manager: ValueManager {
                 varid_to_value: DefinitionAnalysisMap::default(),
@@ -1086,7 +1096,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    fn called_from(&self, def: DefId) -> &[(DefId, Location)] {
+    pub(crate) fn called_from(&self, def: DefId) -> &[(DefId, Location)] {
         self.call_graph.called_from.get(&def).map_or(&[], |v| v)
     }
 
@@ -1596,7 +1606,23 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.curr_body.set(old_body);
     }
 
+    /// Analyzes every entry point, including each resolver property, independently
+    /// of the ones checked before it.
+    ///
+    /// By default `checker_visited` is kept for the lifetime of the interpreter, so
+    /// only the first entry point to reach a shared helper descends into it. Every
+    /// later entry point keeps the state it started with, which both hides sinks
+    /// inside shared helpers and loses the authorization performed by a shared
+    /// `requireAdmin()`-style helper. Off by default so that checkers relying on the
+    /// visit-once behaviour are unaffected.
+    pub fn set_isolate_entries(&mut self, isolate: bool) {
+        self.isolate_entries = isolate;
+    }
+
     pub fn try_check_function(&mut self, def: DefId, checker: &mut C) -> Result<(), Error> {
+        if self.isolate_entries {
+            self.checker_visited.borrow_mut().clear();
+        }
         let resolved_def = self.env.resolve_alias(def);
         let name = self.env.def_name(resolved_def);
         debug!(%name, "found definition");

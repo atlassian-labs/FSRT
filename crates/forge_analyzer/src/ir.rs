@@ -87,6 +87,8 @@ pub enum Intrinsic {
     /// A secret read from `@forge/kvs` (`kvs.getSecret`) or the legacy
     /// `@forge/api` storage API (`storage.getSecret`).
     SecretRead,
+    /// A secret written through the same stores (`setSecret`).
+    SecretWrite,
     ConsoleLog(ConsoleMethod),
 }
 
@@ -1238,6 +1240,7 @@ impl fmt::Display for Intrinsic {
             Intrinsic::EnvRead => write!(f, "env read"),
             Intrinsic::StorageRead => write!(f, "forge storage read"),
             Intrinsic::SecretRead => write!(f, "secret read"),
+            Intrinsic::SecretWrite => write!(f, "secret write"),
             Intrinsic::ConsoleLog(method) => write!(f, "{method}"),
         }
     }

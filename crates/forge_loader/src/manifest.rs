@@ -458,6 +458,8 @@ pub struct ForgeModules<'a> {
     context_menu: Vec<CommonKey<'a>>,
     #[serde(rename = "confluence:globalPage", default, borrow)]
     confluence_global_page: Vec<CommonKey<'a>>,
+    #[serde(rename = "confluence:globalSettings", default, borrow)]
+    confluence_global_settings: Vec<CommonKey<'a>>,
     #[serde(rename = "confluence:homepageFeed", default, borrow)]
     homepage_feed: Vec<CommonKey<'a>>,
     #[serde(rename = "confluence:spacePage", default, borrow)]
@@ -883,6 +885,28 @@ pub enum BindingKind {
     WebTrigger,
 }
 
+/// Module types the platform itself restricts to administrators, so the app has
+/// nothing left to authorize when one of these is the only way in.
+const PLATFORM_ADMIN_GATED: &[&str] = &[
+    "jira:adminPage",
+    "compass:adminPage",
+    "jira:projectSettingsPage",
+    "confluence:spaceSettings",
+    "confluence:globalSettings",
+];
+
+impl ModuleBinding<'_> {
+    /// Whether the platform restricts this registration to administrators.
+    fn platform_admin_gated(&self) -> bool {
+        self.kind == BindingKind::Invokable && PLATFORM_ADMIN_GATED.contains(&self.module_type)
+    }
+
+    /// Whether any authenticated user can reach this registration.
+    fn reachable_by_non_admin(&self) -> bool {
+        self.kind == BindingKind::Invokable && !PLATFORM_ADMIN_GATED.contains(&self.module_type)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ModuleBinding<'a> {
     pub module_type: &'static str,
@@ -946,6 +970,19 @@ pub struct Entrypoint<'a, S = Unresolved> {
     pub invokable: bool,
     pub web_trigger: bool,
     pub admin: bool,
+    /// The handler behind this function is registered both by a module the
+    /// platform restricts to administrators and by one any authenticated user can
+    /// reach, so that platform restriction no longer protects it: the documented
+    /// Forge admin resolver exposure.
+    ///
+    /// Resolved per handler rather than per function key, because two keys
+    /// pointing at one handler are the same code.
+    pub shared_admin_resolver: bool,
+    /// The admin-gated module types registered on this handler, when it is shared.
+    /// `jira:adminPage` is never a module binding, so this is the only record that
+    /// one was involved, and a report naming only the non-admin side would leave
+    /// the triager to find the admin page themselves.
+    pub admin_module_types: Vec<&'static str>,
 }
 
 impl<T> AsRef<T> for FunctionTy<T> {
@@ -977,6 +1014,7 @@ impl<'a> ForgeModules<'a> {
             content_byline_item,
             context_menu,
             confluence_global_page,
+            confluence_global_settings,
             homepage_feed,
             space_page,
             space_settings,
@@ -1035,6 +1073,7 @@ impl<'a> ForgeModules<'a> {
         bindings.common("confluence:contentAction", &content_action);
         bindings.common("confluence:contextMenu", &context_menu);
         bindings.common("confluence:globalPage", &confluence_global_page);
+        bindings.common("confluence:globalSettings", &confluence_global_settings);
         bindings.common("confluence:homepageFeed", &homepage_feed);
         bindings.common("confluence:spacePage", &space_page);
         bindings.common("confluence:spaceSettings", &space_settings);
@@ -1120,8 +1159,56 @@ impl<'a> ForgeModules<'a> {
             bindings.add("action", action.key, &action);
         }
 
+        // `jira:adminPage` is deliberately not registered as a binding: the
+        // platform gates it, so on its own it is not an entry point worth
+        // scanning. It still has to be known here, because sharing its resolver
+        // with another module is precisely what removes that gate. Collected
+        // through `append_functions` so Custom UI pages, which declare their entry
+        // point under `resolver.function` rather than `function`, are included.
+        let mut admin_page_functions: BTreeSet<&str> = BTreeSet::new();
+        for module in &jira_admin_page {
+            let mut properties = Vec::new();
+            module.common_keys.append_functions(&mut properties);
+            admin_page_functions.extend(properties.into_iter().map(|property| property.function));
+        }
+
+        // A handler registered both by a module the platform restricts to admins
+        // and by one any authenticated user can reach has lost that restriction.
+        // Resolved per handler, since two function keys can point at one handler
+        // and are then the same code.
+        let mut admin_handlers: BTreeMap<&str, BTreeSet<&'static str>> = BTreeMap::new();
+        let mut user_handlers: BTreeSet<&str> = BTreeSet::new();
+        for func in &functions {
+            if admin_page_functions.contains(func.key) {
+                admin_handlers
+                    .entry(func.handler)
+                    .or_default()
+                    .insert("jira:adminPage");
+            }
+            for binding in bindings.bindings(func.key) {
+                if binding.platform_admin_gated() {
+                    admin_handlers
+                        .entry(func.handler)
+                        .or_default()
+                        .insert(binding.module_type);
+                } else if binding.reachable_by_non_admin() {
+                    user_handlers.insert(func.handler);
+                }
+            }
+        }
+        let shared_admin_handlers: BTreeMap<&str, Vec<&'static str>> = admin_handlers
+            .into_iter()
+            .filter(|(handler, _)| user_handlers.contains(handler))
+            .map(|(handler, module_types)| (handler, module_types.into_iter().collect()))
+            .collect();
+
         functions.into_iter().flat_map(move |func| {
             let module_bindings = bindings.bindings(func.key);
+            let admin_module_types = shared_admin_handlers
+                .get(func.handler)
+                .cloned()
+                .unwrap_or_default();
+            let shared_admin_resolver = !admin_module_types.is_empty();
             let web_trigger = module_bindings
                 .iter()
                 .any(|binding| binding.kind == BindingKind::WebTrigger);
@@ -1144,6 +1231,8 @@ impl<'a> ForgeModules<'a> {
                 invokable,
                 web_trigger,
                 admin,
+                shared_admin_resolver,
+                admin_module_types,
             })
         })
     }
@@ -1453,7 +1542,9 @@ mod tests {
                 module_bindings: vec![],
                 invokable: false,
                 web_trigger: false,
-                admin: true
+                admin: true,
+                shared_admin_resolver: false,
+                admin_module_types: vec![]
             })
         );
 
@@ -1475,7 +1566,9 @@ mod tests {
                 }],
                 invokable: true,
                 web_trigger: false,
-                admin: false
+                admin: false,
+                shared_admin_resolver: false,
+                admin_module_types: vec![]
             })
         );
     }
@@ -1737,6 +1830,152 @@ permissions:
             manifest.permissions.scopes,
             vec!["read:jira-work".to_string(), "write:jira-work".to_string()]
         );
+    }
+
+    /// Returns the single entrypoint a manifest produces for `key`.
+    fn entrypoint_for<'a>(manifest: &'a ForgeManifest<'a>, key: &str) -> Entrypoint<'a> {
+        manifest
+            .clone()
+            .modules
+            .into_analyzable_functions()
+            .find(|entrypoint| entrypoint.function.key == key)
+            .expect("entrypoint")
+    }
+
+    // `jira:adminPage` is not registered as a binding, so the sharing check has to
+    // find it another way. This is the most common real shape: one resolver behind
+    // both an admin page and an issue panel.
+    #[test]
+    fn test_admin_page_resolver_shared_with_issue_panel() {
+        let json = r#"{
+            "app": { "id": "my-app" },
+            "modules": {
+                "jira:adminPage": [
+                    { "key": "admin", "title": "admin", "resolver": { "function": "resolver-fn" } }
+                ],
+                "jira:issuePanel": [
+                    { "key": "panel", "title": "panel", "resolver": { "function": "resolver-fn" } }
+                ],
+                "function": [ { "key": "resolver-fn", "handler": "index.handler" } ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        assert!(entrypoint_for(&manifest, "resolver-fn").shared_admin_resolver);
+    }
+
+    // The same admin page on its own keeps the platform's restriction, so it is
+    // not an exposure.
+    #[test]
+    fn test_admin_page_resolver_alone_is_not_shared() {
+        let json = r#"{
+            "app": { "id": "my-app" },
+            "modules": {
+                "jira:adminPage": [
+                    { "key": "admin", "title": "admin", "resolver": { "function": "resolver-fn" } }
+                ],
+                "function": [ { "key": "resolver-fn", "handler": "index.handler" } ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        assert!(!entrypoint_for(&manifest, "resolver-fn").shared_admin_resolver);
+    }
+
+    // Two function keys pointing at one handler are the same code, so sharing is
+    // resolved per handler and not per key.
+    #[test]
+    fn test_separate_keys_sharing_one_handler_are_shared() {
+        let json = r#"{
+            "app": { "id": "my-app" },
+            "modules": {
+                "jira:adminPage": [
+                    { "key": "admin", "title": "admin", "resolver": { "function": "admin-fn" } }
+                ],
+                "jira:issuePanel": [
+                    { "key": "panel", "title": "panel", "resolver": { "function": "panel-fn" } }
+                ],
+                "function": [
+                    { "key": "admin-fn", "handler": "index.handler" },
+                    { "key": "panel-fn", "handler": "index.handler" }
+                ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        assert!(entrypoint_for(&manifest, "admin-fn").shared_admin_resolver);
+        assert!(entrypoint_for(&manifest, "panel-fn").shared_admin_resolver);
+    }
+
+    // Separate handlers are separate code, which is the documented fix.
+    #[test]
+    fn test_separate_handlers_are_not_shared() {
+        let json = r#"{
+            "app": { "id": "my-app" },
+            "modules": {
+                "jira:adminPage": [
+                    { "key": "admin", "title": "admin", "resolver": { "function": "admin-fn" } }
+                ],
+                "jira:issuePanel": [
+                    { "key": "panel", "title": "panel", "resolver": { "function": "panel-fn" } }
+                ],
+                "function": [
+                    { "key": "admin-fn", "handler": "index.adminResolver" },
+                    { "key": "panel-fn", "handler": "index.panelResolver" }
+                ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        assert!(!entrypoint_for(&manifest, "admin-fn").shared_admin_resolver);
+        assert!(!entrypoint_for(&manifest, "panel-fn").shared_admin_resolver);
+    }
+
+    // `confluence:globalSettings` renders in the Confluence global settings admin
+    // area and had no field on the modules struct, so it was never deserialized.
+    // Asserting on the binding's module type is what distinguishes the module being
+    // recognised from a sibling admin module doing the gating.
+    #[test]
+    fn test_confluence_global_settings_is_deserialized_and_admin_gated() {
+        let json = r#"{
+            "app": { "id": "my-app" },
+            "modules": {
+                "confluence:globalSettings": [
+                    { "key": "settings", "title": "settings", "resolver": { "function": "resolver-fn" } }
+                ],
+                "macro": [
+                    { "key": "my-macro", "title": "macro", "resolver": { "function": "resolver-fn" } }
+                ],
+                "function": [ { "key": "resolver-fn", "handler": "index.handler" } ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        let entrypoint = entrypoint_for(&manifest, "resolver-fn");
+
+        assert!(
+            entrypoint
+                .module_bindings
+                .iter()
+                .any(|binding| binding.module_type == "confluence:globalSettings"),
+            "confluence:globalSettings was not deserialized: {:?}",
+            entrypoint.module_bindings
+        );
+        assert!(entrypoint.shared_admin_resolver);
+    }
+
+    // A webtrigger is not a user-reachable module for this purpose: it has no
+    // caller identity to authorize, so pairing one with an admin page is not the
+    // exposure this check is about.
+    #[test]
+    fn test_webtrigger_alongside_admin_page_is_not_shared() {
+        let json = r#"{
+            "app": { "id": "my-app" },
+            "modules": {
+                "jira:adminPage": [
+                    { "key": "admin", "title": "admin", "resolver": { "function": "shared-fn" } }
+                ],
+                "webtrigger": [ { "key": "trigger", "function": "shared-fn" } ],
+                "function": [ { "key": "shared-fn", "handler": "index.handler" } ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        assert!(!entrypoint_for(&manifest, "shared-fn").shared_admin_resolver);
     }
 
     // Test to check if hardcoded secrets are detected properly in OAuth2 Provider
