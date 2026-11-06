@@ -122,6 +122,9 @@ pub struct ResolverTable {
     global_defid_to_value: FxHashMap<DefId, Value>,
     parent: FxHashMap<DefId, DefId>,
     declared_bindings: HashSet<DefId>,
+    // Declarations and writes collected before import recognition. Finalized-IR
+    // indexes and function argument definitions are not available at that phase.
+    non_native_symbols: HashSet<Symbol>,
     owning_module: TiVec<DefId, ModId>,
 }
 
@@ -212,6 +215,10 @@ pub fn run_resolver(
     );
     environment.defs = defs;
     for (curr_mod, module) in modules.iter_enumerated() {
+        module.visit_with(&mut NativeBindingCollector {
+            symbols: &mut environment.resolver.non_native_symbols,
+            module: curr_mod,
+        });
         let mut lowerer = Lowerer {
             res: &mut environment,
             curr_mod,
@@ -670,6 +677,23 @@ enum PropPath {
     Super,
     Private(Id),
     Computed(Id),
+}
+
+impl PropPath {
+    /// Materializing an undeclared global must not change its native identity.
+    /// Declared bindings and imports are resolved by their own semantics.
+    fn undeclared_global_name<'a>(&'a self, env: &'a Environment) -> Option<&'a str> {
+        match self {
+            Self::Unknown((name, _)) => Some(name.as_ref()),
+            Self::Def(def) if env.is_undeclared_global(*def) => Some(env.def_name(*def)),
+            _ => None,
+        }
+    }
+}
+
+fn is_supported_native_fetch(callee: &[PropPath], env: &Environment) -> bool {
+    matches!(callee, [root]
+        if matches!(root.undeclared_global_name(env), Some("fetch" | "forgeFetch")))
 }
 
 fn normalize_callee_expr(
@@ -1327,9 +1351,7 @@ impl FunctionAnalyzer<'_> {
             {
                 Some(Intrinsic::SecretRead)
             }
-            [PropPath::Unknown((ref name, ..))] if *name == *"fetch" || *name == *"forgeFetch" => {
-                Some(Intrinsic::Fetch)
-            }
+            _ if is_supported_native_fetch(callee, self.res) => Some(Intrinsic::Fetch),
             [
                 PropPath::Expr(ref n @ Some(ref expr)),
                 PropPath::Static(ref last),
@@ -3157,7 +3179,9 @@ impl Visit for FunctionCollector<'_> {
                 if let Expr::Ident(ident) = &**expr {
                     let callee_ident = ident.to_id();
                     if callee_ident.0 == "require"
-                        && self.res.sym_to_id(callee_ident, self.module).is_none()
+                        && self
+                            .res
+                            .is_unmodified_global_ident(callee_ident, self.module)
                         && args.len() == 1
                     {
                         match args.first() {
@@ -3459,6 +3483,36 @@ fn as_resolver_def<'a>(
     match &**name {
         Expr::Lit(Lit::Str(Str { value, .. })) => Some((objid, value, args)),
         _ => None,
+    }
+}
+
+/// Traverse every lexical scope before collectors that may skip or reorder bodies.
+struct NativeBindingCollector<'a> {
+    symbols: &'a mut HashSet<Symbol>,
+    module: ModId,
+}
+
+impl Visit for NativeBindingCollector<'_> {
+    noop_visit_type!();
+
+    fn visit_binding_ident(&mut self, binding: &BindingIdent) {
+        // Includes declarations, parameters, and identifier/destructuring writes.
+        // Record scoped symbols before function collection materializes arguments.
+        self.symbols.insert(Symbol {
+            module: self.module,
+            id: binding.id.to_id(),
+        });
+        binding.visit_children_with(self);
+    }
+
+    fn visit_update_expr(&mut self, n: &UpdateExpr) {
+        if let Expr::Ident(ident) = &*n.arg {
+            self.symbols.insert(Symbol {
+                module: self.module,
+                id: ident.to_id(),
+            });
+        }
+        n.visit_children_with(self);
     }
 }
 
@@ -4344,6 +4398,22 @@ impl Environment {
     pub fn is_undeclared_global(&self, def: DefId) -> bool {
         matches!(self.def_ref(def), DefKind::Undefined)
             && !self.resolver.declared_bindings.contains(&def)
+    }
+
+    /// An undeclared global may already have a definition from earlier lowering.
+    pub fn is_undeclared_global_ident(&self, ident: Id, module: ModId) -> bool {
+        self.sym_to_id(ident, module)
+            .is_none_or(|def| self.is_undeclared_global(def))
+    }
+
+    /// A conservative, module-wide proof for native loader recognition. Any
+    /// declaration or assignment to this scoped identifier invalidates it, regardless of order.
+    fn is_unmodified_global_ident(&self, ident: Id, module: ModId) -> bool {
+        self.is_undeclared_global_ident(ident.clone(), module)
+            && !self
+                .resolver
+                .non_native_symbols
+                .contains(&Symbol { module, id: ident })
     }
 
     pub fn def_name(&self, def: DefId) -> &str {
