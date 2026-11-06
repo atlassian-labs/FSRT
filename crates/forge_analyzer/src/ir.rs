@@ -42,6 +42,7 @@ use crate::definitions::IntrinsicName;
 use crate::definitions::PackageData;
 use crate::definitions::Value;
 use crate::interp::ProjectionVec;
+use crate::request::RequestFacts;
 
 pub const STARTING_BLOCK: BasicBlockId = BasicBlockId(0);
 
@@ -182,6 +183,28 @@ pub struct Body {
     pub def_id_to_vars: FxHashMap<DefId, VarId>,
     pub class_instantiations: HashMap<DefId, DefId>,
     pub(crate) const_bindings: FxHashSet<DefId>,
+    /// Syntactic proof about this function's normal returns, not helper returns.
+    pub(crate) authz_constant_returns: bool,
+    /// The first construct in the function's own statements whose data flow the
+    /// lowering drops (see `definitions/authz_lossy.rs`); `None` when complete.
+    pub(crate) authz_flow_gap: Option<&'static str>,
+    /// Data flows the lowering does not express as instructions, such as the
+    /// elements an iterated value gives to a loop variable: `(from, to)`.
+    pub(crate) authz_flow_links: Vec<(Operand, Variable)>,
+    /// Function values passed as arguments of a call: indexes into
+    /// `Environment::authz_closures`.
+    pub(crate) authz_callbacks: FxHashMap<Location, SmallVec<[usize; 1]>>,
+    /// Catch handlers, which the lowering does not put in the control flow: indexes
+    /// into `Environment::authz_closures`.
+    pub(crate) authz_catches: SmallVec<[usize; 1]>,
+    /// The method and route of each `requestJira`-style call, by location.
+    pub(crate) authz_requests: FxHashMap<Location, RequestFacts>,
+    /// Simple, unwritten formal bindings, in argument order, with boolean defaults.
+    pub(crate) authz_bool_parameters: Vec<Option<(DefId, Option<bool>)>>,
+    pub(crate) authz_written_bindings: FxHashSet<DefId>,
+    pub(crate) authz_principal_opaque: bool,
+    /// Calls whose actual argument positions are obscured by a spread.
+    pub(crate) authz_spread_calls: FxHashSet<Location>,
     predecessors: OnceCell<TiVec<BasicBlockId, SmallVec<[BasicBlockId; 2]>>>,
     pub dominator_tree: OnceCell<DomTree>,
     pub blockbuilders: TiVec<BasicBlockId, BasicBlockBuilder>,
@@ -439,6 +462,16 @@ impl Body {
             values: FxHashMap::default(),
             class_instantiations: Default::default(),
             const_bindings: Default::default(),
+            authz_constant_returns: false,
+            authz_flow_gap: Some("not analysed"),
+            authz_flow_links: Vec::new(),
+            authz_callbacks: Default::default(),
+            authz_catches: SmallVec::new(),
+            authz_requests: Default::default(),
+            authz_bool_parameters: Default::default(),
+            authz_written_bindings: Default::default(),
+            authz_principal_opaque: false,
+            authz_spread_calls: Default::default(),
             ident_to_local: Default::default(),
             def_id_to_vars: Default::default(),
             predecessors: Default::default(),
@@ -933,6 +966,15 @@ impl Body {
 }
 
 impl Variable {
+    /// The variable an operand names, or an empty-handed `this` for a literal,
+    /// which carries no data.
+    pub(crate) fn new_operand(operand: &Operand) -> Self {
+        match operand {
+            Operand::Var(var) => var.clone(),
+            Operand::Lit(_) => Self::THIS,
+        }
+    }
+
     pub(crate) const THIS: Self = Self {
         base: Base::This,
         projections: SmallVec::new_const(),
