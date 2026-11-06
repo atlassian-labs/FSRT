@@ -1,8 +1,8 @@
 //! IR-based execution checks. `sink` recognizes execution targets from IR
 //! bindings, so a call and a `new` expression are classified the same way.
 //! `ExecutionTaint` supplies sources and the reporting predicate to the shared
-//! fixed-point engine: Forge entrypoint arguments and IO results are sources,
-//! and text assembled only from constants is not.
+//! fixed-point engine: Forge entrypoint arguments, IO results and package call
+//! results are sources, and text assembled only from constants is not.
 
 use std::{
     collections::HashSet,
@@ -22,7 +22,9 @@ use crate::{
         VarKind,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
-    taint::{FlowValue, Taint, TaintDataflow, TaintPolicy, TaintReader, visit_taint_call},
+    taint::{
+        FlowValue, Taint, TaintDataflow, TaintPolicy, TaintReader, UnresolvedCall, visit_taint_call,
+    },
 };
 
 fn child_process_api(name: &str) -> Option<&'static str> {
@@ -73,12 +75,13 @@ fn code_constructor(name: &str) -> Option<&'static str> {
     }
 }
 
-/// The module namespace bound by `require(module)`.
+/// The module namespace bound by `require(module)`. A relative path is app code.
 fn required_module(module: &str) -> Option<Binding> {
     match module {
         "child_process" | "node:child_process" => Some(Binding::ChildProcess),
         "vm" | "node:vm" => Some(Binding::Vm),
-        _ => None,
+        _ if module.starts_with(['.', '/']) => None,
+        _ => Some(Binding::Library),
     }
 }
 
@@ -108,6 +111,9 @@ enum Binding {
     /// property is the `Function` variant that built the inspected function.
     Prototype,
     Sink(&'static str),
+    /// A binding imported or required from a package, or a value reached
+    /// through its properties and calls.
+    Library,
 }
 
 /// Follow IR reads, including module captures and CommonJS destructuring. Only
@@ -149,7 +155,7 @@ fn binding(
                 }
             }
         }
-        None
+        env.foreign_import(def).map(|_| Binding::Library)
     });
     if result.is_none() {
         let mut writes = writes(body, id);
@@ -169,6 +175,7 @@ fn binding(
                         {
                             Some(Binding::Prototype)
                         }
+                        Some(Binding::Library) => Some(Binding::Library),
                         _ => None,
                     },
                     _ => None,
@@ -201,6 +208,7 @@ fn binding(
             // `Object.getPrototypeOf(function () {}).constructor` reaches the
             // `Function` variant for a generator or an async function.
             Binding::Prototype if name == "constructor" => Some(Binding::Sink("Function")),
+            Binding::Library => Some(Binding::Library),
             _ => None,
         };
     }
@@ -315,6 +323,23 @@ impl TaintPolicy for ExecutionTaint {
             ("fetch" | "forgeFetch", []) => Some(FlowValue::from_taint(Taint::Yes)),
             // A coerced boolean carries a decision, not the text behind it.
             ("Boolean", []) => Some(FlowValue::default()),
+            _ => None,
+        }
+    }
+
+    fn method_value(&self, call: &UnresolvedCall<'_, Taint>) -> Option<FlowValue<Taint>> {
+        match binding(call.env, call.body, call.callee, &mut HashSet::new())? {
+            // A package call may return data it read, such as a file or a
+            // response, whatever its arguments.
+            Binding::Library => Some(
+                call.args.iter().fold(
+                    call.receiver
+                        .combine(&FlowValue::from_taint(Taint::Unknown)),
+                    |value, arg| value.combine(arg),
+                ),
+            ),
+            // An alias of a global, such as `const load = fetch`.
+            Binding::Global(name) => self.global_call_value(&name, &[]),
             _ => None,
         }
     }
