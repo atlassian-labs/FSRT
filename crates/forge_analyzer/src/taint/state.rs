@@ -1,5 +1,7 @@
 use std::{collections::BTreeMap, rc::Rc};
 
+use swc_core::ecma::atoms::Atom;
+
 use super::{FieldPath, FlowFacts, FlowValue};
 use crate::{definitions::DefId, interp::JoinSemiLattice, ir::VarId};
 
@@ -26,6 +28,14 @@ impl<F: FlowFacts> TrackedValue<F> {
             .iter()
             .flat_map(|fields| fields.values())
             .fold(self.root.clone(), |value, field| value.combine(field))
+    }
+
+    /// This value with its own value at a property path, such as
+    /// `["context", "accountId"]`, for a value a policy seeds.
+    pub fn with_field(mut self, path: &[&str], value: FlowValue<F>) -> Self {
+        let path = path.iter().map(|name| Atom::from(*name)).collect();
+        Rc::make_mut(self.fields.get_or_insert_default()).insert(path, value);
+        self
     }
 }
 

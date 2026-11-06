@@ -1106,3 +1106,26 @@ fn secret_logging_throwing_exits_add_no_return_value() {
         assert_body_findings(body, count);
     }
 }
+
+#[test]
+fn secret_logging_compact_arrays_preserve_exact_element_taint() {
+    for (expression, count) in [
+        ("values", 1),
+        ("values[0]", 1),
+        ("values[1]", 0),
+        ("values[2].token", 1),
+        ("values[2].label", 0),
+    ] {
+        assert_findings_with(
+            &format!(
+                "import {{ kvs }} from '@forge/kvs'; export async function run() {{
+                    const secret = await kvs.getSecret('key');
+                    const values = [secret, 'public', {{ token: secret, label: 'public' }}];
+                    console.log({expression});
+                }}"
+            ),
+            &[],
+            count,
+        );
+    }
+}

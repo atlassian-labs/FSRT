@@ -211,6 +211,7 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
         _interp: &Interp<'cx, Self>,
         _intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -219,12 +220,13 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
     fn visit_call(
         &mut self,
         interp: &Interp<'cx, Self>,
+        caller: DefId,
         callee: &'cx Operand,
         _args: &'cx [Operand],
-        block: BasicBlockId,
+        loc: Location,
         state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
-        crate::taint::visit_taint_call(self, interp, callee, block, state)
+        crate::taint::visit_taint_call(self, interp, caller, callee, loc, state)
     }
 
     fn visit_inst(
@@ -239,7 +241,7 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
             info!("Prototype pollution vuln detected");
             return ControlFlow::Break(());
         }
-        self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
+        self.visit_rvalue(interp, inst.rvalue(), def, loc, state)
     }
 }
 
@@ -381,6 +383,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -596,6 +599,7 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -939,6 +943,7 @@ impl<'cx> Runner<'cx> for SecretChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         def: DefId,
+        _loc: Location,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -1789,10 +1794,11 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         def: DefId,
+        loc: Location,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        self.visit_intrinsic_at(interp, intrinsic, def, state, operands, None)
+        self.visit_intrinsic_at(interp, intrinsic, def, state, operands, Some(loc))
     }
 
     fn visit_inst(
@@ -1813,7 +1819,7 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                 Some(loc),
             )
         } else {
-            self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
+            self.visit_rvalue(interp, inst.rvalue(), def, loc, state)
         }
     }
 }
@@ -2154,6 +2160,7 @@ impl<'cx> Runner<'cx> for PermissionChecker<'_> {
         _interp: &Interp<'cx, Self>,
         _intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
@@ -2281,6 +2288,7 @@ impl<'cx> Runner<'cx> for DefinitionAnalysisRunner {
         _interp: &Interp<'cx, Self>,
         _intrinsic: &'cx Intrinsic,
         _def: DefId,
+        _loc: Location,
         _state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
