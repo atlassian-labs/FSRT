@@ -360,6 +360,26 @@ fn pure_helper_string_construction_is_not_user_input() {
 }
 
 #[test]
+fn app_module_helper_string_construction_is_not_user_input() {
+    for import in [
+        "import { buildSource } from './build';",
+        "const { buildSource } = require('./build');",
+    ] {
+        assert_execution_findings(
+            &format!(
+                r#"// src/index.js
+            {import}
+            export function run() {{ eval(buildSource()); }}
+            // src/build.js
+            export function buildSource() {{ return 'return 42;'; }}
+        "#
+            ),
+            0,
+        );
+    }
+}
+
+#[test]
 fn entity_store_read_is_a_source() {
     for (store, module) in [("storage", "@forge/api"), ("kvs", "@forge/kvs")] {
         for read in ["get", "getSecret", "query"] {
@@ -375,6 +395,79 @@ fn entity_store_read_is_a_source() {
                 1,
             );
         }
+    }
+}
+
+#[test]
+fn package_call_results_are_sources_whatever_their_arguments() {
+    for (import, read) in [
+        (
+            "import { readFileSync } from 'fs';",
+            "readFileSync('/tmp/code.js', 'utf8')",
+        ),
+        (
+            "import * as fs from 'node:fs';",
+            "fs.readFileSync('/tmp/code.js', 'utf8')",
+        ),
+        (
+            "const fs = require('fs');",
+            "fs.readFileSync('/tmp/code.js', 'utf8')",
+        ),
+        (
+            "const { readFileSync } = require('fs');",
+            "readFileSync('/tmp/code.js', 'utf8')",
+        ),
+        (
+            "import axios from 'axios';",
+            "(await axios.get('/code')).data",
+        ),
+        (
+            "import axios from 'axios'; const client = axios.create({ baseURL: '/api' });",
+            "(await client.get('/code')).data",
+        ),
+    ] {
+        assert_execution_findings(
+            &format!(
+                r#"// src/index.js
+            {import}
+            export async function run() {{ eval({read}); }}
+        "#
+            ),
+            1,
+        );
+    }
+}
+
+#[test]
+fn aliased_fetch_and_storage_reads_are_sources() {
+    for (alias, read) in [
+        ("const load = fetch;", "await (await load('/code')).text()"),
+        (
+            "import api from '@forge/api'; const load = api.fetch;",
+            "await (await load('/code')).text()",
+        ),
+        (
+            "import { storage } from '@forge/api'; const store = storage;",
+            "await store.get('code')",
+        ),
+        (
+            "import { storage } from '@forge/api'; const get = storage.get;",
+            "await get('code')",
+        ),
+        (
+            "import { kvs } from '@forge/kvs'; const { get } = kvs;",
+            "await get('code')",
+        ),
+    ] {
+        assert_execution_findings(
+            &format!(
+                r#"// src/index.js
+            {alias}
+            export async function run() {{ eval({read}); }}
+        "#
+            ),
+            1,
+        );
     }
 }
 
