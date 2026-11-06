@@ -32,6 +32,7 @@ use tracing_subscriber::{EnvFilter, prelude::*};
 use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
+    arbitrary_code_execution::ArbitraryCodeExecutionChecker,
     checkers::{
         AuthHeaderChecker, AuthZChecker, AuthenticateChecker, DEFAULT_EXCLUDED_SECRET_SUFFIXES,
         DEFAULT_SECRET_SUFFIXES, ForgeRuntimeVersionPolicyChecker, PermissionChecker,
@@ -60,13 +61,14 @@ enum Scanner {
     Permission,
     Secret,
     SecretLogging,
+    ArbitraryCodeExecution,
     RuntimeVersion,
 }
 
 impl Scanner {
     /// Opt-in scanners only run when selected with `--scanners`.
     fn enabled_by_default(self) -> bool {
-        !matches!(self, Self::SecretLogging)
+        !matches!(self, Self::SecretLogging | Self::ArbitraryCodeExecution)
     }
 }
 
@@ -145,7 +147,7 @@ pub struct Args {
     cached_permissions_path: Option<PathBuf>,
 
     /// Comma separated list of scanners to enable. Defaults to all of them except
-    /// secret-logging, which only runs when selected.
+    /// secret-logging and arbitrary-code-execution, which only run when selected.
     #[arg(long, value_delimiter = ',')]
     scanners: Vec<Scanner>,
 
@@ -572,6 +574,8 @@ pub(crate) fn scan_directory<'a>(
     let run_auth_header_scanner = opts.scanner_enabled(Scanner::AuthHeader);
     let run_secret_scanner = opts.scanner_enabled(Scanner::Secret);
     let run_secret_logging_scanner = opts.scanner_enabled(Scanner::SecretLogging);
+    let run_arbitrary_code_execution_scanner =
+        opts.scanner_enabled(Scanner::ArbitraryCodeExecution);
     let scan_functions =
         opts.scan_functions || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
 
@@ -630,6 +634,8 @@ pub(crate) fn scan_directory<'a>(
         run_authentication_scanner.then(|| interpreters.create::<AuthenticateChecker>(true));
     let mut secret_logging_interp =
         run_secret_logging_scanner.then(|| interpreters.create::<SecretLoggingChecker>(false));
+    let mut arbitrary_code_execution_interp = run_arbitrary_code_execution_scanner
+        .then(|| interpreters.create::<ArbitraryCodeExecutionChecker>(false));
     // Auth-header checks handle uncalled bodies separately in the full-function pass.
     let mut auth_header_interp =
         run_auth_header_scanner.then(|| interpreters.create::<AuthHeaderChecker>(false));
@@ -644,6 +650,7 @@ pub(crate) fn scan_directory<'a>(
 
     let mut secret_logging_checker = SecretLoggingChecker::new(opts.secret_logging.suffixes());
     let mut auth_header_checker = AuthHeaderChecker::new();
+    let mut arbitrary_code_execution_checker = ArbitraryCodeExecutionChecker::new();
 
     if run_secret_scanner
         && let Some(providers) = &manifest.providers
@@ -659,6 +666,16 @@ pub(crate) fn scan_directory<'a>(
     }
 
     for func in &proj.funcs {
+        if let Some(interp) = &mut arbitrary_code_execution_interp
+            && let Err(err) = interp.run_checker(
+                func.def_id,
+                &mut arbitrary_code_execution_checker,
+                func.path.clone(),
+                func.func_name.to_owned(),
+            )
+        {
+            warn!("error while running arbitrary code execution checker: {err}");
+        }
         if let Some(interp) = &mut secret_logging_interp
             && let Err(err) = interp.run_checker(
                 func.def_id,
@@ -763,6 +780,7 @@ pub(crate) fn scan_directory<'a>(
     reporter.add_vulnerabilities(secret_checker.into_vulns());
     reporter.add_vulnerabilities(secret_logging_checker.into_vulns());
     reporter.add_vulnerabilities(auth_header_checker.into_vulns());
+    reporter.add_vulnerabilities(arbitrary_code_execution_checker.into_vulns());
 
     if !run_permission_scanner {
         return Ok(reporter.into_report());
