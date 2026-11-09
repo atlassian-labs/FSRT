@@ -2,7 +2,8 @@
 //! bindings, so a call and a `new` expression are classified the same way.
 //! `ExecutionTaint` supplies sources and the reporting predicate to the shared
 //! fixed-point engine: Forge entrypoint arguments, IO results and package call
-//! results are sources, and text assembled only from constants is not.
+//! results are sources, and text assembled only from constants is not. lodash
+//! and `path` calls without a callback argument follow their arguments.
 
 use std::{
     collections::HashSet,
@@ -81,8 +82,19 @@ fn required_module(module: &str) -> Option<Binding> {
         "child_process" | "node:child_process" => Some(Binding::ChildProcess),
         "vm" | "node:vm" => Some(Binding::Vm),
         _ if module.starts_with(['.', '/']) => None,
-        _ => Some(Binding::Library),
+        _ => Some(Binding::Library {
+            pure: pure_package(module),
+        }),
     }
+}
+
+/// lodash and `path`, whose helpers compute their result from their arguments.
+fn pure_package(module: &str) -> bool {
+    let module = module.strip_prefix("node:").unwrap_or(module);
+    matches!(module, "lodash" | "lodash-es" | "path")
+        || ["lodash/", "lodash-es/", "lodash.", "path/"]
+            .into_iter()
+            .any(|prefix| module.starts_with(prefix))
 }
 
 /// How many leading arguments of `name` are executed as code or as a command.
@@ -112,8 +124,10 @@ enum Binding {
     Prototype,
     Sink(&'static str),
     /// A binding imported or required from a package, or a value reached
-    /// through its properties and calls.
-    Library,
+    /// through its properties and calls. `pure` marks a `pure_package`.
+    Library {
+        pure: bool,
+    },
 }
 
 /// Follow IR reads, including module captures and CommonJS destructuring. Only
@@ -155,7 +169,9 @@ fn binding(
                 }
             }
         }
-        env.foreign_import(def).map(|_| Binding::Library)
+        env.foreign_import(def).map(|(module, _)| Binding::Library {
+            pure: pure_package(module),
+        })
     });
     if result.is_none() {
         let mut writes = writes(body, id);
@@ -175,7 +191,7 @@ fn binding(
                         {
                             Some(Binding::Prototype)
                         }
-                        Some(Binding::Library) => Some(Binding::Library),
+                        Some(library @ Binding::Library { .. }) => Some(library),
                         _ => None,
                     },
                     _ => None,
@@ -208,7 +224,7 @@ fn binding(
             // `Object.getPrototypeOf(function () {}).constructor` reaches the
             // `Function` variant for a generator or an async function.
             Binding::Prototype if name == "constructor" => Some(Binding::Sink("Function")),
-            Binding::Library => Some(Binding::Library),
+            library @ Binding::Library { .. } => Some(library),
             _ => None,
         };
     }
@@ -329,9 +345,19 @@ impl TaintPolicy for ExecutionTaint {
 
     fn method_value(&self, call: &UnresolvedCall<'_, Taint>) -> Option<FlowValue<Taint>> {
         match binding(call.env, call.body, call.callee, &mut HashSet::new())? {
+            // A pure helper's result comes from its arguments, unless one is a
+            // callback whose result it may return.
+            Binding::Library { pure: true }
+                if !call
+                    .operands
+                    .iter()
+                    .any(|op| is_function(call.env, call.body, op, &mut HashSet::new())) =>
+            {
+                None
+            }
             // A package call may return data it read, such as a file or a
             // response, whatever its arguments.
-            Binding::Library => Some(
+            Binding::Library { .. } => Some(
                 call.args.iter().fold(
                     call.receiver
                         .combine(&FlowValue::from_taint(Taint::Unknown)),

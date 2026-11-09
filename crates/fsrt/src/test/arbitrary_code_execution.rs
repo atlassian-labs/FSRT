@@ -472,6 +472,30 @@ fn aliased_fetch_and_storage_reads_are_sources() {
 }
 
 #[test]
+fn pure_helper_results_follow_their_arguments() {
+    for (source, expected) in [
+        (
+            "import _ from 'lodash'; export function run() { eval(_.join(['1', '1'], ' + ')); }",
+            0,
+        ),
+        (
+            "import { execSync } from 'child_process'; const path = require('node:path'); export function run() { execSync(path.join('/bin', 'ls')); }",
+            0,
+        ),
+        (
+            "import { join } from 'lodash-es'; export function run(input) { eval(join([input], ' + ')); }",
+            1,
+        ),
+        (
+            "import _ from 'lodash'; export function run(input) { eval(_.map(['a'], () => input)); }",
+            1,
+        ),
+    ] {
+        assert_execution_findings(&format!("// src/index.js\n{source}"), expected);
+    }
+}
+
+#[test]
 fn reflect_get_prototype_of_resolves_the_function_constructor() {
     for namespace in ["Object", "Reflect"] {
         assert_execution_findings(
