@@ -3248,18 +3248,44 @@ impl Visit for FunctionCollector<'_> {
             }
             Some(Expr::Object(object_lit)) => {
                 object_lit.props.iter().for_each(|prop| {
-                    if let PropOrSpread::Prop(prop) = prop
-                        && let Prop::Method(MethodProp { key, function }) = &**prop
-                        && let Some(key_ident) = key.as_ident()
-                    {
-                        let former_parent = self.parent;
-                        self.parent = self.res.get_prop_from_ident(
-                            self.module,
-                            id.to_id(),
-                            &key_ident.clone().into(),
-                        );
-                        self.handle_function(function, None);
-                        self.parent = former_parent;
+                    let PropOrSpread::Prop(prop) = prop else {
+                        return;
+                    };
+                    match &**prop {
+                        Prop::Method(MethodProp { key, function }) => {
+                            if let Some(key_ident) = key.as_ident() {
+                                let former_parent = self.parent;
+                                self.parent = self.res.get_prop_from_ident(
+                                    self.module,
+                                    id.to_id(),
+                                    &key_ident.clone().into(),
+                                );
+                                self.handle_function(function, None);
+                                self.parent = former_parent;
+                            }
+                        }
+                        // A function or arrow property is registered as a member of the
+                        // object (see `DefinitionCollector`), so its body must be
+                        // lowered under that member or calls to it resolve to an empty
+                        // stand-in.
+                        Prop::KeyValue(KeyValueProp { key, value }) => {
+                            if let Expr::Fn(_) | Expr::Arrow(_) = &**value
+                                && let Some(name) = key.as_symbol()
+                                && let Some(object) = self.res.sym_to_id(id.to_id(), self.module)
+                                && let Some(def) = self.res.lookup_prop(object, &name)
+                            {
+                                let old_parent = self.parent.replace(def);
+                                match &**value {
+                                    Expr::Fn(function) => {
+                                        self.handle_function(&function.function, Some(def))
+                                    }
+                                    Expr::Arrow(arrow) => self.visit_arrow_expr(arrow),
+                                    _ => {}
+                                }
+                                self.parent = old_parent;
+                            }
+                        }
+                        _ => {}
                     }
                 });
             }
@@ -3631,6 +3657,11 @@ impl Visit for Lowerer<'_> {
                             }
                             ResolverDef::Handler => warn!("unsupported getDefinitions invocation"),
                         }
+                    }
+                    // Registration reads the call's own arguments; the callee can still
+                    // contain registrations, as in `(() => { resolver.define(...) })()`.
+                    if let Callee::Expr(callee) = &call.callee {
+                        callee.visit_children_with(self);
                     }
                 }
                 Expr::Object(ObjectLit { props, .. }) => {

@@ -120,3 +120,21 @@ fn define_with_a_dynamic_key_or_spread_registers_nothing() {
         assert_eq!(authz_findings(&source), 0, "{define}");
     }
 }
+
+#[test]
+fn resolver_registered_inside_an_iife_is_analyzed() {
+    for iife in [
+        "(() => { DEFINE })()",
+        "(function () { DEFINE })()",
+        "(async () => { DEFINE })()",
+    ] {
+        let define = "resolver.define('run', async () => api.asApp().requestJira(route`/rest/api/3/issue/1`));";
+        let iife = iife.replace("DEFINE", define);
+        let source = format!(
+            "{PREAMBLE}
+            const init = {iife};
+            {EPILOGUE}"
+        );
+        assert_eq!(authz_findings(&source), 1, "{iife}");
+    }
+}
