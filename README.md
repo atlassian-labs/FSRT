@@ -41,8 +41,10 @@ execution sink: `eval`, the `Function`, `AsyncFunction`, `GeneratorFunction` and
 `AsyncGeneratorFunction` constructors, the `vm` module, and the `child_process`
 module. Arguments of manifest functions, results of IO such as `fetch`,
 `requestJira` and Forge storage reads, and results of calls into imported
-packages are sources; text assembled only from constants is not reported. It is
-disabled by default; select it explicitly, alone or with other scanners:
+packages are sources; text assembled only from constants is not reported. Calls
+into `lodash` and `path` without a callback argument carry only the taint of
+their arguments, so `path.join('/bin', 'ls')` is not reported. It is disabled by
+default; select it explicitly, alone or with other scanners:
 
 ```bash
 fsrt --scanners arbitrary-code-execution ./my-forge-app
