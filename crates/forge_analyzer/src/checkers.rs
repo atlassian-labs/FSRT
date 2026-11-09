@@ -1149,13 +1149,13 @@ impl IntoVuln for AuthHeaderVuln {
                 severity: Severity::Critical,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
-                marketplace_security_requirement: "Requirement 10.0",
+                marketplace_security_requirement: "Requirement 11.0",
                 date: reporter.current_date(),
             },
             AuthHeaderVulnKind::ContainerToken => Vulnerability {
                 check_name: "ATLASSIAN_CONTAINER_TOKEN".to_string(),
                 description: format!(
-                    "Our API Token Scanner has identified in {} {} call(s) that your app is currently using Atlassian vuln_type:{{container_token}} for authentication to admin endpoints. Under the [updated guidance](https://www.atlassian.com/blog/developer/building-secure-and-scalable-integrations-our-guidance-for-third-party-apps) on app authentication ([FAQ](https://developer.atlassian.com/platform/marketplace/security-requirements-faq/#are-apps-prohibited-from-collecting-atlassian-user-account-api-tokens-even-after-taking-the-user-s-consent-) page) apps collecting customer tokens are now required to migrate to [Forge authentication](https://developer.atlassian.com/platform/forge/security/#simple-and-secure-authentication) to ensure alignment with cloud app [security requirements](https://developer.atlassian.com/platform/marketplace/security-requirements/#security-requirements-for-cloud-apps). Refer to this [announcement](https://community.developer.atlassian.com/t/reminder-migrate-from-using-api-tokens-to-officially-supported-authentication-for-atlassian-apps-integrations/97221) for more details.",
+                    "Our API Token Scanner has identified in {} {} call(s) that your app is currently using Atlassian vuln_type:{{container_token}} for authentication to admin endpoints. Under the [updated guidance](https://www.atlassian.com/blog/developer/building-secure-and-scalable-integrations-our-guidance-for-third-party-apps) on app authentication, apps collecting admin api tokens are now required to migrate to [Forge authentication](https://developer.atlassian.com/platform/forge/security/#simple-and-secure-authentication) to ensure alignment with cloud app security requirements. Refer to this [announcement](https://community.developer.atlassian.com/t/reminder-migrate-from-using-api-tokens-to-officially-supported-authentication-for-atlassian-apps-integrations/97221) for more details.",
                     count, self.api_call
                 ),
                 recommendation: "Use supported authentication mechanisms (such as OAuth 2.0 or Forge authentication). If you anticipate any blockers or require support, contact the Atlassian Ecosystem Support.",
