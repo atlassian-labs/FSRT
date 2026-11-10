@@ -1106,3 +1106,24 @@ fn secret_logging_throwing_exits_add_no_return_value() {
         assert_body_findings(body, count);
     }
 }
+
+#[test]
+fn secret_logging_follows_calls_to_function_properties_of_an_object_literal() {
+    for property in [
+        "identity: value => value",
+        "identity: function (value) { return value; }",
+        "identity(value) { return value; }",
+    ] {
+        assert_findings(
+            &format!(
+                "import {{ kvs }} from '@forge/kvs';
+                const helpers = {{ {property} }};
+                export async function run() {{
+                    const secret = await kvs.getSecret('key');
+                    console.log(helpers.identity(secret));
+                }}"
+            ),
+            1,
+        );
+    }
+}

@@ -3248,18 +3248,44 @@ impl Visit for FunctionCollector<'_> {
             }
             Some(Expr::Object(object_lit)) => {
                 object_lit.props.iter().for_each(|prop| {
-                    if let PropOrSpread::Prop(prop) = prop
-                        && let Prop::Method(MethodProp { key, function }) = &**prop
-                        && let Some(key_ident) = key.as_ident()
-                    {
-                        let former_parent = self.parent;
-                        self.parent = self.res.get_prop_from_ident(
-                            self.module,
-                            id.to_id(),
-                            &key_ident.clone().into(),
-                        );
-                        self.handle_function(function, None);
-                        self.parent = former_parent;
+                    let PropOrSpread::Prop(prop) = prop else {
+                        return;
+                    };
+                    match &**prop {
+                        Prop::Method(MethodProp { key, function }) => {
+                            if let Some(key_ident) = key.as_ident() {
+                                let former_parent = self.parent;
+                                self.parent = self.res.get_prop_from_ident(
+                                    self.module,
+                                    id.to_id(),
+                                    &key_ident.clone().into(),
+                                );
+                                self.handle_function(function, None);
+                                self.parent = former_parent;
+                            }
+                        }
+                        // A function or arrow property is registered as a member of the
+                        // object (see `DefinitionCollector`), so its body must be
+                        // lowered under that member or calls to it resolve to an empty
+                        // stand-in.
+                        Prop::KeyValue(KeyValueProp { key, value }) => {
+                            if let Expr::Fn(_) | Expr::Arrow(_) = &**value
+                                && let Some(name) = key.as_symbol()
+                                && let Some(object) = self.res.sym_to_id(id.to_id(), self.module)
+                                && let Some(def) = self.res.lookup_prop(object, &name)
+                            {
+                                let old_parent = self.parent.replace(def);
+                                match &**value {
+                                    Expr::Fn(function) => {
+                                        self.handle_function(&function.function, Some(def))
+                                    }
+                                    Expr::Arrow(arrow) => self.visit_arrow_expr(arrow),
+                                    _ => {}
+                                }
+                                self.parent = old_parent;
+                            }
+                        }
+                        _ => {}
                     }
                 });
             }
@@ -3445,6 +3471,15 @@ fn as_resolver(
     None
 }
 
+fn static_callback_member(member: &MemberExpr, env: &Environment, module: ModId) -> Option<DefId> {
+    let object = member.obj.as_ident()?;
+    let MemberProp::Ident(property) = &member.prop else {
+        return None;
+    };
+    let object = env.sym_to_id(object.to_id(), module)?;
+    env.lookup_prop(object, &property.sym)
+}
+
 fn as_resolver_def<'a>(
     call: &'a CallExpr,
     res: &Environment,
@@ -3464,6 +3499,9 @@ fn as_resolver_def<'a>(
     else {
         return None;
     };
+    if call.args.iter().any(|arg| arg.spread.is_some()) {
+        return None;
+    }
     match &**name {
         Expr::Lit(Lit::Str(Str { value, .. })) => Some((objid, value, args)),
         _ => None,
@@ -3544,21 +3582,39 @@ impl Visit for Lowerer<'_> {
         }
     }
 
-    fn visit_call_expr(&mut self, n: &CallExpr) {
-        if let Some(expr) = n.callee.as_expr()
-            && let Some((objid, ResolverDef::FnDef)) = as_resolver(expr, self.res, self.curr_mod)
-            && let [
-                ExprOrSpread { expr: name, .. },
-                ExprOrSpread { expr: args, .. },
-            ] = &*n.args
-            && let Expr::Lit(Lit::Str(Str { value, .. })) = &**name
+    fn visit_call_expr(&mut self, call: &CallExpr) {
+        if let Some((objid, name, callback)) = as_resolver_def(call, self.res, self.curr_mod) {
+            let member = match callback {
+                Expr::Fn(_) | Expr::Arrow(_) => {
+                    self.res
+                        .add_anonymous(name.clone(), AnonType::Closure, self.curr_mod)
+                }
+                Expr::Ident(id) => self.res.get_or_insert_sym(id.to_id(), self.curr_mod),
+                Expr::Member(member) => {
+                    let Some(callback) = static_callback_member(member, self.res, self.curr_mod)
+                    else {
+                        warn!("unresolved resolver callback {name}");
+                        return;
+                    };
+                    callback
+                }
+                _ => {
+                    warn!("unsupported resolver callback for {name}");
+                    return;
+                }
+            };
+            self.res
+                .def_mut(objid)
+                .expect_class()
+                .pub_members
+                .push((name.clone(), member));
+        } else if call
+            .callee
+            .as_expr()
+            .and_then(|expr| as_resolver(expr, self.res, self.curr_mod))
+            .is_some_and(|(_, kind)| kind == ResolverDef::FnDef)
         {
-            let fname = value.clone();
-            let new_def = self
-                .res
-                .add_anonymous(fname.clone(), AnonType::Closure, self.curr_mod);
-            let class = self.res.def_mut(objid).expect_class();
-            class.pub_members.push((fname, new_def));
+            warn!("unsupported resolver registration: expected a literal key and static callback");
         }
     }
 
@@ -3584,51 +3640,29 @@ impl Visit for Lowerer<'_> {
                     expr.visit_children_with(self);
                     self.curr_def = old_def;
                 }
-                Expr::Call(CallExpr {
-                    callee: Callee::Expr(expr),
-                    args,
-                    ..
-                }) => {
-                    if let Some((objid, kind)) = as_resolver(expr, self.res, self.curr_mod) {
+                Expr::Call(call) => {
+                    if let Some((objid, kind)) = call
+                        .callee
+                        .as_expr()
+                        .and_then(|expr| as_resolver(expr, self.res, self.curr_mod))
+                    {
                         match kind {
-                            ResolverDef::FnDef => {
-                                if let [
-                                    ExprOrSpread { expr: name, .. },
-                                    ExprOrSpread { expr: args, .. },
-                                ] = &**args
-                                    && let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr
-                                {
-                                    let fname = value.clone();
-                                    let member_def = match &**args {
-                                        Expr::Fn(_) | Expr::Arrow(_) => self.res.add_anonymous(
-                                            fname.clone(),
-                                            AnonType::Closure,
-                                            self.curr_mod,
-                                        ),
-                                        Expr::Ident(id) => self.get_or_insert_sym(id.to_id()),
-                                        _ => {
-                                            warn!("unknown function def: {:?}", args);
-                                            self.res.add_anonymous(
-                                                fname.clone(),
-                                                AnonType::Unknown,
-                                                self.curr_mod,
-                                            )
-                                        }
-                                    };
-                                    let class = self.res.def_mut(objid).expect_class();
-                                    class.pub_members.push((fname, member_def));
-                                }
-                            }
-                            ResolverDef::Handler => {
+                            ResolverDef::FnDef => self.visit_call_expr(call),
+                            ResolverDef::Handler if call.args.is_empty() => {
                                 self.res.get_or_overwrite_sym(
                                     id,
                                     self.curr_mod,
                                     DefKind::ResolverHandler(objid),
                                 );
                             }
+                            ResolverDef::Handler => warn!("unsupported getDefinitions invocation"),
                         }
                     }
-                    expr.visit_children_with(self);
+                    // Registration reads the call's own arguments; the callee can still
+                    // contain registrations, as in `(() => { resolver.define(...) })()`.
+                    if let Callee::Expr(callee) = &call.callee {
+                        callee.visit_children_with(self);
+                    }
                 }
                 Expr::Object(ObjectLit { props, .. }) => {
                     let def_id =
@@ -3653,9 +3687,25 @@ impl Visit for Lowerer<'_> {
                                 }
                                 Prop::KeyValue(KeyValueProp { key, value }) => {
                                     if let sym @ Some(_) = key.as_symbol() {
-                                        let defid = value.as_ident().map(|id| {
-                                            self.res.get_or_insert_sym(id.to_id(), self.curr_mod)
-                                        });
+                                        let defid = match &**value {
+                                            Expr::Ident(id) => Some(
+                                                self.res
+                                                    .get_or_insert_sym(id.to_id(), self.curr_mod),
+                                            ),
+                                            Expr::Fn(_) | Expr::Arrow(_) => {
+                                                Some(self.res.add_anonymous(
+                                                    key.expect_symbol(),
+                                                    AnonType::Closure,
+                                                    self.curr_mod,
+                                                ))
+                                            }
+                                            Expr::Member(member) => static_callback_member(
+                                                member,
+                                                self.res,
+                                                self.curr_mod,
+                                            ),
+                                            _ => None,
+                                        };
                                         let cls = self.res.def_mut(def_id).expect_class();
                                         cls.pub_members.extend(sym.zip(defid));
                                     }
