@@ -1159,6 +1159,159 @@ fn api_token_fetch_detected_across_import_styles() {
     }
 }
 
+#[test]
+fn api_token_in_returned_headers_with_configured_rovo_site() {
+    let source = "// src/index.js
+        import { fetch, storage } from '@forge/api';
+        async function getAuth() {
+            const siteUrl = process.env.SITE_URL;
+            const email = process.env.USER_EMAIL;
+            const token = await storage.getSecret('atlassian-api-token');
+            if (!siteUrl || !email || !token) return null;
+            return {
+                url: siteUrl.replace(/\\/$/, ''),
+                headers: {
+                    Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`,
+                    Accept: 'application/json',
+                },
+            };
+        }
+        export async function run() {
+            const auth = await getAuth();
+            if (!auth) return;
+            return fetch(`${auth.url}/gateway/api/assist/rovo/v1/agents?limit=100`, {
+                headers: auth.headers,
+            });
+        }";
+    let result = scan_directory_test(MockForgeProject::files_from_string(source));
+    assert!(result.contains_api_token_vuln(1), "{result:#?}");
+    assert!(result.contains_container_token_vuln(0), "{result:#?}");
+}
+
+#[test]
+fn api_token_in_returned_headers_with_literal_atlassian_url() {
+    let source = "// src/index.js
+        import { fetch } from '@forge/api';
+        function getAuth() {
+            return { headers: { Authorization: 'Basic secret' } };
+        }
+        export function run() {
+            const auth = getAuth();
+            return fetch('example.atlassian.net/rest/api/3/issue', { headers: auth.headers });
+        }";
+    let result = scan_directory_test(MockForgeProject::files_from_string(source));
+    assert!(result.contains_api_token_vuln(1), "{result:#?}");
+}
+
+#[test]
+fn returned_header_property_can_have_a_different_name() {
+    for property in ["requestHeaders", "credentials"] {
+        let source = format!(
+            "// src/index.js
+            import {{ fetch }} from '@forge/api';
+            function getAuth() {{
+                return {{ {property}: {{ Authorization: 'Basic secret' }} }};
+            }}
+            export function run() {{
+                const auth = getAuth();
+                return fetch('example.atlassian.net/rest/api/3/issue', {{
+                    headers: auth.{property},
+                }});
+            }}"
+        );
+        let result = scan_directory_test(MockForgeProject::files_from_string(&source));
+        assert!(result.contains_api_token_vuln(1), "{property}: {result:#?}");
+    }
+
+    let mismatched = "// src/index.js
+        import { fetch } from '@forge/api';
+        function getAuth() {
+            return {
+                requestHeaders: { Authorization: 'Basic secret' },
+                publicHeaders: { Authorization: 'public' },
+            };
+        }
+        export function run() {
+            const auth = getAuth();
+            return fetch('example.atlassian.net/rest/api/3/issue', {
+                headers: auth.publicHeaders,
+            });
+        }";
+    let result = scan_directory_test(MockForgeProject::files_from_string(mismatched));
+    assert!(result.contains_api_token_vuln(0), "{result:#?}");
+}
+
+#[test]
+fn returned_headers_follow_nested_properties_and_direct_returns() {
+    for expression in ["auth.credentials.requestHeaders", "getHeaders()"] {
+        let source = format!(
+            "// src/index.js
+            import {{ fetch }} from '@forge/api';
+            function getHeaders() {{
+                const secret = {{ Authorization: 'Basic secret' }};
+                return secret;
+            }}
+            function getAuth() {{
+                return {{ credentials: {{ requestHeaders: getHeaders() }} }};
+            }}
+            export function run() {{
+                const auth = getAuth();
+                return fetch('example.atlassian.net/rest/api/3/issue', {{
+                    headers: {expression},
+                }});
+            }}"
+        );
+        let result = scan_directory_test(MockForgeProject::files_from_string(&source));
+        assert!(
+            result.contains_api_token_vuln(1),
+            "{expression}: {result:#?}"
+        );
+    }
+}
+
+#[test]
+fn returned_headers_do_not_pick_up_unrelated_basic_header() {
+    let source = "// src/index.js
+        import { fetch } from '@forge/api';
+        function getAuth() {
+            const unused = { Authorization: 'Basic secret' };
+            return { headers: { Authorization: 'public' } };
+        }
+        export function run() {
+            const auth = getAuth();
+            return fetch('example.atlassian.net/rest/api/3/issue', { headers: auth.headers });
+        }";
+    let result = scan_directory_test(MockForgeProject::files_from_string(source));
+    assert!(result.contains_api_token_vuln(0), "{result:#?}");
+}
+
+#[test]
+fn repeated_global_fetch_is_recognized_without_matching_a_local_function() {
+    let source = "// src/index.js
+        function warmup() {
+            return fetch('api.atlassian.com/rest/api/3/issue', {
+                headers: { Authorization: 'public' },
+            });
+        }
+        export function run() {
+            return fetch('api.atlassian.com/rest/api/3/issue', {
+                headers: { Authorization: 'Basic ' + process.env.API_TOKEN },
+            });
+        }";
+    let result = scan_directory_test(MockForgeProject::files_from_string(source));
+    assert!(result.contains_api_token_vuln(1), "{result:#?}");
+
+    let shadowed = "// src/index.js
+        function fetch() { return null; }
+        export function run() {
+            return fetch('api.atlassian.com/rest/api/3/issue', {
+                headers: { Authorization: 'Basic ' + process.env.API_TOKEN },
+            });
+        }";
+    let result = scan_directory_test(MockForgeProject::files_from_string(shadowed));
+    assert!(result.contains_api_token_vuln(0), "{result:#?}");
+}
+
 // Known gap: module-scope headers with Basic auth are not tracked into function-scoped fetch calls.
 // The analyzer's value tracking is scoped to function bodies (DefId + VarId), so the Authorization
 // field defined at module level is not visible when checking the fetch intrinsic's operands.
