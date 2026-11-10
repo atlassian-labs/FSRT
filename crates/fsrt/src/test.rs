@@ -650,7 +650,7 @@ fn property_literal_does_not_leak_to_sibling_property_in_auth_header() {
             });
         }",
     );
-    assert!(report.contains_secret_vuln(0), "{report:#?}");
+    assert!(report.contains_secret_vuln(0));
     assert_eq!(report.into_vulns().len(), 0);
 }
 
@@ -666,7 +666,7 @@ fn hardcoded_property_value_is_still_reported() {
             });
         }",
     );
-    assert!(report.contains_secret_vuln(1), "{report:#?}");
+    assert!(report.contains_secret_vuln(1));
 }
 
 #[test]
