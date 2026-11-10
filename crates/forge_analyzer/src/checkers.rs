@@ -1576,6 +1576,92 @@ fn operand_auth_scheme(op: &Operand) -> Option<AuthScheme> {
     }
 }
 
+/// Resolve a header value through object properties, aliases, and returned
+/// objects when the value lattice cannot resolve it at the fetch call.
+fn returned_header_auth_scheme(
+    body: &crate::ir::Body,
+    env: &Environment,
+    options: VarId,
+) -> Option<AuthScheme> {
+    let mut path = projvec_from_str("headers");
+    path.extend(projvec_from_str("Authorization"));
+    auth_scheme_at_path(body, env, options, &path, 16)
+}
+
+fn projection_prefix_matches(path: &[Projection], assigned: &[Projection]) -> bool {
+    assigned.len() <= path.len()
+        && assigned
+            .iter()
+            .zip(path)
+            .all(|(assigned, wanted)| match (assigned, wanted) {
+                (Projection::Known(a), Projection::Known(b)) => a.eq_ignore_ascii_case(b),
+                _ => assigned == wanted,
+            })
+}
+
+fn auth_scheme_at_path(
+    body: &crate::ir::Body,
+    env: &Environment,
+    target: VarId,
+    path: &[Projection],
+    depth: u8,
+) -> Option<AuthScheme> {
+    if depth == 0 {
+        return None;
+    }
+    for (_, block) in body.iter_blocks_enumerated() {
+        for inst in &block.insts {
+            let Inst::Assign(assigned, value) = inst else {
+                continue;
+            };
+            if assigned.base != Base::Var(target)
+                || !projection_prefix_matches(path, &assigned.projections)
+            {
+                continue;
+            }
+            let remaining = &path[assigned.projections.len()..];
+            if remaining.is_empty()
+                && let Some(scheme) = classify_rvalue_auth_scheme(value, body)
+            {
+                return Some(scheme);
+            }
+            match value {
+                Rvalue::Read(Operand::Var(source)) => {
+                    let Base::Var(source_var) = source.base else {
+                        continue;
+                    };
+                    let next_path = source
+                        .projections
+                        .iter()
+                        .cloned()
+                        .chain(remaining.iter().cloned())
+                        .collect::<Vec<_>>();
+                    if let Some(scheme) =
+                        auth_scheme_at_path(body, env, source_var, &next_path, depth - 1)
+                    {
+                        return Some(scheme);
+                    }
+                }
+                Rvalue::Call(callee, _) => {
+                    let Some((_, helper)) = body.resolve_call(env, callee) else {
+                        continue;
+                    };
+                    for (ret, kind) in helper.iter_vars_enumerated() {
+                        if matches!(kind, VarKind::Ret)
+                            && let Some(scheme) =
+                                auth_scheme_at_path(helper, env, ret, remaining, depth - 1)
+                        {
+                            return Some(scheme);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 /// Tries to extract the URL string from a VarId by walking the IR when the
 /// value lattice resolves to `Unknown` (e.g. template literals with unknown
 /// substitutions where the static quasis still contain the host). Follows
@@ -1690,7 +1776,7 @@ impl AuthHeaderChecker {
                         varid
                     };
                 let headers_proj = projvec_from_str("headers");
-                if let Some(Value::Object(varid)) =
+                let auth_scheme = if let Some(Value::Object(varid)) =
                     interp.get_value(def, *varid_argument, Some(headers_proj))
                 {
                     let auth_proj = projvec_from_str("Authorization");
@@ -1707,7 +1793,7 @@ impl AuthHeaderChecker {
                     // A property overwrite supersedes its initializer, including
                     // a known constant retained by the legacy value lattice.
                     // Inspect only assignments that can reach this fetch.
-                    let auth_scheme: Option<AuthScheme> = if let Some(origins) =
+                    if let Some(origins) =
                         interp.projection_origins(def, *varid, auth_projection, location)
                     {
                         origins.iter().find_map(|&(origin, loc)| {
@@ -1740,36 +1826,42 @@ impl AuthHeaderChecker {
                             }
                             _ => None,
                         }
-                    };
+                    }
+                } else {
+                    returned_header_auth_scheme(
+                        interp.env().def_ref(def).expect_body(),
+                        interp.env(),
+                        *varid_argument,
+                    )
+                };
 
-                    if let Some(scheme @ (AuthScheme::Basic | AuthScheme::Bearer)) = auth_scheme {
-                        // Platform API shims always target Atlassian APIs. For fetch /
-                        // api.fetch / node-fetch, require a recognized Atlassian URL.
-                        let should_flag = is_platform_api
-                            || (is_fetch
-                                && url_str.as_deref().is_some_and(|url| {
-                                    is_admin_path(url) || is_atlassian_url(url)
-                                }));
+                if let Some(scheme @ (AuthScheme::Basic | AuthScheme::Bearer)) = auth_scheme {
+                    // Platform API shims always target Atlassian APIs. For fetch /
+                    // api.fetch / node-fetch, require a recognized Atlassian URL.
+                    let should_flag = is_platform_api
+                        || (is_fetch
+                            && url_str
+                                .as_deref()
+                                .is_some_and(|url| is_admin_path(url) || is_atlassian_url(url)));
 
-                        if should_flag {
-                            // Container tokens are Bearer tokens used with admin endpoints.
-                            // Basic and non-admin Bearer tokens are reported as API tokens.
-                            let kind = if scheme == AuthScheme::Bearer
-                                && url_str.as_deref().is_some_and(is_admin_path)
-                            {
-                                AuthHeaderVulnKind::ContainerToken
-                            } else {
-                                AuthHeaderVulnKind::ApiToken
-                            };
-                            self.vulns.push(AuthHeaderVuln::new(
-                                kind,
-                                api_call_name(intrinsic),
-                                url_str.clone(),
-                                interp.callstack(),
-                                interp.env(),
-                                interp.entry(),
-                            ));
-                        }
+                    if should_flag {
+                        // Container tokens are Bearer tokens used with admin endpoints.
+                        // Basic and non-admin Bearer tokens are reported as API tokens.
+                        let kind = if scheme == AuthScheme::Bearer
+                            && url_str.as_deref().is_some_and(is_admin_path)
+                        {
+                            AuthHeaderVulnKind::ContainerToken
+                        } else {
+                            AuthHeaderVulnKind::ApiToken
+                        };
+                        self.vulns.push(AuthHeaderVuln::new(
+                            kind,
+                            api_call_name(intrinsic),
+                            url_str.clone(),
+                            interp.callstack(),
+                            interp.env(),
+                            interp.entry(),
+                        ));
                     }
                 }
             }

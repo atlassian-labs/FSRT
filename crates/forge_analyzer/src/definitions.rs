@@ -1330,6 +1330,14 @@ impl FunctionAnalyzer<'_> {
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" || *name == *"forgeFetch" => {
                 Some(Intrinsic::Fetch)
             }
+            [PropPath::Def(def)]
+                if self.res.is_undeclared_global(def)
+                    && matches!(self.res.def_name(def), "fetch" | "forgeFetch") =>
+            {
+                // Repeated references to a global fetch may resolve to the
+                // placeholder created by an earlier reference in this module.
+                Some(Intrinsic::Fetch)
+            }
             [
                 PropPath::Expr(ref n @ Some(ref expr)),
                 PropPath::Static(ref last),
