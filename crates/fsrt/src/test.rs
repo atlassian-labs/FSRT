@@ -618,6 +618,57 @@ fn forge_runtime_version_policy_ignores_unrecognized_runtime_names() {
     );
 }
 
+fn secret_findings(source: &str) -> Report {
+    let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+    project.add_file("src/index.js", source);
+    let report =
+        scan_directory_test_with_args(project, Args::parse_from(["fsrt", "--scanners", "secret"]));
+    assert!(!report.has_errors());
+    report
+}
+
+// Regression for EAS-4914: assigning a literal to one property of an object
+// must not make the object's other properties (or the object) resolve to it.
+#[test]
+fn property_literal_does_not_leak_to_sibling_property_in_auth_header() {
+    let report = secret_findings(
+        "import { fetch } from '@forge/api';
+        async function getLinks(token) {
+            return fetch('https://api.atlassian.com/jsm/assets/v1/imports/info', {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+        }
+        export async function run(req) {
+            const data = req.payload.importer;
+            if (data.deviceName === undefined) {
+                data.deviceName = 'deviceName1';
+            }
+            data.configStatus = 'IDLE';
+            await getLinks(data.token);
+            await fetch('https://api.atlassian.com/jsm/assets/v1/imports/info', {
+                headers: { Authorization: `Bearer ${data.token}` },
+            });
+        }",
+    );
+    assert!(report.contains_secret_vuln(0), "{report:#?}");
+    assert_eq!(report.into_vulns().len(), 0);
+}
+
+#[test]
+fn hardcoded_property_value_is_still_reported() {
+    let report = secret_findings(
+        "import { fetch } from '@forge/api';
+        export async function run(req) {
+            const data = { token: 'hardcoded-token' };
+            data.deviceName = 'deviceName1';
+            await fetch('https://example.com', {
+                headers: { Authorization: `Bearer ${data.token}` },
+            });
+        }",
+    );
+    assert!(report.contains_secret_vuln(1), "{report:#?}");
+}
+
 #[test]
 fn test_secret_vuln() {
     let forge_manifest = ForgeManifest::create_manifest_with_func_mod(FunctionMod {
