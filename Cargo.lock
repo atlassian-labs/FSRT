@@ -859,6 +859,7 @@ dependencies = [
  "time",
  "tracing",
  "typed-index-collections",
+ "url",
 ]
 
 [[package]]

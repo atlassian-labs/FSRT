@@ -25,6 +25,7 @@ swc_core.workspace = true
 time.workspace = true
 tracing.workspace = true
 typed-index-collections.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 forge_loader.workspace = true

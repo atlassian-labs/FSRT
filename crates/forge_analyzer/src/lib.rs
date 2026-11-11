@@ -1,6 +1,7 @@
 pub mod checkers;
 pub mod ctx;
 pub mod definitions;
+pub mod endpoints;
 pub mod interp;
 pub mod ir;
 pub mod lattice;

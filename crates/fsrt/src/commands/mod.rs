@@ -4,6 +4,7 @@ use clap::Subcommand;
 
 use crate::{Result, forge_project::find_manifest_path};
 
+pub(crate) mod extract;
 pub(crate) mod invoke_extension;
 #[cfg(feature = "mint_cookie")]
 pub(crate) mod mint_cookie;
@@ -69,6 +70,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: RemoteCommand,
     },
+
+    /// List the domains and IP addresses an app references, with ports and
+    /// pathnames, one per line.
+    #[command(hide = true)]
+    Extract(extract::ExtractArgs),
 }
 
 /// Deployed Forge app interaction subcommands.
@@ -92,12 +98,14 @@ impl Command {
     pub(crate) fn diagnostic_logging_requested(&self) -> bool {
         match self {
             Self::Remote { command } => command.diagnostic_logging_requested(),
+            Self::Extract(_) => false,
         }
     }
 
     pub(crate) fn run(&self) -> Result<()> {
         match self {
             Self::Remote { command } => command.run(),
+            Self::Extract(args) => extract::run(args),
         }
     }
 }
