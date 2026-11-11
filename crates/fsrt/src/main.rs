@@ -26,7 +26,7 @@ use graphql_parser::{
     schema::{ObjectTypeExtension, TypeDefinition, TypeExtension},
 };
 
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use tracing_subscriber::{EnvFilter, prelude::*};
 use tracing_tree::HierarchicalLayer;
 
@@ -656,6 +656,7 @@ pub(crate) fn scan_directory<'a>(
         }
     }
 
+    let mut policy_suppressed = 0;
     for func in &proj.funcs {
         if let Some(interp) = &mut secret_logging_interp
             && let Err(err) = interp.run_checker(
@@ -729,11 +730,21 @@ pub(crate) fn scan_directory<'a>(
                     func.func_name, func.path,
                 );
             }
+            policy_suppressed += checker.policy_suppressed();
             reporter.add_vulnerabilities_with_proof(
                 checker.into_vulns(),
                 &func.manifest_proof(manifest::BindingKind::WebTrigger),
             );
         }
+    }
+
+    if policy_suppressed > 0 {
+        info!(
+            reason = "authentication-check-present-policy",
+            authentication_verified = false,
+            count = policy_suppressed,
+            "Authentication findings suppressed because a verification call was observed"
+        );
     }
 
     // Optional full-function auth-header scan. When enabled, scan all function and
@@ -885,6 +896,20 @@ pub(crate) fn scan_directory<'a>(
     Ok(reporter.into_report())
 }
 
+/// Secret-handling functions followed by authentication-verification functions.
+fn builtin_packages() -> Vec<PackageData> {
+    let mut packages: Vec<PackageData> =
+        serde_yaml::from_str(include_str!("../../../secretdata.yaml"))
+            .expect("Failed to deserialize packages");
+    packages.extend(
+        serde_yaml::from_str::<Vec<PackageData>>(include_str!(
+            "../../../authentication-checks.yaml"
+        ))
+        .expect("Failed to deserialize authentication checks"),
+    );
+    packages
+}
+
 fn select_env_filter(configured: Option<EnvFilter>, diagnostics_requested: bool) -> EnvFilter {
     configured.unwrap_or_else(|| {
         if diagnostics_requested {
@@ -927,9 +952,7 @@ fn main() -> Result<()> {
 
     let dirs = std::mem::take(&mut args.dirs);
 
-    let secretdata_file = include_str!("../../../secretdata.yaml");
-    let secret_packages: Vec<PackageData> =
-        serde_yaml::from_str(secretdata_file).expect("Failed to deserialize packages");
+    let secret_packages = builtin_packages();
 
     for dir in dirs {
         if let Some(path) = &args.out {

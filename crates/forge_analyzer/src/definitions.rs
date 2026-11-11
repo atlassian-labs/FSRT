@@ -682,7 +682,12 @@ pub struct PackageData {
     pub package_name: String,
     pub identifier: String,
     pub method: Option<String>,
-    pub secret_position: u8,
+    /// 1-based position of the secret argument; absent for verification-only entries.
+    #[serde(default)]
+    pub secret_position: Option<u8>,
+    /// Marks a function that verifies request authentication (see `authentication-checks.yaml`).
+    #[serde(default)]
+    pub authentication_check: bool,
 }
 
 struct Lowerer<'cx> {
@@ -1038,6 +1043,20 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
 }
 
 impl FunctionAnalyzer<'_> {
+    /// First catalog entry matching `matches`. When another matching entry is an
+    /// authentication check, the result carries that mark too, so an entry
+    /// that is also a secret function (`jsonwebtoken.verify`) keeps its own
+    /// `secret_position`.
+    fn find_package(&self, matches: impl Fn(&PackageData) -> bool) -> Option<PackageData> {
+        let mut found = self
+            .secret_packages
+            .iter()
+            .filter(|package| matches(package));
+        let mut package = found.next()?.clone();
+        package.authentication_check |= found.any(|other| other.authentication_check);
+        Some(package)
+    }
+
     fn new<'cx>(
         env: &'cx mut Environment,
         module: ModId,
@@ -1481,7 +1500,7 @@ impl FunctionAnalyzer<'_> {
                 // example: import * as cryptoJS from 'crypto-js';
                 // var aes = cryptoJS.AES.encrypt('Secret message', 'secret password');
                 let (package_name, import_kind) = self.res.as_foreign_import(def)?;
-                let package_found = self.secret_packages.iter().find(|&package_data| {
+                let package_found = self.find_package(|package_data| {
                     if let Some(package_method) = &package_data.method {
                         package_name == package_data.package_name
                             && import_kind == ImportKind::Star
@@ -1492,7 +1511,7 @@ impl FunctionAnalyzer<'_> {
                     }
                 });
 
-                package_found.map(|package| Intrinsic::SecretFunction(package.clone()))
+                package_found.map(Intrinsic::SecretFunction)
             }
             // [Def, Static]
             // [PropPath::Def(def), PropPath::Static(atom)]
@@ -1504,18 +1523,18 @@ impl FunctionAnalyzer<'_> {
                 // import * as atlassian_jwt from "atlassian-jwt";
                 // atlassian_jwt.encode(blah, blah);
                 if import_kind == ImportKind::Star {
-                    let package_found = self.secret_packages.iter().find(|&package_data| {
+                    let package_found = self.find_package(|package_data| {
                         package_name == package_data.package_name
                             && *method_name == package_data.identifier
                             && package_data.method.is_none()
                     });
-                    package_found.map(|package| Intrinsic::SecretFunction(package.clone()))
+                    package_found.map(Intrinsic::SecretFunction)
                 } else {
                     // Named or default imports that
                     // import AES from "crypto-js";
                     // import {AES} from "crypto-js"
                     // Aes.encrypt(blah, blah);
-                    let package_found = self.secret_packages.iter().find(|&package_data| {
+                    let package_found = self.find_package(|package_data| {
                         if let Some(method) = &package_data.method {
                             package_name == package_data.package_name
                                 && import_kind == *package_data.identifier
@@ -1526,7 +1545,7 @@ impl FunctionAnalyzer<'_> {
                                 && import_kind == ImportKind::Default
                         }
                     });
-                    package_found.map(|package| Intrinsic::SecretFunction(package.clone()))
+                    package_found.map(Intrinsic::SecretFunction)
                 }
             }
             // [Def, .., Static] star
@@ -1535,12 +1554,12 @@ impl FunctionAnalyzer<'_> {
             // 1. Named/Default => package matches imported from and ident is the same, (NO METHOD)
             [PropPath::Def(def)] => {
                 let (package_name, import_kind) = self.res.as_foreign_import(def)?;
-                let package = self.secret_packages.iter().find(|&package_data| {
+                let package = self.find_package(|package_data| {
                     *package_name == *package_data.package_name
                         && import_kind == *package_data.identifier
                         && package_data.method.is_none()
                 });
-                package.cloned().map(Intrinsic::SecretFunction)
+                package.map(Intrinsic::SecretFunction)
             }
 
             // graphqlGateway's compass
