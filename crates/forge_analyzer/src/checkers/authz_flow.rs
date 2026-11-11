@@ -361,6 +361,9 @@ struct Builder<'a> {
     request: FxHashSet<Node>,
     /// The instruction being read, and how many request reads it has had.
     cursor: (Location, u8),
+    /// A number or flag read from a value carries that value's origin, but not
+    /// where it may go: `(value, scalar)`.
+    origin_edges: Vec<(Node, Node)>,
     incomplete: Option<String>,
 }
 
@@ -376,6 +379,7 @@ pub(super) fn analyze(env: &Environment, root: DefId) -> Result<Flow, String> {
         pending: VecDeque::new(),
         request: FxHashSet::default(),
         cursor: (Location::new(crate::ir::BasicBlockId(0), 0), 0),
+        origin_edges: Vec::new(),
         incomplete: None,
     };
     builder.find_request();
@@ -554,7 +558,12 @@ impl<'a> Builder<'a> {
         if let Some(Projection::Known(last)) = var.projections.last()
             && SCALAR_PROPERTIES.contains(&last.as_ref())
         {
-            return None;
+            // The number or flag does not carry the data it summarizes anywhere, but it
+            // is still what the caller chose: it takes the origin, not the exposure.
+            let scalar = Node::Source(func, self.cursor.0, self.cursor.1);
+            self.cursor.1 += 1;
+            self.origin_edges.push((node, scalar));
+            return Some(scalar);
         }
         // The platform sets `context`, but not all of what it carries.
         if Self::caller_controlled(&var.projections) {
@@ -1087,6 +1096,16 @@ impl<'a> Builder<'a> {
         let mut changed = true;
         while changed {
             changed = false;
+            for (value, scalar) in self.origin_edges.clone() {
+                let source = self.classes.class(value);
+                let bits = self.classes.meta[source as usize].origin;
+                let class = self.classes.class(scalar);
+                let meta = &mut self.classes.meta[class as usize];
+                if meta.origin | bits != meta.origin {
+                    meta.origin |= bits;
+                    changed = true;
+                }
+            }
             let requests: Vec<(Site, Option<Node>, Vec<Node>)> = self
                 .requests
                 .iter()

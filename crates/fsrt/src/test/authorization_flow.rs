@@ -474,6 +474,30 @@ fn a_write_that_carries_caller_or_stored_data_is_reported() {
 }
 
 #[test]
+fn a_number_or_flag_read_from_caller_data_is_still_caller_data() {
+    // `length`, `size`, `ok` and `statusText` summarize what they are read from, but a write
+    // whose body carries one still carries what the caller chose.
+    check(&[
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue`, {method: 'POST', body: JSON.stringify({fields: {}, size: payload.size})});
+             return {ok: true};",
+            1,
+        ),
+        (
+            "const count = payload.items.length;
+             await api.asApp().requestJira(route`/rest/api/3/issue`, {method: 'POST', body: JSON.stringify({fields: {}, count})});
+             return {ok: true};",
+            1,
+        ),
+        (
+            "await api.asApp().requestJira(route`/rest/api/3/issue/${payload.id.length}`, {method: 'PUT', body: '{}'});
+             return {ok: true};",
+            1,
+        ),
+    ]);
+}
+
+#[test]
 fn a_write_helper_is_judged_by_what_each_call_gives_it() {
     let helpers = "async function create(data) {
         return api.asApp().requestJira(route`/rest/api/3/issue`, {method: 'POST', body: JSON.stringify(data)});
