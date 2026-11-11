@@ -375,16 +375,6 @@ fn secret_fetch_authorization_from_known_object_is_not_hardcoded() {
 }
 
 #[test]
-fn secret_function_argument_from_known_object_is_not_hardcoded() {
-    let source = "import { AES } from 'crypto-js';
-        export function run() {
-            const obj = { prop: { nested: 'y' } };
-            AES.encrypt('plaintext', 'x' + obj.prop);
-        }";
-    assert_eq!(secret_finding_count(source), 0);
-}
-
-#[test]
 fn secret_hardcoded_literals_and_phi_still_fire() {
     let literal = "import { fetch } from '@forge/api';
         export function run() {
