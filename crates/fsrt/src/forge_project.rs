@@ -1,6 +1,7 @@
 use crate::{ResolvedEntryPoint, collect_sourcefiles};
 use forge_analyzer::ctx::AppCtx;
 use forge_analyzer::definitions::{Environment, PackageData, run_resolver};
+use forge_analyzer::reporter::CoverageNote;
 use forge_loader::manifest::{BindingKind, Entrypoint, ForgeManifest, Resolved};
 use forge_permission_resolver::permissions_resolver::PermMap;
 use serde_yaml::Error as YamlError;
@@ -13,7 +14,7 @@ use swc_core::ecma::ast::EsVersion;
 use swc_core::ecma::parser::{Syntax, TsSyntax, parse_file_as_module};
 use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::visit::VisitMutWith;
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub(crate) fn find_manifest_path(app_dir: &Path) -> io::Result<PathBuf> {
     ["manifest.yaml", "manifest.yml"]
@@ -114,16 +115,53 @@ pub(crate) struct ForgeProject<'a> {
 }
 
 impl<'a> ForgeProject<'a> {
+    /// Adds each entrypoint that resolves to something a checker can start from.
+    ///
+    /// Entrypoints that do not are skipped by every scanner, so each one is returned as a
+    /// coverage note rather than dropped silently.
     #[inline]
-    pub fn add_funcs<I: IntoIterator<Item = Entrypoint<'a, Resolved>>>(&mut self, iter: I) {
-        self.funcs.extend(iter.into_iter().filter_map(|entrypoint| {
+    pub fn add_funcs<I: IntoIterator<Item = Entrypoint<'a, Resolved>>>(
+        &mut self,
+        iter: I,
+    ) -> Vec<CoverageNote> {
+        let mut notes = Vec::new();
+        for entrypoint in iter {
             let function_key = entrypoint.function.key();
+            let handler = entrypoint.handler;
             let (func_name, path) = entrypoint.function.into_func_path();
-            let module = self.ctx.modid_from_path(&path)?;
-            let def_id = self.env.module_export(module, func_name)?;
+            let mut note = |reason: String| {
+                warn!("{function_key}: {reason}");
+                notes.push(CoverageNote {
+                    function_key: function_key.to_owned(),
+                    handler: handler.to_owned(),
+                    reason,
+                });
+            };
+            let Some(module) = self.ctx.modid_from_path(&path) else {
+                note(format!(
+                    "{} was not loaded as a source module",
+                    path.display()
+                ));
+                continue;
+            };
+            // follows `export { x } from`, `export *` and `import { x }; export { x }`
+            let Some(def_id) = self.env.resolve_export(module, func_name) else {
+                note(format!(
+                    "no export named `{func_name}` could be found in {}",
+                    path.display()
+                ));
+                continue;
+            };
             // Resolve ExportAlias / ResolverHandler chains to the actual definition.
             let def_id = self.env.resolve_alias(def_id);
-            Some(ResolvedEntryPoint {
+            if !self.env.is_analyzable_entry(def_id) {
+                note(format!(
+                    "`{func_name}` in {} is neither a function nor a resolver with registered callbacks",
+                    path.display()
+                ));
+                continue;
+            }
+            self.funcs.push(ResolvedEntryPoint {
                 function_key,
                 handler: entrypoint.handler,
                 module_bindings: entrypoint.module_bindings,
@@ -134,8 +172,9 @@ impl<'a> ForgeProject<'a> {
                 invokable: entrypoint.invokable,
                 webtrigger: entrypoint.web_trigger,
                 admin: entrypoint.admin,
-            })
-        }));
+            });
+        }
+        notes
     }
 }
 
