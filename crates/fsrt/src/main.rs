@@ -38,7 +38,7 @@ use forge_analyzer::{
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
-    reporter::{Report, Reporter},
+    reporter::{CoverageNote, Report, Reporter},
 };
 
 use crate::{
@@ -573,21 +573,38 @@ pub(crate) fn scan_directory<'a>(
     let scan_functions =
         opts.scan_functions || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
 
-    let funcrefs = manifest
+    // Entrypoints that cannot be followed to a function are skipped by every scanner. Keep
+    // them so the report can say so instead of looking like a clean result.
+    let mut coverage_notes = Vec::new();
+    let funcrefs: Vec<_> = manifest
         .modules
         .into_analyzable_functions()
-        .flat_map(|entrypoint| {
-            Ok::<_, forge_loader::Error>(Entrypoint {
-                function: entrypoint.function.try_resolve(&paths, &dir)?,
-                handler: entrypoint.handler,
-                module_bindings: entrypoint.module_bindings,
-                invokable: entrypoint.invokable,
-                web_trigger: entrypoint.web_trigger,
-                admin: entrypoint.admin,
-            })
-        });
+        .filter_map(|entrypoint| {
+            let function_key = entrypoint.function.key();
+            let handler = entrypoint.handler;
+            match entrypoint.function.try_resolve(&paths, &dir) {
+                Ok(function) => Some(Entrypoint {
+                    function,
+                    handler,
+                    module_bindings: entrypoint.module_bindings,
+                    invokable: entrypoint.invokable,
+                    web_trigger: entrypoint.web_trigger,
+                    admin: entrypoint.admin,
+                }),
+                Err(err) => {
+                    warn!("could not resolve entrypoint {function_key}: {err}");
+                    coverage_notes.push(CoverageNote {
+                        function_key: function_key.to_owned(),
+                        handler: handler.to_owned(),
+                        reason: "the handler file was not found in the app source".to_owned(),
+                    });
+                    None
+                }
+            }
+        })
+        .collect();
 
-    proj.add_funcs(funcrefs);
+    coverage_notes.extend(proj.add_funcs(funcrefs));
     // resolve_calls(&mut proj.ctx);
     if let Some(func) = opts.dump_ir.as_ref() {
         proj.env.dump_function(&mut std::io::stdout().lock(), func);
@@ -636,6 +653,7 @@ pub(crate) fn scan_directory<'a>(
 
     let mut reporter = Reporter::new();
     reporter.add_app(opts.appkey.clone().unwrap_or_default(), name.to_owned());
+    reporter.add_coverage_notes(coverage_notes);
     if let Some(vuln) = runtime_policy_vuln {
         reporter.add_vulnerabilities([vuln]);
     }

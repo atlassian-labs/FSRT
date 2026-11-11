@@ -37,6 +37,22 @@ impl Vulnerability {
     pub fn description(&self) -> &str {
         &self.description
     }
+
+    pub fn proof(&self) -> &str {
+        &self.proof
+    }
+}
+
+/// A manifest entrypoint the scan could not analyze.
+///
+/// An entrypoint FSRT cannot follow to a function is skipped by every scanner, so it
+/// produces no findings. A note makes that gap visible in the report instead of looking
+/// like a clean result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CoverageNote {
+    pub function_key: String,
+    pub handler: String,
+    pub reason: String,
 }
 
 pub trait IntoVuln {
@@ -54,10 +70,13 @@ pub struct Report {
     scanned: Vec<String>,
     errors: bool,
     error_message: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    coverage_notes: Vec<CoverageNote>,
 }
 
 pub struct Reporter {
     vulns: Vec<Vulnerability>,
+    coverage_notes: Vec<CoverageNote>,
     started_at: OffsetDateTime,
     // (key, name)
     apps: Vec<(String, String)>,
@@ -69,6 +88,7 @@ impl Reporter {
     pub fn new() -> Self {
         Self {
             vulns: Vec::new(),
+            coverage_notes: Vec::new(),
             started_at: OffsetDateTime::now_utc(),
             apps: Vec::new(),
             current_app: 0,
@@ -94,6 +114,10 @@ impl Reporter {
     #[inline]
     pub fn current_date(&self) -> Date {
         self.started_at.date()
+    }
+
+    pub fn add_coverage_notes(&mut self, notes: impl IntoIterator<Item = CoverageNote>) {
+        self.coverage_notes.extend(notes);
     }
 
     pub fn add_vulnerabilities(&mut self, vuln_reports: impl IntoIterator<Item = impl IntoVuln>) {
@@ -125,6 +149,7 @@ impl Reporter {
             scanned: self.apps.into_iter().map(|(key, _)| key).collect(),
             errors: false,
             error_message: String::new(),
+            coverage_notes: self.coverage_notes,
         }
     }
 
@@ -145,12 +170,18 @@ impl Report {
             scanned,
             errors: true,
             error_message,
+            coverage_notes: Vec::new(),
         }
     }
 
     #[inline]
     pub fn into_vulns(&self) -> &[Vulnerability] {
         &self.vulns
+    }
+
+    #[inline]
+    pub fn coverage_notes(&self) -> &[CoverageNote] {
+        &self.coverage_notes
     }
 
     #[inline]

@@ -14,6 +14,7 @@ use swc_core::common::{FileName, SourceFile, SourceMap};
 use time::{Date, Month};
 
 mod captured_values;
+mod entry_resolution;
 mod legacy_callbacks;
 mod resolver_registration;
 mod secret_logging;

@@ -30,18 +30,18 @@ use swc_core::{
             ExportDecl, ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier,
             ExportSpecifier, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForHead, ForInStmt,
             ForOfStmt, ForStmt, Function, Id, Ident, IdentName, IfStmt, Import, ImportDecl,
-            ImportDefaultSpecifier, ImportNamedSpecifier, ImportStarAsSpecifier, JSXAttrName,
-            JSXAttrOrSpread, JSXAttrValue, JSXElement, JSXElementChild, JSXElementName, JSXExpr,
-            JSXExprContainer, JSXFragment, JSXMemberExpr, JSXNamespacedName, JSXObject,
-            JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp, LabeledStmt, Lit, MemberExpr,
-            MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl, ModuleExportName, ModuleItem,
-            NamedExport, NewExpr, Number, ObjectLit, ObjectPat, ObjectPatProp, OptCall,
-            OptChainBase, OptChainExpr, Param, ParenExpr, Pat, PrivateName, Prop, PropName,
-            PropOrSpread, RestPat, ReturnStmt, SeqExpr, SimpleAssignTarget, Stmt, Str, Super,
-            SuperProp, SuperPropExpr, SwitchStmt, TaggedTpl, ThisExpr, ThrowStmt, Tpl, TplElement,
-            TryStmt, TsAsExpr, TsConstAssertion, TsInstantiation, TsNonNullExpr, TsSatisfiesExpr,
-            TsTypeAssertion, UnaryExpr, UpdateExpr, VarDecl, VarDeclOrExpr, VarDeclarator,
-            WhileStmt, WithStmt, YieldExpr,
+            ImportDefaultSpecifier, ImportNamedSpecifier, ImportSpecifier, ImportStarAsSpecifier,
+            JSXAttrName, JSXAttrOrSpread, JSXAttrValue, JSXElement, JSXElementChild,
+            JSXElementName, JSXExpr, JSXExprContainer, JSXFragment, JSXMemberExpr,
+            JSXNamespacedName, JSXObject, JSXSpreadChild, JSXText, KeyValuePatProp, KeyValueProp,
+            LabeledStmt, Lit, MemberExpr, MemberProp, MetaPropExpr, MethodProp, Module, ModuleDecl,
+            ModuleExportName, ModuleItem, NamedExport, NewExpr, Number, ObjectLit, ObjectPat,
+            ObjectPatProp, OptCall, OptChainBase, OptChainExpr, Param, ParenExpr, Pat, PrivateName,
+            Prop, PropName, PropOrSpread, RestPat, ReturnStmt, SeqExpr, SimpleAssignTarget, Stmt,
+            Str, Super, SuperProp, SuperPropExpr, SwitchStmt, TaggedTpl, ThisExpr, ThrowStmt, Tpl,
+            TplElement, TryStmt, TsAsExpr, TsConstAssertion, TsInstantiation, TsNonNullExpr,
+            TsSatisfiesExpr, TsTypeAssertion, UnaryExpr, UpdateExpr, VarDecl, VarDeclOrExpr,
+            VarDeclarator, WhileStmt, WithStmt, YieldExpr,
         },
         atoms::Atom,
         utils::{function, ident::IdentLike},
@@ -173,6 +173,11 @@ pub fn run_resolver(
             debug_assert_eq!(def_id, None, "def_id shouldn't be set");
         }
     }
+
+    environment.reexports = modules
+        .iter_enumerated()
+        .map(|(curr_mod, module)| collect_reexports(curr_mod, module, file_resolver))
+        .collect();
 
     // The following two for loops iterate through the imported modules of the file.
     let mut foreign = TiVec::default();
@@ -594,8 +599,119 @@ pub struct Environment {
     pub global: TiVec<ModId, DefId>,
     pub defs: Definitions,
     default_exports: FxHashMap<ModId, DefId>,
+    reexports: TiVec<ModId, ReExports>,
     pub resolver: ResolverTable,
     pub all_strings: Vec<String>,
+}
+
+/// How deep [`Environment::resolve_export`] follows re-exports before giving up.
+/// This is what keeps a circular `export { x } from` chain from looping forever.
+const MAX_REEXPORT_DEPTH: u8 = 8;
+
+/// The re-exports a module declares, with the module each one forwards to already resolved
+/// through the file resolver. Specifiers whose source file is unknown are dropped.
+#[derive(Debug, Clone, Default)]
+struct ReExports {
+    /// `export { orig as exported } from './m'` and `import { orig as l } from './m'; export { l as exported }`
+    named: Vec<ReExportedName>,
+    /// `export * from './m'`
+    star: Vec<ModId>,
+}
+
+#[derive(Debug, Clone)]
+struct ReExportedName {
+    exported: Atom,
+    target: ModId,
+    orig: Atom,
+}
+
+fn module_export_name(name: &ModuleExportName) -> Atom {
+    match name {
+        ModuleExportName::Ident(ident) => ident.sym.clone(),
+        ModuleExportName::Str(s) => s.value.clone(),
+    }
+}
+
+/// Finds the forwarding exports of `module`:
+/// `export { x } from './y'`, `export * from './y'` and `import { x } from './y'; export { x }`.
+fn collect_reexports(curr_mod: ModId, module: &Module, file_resolver: &ForgeResolver) -> ReExports {
+    let resolve = |src: &Str| {
+        file_resolver
+            .resolve_import(curr_mod.into(), &*src.value)
+            .ok()
+            .map(ModId::from)
+    };
+    // local name -> (module it was imported from, name it has there)
+    let mut imported: FxHashMap<Atom, (ModId, Atom)> = FxHashMap::default();
+    for item in &module.body {
+        let ModuleItem::ModuleDecl(ModuleDecl::Import(import)) = item else {
+            continue;
+        };
+        if import.type_only {
+            continue;
+        }
+        let Some(target) = resolve(&import.src) else {
+            continue;
+        };
+        for specifier in &import.specifiers {
+            match specifier {
+                ImportSpecifier::Named(named) if !named.is_type_only => {
+                    let orig = named
+                        .imported
+                        .as_ref()
+                        .map_or_else(|| named.local.sym.clone(), module_export_name);
+                    imported.insert(named.local.sym.clone(), (target, orig));
+                }
+                ImportSpecifier::Default(default) => {
+                    imported.insert(default.local.sym.clone(), (target, "default".into()));
+                }
+                ImportSpecifier::Named(_) | ImportSpecifier::Namespace(_) => {}
+            }
+        }
+    }
+
+    let mut reexports = ReExports::default();
+    for item in &module.body {
+        let ModuleItem::ModuleDecl(decl) = item else {
+            continue;
+        };
+        match decl {
+            ModuleDecl::ExportAll(all) if !all.type_only => {
+                reexports.star.extend(resolve(&all.src));
+            }
+            ModuleDecl::ExportNamed(named) if !named.type_only => {
+                let source = named.src.as_deref().map(resolve);
+                for specifier in &named.specifiers {
+                    let ExportSpecifier::Named(specifier) = specifier else {
+                        continue;
+                    };
+                    if specifier.is_type_only {
+                        continue;
+                    }
+                    let orig = module_export_name(&specifier.orig);
+                    let exported = specifier
+                        .exported
+                        .as_ref()
+                        .map_or_else(|| orig.clone(), module_export_name);
+                    let forwarded = match &source {
+                        // `export { orig as exported } from './m'`
+                        Some(target) => target.map(|target| (target, orig)),
+                        // `export { local as exported }` of an imported binding
+                        None => imported.get(&orig).cloned(),
+                    };
+                    if let Some((target, orig)) = forwarded {
+                        reexports.named.push(ReExportedName {
+                            exported,
+                            target,
+                            orig,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    reexports
 }
 
 struct ImportCollector<'cx> {
@@ -4524,6 +4640,78 @@ impl Environment {
             }
         }
         defid
+    }
+
+    /// Finds what `module` exports as `name`, following `export { x } from`, `export *` and
+    /// `import { x } from; export { x }` into other modules.
+    ///
+    /// Mirrors ES module semantics where it matters for picking the right definition:
+    /// a module's own export wins over `export *`, `export *` never forwards `default`, and a
+    /// name supplied by two different `export *` sources is ambiguous and so resolves to nothing.
+    /// Following stops at [`MAX_REEXPORT_DEPTH`] and on cycles.
+    pub fn resolve_export(&self, module: ModId, name: &str) -> Option<DefId> {
+        self.resolve_export_inner(module, name, 0, &mut Vec::new())
+    }
+
+    fn resolve_export_inner(
+        &self,
+        module: ModId,
+        name: &str,
+        depth: u8,
+        visiting: &mut Vec<(ModId, String)>,
+    ) -> Option<DefId> {
+        if depth > MAX_REEXPORT_DEPTH || visiting.iter().any(|(m, n)| *m == module && n == name) {
+            return None;
+        }
+        // an export that only names an imported binding stays `Undefined`; keep looking for it
+        if let Some(def) = self.module_export(module, name)
+            && !matches!(self.def_ref(self.resolve_alias(def)), DefKind::Undefined)
+        {
+            return Some(def);
+        }
+        let reexports = self.reexports.get(module)?;
+        visiting.push((module, name.to_owned()));
+        let resolved = self.resolve_forwarded_export(reexports, name, depth, visiting);
+        visiting.pop();
+        resolved
+    }
+
+    fn resolve_forwarded_export(
+        &self,
+        reexports: &ReExports,
+        name: &str,
+        depth: u8,
+        visiting: &mut Vec<(ModId, String)>,
+    ) -> Option<DefId> {
+        for forwarded in reexports.named.iter().filter(|r| *r.exported == *name) {
+            if let Some(def) =
+                self.resolve_export_inner(forwarded.target, &forwarded.orig, depth + 1, visiting)
+            {
+                return Some(def);
+            }
+        }
+        if name == "default" {
+            return None;
+        }
+        let mut found: Option<DefId> = None;
+        for &target in &reexports.star {
+            let Some(def) = self.resolve_export_inner(target, name, depth + 1, visiting) else {
+                continue;
+            };
+            match found {
+                None => found = Some(def),
+                Some(prev) if self.resolve_alias(prev) == self.resolve_alias(def) => {}
+                Some(_) => return None,
+            }
+        }
+        found
+    }
+
+    /// Whether a checker can start from `def`: it is a function body, or a resolver
+    /// with at least one registered callback.
+    pub fn is_analyzable_entry(&self, def: DefId) -> bool {
+        let def = self.resolve_alias(def);
+        self.def_ref(def).as_body().is_some() || !self.resolver_defs(def).is_empty()
     }
 
     #[inline]
