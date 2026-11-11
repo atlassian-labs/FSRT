@@ -354,7 +354,7 @@ fn constant_branches_preserve_only_hardcoded_secret_findings() {
     }
 }
 
-fn secret_findings(source: &str) -> usize {
+fn secret_finding_count(source: &str) -> usize {
     let mut project = MockForgeProject::files_from_string("// src/index.js\n");
     project.add_file("src/index.js", source);
     let report =
@@ -371,7 +371,7 @@ fn secret_fetch_authorization_from_known_object_is_not_hardcoded() {
             const headers = { Authorization: `Bearer ${obj.token}` };
             fetch('https://example.com', { headers });
         }";
-    assert_eq!(secret_findings(source), 0);
+    assert_eq!(secret_finding_count(source), 0);
 }
 
 #[test]
@@ -381,7 +381,7 @@ fn secret_function_argument_from_known_object_is_not_hardcoded() {
             const obj = { prop: { nested: 'y' } };
             AES.encrypt('plaintext', 'x' + obj.prop);
         }";
-    assert_eq!(secret_findings(source), 0);
+    assert_eq!(secret_finding_count(source), 0);
 }
 
 #[test]
@@ -390,7 +390,7 @@ fn secret_hardcoded_literals_and_phi_still_fire() {
         export function run() {
             fetch('https://example.com', { headers: { Authorization: 'Bearer abc123' } });
         }";
-    assert_eq!(secret_findings(literal), 1);
+    assert_eq!(secret_finding_count(literal), 1);
 
     let phi = "import { fetch } from '@forge/api';
         export function run(request) {
@@ -400,7 +400,7 @@ fn secret_hardcoded_literals_and_phi_still_fire() {
             }
             fetch('https://example.com', { headers: { Authorization: `Bearer ${token}` } });
         }";
-    assert_eq!(secret_findings(phi), 1);
+    assert_eq!(secret_finding_count(phi), 1);
 
     let function = "import { AES } from 'crypto-js';
         export function run(request) {
@@ -410,7 +410,7 @@ fn secret_hardcoded_literals_and_phi_still_fire() {
             }
             AES.encrypt('plaintext', 'x' + suffix);
         }";
-    assert_eq!(secret_findings(function), 1);
+    assert_eq!(secret_finding_count(function), 1);
 }
 
 #[test]
