@@ -221,6 +221,7 @@ pub fn run_resolver(
         };
         module.visit_with(&mut lowerer);
     }
+    environment.register_resolver_configs();
     for (curr_mod, module) in modules.iter_enumerated() {
         let global_id = environment.get_or_reserve_global_scope(curr_mod);
         let mut global_collector = GlobalCollector {
@@ -596,6 +597,9 @@ pub struct Environment {
     default_exports: FxHashMap<ModId, DefId>,
     pub resolver: ResolverTable,
     pub all_strings: Vec<String>,
+    /// `(resolver, object)` for each `makeResolver(object)` call, whose members are
+    /// copied once all modules have been lowered.
+    resolver_configs: Vec<(DefId, DefId)>,
 }
 
 struct ImportCollector<'cx> {
@@ -3705,12 +3709,23 @@ impl Visit for Lowerer<'_> {
                 if let [ExprOrSpread { spread: None, expr }] = call.args.as_slice()
                     && let Expr::Ident(object) = &**expr
                 {
+                    // The object is only known to be a resolver here, and may be declared
+                    // later or in another module. Register a resolver for it now and fill
+                    // its members once every module is lowered; the object itself stays a
+                    // plain object for everything else that reads it.
                     let object = self.get_or_insert_sym(object.to_id());
+                    let resolver = self.res.add_anonymous(
+                        "resolver definitions",
+                        AnonType::Unknown,
+                        self.curr_mod,
+                    );
+                    self.res.overwrite_def(resolver, DefKind::Resolver(()));
                     self.res.get_or_overwrite_sym(
                         id,
                         self.curr_mod,
-                        DefKind::ResolverHandler(object),
+                        DefKind::ResolverHandler(resolver),
                     );
+                    self.res.resolver_configs.push((resolver, object));
                     return;
                 }
                 let resolver = self.res.add_anonymous(
@@ -4704,6 +4719,21 @@ impl Environment {
             DefKind::ExportAlias(def)
             | DefKind::ResolverDef(def)
             | DefKind::ResolverHandler(def) => self.resolve_alias(def),
+        }
+    }
+
+    /// Gives each resolver created for `makeResolver(object)` the members of the object
+    /// literal the identifier resolves to. An identifier that does not resolve to an
+    /// object literal registers nothing.
+    fn register_resolver_configs(&mut self) {
+        for (resolver, object) in std::mem::take(&mut self.resolver_configs) {
+            let object = self.resolve_alias(object);
+            let DefKind::GlobalObj(config) = self.def_ref(object) else {
+                warn!("unsupported makeResolver object (not a static object literal)");
+                continue;
+            };
+            let members = config.pub_members.clone();
+            self.def_mut(resolver).expect_class().pub_members = members;
         }
     }
 
