@@ -223,3 +223,122 @@ fn arrow_property_of_an_object_literal_is_lowered() {
     );
     assert_eq!(authz_findings(&source), 1);
 }
+
+fn make_resolver_config_findings(config: &str, handler: &str) -> usize {
+    let source = format!(
+        "{MAKE_RESOLVER_PREAMBLE}
+        async function getIssue() {{ return {ISSUE_REQUEST}; }}
+        {config}
+        {handler}"
+    );
+    authz_findings(&source)
+}
+
+#[test]
+fn make_resolver_with_an_identifier_analyzes_the_object_callbacks() {
+    for config in [
+        format!("const config = {{ getIssue: async () => {ISSUE_REQUEST} }};"),
+        format!("const config = {{ async getIssue() {{ return {ISSUE_REQUEST}; }} }};"),
+        "const config = { getIssue };".to_string(),
+        "const config = { getIssue: getIssue };".to_string(),
+        format!("export const config = {{ getIssue: async () => {ISSUE_REQUEST} }};"),
+    ] {
+        for handler in [
+            "export const handler = makeResolver(config);",
+            "const handler = makeResolver(config); export { handler };",
+        ] {
+            assert_eq!(
+                make_resolver_config_findings(&config, handler),
+                1,
+                "{config} {handler}"
+            );
+        }
+    }
+}
+
+#[test]
+fn make_resolver_with_an_identifier_declared_later_analyzes_the_object_callbacks() {
+    let source = format!(
+        "{MAKE_RESOLVER_PREAMBLE}
+        export const handler = makeResolver(config);
+        var config = {{ getIssue: async () => {ISSUE_REQUEST} }};"
+    );
+    assert_eq!(authz_findings(&source), 1);
+}
+
+#[test]
+fn make_resolver_with_an_imported_identifier_analyzes_the_object_callbacks() {
+    let files = format!(
+        "// src/config.js
+        import api, {{ route }} from '@forge/api';
+        export const config = {{ getIssue: async () => {ISSUE_REQUEST} }};
+        // src/index.js
+        {MAKE_RESOLVER_PREAMBLE}
+        import {{ config }} from './config';
+        export const handler = makeResolver(config);
+        {MANIFEST}"
+    );
+    let report = scan_directory_test(MockForgeProject::files_from_string(&files));
+    let findings = report
+        .into_vulns()
+        .iter()
+        .filter(|vuln| vuln.check_name().contains("Authorization"))
+        .count();
+    assert_eq!(findings, 1);
+}
+
+#[test]
+fn object_never_passed_to_a_resolver_is_not_a_resolver() {
+    // The manifest handler names a plain object, so none of its properties are entry points.
+    let source = format!(
+        "{MAKE_RESOLVER_PREAMBLE}
+        export const handler = {{ getIssue: async () => {ISSUE_REQUEST} }};"
+    );
+    assert_eq!(authz_findings(&source), 0);
+    let source = format!(
+        "{MAKE_RESOLVER_PREAMBLE}
+        const config = {{ getIssue: async () => {ISSUE_REQUEST} }};
+        export const handler = config;"
+    );
+    assert_eq!(authz_findings(&source), 0);
+}
+
+#[test]
+fn object_passed_to_a_makeresolver_lookalike_is_not_a_resolver() {
+    let source = format!(
+        "import api, {{ route }} from '@forge/api';
+        function makeResolver(handlers) {{ return handlers; }}
+        const config = {{ getIssue: async () => {ISSUE_REQUEST} }};
+        export const handler = makeResolver(config);"
+    );
+    assert_eq!(authz_findings(&source), 0);
+}
+
+#[test]
+fn make_resolver_object_that_is_filled_imperatively_registers_nothing() {
+    for fill in [
+        format!("handlers.getIssue = async () => {ISSUE_REQUEST};"),
+        format!("handlers['getIssue'] = async () => {ISSUE_REQUEST};"),
+        format!(
+            "for (const name of ['getIssue']) {{ handlers[name] = async () => {ISSUE_REQUEST}; }}"
+        ),
+    ] {
+        let source = format!(
+            "{MAKE_RESOLVER_PREAMBLE}
+            const handlers = {{}};
+            {fill}
+            export const handler = makeResolver(handlers);"
+        );
+        assert_eq!(authz_findings(&source), 0, "{fill}");
+    }
+}
+
+#[test]
+fn make_resolver_object_built_with_object_assign_registers_nothing() {
+    let source = format!(
+        "{MAKE_RESOLVER_PREAMBLE}
+        const config = Object.assign({{}}, {{ getIssue: async () => {ISSUE_REQUEST} }});
+        export const handler = makeResolver(config);"
+    );
+    assert_eq!(authz_findings(&source), 0);
+}
