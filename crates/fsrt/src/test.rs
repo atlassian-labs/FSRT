@@ -354,6 +354,65 @@ fn constant_branches_preserve_only_hardcoded_secret_findings() {
     }
 }
 
+fn secret_findings(source: &str) -> usize {
+    let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+    project.add_file("src/index.js", source);
+    let report =
+        scan_directory_test_with_args(project, Args::parse_from(["fsrt", "--scanners", "secret"]));
+    assert!(!report.has_errors(), "{source}\n{report:#?}");
+    report.into_vulns().len()
+}
+
+#[test]
+fn secret_fetch_authorization_from_known_object_is_not_hardcoded() {
+    let source = "import { fetch } from '@forge/api';
+        export function run() {
+            const obj = { token: { value: 'abc' } };
+            const headers = { Authorization: `Bearer ${obj.token}` };
+            fetch('https://example.com', { headers });
+        }";
+    assert_eq!(secret_findings(source), 0);
+}
+
+#[test]
+fn secret_function_argument_from_known_object_is_not_hardcoded() {
+    let source = "import { AES } from 'crypto-js';
+        export function run() {
+            const obj = { prop: { nested: 'y' } };
+            AES.encrypt('plaintext', 'x' + obj.prop);
+        }";
+    assert_eq!(secret_findings(source), 0);
+}
+
+#[test]
+fn secret_hardcoded_literals_and_phi_still_fire() {
+    let literal = "import { fetch } from '@forge/api';
+        export function run() {
+            fetch('https://example.com', { headers: { Authorization: 'Bearer abc123' } });
+        }";
+    assert_eq!(secret_findings(literal), 1);
+
+    let phi = "import { fetch } from '@forge/api';
+        export function run(request) {
+            let token = 'abc';
+            if (request.flag) {
+                token = 'def';
+            }
+            fetch('https://example.com', { headers: { Authorization: `Bearer ${token}` } });
+        }";
+    assert_eq!(secret_findings(phi), 1);
+
+    let function = "import { AES } from 'crypto-js';
+        export function run(request) {
+            let suffix = 'a';
+            if (request.flag) {
+                suffix = 'b';
+            }
+            AES.encrypt('plaintext', 'x' + suffix);
+        }";
+    assert_eq!(secret_findings(function), 1);
+}
+
 #[test]
 fn scanners_only_run_selected_checks() {
     let test_forge_project = MockForgeProject::files_from_string(
