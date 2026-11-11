@@ -953,7 +953,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 let all_values = template
                     .exprs
                     .iter()
-                    .map(|expr| self.value_from_operand(defid_block, expr.clone()))
+                    .map(|expr| self.concat_operand_value(defid_block, expr.clone()))
                     .collect_vec();
 
                 if all_values.contains(&Value::Unknown) {
@@ -977,8 +977,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 return_combinations_phi(values_joined)
             }
             Rvalue::Bin(BinOp::Add, op1, op2) => {
-                let value_op1 = self.value_from_operand(defid_block, op1);
-                let value_op2 = self.value_from_operand(defid_block, op2);
+                let value_op1 = self.concat_operand_value(defid_block, op1);
+                let value_op2 = self.concat_operand_value(defid_block, op2);
                 if value_op1 == Value::Unknown || value_op2 == Value::Unknown {
                     return Value::Unknown;
                 }
@@ -986,6 +986,38 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             }
             _ => Value::Unknown,
         }
+    }
+
+    /// Value of an operand being coerced to a string (template literal or `+`).
+    ///
+    /// A plain object literal coerces to the known string `"[object Object]"`. Any other
+    /// object-like value (arrays, classes, objects with custom coercion, anything we cannot
+    /// classify) stays `Value::Object` and is treated as unknown by the caller.
+    fn concat_operand_value(&self, defid_block: DefId, operand: Operand) -> Value {
+        let value = self.value_from_operand(defid_block, operand);
+        match value {
+            Value::Object(varid) if self.coerces_to_default_tag(defid_block, varid) => {
+                Value::Const(Const::Literal("[object Object]".to_string()))
+            }
+            Value::Object(_) => Value::Unknown,
+            other => other,
+        }
+    }
+
+    /// Whether `varid` is an object literal known to coerce to `"[object Object]"`.
+    fn coerces_to_default_tag(&self, defid_block: DefId, varid: VarId) -> bool {
+        let Some(defid) = self.body().get_defid_from_var(varid) else {
+            return false;
+        };
+        let DefKind::GlobalObj(class_id) = self.env.defs.defs[defid] else {
+            return false;
+        };
+        self.env.defs.classes[class_id].coerces_to_default_tag
+            // A later `obj.toString = ...` overrides coercion even if the literal was plain.
+            && ["toString", "valueOf"].iter().all(|name| {
+                self.get_value(defid_block, varid, Some(crate::utils::projvec_from_str(name)))
+                    .is_none()
+            })
     }
 
     #[inline]

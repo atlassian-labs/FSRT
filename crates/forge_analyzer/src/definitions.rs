@@ -334,6 +334,35 @@ pub struct Class {
     def: DefId,
     pub pub_members: Vec<(Atom, DefId)>,
     constructor: Option<DefId>,
+    /// Set only for an object literal that is guaranteed to coerce to `"[object Object]"`
+    /// when concatenated: no spread, accessor, method, computed key, or
+    /// `toString`/`valueOf`/`__proto__` key. Defaults to `false` for anything unclassified.
+    pub coerces_to_default_tag: bool,
+}
+
+/// Whether coercing this literal to a primitive yields `"[object Object]"`.
+///
+/// Conservative: any property the lowering cannot account for (spread, computed keys,
+/// accessors, methods) or that could change coercion rejects the literal.
+fn coerces_to_default_tag_lit(lit: &ObjectLit) -> bool {
+    lit.props.iter().all(|prop| {
+        let PropOrSpread::Prop(prop) = prop else {
+            return false;
+        };
+        let name = match &**prop {
+            Prop::Shorthand(ident) => &ident.sym,
+            Prop::KeyValue(KeyValueProp {
+                key: PropName::Ident(ident),
+                ..
+            }) => &ident.sym,
+            Prop::KeyValue(KeyValueProp {
+                key: PropName::Str(s),
+                ..
+            }) => &s.value,
+            _ => return false,
+        };
+        !matches!(&**name, "toString" | "valueOf" | "__proto__")
+    })
 }
 
 enum PropKind {
@@ -362,6 +391,7 @@ impl Class {
             def,
             pub_members: vec![],
             constructor: None,
+            coerces_to_default_tag: false,
         }
     }
 
@@ -2038,6 +2068,11 @@ impl FunctionAnalyzer<'_> {
                     .add_anonymous("__UNKNOWN", AnonType::Obj, self.module);
                 let class_var_id = self.body.add_var(VarKind::LocalDef(def_id));
                 if let DefKind::GlobalObj(class_id) = self.res.defs.defs[def_id] {
+                    self.res.defs.classes[class_id].coerces_to_default_tag =
+                        coerces_to_default_tag_lit(&ObjectLit {
+                            span: *span,
+                            props: props.clone(),
+                        });
                     props.iter().for_each(|prop_or_spread| {
                         let mut var = Variable::new(class_var_id);
                         match prop_or_spread {
@@ -3812,11 +3847,16 @@ impl Visit for Lowerer<'_> {
                         callee.visit_children_with(self);
                     }
                 }
-                Expr::Object(ObjectLit { props, .. }) => {
+                Expr::Object(lit @ ObjectLit { props, .. }) => {
                     let def_id =
                         self.res
                             .get_or_overwrite_sym(id, self.curr_mod, DefKind::GlobalObj(()));
                     let old_def = self.curr_def.replace(def_id);
+                    let coerces = coerces_to_default_tag_lit(lit);
+                    self.res
+                        .def_mut(def_id)
+                        .expect_class()
+                        .coerces_to_default_tag = coerces;
                     // TODO:add parent
                     for prop in props {
                         match prop {

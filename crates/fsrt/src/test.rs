@@ -363,25 +363,90 @@ fn secret_finding_count(source: &str) -> usize {
     report.into_vulns().len()
 }
 
+// A plain object coerces to the known string "[object Object]" in both `+` and template
+// literals, so concatenating one with literals is still a hardcoded value (PR #136 review).
 #[test]
-fn secret_fetch_authorization_from_known_object_is_not_hardcoded() {
+fn secret_fetch_authorization_from_plain_object_template_is_hardcoded() {
     let source = "import { fetch } from '@forge/api';
         export function run() {
             const obj = { token: { value: 'abc' } };
             const headers = { Authorization: `Bearer ${obj.token}` };
             fetch('https://example.com', { headers });
         }";
-    assert_eq!(secret_finding_count(source), 0);
+    assert_eq!(secret_finding_count(source), 1);
 }
 
 #[test]
-fn secret_function_argument_from_known_object_is_not_hardcoded() {
+fn secret_function_argument_from_plain_object_concat_is_hardcoded() {
     let source = "import { AES } from 'crypto-js';
         export function run() {
             const obj = { prop: { nested: 'y' } };
             AES.encrypt('plaintext', 'x' + obj.prop);
         }";
-    assert_eq!(secret_finding_count(source), 0);
+    assert_eq!(secret_finding_count(source), 1);
+}
+
+#[test]
+fn secret_function_argument_from_whole_plain_object_is_hardcoded() {
+    let concat = "import { AES } from 'crypto-js';
+        export function run() {
+            const obj = { nested: 'y' };
+            AES.encrypt('plaintext', 'x' + obj);
+        }";
+    assert_eq!(secret_finding_count(concat), 1);
+
+    let template = "import { AES } from 'crypto-js';
+        export function run() {
+            const obj = { nested: 'y' };
+            AES.encrypt('plaintext', `x${obj}`);
+        }";
+    assert_eq!(secret_finding_count(template), 1);
+}
+
+#[test]
+fn secret_function_argument_from_runtime_unknown_piece_is_not_hardcoded() {
+    let concat = "import { AES } from 'crypto-js';
+        export function run(request) {
+            AES.encrypt('plaintext', 'x' + request.body());
+        }";
+    assert_eq!(secret_finding_count(concat), 0);
+
+    let template = "import { AES } from 'crypto-js';
+        export function run(request) {
+            AES.encrypt('plaintext', `x${request.body()}`);
+        }";
+    assert_eq!(secret_finding_count(template), 0);
+}
+
+#[test]
+fn secret_function_argument_from_non_plain_object_is_not_hardcoded() {
+    let objects = [
+        "const obj = { prop: { nested: 'y' }, toString() { return 'k'; } };",
+        "const obj = { prop: { nested: 'y' }, toString: () => 'k' };",
+        "const obj = { prop: { nested: 'y' }, valueOf: () => 'k' };",
+        "const obj = { prop: { nested: 'y' }, get x() { return 1; } };",
+        "const other = { toString: () => 'k' }; const obj = { prop: { nested: 'y' }, ...other };",
+        "const obj = { prop: { nested: 'y' }, [Symbol.toPrimitive]: () => 'k' };",
+        "const obj = { nested: 'y' }; obj.toString = () => 'k';",
+        "const obj = ['a', 'b'];",
+    ];
+    for decl in objects {
+        for expr in ["'x' + obj", "'x' + obj.prop", "`x${obj}`", "`x${obj.prop}`"] {
+            let source = format!(
+                "import {{ AES }} from 'crypto-js';
+                export function run() {{
+                    {decl}
+                    AES.encrypt('plaintext', {expr});
+                }}"
+            );
+            // `obj.prop` is itself a plain object in the declarations that define it, so
+            // it is a genuine finding; only the whole non-plain object must stay unknown.
+            if decl.contains("prop") && expr.contains("prop") {
+                continue;
+            }
+            assert_eq!(secret_finding_count(&source), 0, "{source}");
+        }
+    }
 }
 
 #[test]
