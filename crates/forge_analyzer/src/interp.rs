@@ -792,7 +792,9 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                             .insert(*defid, (defid_block, varid));
                     }
                 }
-                Rvalue::Read(Operand::Lit(Literal::Str(str))) => {
+                // Only a whole-variable assignment defines the binding's value; `obj.prop = "x"`
+                // must not make `obj` itself (or its other properties) evaluate to "x".
+                Rvalue::Read(Operand::Lit(Literal::Str(str))) if projections.is_empty() => {
                     let val = Value::Const(Const::Literal(str.to_string()));
                     if let Some(VarKind::GlobalRef(def)) = self.body().vars.get(varid) {
                         self.value_manager.insert_defid_value(*def, val);
@@ -998,12 +1000,15 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 else {
                     return Value::Unknown;
                 };
+                // A defid-level value describes the whole binding, never one of its properties.
+                let is_whole_binding = projections.is_empty();
                 match self.get_value(defid_block, varid, Some(projections)) {
                     Some(value) => value.clone(),
                     None => {
                         if self.is_obj(varid) {
                             Value::Object(varid)
-                        } else if let Some(defid) = self.body().get_defid_from_var(varid)
+                        } else if is_whole_binding
+                            && let Some(defid) = self.body().get_defid_from_var(varid)
                             && let Some(val) = self.value_manager.defid_to_value.get(&defid)
                         {
                             val.clone()
