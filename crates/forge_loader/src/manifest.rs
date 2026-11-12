@@ -881,6 +881,12 @@ pub enum FunctionTy<T> {
 pub enum BindingKind {
     Invokable,
     WebTrigger,
+    /// Reachable only by the platform or by an administrator of the whole
+    /// product: admin pages and lifecycle hooks. Such a binding does not make a
+    /// function an unprivileged user's entrypoint. Project and space settings
+    /// pages are not included: their administrators are not product
+    /// administrators, and an asApp call from them is a privilege elevation.
+    Privileged,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -924,6 +930,12 @@ impl<'a> FunctionBindings<'a> {
     fn common(&mut self, module_type: &'static str, modules: &[CommonKey<'a>]) {
         for module in modules {
             self.add(module_type, module.key, module);
+        }
+    }
+
+    fn privileged(&mut self, module_type: &'static str, modules: &[CommonKey<'a>]) {
+        for module in modules {
+            self.record(module_type, module.key, BindingKind::Privileged, module);
         }
     }
 
@@ -1028,7 +1040,7 @@ impl<'a> ForgeModules<'a> {
         for route in api_routes {
             bindings.add("apiRoute", route.key, &route.function);
         }
-        bindings.common("compass:adminPage", &compass_admin_page);
+        bindings.privileged("compass:adminPage", &compass_admin_page);
         bindings.common("compass:componentPage", &component_page);
         bindings.common("compass:globalPage", &compass_global_page);
         bindings.common("compass:teamPage", &team_page);
@@ -1107,9 +1119,10 @@ impl<'a> ForgeModules<'a> {
             bindings.add("jira:uiModifications", module.common_keys.key, &module);
         }
         for module in assets_import_type {
-            bindings.add(
+            bindings.record(
                 "jiraServiceManagement:assetsImportType",
                 module.common_keys.key,
+                BindingKind::Privileged,
                 &module,
             );
         }
@@ -1498,7 +1511,8 @@ modules:
 "#;
         let manifest: ForgeManifest<'_> = serde_yaml::from_str(yaml).unwrap();
         let entrypoint = manifest.modules.into_analyzable_functions().next().unwrap();
-        assert!(entrypoint.invokable);
+        // Lifecycle hooks are called by the Assets import platform, not by a user.
+        assert!(!entrypoint.invokable);
         assert!(!entrypoint.web_trigger);
         let properties: Vec<_> = entrypoint
             .module_bindings
@@ -1523,6 +1537,62 @@ modules:
                 "stopImport.function",
             ]
         );
+    }
+
+    #[test]
+    fn privileged_modules_do_not_make_functions_invokable() {
+        let yaml = r#"
+app: { id: test-app }
+modules:
+  jiraServiceManagement:assetsImportType:
+    - key: import
+      resolver: { function: import-only }
+      onDeleteImport: { function: import-only }
+      stopImport: { function: import-only }
+      startImport: { function: import-only }
+      importStatus: { function: import-only }
+    - key: shared-import
+      resolver: { function: shared }
+      onDeleteImport: { function: shared }
+      stopImport: { function: shared }
+      startImport: { function: shared }
+      importStatus: { function: shared }
+  jira:projectSettingsPage:
+    - { key: settings, resource: main, resolver: { function: settings } }
+  compass:adminPage:
+    - { key: compass-admin, function: compass-only }
+  jira:globalPage:
+    - { key: global, resource: main, resolver: { function: shared } }
+  function:
+    - { key: import-only, handler: index.import }
+    - { key: settings, handler: index.settings }
+    - { key: compass-only, handler: index.compass }
+    - { key: shared, handler: index.shared }
+"#;
+        let manifest: ForgeManifest<'_> = serde_yaml::from_str(yaml).unwrap();
+        let entrypoints: BTreeMap<_, _> = manifest
+            .modules
+            .into_analyzable_functions()
+            .map(|entrypoint| (entrypoint.handler, entrypoint))
+            .collect();
+        for privileged_only in ["index.import", "index.compass"] {
+            let entrypoint = &entrypoints[privileged_only];
+            assert!(!entrypoint.invokable, "{privileged_only}");
+            assert!(
+                entrypoint
+                    .module_bindings
+                    .iter()
+                    .all(|binding| binding.kind == BindingKind::Privileged),
+                "{privileged_only}"
+            );
+            assert!(!entrypoint.module_bindings.is_empty());
+        }
+        // A function that an ordinary module also exposes is still reachable.
+        let shared = &entrypoints["index.shared"];
+        assert!(shared.invokable);
+        assert_eq!(shared.module_bindings.len(), 6);
+        // Project settings administrators are not product administrators.
+        assert!(entrypoints["index.settings"].invokable);
     }
 
     #[test]
