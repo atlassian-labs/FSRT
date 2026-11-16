@@ -2,8 +2,8 @@
 //! bindings, so a call and a `new` expression are classified the same way.
 //! `ExecutionTaint` supplies sources and the reporting predicate to the shared
 //! fixed-point engine: Forge entrypoint arguments, IO results and package call
-//! results are sources, and text assembled only from constants is not. lodash
-//! and `path` calls without a callback argument follow their arguments.
+//! results are sources, and text assembled only from constants is not. The
+//! lodash and `path` members named by `pure_helper` follow their arguments.
 
 use std::{
     collections::HashSet,
@@ -88,13 +88,117 @@ fn required_module(module: &str) -> Option<Binding> {
     }
 }
 
-/// lodash and `path`, whose helpers compute their result from their arguments.
+/// lodash and `path`, whose `pure_helper` members compute their result from
+/// their arguments.
 fn pure_package(module: &str) -> bool {
     let module = module.strip_prefix("node:").unwrap_or(module);
     matches!(module, "lodash" | "lodash-es" | "path")
         || ["lodash/", "lodash-es/", "lodash.", "path/"]
             .into_iter()
             .any(|prefix| module.starts_with(prefix))
+}
+
+/// The lodash and `path` members whose result is derived from their arguments.
+/// Any other member keeps the package floor, including one that accepts a
+/// function, such as `map` or `replace`, whose result can come from that call.
+fn pure_helper(name: &str) -> bool {
+    matches!(
+        name,
+        // `path`, whose members only inspect and rewrite path text.
+        "basename"
+            | "dirname"
+            | "extname"
+            | "format"
+            | "isAbsolute"
+            | "normalize"
+            | "parse"
+            | "relative"
+            | "resolve"
+            | "toNamespacedPath"
+            // Array and collection members that take no iteratee.
+            | "chunk"
+            | "compact"
+            | "concat"
+            | "difference"
+            | "drop"
+            | "dropRight"
+            | "fill"
+            | "first"
+            | "flatten"
+            | "flattenDeep"
+            | "head"
+            | "indexOf"
+            | "initial"
+            | "intersection"
+            | "join"
+            | "last"
+            | "lastIndexOf"
+            | "nth"
+            | "reverse"
+            | "slice"
+            | "take"
+            | "takeRight"
+            | "union"
+            | "uniq"
+            | "unzip"
+            | "without"
+            | "xor"
+            | "zip"
+            // Object members addressed by key or path.
+            | "assign"
+            | "clone"
+            | "cloneDeep"
+            | "defaults"
+            | "defaultsDeep"
+            | "entries"
+            | "get"
+            | "has"
+            | "invert"
+            | "keys"
+            | "merge"
+            | "omit"
+            | "pick"
+            | "set"
+            | "toPairs"
+            | "unset"
+            | "values"
+            // String members, whose arguments are text or a pattern.
+            | "camelCase"
+            | "capitalize"
+            | "endsWith"
+            | "escape"
+            | "escapeRegExp"
+            | "kebabCase"
+            | "lowerCase"
+            | "lowerFirst"
+            | "pad"
+            | "padEnd"
+            | "padStart"
+            | "repeat"
+            | "snakeCase"
+            | "split"
+            | "startCase"
+            | "startsWith"
+            | "toLower"
+            | "toUpper"
+            | "trim"
+            | "trimEnd"
+            | "trimStart"
+            | "truncate"
+            | "unescape"
+            | "upperCase"
+            | "upperFirst"
+            | "words"
+            // Comparisons, sizes and conversions.
+            | "clamp"
+            | "isEmpty"
+            | "isEqual"
+            | "isNil"
+            | "size"
+            | "toInteger"
+            | "toNumber"
+            | "toString"
+    )
 }
 
 /// How many leading arguments of `name` are executed as code or as a command.
@@ -345,16 +449,8 @@ impl TaintPolicy for ExecutionTaint {
 
     fn method_value(&self, call: &UnresolvedCall<'_, Taint>) -> Option<FlowValue<Taint>> {
         match binding(call.env, call.body, call.callee, &mut HashSet::new())? {
-            // A pure helper's result comes from its arguments, unless one is a
-            // callback whose result it may return.
-            Binding::Library { pure: true }
-                if !call
-                    .operands
-                    .iter()
-                    .any(|op| is_function(call.env, call.body, op, &mut HashSet::new())) =>
-            {
-                None
-            }
+            // A pure helper's result comes from its arguments.
+            Binding::Library { pure: true } if pure_helper(call.method) => None,
             // A package call may return data it read, such as a file or a
             // response, whatever its arguments.
             Binding::Library { .. } => Some(

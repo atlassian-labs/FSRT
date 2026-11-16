@@ -151,7 +151,7 @@ pub struct UnresolvedCall<'a, F> {
     pub receiver: FlowValue<F>,
     pub args: &'a [FlowValue<F>],
     pub callee: &'a Operand,
-    pub operands: &'a [Operand],
+    operands: &'a [Operand],
     pub env: &'a Environment,
     pub body: &'a Body,
     layout: &'a Bindings,

@@ -490,6 +490,17 @@ fn pure_helper_results_follow_their_arguments() {
             "import _ from 'lodash'; export function run(input) { eval(_.map(['a'], () => input)); }",
             1,
         ),
+        // `map` returns what its callback returned, including when the
+        // callback is an aliased import.
+        (
+            "import { readFileSync as read } from 'fs'; import _ from 'lodash'; const callback = read; export function run() { eval(_.map([0], callback).join('')); }",
+            1,
+        ),
+        // A member that is not a known helper keeps the package floor.
+        (
+            "import _ from 'lodash'; export function run() { eval(_.sortBy(['1']).join(' + ')); }",
+            1,
+        ),
     ] {
         assert_execution_findings(&format!("// src/index.js\n{source}"), expected);
     }
