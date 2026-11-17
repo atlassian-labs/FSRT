@@ -170,7 +170,7 @@ impl ForgeProjectTrait<'_> for ForgeProjectFromDir {
 
     fn get_paths(&self) -> HashSet<PathBuf> {
         // Entrypoints stay under `src/`, but `src/` files may import first-party code beside it.
-        collect_sourcefiles(self.dir.join("src/"))
+        collect_sourcefiles(&self.dir, &self.dir.join("src/"))
             .chain(collect_sourcefiles_outside_src(&self.dir))
             .collect::<HashSet<_>>()
     }

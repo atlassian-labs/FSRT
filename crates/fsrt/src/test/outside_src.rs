@@ -244,40 +244,57 @@ fn folders_beside_src_use_the_same_depth_cap_as_src() {
     assert_eq!(app.outside_src(), ["lib/a/b/c/d/within.js"]);
 }
 
+/// One rule for `src/` and the folders beside it: regular files, and links to files inside the
+/// app, are read; directories named like a source file, links to folders, links to files outside
+/// the app, broken links and link loops are not.
 #[cfg(unix)]
 #[test]
-fn symlinks_beside_src_are_not_followed() {
-    let app = TempApp::new("symlink");
-    let elsewhere = TempApp::new("symlink-target");
-    elsewhere.write("outside/secret.js", "");
+fn symlinked_files_are_read_only_when_they_stay_inside_the_app() {
+    use std::os::unix::fs::symlink;
+
+    let app = TempApp::new("symlinks");
+    let elsewhere = TempApp::new("symlinks-target");
     elsewhere.write("file.js", "");
-    app.write("lib/helper.js", "");
-    std::os::unix::fs::symlink(elsewhere.0.join("outside"), app.0.join("linked")).unwrap();
-    std::os::unix::fs::symlink(elsewhere.0.join("outside"), app.0.join("lib/linked")).unwrap();
-    std::os::unix::fs::symlink(elsewhere.0.join("file.js"), app.0.join("lib/file.js")).unwrap();
-
-    assert_eq!(app.outside_src(), ["lib/helper.js"]);
-}
-
-#[cfg(unix)]
-#[test]
-fn symlinked_js_files_under_src_are_still_collected() {
-    let app = TempApp::new("src-symlink");
-    let elsewhere = TempApp::new("src-symlink-target");
-    elsewhere.write("linked.js", "");
+    elsewhere.write("folder/secret.js", "");
     app.write("src/index.js", "");
-    std::os::unix::fs::symlink(elsewhere.0.join("linked.js"), app.0.join("src/linked.js")).unwrap();
+    app.write("src/real.js", "");
+    app.write("lib/real.js", "");
+    for dir in ["src", "lib"] {
+        let dir = app.0.join(dir);
+        // link to a file inside the app: read, under the path of the link
+        symlink(app.0.join("src/real.js"), dir.join("link-in.js")).unwrap();
+        // links the scan must not follow
+        symlink(elsewhere.0.join("file.js"), dir.join("link-out.js")).unwrap();
+        symlink(elsewhere.0.join("folder"), dir.join("folder-out")).unwrap();
+        symlink(app.0.join("lib"), dir.join("folder-in")).unwrap();
+        symlink(app.0.join("lib"), dir.join("folder-link.js")).unwrap();
+        symlink(dir.join("missing.js"), dir.join("broken.js")).unwrap();
+        symlink(dir.join("loop.js"), dir.join("loop.js")).unwrap();
+        // a directory named like a source file is not a file
+        std::fs::create_dir_all(dir.join("dir.js")).unwrap();
+    }
+    std::os::unix::fs::symlink(elsewhere.0.join("folder"), app.0.join("linked")).unwrap();
 
-    let mut found = crate::collect_sourcefiles(app.0.join("src"))
-        .map(|path| path.strip_prefix(&app.0).unwrap().to_owned())
-        .collect::<Vec<_>>();
-    found.sort();
+    let relative = |paths: Vec<PathBuf>| {
+        let mut paths = paths
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&app.0)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
+    };
     assert_eq!(
-        found,
-        [
-            PathBuf::from("src/index.js"),
-            PathBuf::from("src/linked.js")
-        ]
+        relative(crate::collect_sourcefiles(&app.0, &app.0.join("src")).collect()),
+        ["src/index.js", "src/link-in.js", "src/real.js"]
+    );
+    assert_eq!(
+        relative(crate::collect_sourcefiles_outside_src(&app.0)),
+        ["lib/link-in.js", "lib/real.js"]
     );
 }
 

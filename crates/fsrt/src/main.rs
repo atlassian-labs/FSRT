@@ -155,7 +155,8 @@ pub struct Args {
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the handlers are located in `src/`. Source files in other top-level
     /// folders are read too, so that imports from `src/` resolve; a top-level `bundled/` folder
-    /// is skipped, as are `static/`, `node_modules/`, `webpack/` and dot-folders at any depth
+    /// is skipped, as are `static/`, `node_modules/`, `webpack/` and dot-folders at any depth.
+    /// Symlinks to files inside the app are read; links to folders or outside the app are not
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
 
@@ -449,14 +450,35 @@ const EXCLUDED_DIR_NAMES: [&str; 3] = ["static", "node_modules", "webpack"];
 /// `bundled/` folder of bundled sources next to `src/`. A nested `lib/bundled/` is still read.
 const EXCLUDED_TOP_LEVEL_DIR_NAMES: [&str; 1] = ["bundled"];
 
-fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf> {
-    WalkDir::new(root)
+/// Whether a walked entry is a source file the scan may read. A regular file with a JS/TS name
+/// is; so is a symlink whose fully resolved target is a regular file inside `app_root` (the
+/// module keeps the path of the link, which is the one the app imports). A directory named like
+/// a source file, a link to a directory, to a file outside the app, a broken link and a link
+/// loop are not. `app_root` is the canonical app directory; without it no link is followed.
+fn is_source_file(entry: &walkdir::DirEntry, app_root: Option<&Path>) -> bool {
+    if !is_js_file(entry.path()) {
+        return false;
+    }
+    let file_type = entry.file_type();
+    if file_type.is_file() {
+        return true;
+    }
+    file_type.is_symlink()
+        && app_root.is_some_and(|app_root| {
+            fs::canonicalize(entry.path())
+                .is_ok_and(|target| target.is_file() && target.starts_with(app_root))
+        })
+}
+
+fn collect_sourcefiles(app_dir: &Path, src_dir: &Path) -> impl Iterator<Item = PathBuf> {
+    let app_root = fs::canonicalize(app_dir).ok();
+    WalkDir::new(src_dir)
         .min_depth(1)
         .max_depth(MAX_SOURCE_DEPTH)
         .into_iter()
-        .filter_map(|e| {
-            let path = e.ok()?.into_path();
-            is_js_file(&path).then_some(path)
+        .filter_map(move |e| {
+            let entry = e.ok()?;
+            is_source_file(&entry, app_root.as_deref()).then(|| entry.into_path())
         })
 }
 
@@ -465,9 +487,9 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 ///
 /// Only top-level directories of `app_dir` are considered, skipping `src` (scanned by
 /// [`collect_sourcefiles`]), `bundled` and the directories of [`EXCLUDED_DIR_NAMES`], and
-/// dot-directories. The same depth cap as `src/` applies below each of them. Symlinks are never
-/// followed, and `node_modules`, `static`, `webpack` and dot-directories are pruned at every
-/// level.
+/// dot-directories. The same depth cap and the same rule for symlinked files as `src/` apply
+/// below each of them. Symlinked directories are never followed, and `node_modules`, `static`,
+/// `webpack` and dot-directories are pruned at every level.
 fn collect_sourcefiles_outside_src(app_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(app_dir) else {
         return vec![];
@@ -488,6 +510,7 @@ fn collect_sourcefiles_outside_src(app_dir: &Path) -> Vec<PathBuf> {
         })
         .collect::<Vec<_>>();
 
+    let app_root = fs::canonicalize(app_dir).ok();
     let mut files = vec![];
     for root in roots {
         let walker = WalkDir::new(&root)
@@ -503,10 +526,9 @@ fn collect_sourcefiles_outside_src(app_dir: &Path) -> Vec<PathBuf> {
                         .is_none_or(|name| !is_pruned_dir_name(name))
             });
         for entry in walker.filter_map(|entry| entry.ok()) {
-            if !entry.file_type().is_file() || !is_js_file(entry.path()) {
-                continue;
+            if is_source_file(&entry, app_root.as_deref()) {
+                files.push(entry.into_path());
             }
-            files.push(entry.into_path());
         }
     }
     files
