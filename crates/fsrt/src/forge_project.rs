@@ -1,4 +1,4 @@
-use crate::{ResolvedEntryPoint, collect_sourcefiles};
+use crate::{ResolvedEntryPoint, collect_sourcefiles, collect_sourcefiles_outside_src};
 use forge_analyzer::ctx::AppCtx;
 use forge_analyzer::definitions::{Environment, PackageData, run_resolver};
 use forge_loader::manifest::{BindingKind, Entrypoint, ForgeManifest, Resolved};
@@ -13,7 +13,7 @@ use swc_core::ecma::ast::EsVersion;
 use swc_core::ecma::parser::{Syntax, TsSyntax, parse_file_as_module};
 use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::visit::VisitMutWith;
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub(crate) fn find_manifest_path(app_dir: &Path) -> io::Result<PathBuf> {
     ["manifest.yaml", "manifest.yml"]
@@ -42,6 +42,8 @@ pub(crate) trait ForgeProjectTrait<'a> {
         &self,
         src: P,
         iter: I,
+        // Files for which a read or parse failure only skips the file instead of the scan.
+        is_best_effort: impl Fn(&Path) -> bool,
         secret_packages: &[PackageData],
         perm_map: &mut PermMap,
         suspicious_remotes: &HashSet<String>,
@@ -54,30 +56,42 @@ pub(crate) trait ForgeProjectTrait<'a> {
             let sourcemap = Arc::clone(&sm);
             GLOBALS.set(&globals, || -> crate::Result<_> {
                 debug!(file = %p.display(), "parsing");
-                let src = self.load_file(p.clone(), sourcemap)?;
-                debug!("loaded sourcemap");
-                let mut recovered_errors = vec![];
-                let mut module = parse_file_as_module(
-                    src.as_ref(),
-                    Syntax::Typescript(TsSyntax {
-                        tsx: p.extension().and_then(|extension| extension.to_str()) != Some("ts"),
-                        decorators: true,
-                        ..Default::default()
-                    }),
-                    target,
-                    None,
-                    &mut recovered_errors,
-                )
-                .map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("Could not parse {}: {error:?}", p.display()),
+                let parsed = (|| -> io::Result<_> {
+                    let src = self.load_file(p.clone(), sourcemap)?;
+                    debug!("loaded sourcemap");
+                    let mut recovered_errors = vec![];
+                    let mut module = parse_file_as_module(
+                        src.as_ref(),
+                        Syntax::Typescript(TsSyntax {
+                            tsx: p.extension().and_then(|extension| extension.to_str())
+                                != Some("ts"),
+                            decorators: true,
+                            ..Default::default()
+                        }),
+                        target,
+                        None,
+                        &mut recovered_errors,
                     )
-                })?;
-                debug!("finished parsing");
-                let mut hygeine = resolver(Mark::new(), Mark::new(), true);
-                module.visit_mut_with(&mut hygeine);
-                ctx.load_module(p, module);
+                    .map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Could not parse {}: {error:?}", p.display()),
+                        )
+                    })?;
+                    debug!("finished parsing");
+                    let mut hygeine = resolver(Mark::new(), Mark::new(), true);
+                    module.visit_mut_with(&mut hygeine);
+                    Ok(module)
+                })();
+                match parsed {
+                    Ok(module) => {
+                        ctx.load_module(p, module);
+                    }
+                    Err(error) if is_best_effort(&p) => {
+                        warn!("skipping {}: {error}", p.display());
+                    }
+                    Err(error) => return Err(error.into()),
+                }
                 Ok(ctx)
             })
         })?;
@@ -155,7 +169,10 @@ impl ForgeProjectTrait<'_> for ForgeProjectFromDir {
     }
 
     fn get_paths(&self) -> HashSet<PathBuf> {
-        collect_sourcefiles(self.dir.join("src/")).collect::<HashSet<_>>()
+        // Entrypoints stay under `src/`, but `src/` files may import first-party code beside it.
+        collect_sourcefiles(self.dir.join("src/"))
+            .chain(collect_sourcefiles_outside_src(&self.dir))
+            .collect::<HashSet<_>>()
     }
 
     fn get_secret_packages(&self) -> Vec<PackageData> {

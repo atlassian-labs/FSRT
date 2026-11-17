@@ -153,7 +153,8 @@ pub struct Args {
     scan_functions: bool,
 
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
-    /// directory, and that the source code is located in `src/`
+    /// directory, and that the handlers are located in `src/`. Source files in other top-level
+    /// folders (except `static/` and `node_modules/`) are read too, so that imports from `src/` resolve
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
 
@@ -434,15 +435,113 @@ fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
         .is_some_and(|ext| ext == "jsx" || ext == "js" || ext == "tsx" || ext == "ts")
 }
 
+/// Deepest directory level scanned below a source root, `src/` or a first-party folder beside it.
+const MAX_SOURCE_DEPTH: usize = 5;
+
+/// Most first-party files read from the folders beside `src/`. Keeps a repository with a huge
+/// `lib/` or `dist/` tree from turning a scan into a crawl; `src/` itself is not capped.
+const MAX_FILES_OUTSIDE_SRC: usize = 2_000;
+
+/// Directories that are not first-party backend code wherever they appear below the app root:
+/// `static/` holds hosted (Custom UI / UI Kit) code and `node_modules/` third-party code.
+const EXCLUDED_DIR_NAMES: [&str; 2] = ["static", "node_modules"];
+
 fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf> {
     WalkDir::new(root)
         .min_depth(1)
-        .max_depth(5)
+        .max_depth(MAX_SOURCE_DEPTH)
         .into_iter()
         .filter_map(|e| {
-            let path = e.ok()?.into_path();
-            is_js_file(&path).then_some(path)
+            let entry = e.ok()?;
+            // `WalkDir` does not follow symlinks, so a link is never a regular file here and
+            // cannot lead the scan out of the app.
+            (entry.file_type().is_file() && is_js_file(entry.path())).then(|| entry.into_path())
         })
+}
+
+/// First-party JS/TS next to `src/`, for example `common/util/request-util.ts` or
+/// `shared/config.js`, which `src/` files import with a relative path such as `../common/util`.
+///
+/// Only top-level directories of `app_dir` are considered, skipping `src` (scanned by
+/// [`collect_sourcefiles`]), `static`, `node_modules` and dot-directories. The same depth cap as
+/// `src/` applies below each of them. Symlinks are never followed, `node_modules`, `static`
+/// and dot-directories are pruned at every level, and at most [`MAX_FILES_OUTSIDE_SRC`] files
+/// are returned (in path order, so the cut is reproducible).
+fn collect_sourcefiles_outside_src(app_dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(app_dir) else {
+        return vec![];
+    };
+    let mut roots = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            // `DirEntry::file_type` does not follow symlinks: a linked directory is not a directory.
+            if !entry.file_type().ok()?.is_dir() {
+                return None;
+            }
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            (name != "src" && !is_pruned_dir_name(name)).then(|| entry.path())
+        })
+        .collect::<Vec<_>>();
+    roots.sort();
+
+    let mut files = vec![];
+    for root in roots {
+        let walker = WalkDir::new(&root)
+            .min_depth(1)
+            .max_depth(MAX_SOURCE_DEPTH)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_entry(|entry| {
+                !entry.file_type().is_dir()
+                    || entry.depth() == 0
+                    || entry
+                        .file_name()
+                        .to_str()
+                        .is_none_or(|name| !is_pruned_dir_name(name))
+            });
+        for entry in walker.filter_map(|entry| entry.ok()) {
+            if !entry.file_type().is_file() || !is_js_file(entry.path()) {
+                continue;
+            }
+            if files.len() >= MAX_FILES_OUTSIDE_SRC {
+                warn!(
+                    "more than {MAX_FILES_OUTSIDE_SRC} JS/TS files outside src/ in {}; \
+                     ignoring the rest",
+                    app_dir.display()
+                );
+                return files;
+            }
+            files.push(entry.into_path());
+        }
+    }
+    files
+}
+
+/// Transpiled async in `src/` fails the scan. A file beside `src/` only gets left out: such a
+/// folder is often build output (`dist/`, `build/`) that a scan used to ignore completely.
+fn without_transpiled_async_outside_src(
+    paths: HashSet<PathBuf>,
+    src_dir: &Path,
+) -> HashSet<PathBuf> {
+    paths
+        .into_iter()
+        .filter(|path| {
+            let transpiled = !path.starts_with(src_dir)
+                && fs::read_to_string(path).is_ok_and(|source| contains_transpiled_async(&source));
+            if transpiled {
+                warn!(
+                    "skipping {} because it contains transpiled async",
+                    path.display()
+                );
+            }
+            !transpiled
+        })
+        .collect()
+}
+
+fn is_pruned_dir_name(name: &str) -> bool {
+    name.starts_with('.') || EXCLUDED_DIR_NAMES.contains(&name)
 }
 
 fn check_perm(perm: &str) -> bool {
@@ -481,7 +580,8 @@ pub(crate) fn scan_directory<'a>(
     project: impl ForgeProjectTrait<'a> + std::fmt::Debug,
     secret_packages: &[PackageData],
 ) -> Result<Report> {
-    let paths = project.get_paths();
+    let src_dir = dir.join("src");
+    let paths = without_transpiled_async_outside_src(project.get_paths(), &src_dir);
     let manifest = match project.get_manifest() {
         Ok(manifest) => manifest,
         Err(err) => {
@@ -549,6 +649,7 @@ pub(crate) fn scan_directory<'a>(
     let mut proj = project.with_files_and_sourceroot(
         Path::new("src"),
         sorted_paths,
+        |path| !path.starts_with(&src_dir),
         secret_packages,
         &mut perm_map,
         &suspicious_remotes,

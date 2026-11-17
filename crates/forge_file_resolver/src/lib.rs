@@ -113,18 +113,24 @@ impl ForgeResolver {
         self.modules.len() - 1
     }
 
-    fn search_normalized(&self, path: &Path) -> Option<usize> {
+    /// Find the module `path` names, never `importer` itself.
+    ///
+    /// Import specifiers are tried relative to the importing file first, so a bare package name
+    /// matches a sibling file with that name. A wrapper such as `lib/axios.js` doing
+    /// `import axios from "axios"` would otherwise resolve to itself, not the package.
+    fn search_normalized(&self, path: &Path, importer: usize) -> Option<usize> {
         let path = normalize_path(path);
         // only resolve files with no extension if the import doesn't have one or is a [jt]sx? file
-        if path.extension().is_none() || is_jslike(&path) {
-            let path_no_extension = path.with_extension("");
-            self.modules
-                .iter()
-                .zip(&self.no_ext)
-                .position(|(modpath, no_ext)| *modpath == path || *no_ext == path_no_extension)
-        } else {
-            self.modules.iter().position(|modpath| *modpath == path)
-        }
+        let by_stem = path.extension().is_none() || is_jslike(&path);
+        let path_no_extension = path.with_extension("");
+        self.modules
+            .iter()
+            .zip(&self.no_ext)
+            .enumerate()
+            .find_map(|(id, (modpath, no_ext))| {
+                (id != importer && (*modpath == path || (by_stem && *no_ext == path_no_extension)))
+                    .then_some(id)
+            })
     }
 
     fn resolve_import_path(&self, module: usize, import: &Path) -> Result<usize, Error> {
@@ -135,7 +141,7 @@ impl ForgeResolver {
                 break 'rel current_file.clone();
             };
             let relative_path = file_dir.join(import);
-            match self.search_normalized(&relative_path) {
+            match self.search_normalized(&relative_path, module) {
                 Some(modid) => return Ok(modid),
                 None => relative_path,
             }
@@ -143,7 +149,7 @@ impl ForgeResolver {
 
         // if not, try to search relative to the base of the project
         let project_relative = self.src.join(import);
-        self.search_normalized(&project_relative)
+        self.search_normalized(&project_relative, module)
             .ok_or_else(|| Error::UnknownModule {
                 base: module,
                 path: import.to_owned(),
@@ -179,5 +185,61 @@ mod tests {
         let mut file_resolver = ForgeResolver::with_sourceroot("test/src");
         let id = file_resolver.add_module("index.js");
         assert_eq!(id, 0);
+    }
+
+    #[test]
+    fn resolves_relative_import_out_of_src_to_sibling_folder() {
+        let mut file_resolver = ForgeResolver::with_sourceroot("app/src");
+        let index = file_resolver.add_module("app/src/index.js");
+        let helper = file_resolver.add_module("app/lib/helper.js");
+        let nested = file_resolver.add_module("app/common/util/request-util.ts");
+
+        assert_eq!(
+            file_resolver
+                .resolve_import(index, "../lib/helper")
+                .unwrap(),
+            helper
+        );
+        assert_eq!(
+            file_resolver
+                .resolve_import(index, "../common/util/request-util.ts")
+                .unwrap(),
+            nested
+        );
+        assert_eq!(
+            file_resolver
+                .resolve_import(helper, "../src/index")
+                .unwrap(),
+            index
+        );
+    }
+
+    #[test]
+    fn import_never_resolves_to_the_importing_module() {
+        let mut file_resolver = ForgeResolver::with_sourceroot("app/src");
+        let axios = file_resolver.add_module("app/lib/axios.js");
+        let sibling = file_resolver.add_module("app/lib/other.js");
+
+        // `import axios from "axios"` in `axios.js` names the package, not the file itself.
+        assert!(file_resolver.resolve_import(axios, "axios").is_err());
+        assert!(file_resolver.resolve_import(axios, "./axios.js").is_err());
+        assert_eq!(
+            file_resolver.resolve_import(axios, "./other").unwrap(),
+            sibling
+        );
+        assert_eq!(
+            file_resolver.resolve_import(sibling, "./axios").unwrap(),
+            axios
+        );
+    }
+
+    #[test]
+    fn import_skips_the_importer_when_another_module_has_the_same_stem() {
+        let mut file_resolver = ForgeResolver::with_sourceroot("app/src");
+        let ts = file_resolver.add_module("app/lib/util.ts");
+        let js = file_resolver.add_module("app/lib/util.js");
+
+        assert_eq!(file_resolver.resolve_import(ts, "./util").unwrap(), js);
+        assert_eq!(file_resolver.resolve_import(js, "./util").unwrap(), ts);
     }
 }
