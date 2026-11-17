@@ -147,7 +147,14 @@ fn toy_d_guard_inside_src_clears_the_request() {
 
 #[test]
 fn hosted_and_third_party_folders_are_not_scanned() {
-    for folder in ["static", "node_modules", ".hidden", "lib/static"] {
+    for folder in [
+        "static",
+        "node_modules",
+        ".hidden",
+        "lib/static",
+        "webpack",
+        "bundled",
+    ] {
         let app = App::new("excluded");
         app.write(
             "src/index.js",

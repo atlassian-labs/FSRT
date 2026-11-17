@@ -214,6 +214,9 @@ fn first_party_folders_beside_src_are_collected_without_hosted_or_third_party_co
     app.write("common/util/request-util.ts", "");
     app.write("shared/config.jsx", "");
     app.write("static/hello/index.js", "");
+    app.write("webpack/my-project/src/leftover.js", "");
+    app.write("bundled/index.js", "");
+    app.write("lib/webpack/config.js", "");
     app.write("node_modules/pkg/index.js", "");
     app.write(".storybook/main.js", "");
     app.write("lib/node_modules/pkg/index.js", "");
@@ -292,5 +295,26 @@ fn project_from_dir_scans_src_and_first_party_folders() {
             PathBuf::from("lib/helper.js"),
             PathBuf::from("src/index.js")
         ]
+    );
+}
+
+/// Older reverse-sourcemapped trees keep `webpack/<project>/` copies of the bundled sources
+/// beside `src/` and inside other folders, and a `bundled/` folder beside `src/`.
+#[test]
+fn webpack_folders_are_not_read_at_any_depth_and_bundled_only_beside_src() {
+    let app = TempApp::new("webpack");
+    app.write("webpack/my-project/src/leftover.js", "");
+    app.write("webpack/bootstrap/index.js", "");
+    app.write("bundled/webpack/my-project/src/leftover.js", "");
+    app.write("bundled/index.js", "");
+    app.write("resolvers/webpack/my-project/src/store.ts", "");
+    app.write("resolvers/index.ts", "");
+    app.write("webpack.config.js", "");
+    app.write("lib/webpack/config.js", "");
+    app.write("lib/bundled/index.js", "");
+
+    assert_eq!(
+        app.outside_src(),
+        ["lib/bundled/index.js", "resolvers/index.ts"]
     );
 }

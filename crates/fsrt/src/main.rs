@@ -154,7 +154,8 @@ pub struct Args {
 
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the handlers are located in `src/`. Source files in other top-level
-    /// folders (except `static/` and `node_modules/`) are read too, so that imports from `src/` resolve
+    /// folders are read too, so that imports from `src/` resolve; `static/`, `node_modules/`,
+    /// `bundled/` and any `webpack/` or `static/` folder are skipped
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
 
@@ -443,8 +444,14 @@ const MAX_SOURCE_DEPTH: usize = 5;
 const MAX_FILES_OUTSIDE_SRC: usize = 2_000;
 
 /// Directories that are not first-party backend code wherever they appear below the app root:
-/// `static/` holds hosted (Custom UI / UI Kit) code and `node_modules/` third-party code.
-const EXCLUDED_DIR_NAMES: [&str; 2] = ["static", "node_modules"];
+/// `static/` holds hosted (Custom UI / UI Kit) code, `node_modules/` third-party code and
+/// `webpack/` the `webpack/<project>/` bundler leftover that older reverse-sourcemapped trees
+/// keep beside `src/` and inside other folders, a second copy of bundled sources.
+const EXCLUDED_DIR_NAMES: [&str; 3] = ["static", "node_modules", "webpack"];
+
+/// Top-level directories that are also skipped. Older reverse-sourcemapped trees keep a
+/// `bundled/` folder of bundled sources next to `src/`. A nested `lib/bundled/` is still read.
+const EXCLUDED_TOP_LEVEL_DIR_NAMES: [&str; 1] = ["bundled"];
 
 fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf> {
     WalkDir::new(root)
@@ -463,10 +470,11 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 /// `shared/config.js`, which `src/` files import with a relative path such as `../common/util`.
 ///
 /// Only top-level directories of `app_dir` are considered, skipping `src` (scanned by
-/// [`collect_sourcefiles`]), `static`, `node_modules` and dot-directories. The same depth cap as
-/// `src/` applies below each of them. Symlinks are never followed, `node_modules`, `static`
-/// and dot-directories are pruned at every level, and at most [`MAX_FILES_OUTSIDE_SRC`] files
-/// are returned (in path order, so the cut is reproducible).
+/// [`collect_sourcefiles`]), `bundled` and the directories of [`EXCLUDED_DIR_NAMES`], and
+/// dot-directories. The same depth cap as `src/` applies below each of them. Symlinks are never
+/// followed, `node_modules`, `static`, `webpack` and dot-directories are pruned at every level,
+/// and at most [`MAX_FILES_OUTSIDE_SRC`] files are returned (in path order, so the cut is
+/// reproducible).
 fn collect_sourcefiles_outside_src(app_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(app_dir) else {
         return vec![];
@@ -480,7 +488,10 @@ fn collect_sourcefiles_outside_src(app_dir: &Path) -> Vec<PathBuf> {
             }
             let name = entry.file_name();
             let name = name.to_str()?;
-            (name != "src" && !is_pruned_dir_name(name)).then(|| entry.path())
+            (name != "src"
+                && !EXCLUDED_TOP_LEVEL_DIR_NAMES.contains(&name)
+                && !is_pruned_dir_name(name))
+            .then(|| entry.path())
         })
         .collect::<Vec<_>>();
     roots.sort();
