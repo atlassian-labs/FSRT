@@ -746,6 +746,16 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         (*self.callstack.borrow()).clone()
     }
 
+    /// The functions the checker has already walked into. They are skipped on later calls, so a
+    /// checker that walks past a finding takes them from the roots that come after it.
+    pub(crate) fn checker_visited_snapshot(&self) -> FxHashSet<DefId> {
+        self.checker_visited.borrow().clone()
+    }
+
+    pub(crate) fn restore_checker_visited(&self, visited: FxHashSet<DefId>) {
+        *self.checker_visited.borrow_mut() = visited;
+    }
+
     /// A root-specific suppression must not hide a helper from later roots.
     pub(crate) fn retry_checker_functions(&self, defs: impl IntoIterator<Item = DefId>) {
         let mut visited = self.checker_visited.borrow_mut();

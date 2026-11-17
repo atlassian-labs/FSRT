@@ -20,7 +20,7 @@ use core::fmt;
 use forge_permission_resolver::permissions_resolver::{
     PermissionHashMap, RequestType, check_url_for_permissions,
 };
-use forge_utils::FxHashMap;
+use forge_utils::{FxHashMap, FxHashSet};
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
 use serde::Deserialize;
@@ -262,6 +262,10 @@ pub struct AuthZChecker {
     flow: Option<Result<authz_flow::Flow, String>>,
     /// Candidates already audited per finding id, for stable ordinals.
     audited: HashMap<String, u32>,
+    /// The functions already walked into when the root's first reported operation was
+    /// found. Walking on past it, in case a write follows, must not claim helpers that
+    /// the roots after this one would have reached first.
+    visited_at_first: Option<FxHashSet<DefId>>,
 }
 
 /// A privileged operation the walk reached without a recognised check, and what the
@@ -312,6 +316,7 @@ impl AuthZChecker {
             candidates: Vec::new(),
             flow: None,
             audited: HashMap::new(),
+            visited_at_first: None,
         }
     }
 
@@ -367,6 +372,9 @@ impl AuthZChecker {
             reason,
             facts,
         });
+        if reason.is_none() && self.visited_at_first.is_none() {
+            self.visited_at_first = Some(interp.checker_visited_snapshot());
+        }
         if reason.is_none() && class == FindingClass::Write {
             ControlFlow::Break(())
         } else {
@@ -736,6 +744,11 @@ impl<'cx> Runner<'cx> for AuthZChecker {
         interp.set_body(old_body);
         if is_root {
             self.decide(interp);
+            // The walk went on past the first reported operation to look for a write:
+            // what it reached after that point is not claimed for this root.
+            if let Some(visited) = self.visited_at_first.take() {
+                interp.restore_checker_visited(visited);
+            }
             // Retain recursion protection during this traversal, but let a later
             // resolver expose the same helper's result. Other history is unchanged.
             interp.retry_checker_functions(self.suppressed_helpers.drain());

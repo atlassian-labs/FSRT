@@ -232,3 +232,34 @@ fn a_read_after_the_write_is_not_reported() {
     );
     assert_eq!(only(&write), only(&write_then_reads));
 }
+
+#[test]
+fn walking_past_a_finding_does_not_claim_helpers_from_later_entries() {
+    // `first` has a finding and goes on to look for a write: it walks into `shared`, which a
+    // later entry reaches too. Only the finding of `first` is reported for it, and `shared`
+    // is still there for `second`, whose only finding it is.
+    let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+    project.add_file(
+        "src/index.js",
+        "import Resolver from '@forge/resolver';
+         import api, {route} from '@forge/api';
+         async function shared() {
+             const response = await api.asApp().requestJira(route`/rest/api/3/issue/2`);
+             return response.json();
+         }
+         const resolver = new Resolver();
+         resolver.define('first', async () => {
+             const response = await api.asApp().requestJira(route`/rest/api/3/issue/1`);
+             return [await response.json(), await shared()];
+         });
+         resolver.define('second', async () => shared());
+         export const handler = resolver.getDefinitions();",
+    );
+    project.manifest_file_content = Some(alias_manifest(false));
+    let report = scan_directory_test_with_args(
+        project,
+        Args::parse_from(["fsrt", "--scanners", "authorization"]),
+    );
+    assert!(!report.has_errors(), "{report:#?}");
+    assert!(report.contains_authz_vuln(2), "{report:#?}");
+}
