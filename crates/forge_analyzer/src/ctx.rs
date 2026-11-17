@@ -58,6 +58,12 @@ impl AppCtx {
         }
     }
 
+    /// Packages the app declares in its `package.json`; a bare import of one of them is never
+    /// looked up among the app's own files.
+    pub fn set_declared_packages(&mut self, packages: impl IntoIterator<Item = String>) {
+        self.file_resolver.set_declared_packages(packages);
+    }
+
     #[instrument(level = "debug", skip(self, module))]
     pub fn load_module(&mut self, path: PathBuf, module: Module) -> ModId {
         let mod_id = self.modules.push_and_get_key(module);

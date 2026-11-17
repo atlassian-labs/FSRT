@@ -31,6 +31,25 @@ pub(crate) fn find_manifest_path(app_dir: &Path) -> io::Result<PathBuf> {
         })
 }
 
+/// Names under `dependencies`, `devDependencies`, `peerDependencies` and `optionalDependencies`
+/// of `<app_dir>/package.json`; `None` when there is no readable `package.json`.
+fn declared_packages(app_dir: &Path) -> Option<HashSet<String>> {
+    let package_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(app_dir.join("package.json")).ok()?).ok()?;
+    Some(
+        [
+            "dependencies",
+            "devDependencies",
+            "peerDependencies",
+            "optionalDependencies",
+        ]
+        .into_iter()
+        .filter_map(|section| package_json.get(section)?.as_object())
+        .flat_map(|section| section.keys().cloned())
+        .collect(),
+    )
+}
+
 pub(crate) trait ForgeProjectTrait<'a> {
     fn load_file(&self, path: impl AsRef<Path>, _: Arc<SourceMap>) -> io::Result<Arc<SourceFile>>;
 
@@ -51,7 +70,10 @@ pub(crate) trait ForgeProjectTrait<'a> {
         let sm = Arc::<SourceMap>::default();
         let target = EsVersion::latest();
         let globals = Globals::new();
-        let ctx = AppCtx::new(src);
+        let mut ctx = AppCtx::new(src);
+        if let Some(packages) = self.get_declared_packages() {
+            ctx.set_declared_packages(packages);
+        }
         let ctx = iter.into_iter().try_fold(ctx, |mut ctx, p| {
             let sourcemap = Arc::clone(&sm);
             GLOBALS.set(&globals, || -> crate::Result<_> {
@@ -114,6 +136,11 @@ pub(crate) trait ForgeProjectTrait<'a> {
 
     fn get_paths(&self) -> HashSet<PathBuf>;
 
+    /// Packages the app declares in its `package.json`, or `None` when it has none.
+    fn get_declared_packages(&self) -> Option<HashSet<String>> {
+        None
+    }
+
     #[allow(dead_code)]
     fn get_secret_packages(&self) -> Vec<PackageData>;
 
@@ -173,6 +200,10 @@ impl ForgeProjectTrait<'_> for ForgeProjectFromDir {
         collect_sourcefiles(&self.dir, &self.dir.join("src/"))
             .chain(collect_sourcefiles_outside_src(&self.dir))
             .collect::<HashSet<_>>()
+    }
+
+    fn get_declared_packages(&self) -> Option<HashSet<String>> {
+        declared_packages(&self.dir)
     }
 
     fn get_secret_packages(&self) -> Vec<PackageData> {

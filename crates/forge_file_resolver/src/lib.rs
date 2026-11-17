@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     error,
     ffi::OsStr,
     fmt,
@@ -38,6 +39,7 @@ pub struct ForgeResolver {
     modules: Vec<PathBuf>,
     no_ext: Vec<PathBuf>,
     src: PathBuf,
+    declared_packages: HashSet<String>,
 }
 
 impl FileResolver for ForgeResolver {
@@ -51,6 +53,7 @@ impl FileResolver for ForgeResolver {
             src: normalize_path(src),
             no_ext: Default::default(),
             modules: Default::default(),
+            declared_packages: Default::default(),
         }
     }
 
@@ -106,6 +109,11 @@ fn is_jslike(path: &Path) -> bool {
 }
 
 impl ForgeResolver {
+    /// Names of the packages the app declares (`package.json` dependencies).
+    pub fn set_declared_packages(&mut self, packages: impl IntoIterator<Item = String>) {
+        self.declared_packages = packages.into_iter().collect();
+    }
+
     fn add_module_inner(&mut self, path: &Path) -> usize {
         let path = normalize_path(path);
         self.no_ext.push(path.with_extension(""));
@@ -113,12 +121,9 @@ impl ForgeResolver {
         self.modules.len() - 1
     }
 
-    /// Find the module `path` names, never `importer` itself.
-    ///
-    /// Import specifiers are tried relative to the importing file first, so a bare package name
-    /// matches a sibling file with that name. A wrapper such as `lib/axios.js` doing
-    /// `import axios from "axios"` would otherwise resolve to itself, not the package.
-    fn search_normalized(&self, path: &Path, importer: usize) -> Option<usize> {
+    /// Find the module `path` names, with or without a JS/TS extension. A module may be its own
+    /// match: importing oneself is legal JavaScript.
+    fn search_normalized(&self, path: &Path) -> Option<usize> {
         let path = normalize_path(path);
         // only resolve files with no extension if the import doesn't have one or is a [jt]sx? file
         let by_stem = path.extension().is_none() || is_jslike(&path);
@@ -126,37 +131,107 @@ impl ForgeResolver {
         self.modules
             .iter()
             .zip(&self.no_ext)
-            .enumerate()
-            .find_map(|(id, (modpath, no_ext))| {
-                (id != importer && (*modpath == path || (by_stem && *no_ext == path_no_extension)))
-                    .then_some(id)
+            .position(|(modpath, no_ext)| {
+                *modpath == path || (by_stem && *no_ext == path_no_extension)
             })
+    }
+
+    /// Whether a bare specifier names a package (npm, scoped, or Node builtin) that can never be
+    /// a file of the app, so the project-relative fallback must not look for it.
+    fn is_package_specifier(&self, specifier: &str) -> bool {
+        if specifier.starts_with('@') || specifier.starts_with("node:") {
+            return true;
+        }
+        let first_segment = specifier.split('/').next().unwrap_or(specifier);
+        NODE_BUILTINS.contains(&first_segment) || self.declared_packages.contains(first_segment)
     }
 
     fn resolve_import_path(&self, module: usize, import: &Path) -> Result<usize, Error> {
         let current_file = self.modules.get(module).ok_or(Error::InvalidId(module))?;
-        // see if the file exists relative to the path of `module`
-        let relative_path = 'rel: {
-            let Some(file_dir) = current_file.parent() else {
-                break 'rel current_file.clone();
-            };
-            let relative_path = file_dir.join(import);
-            match self.search_normalized(&relative_path, module) {
-                Some(modid) => return Ok(modid),
-                None => relative_path,
-            }
+        let unknown = |attempts: Vec<PathBuf>| Error::UnknownModule {
+            base: module,
+            path: import.to_owned(),
+            attempts,
         };
+        let specifier = import.to_str().unwrap_or_default();
+        let is_relative = matches!(specifier, "." | "..")
+            || specifier.starts_with("./")
+            || specifier.starts_with("../");
 
-        // if not, try to search relative to the base of the project
+        if is_relative {
+            // `./x` and `../x` name a file relative to the importing file, and only there
+            let relative_path = current_file
+                .parent()
+                .map_or_else(|| current_file.clone(), |dir| dir.join(import));
+            return self
+                .search_normalized(&relative_path)
+                .ok_or_else(|| unknown(vec![relative_path]));
+        }
+        if import.is_absolute() {
+            // `/x` names a file relative to the app root
+            let app_root = self.src.parent().unwrap_or(Path::new(""));
+            let rooted = app_root.join(specifier.trim_start_matches('/'));
+            return self
+                .search_normalized(&rooted)
+                .ok_or_else(|| unknown(vec![rooted]));
+        }
+        // A bare specifier names a package, never a file next to the importer. Only a
+        // `baseUrl`-style import (`utils/db`) of something that is not a known package is looked
+        // up under the source root.
+        if self.is_package_specifier(specifier) {
+            return Err(unknown(vec![]));
+        }
         let project_relative = self.src.join(import);
-        self.search_normalized(&project_relative, module)
-            .ok_or_else(|| Error::UnknownModule {
-                base: module,
-                path: import.to_owned(),
-                attempts: vec![project_relative, relative_path],
-            })
+        self.search_normalized(&project_relative)
+            .ok_or_else(|| unknown(vec![project_relative]))
     }
 }
+
+/// Node.js core modules, which `import "fs"` names even when the app has a file called `fs.js`.
+const NODE_BUILTINS: &[&str] = &[
+    "assert",
+    "async_hooks",
+    "buffer",
+    "child_process",
+    "cluster",
+    "console",
+    "constants",
+    "crypto",
+    "dgram",
+    "diagnostics_channel",
+    "dns",
+    "domain",
+    "events",
+    "fs",
+    "http",
+    "http2",
+    "https",
+    "inspector",
+    "module",
+    "net",
+    "os",
+    "path",
+    "perf_hooks",
+    "process",
+    "punycode",
+    "querystring",
+    "readline",
+    "repl",
+    "stream",
+    "string_decoder",
+    "sys",
+    "timers",
+    "tls",
+    "trace_events",
+    "tty",
+    "url",
+    "util",
+    "v8",
+    "vm",
+    "wasi",
+    "worker_threads",
+    "zlib",
+];
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -215,31 +290,130 @@ mod tests {
     }
 
     #[test]
-    fn import_never_resolves_to_the_importing_module() {
+    fn a_module_may_import_itself() {
         let mut file_resolver = ForgeResolver::with_sourceroot("app/src");
-        let axios = file_resolver.add_module("app/lib/axios.js");
-        let sibling = file_resolver.add_module("app/lib/other.js");
+        let index = file_resolver.add_module("app/src/index.js");
+        let other = file_resolver.add_module("app/src/other.js");
 
-        // `import axios from "axios"` in `axios.js` names the package, not the file itself.
-        assert!(file_resolver.resolve_import(axios, "axios").is_err());
-        assert!(file_resolver.resolve_import(axios, "./axios.js").is_err());
+        for specifier in ["./index", "./index.js", "../src/index"] {
+            assert_eq!(
+                file_resolver.resolve_import(index, specifier).unwrap(),
+                index,
+                "{specifier}"
+            );
+        }
         assert_eq!(
-            file_resolver.resolve_import(axios, "./other").unwrap(),
-            sibling
-        );
-        assert_eq!(
-            file_resolver.resolve_import(sibling, "./axios").unwrap(),
-            axios
+            file_resolver.resolve_import(index, "./other").unwrap(),
+            other
         );
     }
 
     #[test]
-    fn import_skips_the_importer_when_another_module_has_the_same_stem() {
+    fn relative_specifiers_resolve_next_to_the_importer() {
         let mut file_resolver = ForgeResolver::with_sourceroot("app/src");
-        let ts = file_resolver.add_module("app/lib/util.ts");
-        let js = file_resolver.add_module("app/lib/util.js");
+        let axios = file_resolver.add_module("app/lib/axios.js");
+        let sibling = file_resolver.add_module("app/lib/other.js");
+        let parent = file_resolver.add_module("app/util.js");
 
-        assert_eq!(file_resolver.resolve_import(ts, "./util").unwrap(), js);
-        assert_eq!(file_resolver.resolve_import(js, "./util").unwrap(), ts);
+        assert_eq!(
+            file_resolver.resolve_import(sibling, "./axios").unwrap(),
+            axios
+        );
+        assert_eq!(
+            file_resolver.resolve_import(sibling, "../util").unwrap(),
+            parent
+        );
+        assert_eq!(
+            file_resolver.resolve_import(axios, "./other.js").unwrap(),
+            sibling
+        );
+    }
+
+    /// A bare specifier names a package, never a file next to the importer.
+    #[test]
+    fn bare_specifiers_are_not_resolved_next_to_the_importer() {
+        let mut file_resolver = ForgeResolver::with_sourceroot("app/src");
+        let wrapper = file_resolver.add_module("app/lib/axios.js");
+        let sibling = file_resolver.add_module("app/lib/other.js");
+        let index = file_resolver.add_module("app/src/index.js");
+        let local_axios = file_resolver.add_module("app/src/axios.js");
+        file_resolver.add_module("app/src/fs.js");
+
+        // Without a `package.json` nothing says `axios` is a package, so the `baseUrl`-style
+        // lookup finds `src/axios.js` (but never `lib/axios.js` next to the importer).
+        assert_eq!(
+            file_resolver.resolve_import(wrapper, "axios").unwrap(),
+            local_axios
+        );
+        assert_eq!(
+            file_resolver.resolve_import(sibling, "axios").unwrap(),
+            local_axios
+        );
+
+        // `import axios from "axios"` in `lib/axios.js` or a sibling is the package.
+        file_resolver.set_declared_packages(["axios".to_owned()]);
+        assert!(file_resolver.resolve_import(wrapper, "axios").is_err());
+        assert!(file_resolver.resolve_import(sibling, "axios").is_err());
+        // so is it in `src/index.js`, although `src/axios.js` exists
+        assert!(file_resolver.resolve_import(index, "axios").is_err());
+        assert!(file_resolver.resolve_import(index, "axios/lib/x").is_err());
+    }
+
+    #[test]
+    fn node_builtins_and_scoped_packages_stay_foreign() {
+        let mut file_resolver = ForgeResolver::with_sourceroot("app/src");
+        let index = file_resolver.add_module("app/src/index.js");
+        file_resolver.add_module("app/src/fs.js");
+        file_resolver.add_module("app/src/path.js");
+        file_resolver.add_module("app/src/@forge/api.js");
+        file_resolver.add_module("app/src/fs/promises.js");
+
+        for specifier in [
+            "fs",
+            "path",
+            "node:fs",
+            "fs/promises",
+            "@forge/api",
+            "@forge/resolver",
+        ] {
+            assert!(
+                file_resolver.resolve_import(index, specifier).is_err(),
+                "{specifier}"
+            );
+        }
+    }
+
+    /// TypeScript `baseUrl`-style imports (`utils/db`) are looked up under `src/`, unless the
+    /// first segment is a package the app declares.
+    #[test]
+    fn project_relative_fallback_applies_to_undeclared_bare_specifiers_only() {
+        let mut file_resolver = ForgeResolver::with_sourceroot("app/src");
+        let deep = file_resolver.add_module("app/src/a/b/deep.ts");
+        let db = file_resolver.add_module("app/src/utils/db.ts");
+        let lodash = file_resolver.add_module("app/src/lodash/fp.js");
+
+        assert_eq!(file_resolver.resolve_import(deep, "utils/db").unwrap(), db);
+        assert_eq!(
+            file_resolver.resolve_import(deep, "lodash/fp").unwrap(),
+            lodash
+        );
+
+        file_resolver.set_declared_packages(["lodash".to_owned()]);
+        assert_eq!(file_resolver.resolve_import(deep, "utils/db").unwrap(), db);
+        assert!(file_resolver.resolve_import(deep, "lodash/fp").is_err());
+        assert!(file_resolver.resolve_import(deep, "lodash").is_err());
+    }
+
+    #[test]
+    fn absolute_specifiers_resolve_from_the_app_root() {
+        let mut file_resolver = ForgeResolver::with_sourceroot("app/src");
+        let index = file_resolver.add_module("app/src/a/index.js");
+        let lib = file_resolver.add_module("app/lib/helper.js");
+
+        assert_eq!(
+            file_resolver.resolve_import(index, "/lib/helper").unwrap(),
+            lib
+        );
+        assert!(file_resolver.resolve_import(index, "/lib/missing").is_err());
     }
 }

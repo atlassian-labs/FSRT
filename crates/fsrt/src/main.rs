@@ -668,7 +668,8 @@ pub(crate) fn scan_directory<'a>(
 
     let suspicious_remotes = check_remotes(&manifest.remotes);
     let mut proj = project.with_files_and_sourceroot(
-        Path::new("src"),
+        // the real source root: `baseUrl`-style imports (`utils/db`) are looked up below it
+        &src_dir,
         sorted_paths,
         |path| !path.starts_with(&src_dir),
         secret_packages,
