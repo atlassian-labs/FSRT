@@ -439,10 +439,6 @@ fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
 /// Deepest directory level scanned below a source root, `src/` or a first-party folder beside it.
 const MAX_SOURCE_DEPTH: usize = 5;
 
-/// Most first-party files read from the folders beside `src/`. Keeps a repository with a huge
-/// `lib/` or `dist/` tree from turning a scan into a crawl; `src/` itself is not capped.
-const MAX_FILES_OUTSIDE_SRC: usize = 2_000;
-
 /// Directories that are not first-party backend code wherever they appear below the app root:
 /// `static/` holds hosted (Custom UI / UI Kit) code, `node_modules/` third-party code and
 /// `webpack/` the `webpack/<project>/` bundler leftover that older reverse-sourcemapped trees
@@ -459,10 +455,8 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
         .max_depth(MAX_SOURCE_DEPTH)
         .into_iter()
         .filter_map(|e| {
-            let entry = e.ok()?;
-            // `WalkDir` does not follow symlinks, so a link is never a regular file here and
-            // cannot lead the scan out of the app.
-            (entry.file_type().is_file() && is_js_file(entry.path())).then(|| entry.into_path())
+            let path = e.ok()?.into_path();
+            is_js_file(&path).then_some(path)
         })
 }
 
@@ -472,14 +466,13 @@ fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf>
 /// Only top-level directories of `app_dir` are considered, skipping `src` (scanned by
 /// [`collect_sourcefiles`]), `bundled` and the directories of [`EXCLUDED_DIR_NAMES`], and
 /// dot-directories. The same depth cap as `src/` applies below each of them. Symlinks are never
-/// followed, `node_modules`, `static`, `webpack` and dot-directories are pruned at every level,
-/// and at most [`MAX_FILES_OUTSIDE_SRC`] files are returned (in path order, so the cut is
-/// reproducible).
+/// followed, and `node_modules`, `static`, `webpack` and dot-directories are pruned at every
+/// level.
 fn collect_sourcefiles_outside_src(app_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(app_dir) else {
         return vec![];
     };
-    let mut roots = entries
+    let roots = entries
         .filter_map(|entry| {
             let entry = entry.ok()?;
             // `DirEntry::file_type` does not follow symlinks: a linked directory is not a directory.
@@ -494,14 +487,12 @@ fn collect_sourcefiles_outside_src(app_dir: &Path) -> Vec<PathBuf> {
             .then(|| entry.path())
         })
         .collect::<Vec<_>>();
-    roots.sort();
 
     let mut files = vec![];
     for root in roots {
         let walker = WalkDir::new(&root)
             .min_depth(1)
             .max_depth(MAX_SOURCE_DEPTH)
-            .sort_by_file_name()
             .into_iter()
             .filter_entry(|entry| {
                 !entry.file_type().is_dir()
@@ -514,14 +505,6 @@ fn collect_sourcefiles_outside_src(app_dir: &Path) -> Vec<PathBuf> {
         for entry in walker.filter_map(|entry| entry.ok()) {
             if !entry.file_type().is_file() || !is_js_file(entry.path()) {
                 continue;
-            }
-            if files.len() >= MAX_FILES_OUTSIDE_SRC {
-                warn!(
-                    "more than {MAX_FILES_OUTSIDE_SRC} JS/TS files outside src/ in {}; \
-                     ignoring the rest",
-                    app_dir.display()
-                );
-                return files;
             }
             files.push(entry.into_path());
         }

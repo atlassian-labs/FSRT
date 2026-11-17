@@ -244,19 +244,6 @@ fn folders_beside_src_use_the_same_depth_cap_as_src() {
     assert_eq!(app.outside_src(), ["lib/a/b/c/d/within.js"]);
 }
 
-#[test]
-fn files_beside_src_are_capped_in_path_order() {
-    let app = TempApp::new("cap");
-    for index in 0..crate::MAX_FILES_OUTSIDE_SRC {
-        app.write(&format!("a/f{index:05}.js"), "");
-    }
-    app.write("b/extra.js", "");
-
-    let found = app.outside_src();
-    assert_eq!(found.len(), crate::MAX_FILES_OUTSIDE_SRC);
-    assert!(found.iter().all(|path| path.starts_with("a/")));
-}
-
 #[cfg(unix)]
 #[test]
 fn symlinks_beside_src_are_not_followed() {
@@ -270,6 +257,28 @@ fn symlinks_beside_src_are_not_followed() {
     std::os::unix::fs::symlink(elsewhere.0.join("file.js"), app.0.join("lib/file.js")).unwrap();
 
     assert_eq!(app.outside_src(), ["lib/helper.js"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_js_files_under_src_are_still_collected() {
+    let app = TempApp::new("src-symlink");
+    let elsewhere = TempApp::new("src-symlink-target");
+    elsewhere.write("linked.js", "");
+    app.write("src/index.js", "");
+    std::os::unix::fs::symlink(elsewhere.0.join("linked.js"), app.0.join("src/linked.js")).unwrap();
+
+    let mut found = crate::collect_sourcefiles(app.0.join("src"))
+        .map(|path| path.strip_prefix(&app.0).unwrap().to_owned())
+        .collect::<Vec<_>>();
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            PathBuf::from("src/index.js"),
+            PathBuf::from("src/linked.js")
+        ]
+    );
 }
 
 #[test]
