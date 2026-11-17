@@ -154,9 +154,11 @@ pub struct Args {
 
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the handlers are located in `src/`. Source files in other top-level
-    /// folders are read too, so that imports from `src/` resolve; a top-level `bundled/` folder
-    /// is skipped, as are `static/`, `node_modules/`, `webpack/` and dot-folders at any depth.
-    /// Symlinks to files inside the app are read; links to folders or outside the app are not
+    /// folders are read too, so that imports from `src/` resolve. In those folders beside `src/`
+    /// a top-level `bundled/` folder is skipped, as are `static/`, `node_modules/`, `webpack/`
+    /// and dot-folders at any depth below them. `src/` itself is read as before, including any
+    /// nested `webpack/` folder. Symlinks to files inside the app are read; links to folders or
+    /// outside the app are not
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
 
@@ -440,14 +442,15 @@ fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
 /// Deepest directory level scanned below a source root, `src/` or a first-party folder beside it.
 const MAX_SOURCE_DEPTH: usize = 5;
 
-/// Directories that are not first-party backend code wherever they appear below the app root:
-/// `static/` holds hosted (Custom UI / UI Kit) code, `node_modules/` third-party code and
-/// `webpack/` the `webpack/<project>/` bundler leftover that older reverse-sourcemapped trees
-/// keep beside `src/` and inside other folders, a second copy of bundled sources.
+/// Directories that are not first-party backend code, skipped at any depth inside the folders
+/// beside `src/` (never inside `src/`, which is read as before): `static/` holds hosted
+/// (Custom UI / UI Kit) code, `node_modules/` third-party code and `webpack/` the
+/// `webpack/<project>/` bundler leftover that older reverse-sourcemapped trees keep beside
+/// `src/` and inside other folders, a second copy of bundled sources.
 const EXCLUDED_DIR_NAMES: [&str; 3] = ["static", "node_modules", "webpack"];
 
-/// Top-level directories that are also skipped. Older reverse-sourcemapped trees keep a
-/// `bundled/` folder of bundled sources next to `src/`. A nested `lib/bundled/` is still read.
+/// Top-level directories beside `src/` that are also skipped. Older reverse-sourcemapped trees
+/// keep a `bundled/` folder of bundled sources next to `src/`. A nested `lib/bundled/` is still read.
 const EXCLUDED_TOP_LEVEL_DIR_NAMES: [&str; 1] = ["bundled"];
 
 /// Whether a walked entry is a source file the scan may read. A regular file with a JS/TS name
@@ -489,7 +492,8 @@ fn collect_sourcefiles(app_dir: &Path, src_dir: &Path) -> impl Iterator<Item = P
 /// [`collect_sourcefiles`]), `bundled` and the directories of [`EXCLUDED_DIR_NAMES`], and
 /// dot-directories. The same depth cap and the same rule for symlinked files as `src/` apply
 /// below each of them. Symlinked directories are never followed, and `node_modules`, `static`,
-/// `webpack` and dot-directories are pruned at every level.
+/// `webpack` and dot-directories are pruned at every level below these folders. `src/` is not
+/// pruned: a `webpack/` folder nested inside it is still read.
 fn collect_sourcefiles_outside_src(app_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(app_dir) else {
         return vec![];
@@ -556,6 +560,7 @@ fn without_transpiled_async_outside_src(
         .collect()
 }
 
+/// Directory names skipped at every level of the folders beside `src/`, not inside `src/`.
 fn is_pruned_dir_name(name: &str) -> bool {
     name.starts_with('.') || EXCLUDED_DIR_NAMES.contains(&name)
 }

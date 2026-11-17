@@ -13,7 +13,7 @@ Usage: fsrt [OPTIONS] [DIRS]...
        fsrt [OPTIONS] <COMMAND>
 
 Arguments:
-  [DIRS]...  The directory to scan. Assumes there is a `manifest.yaml` file in the top level directory, and that the handlers are located in `src/`. Source files in other top-level folders are read too, so that imports from `src/` resolve; a top-level `bundled/` folder is skipped, as are `static/`, `node_modules/`, `webpack/` and dot-folders at any depth. Symlinks to files inside the app are read; links to folders or outside the app are not
+  [DIRS]...  The directory to scan. Assumes there is a `manifest.yaml` file in the top level directory, and that the handlers are located in `src/`. Source files in other top-level folders are read too, so that imports from `src/` resolve. In those folders beside `src/`, a top-level `bundled/` folder is skipped, as are `static/`, `node_modules/`, `webpack/` and dot-folders at any depth below them. `src/` itself is read as before, including any nested `webpack/` folder. Symlinks to files inside the app are read; links to folders or outside the app are not
 
 Commands:
   remote  Interact with deployed Forge apps
