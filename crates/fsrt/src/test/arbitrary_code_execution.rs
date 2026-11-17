@@ -523,6 +523,27 @@ fn reflect_get_prototype_of_resolves_the_function_constructor() {
 }
 
 #[test]
+fn prototype_of_a_package_import_is_the_function_constructor() {
+    // An imported binding is opaque, so its prototype may be the one that
+    // carries the `Function` constructor.
+    for value in ["read", "readFileSync", "fs.readFileSync", "_"] {
+        assert_execution_findings(
+            &format!(
+                r#"// src/index.js
+            import {{ readFileSync as read, readFileSync }} from 'fs';
+            import _ from 'lodash';
+            const fs = require('fs');
+            export function run(input) {{
+                Object.getPrototypeOf({value}).constructor(input.source);
+            }}
+        "#
+            ),
+            1,
+        );
+    }
+}
+
+#[test]
 fn prototype_of_a_non_function_is_not_the_function_constructor() {
     // The constructor of a non-function prototype is Object, Array or String.
     for value in ["{}", "[]", "'text'", "input.value", "settings"] {

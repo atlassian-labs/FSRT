@@ -291,7 +291,7 @@ fn binding(
                         Some(Binding::GetPrototypeOf)
                             if args
                                 .first()
-                                .is_some_and(|arg| is_function(env, body, arg, seen)) =>
+                                .is_some_and(|arg| may_be_function(env, body, arg, seen)) =>
                         {
                             Some(Binding::Prototype)
                         }
@@ -350,14 +350,18 @@ fn writes(body: &Body, id: VarId) -> impl Iterator<Item = &Rvalue> {
         })
 }
 
-/// Whether `op` holds a function: a function or arrow expression, which lowers
-/// to `undefined`, or a binding to a declared function, closure or class.
-fn is_function(
+/// Whether `op` may hold a function: a function or arrow expression, which
+/// lowers to `undefined`, a binding to a declared function, closure or class,
+/// or a package import, whose value is opaque.
+fn may_be_function(
     env: &Environment,
     body: &Body,
     op: &Operand,
     seen: &mut HashSet<(DefId, VarId)>,
 ) -> bool {
+    if matches!(binding(env, body, op, seen), Some(Binding::Library { .. })) {
+        return true;
+    }
     let var = match op {
         Operand::Lit(Literal::Undef) => return true,
         Operand::Var(var) if var.projections.is_empty() => var,
@@ -379,7 +383,7 @@ fn is_function(
     }
     let mut values = writes(body, id);
     let result = match (values.next(), values.next()) {
-        (Some(Rvalue::Read(value)), None) => is_function(env, body, value, seen),
+        (Some(Rvalue::Read(value)), None) => may_be_function(env, body, value, seen),
         _ => false,
     };
     seen.remove(&(owner, id));
