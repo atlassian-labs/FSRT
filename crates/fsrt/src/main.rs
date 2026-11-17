@@ -154,8 +154,8 @@ pub struct Args {
 
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
     /// directory, and that the handlers are located in `src/`. Source files in other top-level
-    /// folders are read too, so that imports from `src/` resolve; `static/`, `node_modules/`,
-    /// `bundled/` and any `webpack/` or `static/` folder are skipped
+    /// folders are read too, so that imports from `src/` resolve; a top-level `bundled/` folder
+    /// is skipped, as are `static/`, `node_modules/`, `webpack/` and dot-folders at any depth
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
 
