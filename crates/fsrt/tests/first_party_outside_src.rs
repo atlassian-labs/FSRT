@@ -79,9 +79,9 @@ impl App {
         self
     }
 
-    fn scan(&self) -> (bool, serde_json::Value) {
+    fn scan(&self, scanner: &str) -> (bool, serde_json::Value) {
         let output = Command::new(env!("CARGO_BIN_EXE_fsrt"))
-            .args(["--scanners", "authorization", "--no-cache"])
+            .args(["--scanners", scanner, "--no-cache"])
             .arg(&self.0)
             .env_remove("FORGE_LOG")
             .output()
@@ -97,7 +97,11 @@ impl App {
     }
 
     fn findings(&self) -> usize {
-        let (success, report) = self.scan();
+        self.findings_for("authorization")
+    }
+
+    fn findings_for(&self, scanner: &str) -> usize {
+        let (success, report) = self.scan(scanner);
         assert!(success && report["errors"] == false, "{report}");
         report["vulns"].as_array().unwrap().len()
     }
@@ -170,7 +174,7 @@ fn handler_beside_src_is_not_an_entrypoint() {
     let app = App::new("handler");
     app.write("lib/index.js", &entry(FETCH_ENTRY, "./helper"))
         .write("lib/helper.js", FETCH_HELPER);
-    let (_, report) = app.scan();
+    let (_, report) = app.scan("authorization");
     assert_eq!(report["vulns"], serde_json::json!([]), "{report}");
 }
 
@@ -213,7 +217,7 @@ fn transpiled_async_in_src_still_fails_the_scan() {
     let app = App::new("transpiled-src");
     app.write("src/index.js", &entry(FETCH_ENTRY, "./helper"))
         .write("src/helper.js", "var _asyncToGenerator = function () {};");
-    let (success, report) = app.scan();
+    let (success, report) = app.scan("authorization");
     assert!(!success || report["errors"] == true, "{report}");
 }
 
@@ -354,4 +358,40 @@ import * as a from "./a";
 export async function fromB(key) { return a.fromA ? 1 : 0; }
 "#);
     assert_eq!(app.findings(), 1);
+}
+
+#[test]
+fn import_resolution_follows_an_explicit_named_self_import() {
+    let app = App::new("explicit-self-import");
+    let handler = r#"import { fetchIssue as delegated } from "./index.js";
+export function handler(req) { return delegated(req.payload.key); }"#;
+    app.write("src/index.js", &format!("{handler}\n{FETCH_HELPER}"));
+    assert_eq!(
+        app.findings(),
+        1,
+        "the handler calls its own fetchIssue export"
+    );
+}
+
+#[test]
+fn import_resolution_keeps_a_bare_package_external_with_a_same_stem_sibling() {
+    let app = App::new("bare-package-with-sibling");
+    app.write(
+        "src/index.js",
+        r#"import { scramble } from "../lib/crypto-js.js";
+export function handler(value) { return scramble(value); }"#,
+    )
+    .write(
+        "lib/crypto-js.js",
+        r#"import { AES } from "crypto-js";
+export function scramble(value) { return AES.encrypt(value, "fixture-key"); }"#,
+    );
+    assert_eq!(app.findings_for("secret"), 1, "wrapper alone");
+
+    app.write("lib/crypto-js.ts", "export const version = 1;");
+    assert_eq!(
+        app.findings_for("secret"),
+        1,
+        "wrapper with a same-stem sibling"
+    );
 }
