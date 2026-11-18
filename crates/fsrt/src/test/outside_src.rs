@@ -355,6 +355,8 @@ fn imports_are_resolved_with_the_resolvers_rules() {
          import k from '../.cache/entry';
          import l from '../lib/prefers-js';
          import m from 'src-relative/thing';
+         import '../lib/vendor.min.js';
+         import '../lib/vendor.minimal';
          const n = require(variable);
          const o = require(`../lib/template`);",
     );
@@ -373,6 +375,7 @@ fn imports_are_resolved_with_the_resolvers_rules() {
         "lib/prefers-js.ts",
         "lib/prefers-js.js",
         "lib/hidden.d.txt",
+        "lib/vendor.min.js",
         // a bare name that is not a package is looked up under src/ only
         "src/src-relative/thing.js",
     ] {
@@ -383,7 +386,7 @@ fn imports_are_resolved_with_the_resolvers_rules() {
     assert_eq!(
         app.read_outside_src(),
         ["lib/prefers-js.js"],
-        "only the first of a file's extensions the resolver would pick is read"
+        "minified builds, packages, folders and the like are skipped, and only the first of a file's extensions the resolver would pick is read"
     );
 }
 

@@ -158,7 +158,8 @@ pub struct Args {
     /// file anywhere else in the app is read only when a file that is read imports it, by a
     /// relative path, a path from the app root or a path under `src/`, directly or through
     /// other such files: a front-end bundle or a leftover build folder that nothing imports is
-    /// skipped. Files in `node_modules/` and dot-folders are never read, and imports of
+    /// skipped. Files in `node_modules/` and dot-folders and minified `*.min.js` builds are
+    /// never read, and imports of
     /// packages, dynamic imports with a variable, `tsconfig.json` path aliases and monorepo
     /// workspace packages are not followed. At most 2,000 files outside `src/` are read; the rest are skipped
     /// with a warning. Symlinks to files inside the app are read; links to folders or outside

@@ -48,10 +48,20 @@ fn in_unscanned_directory(relative: &Path) -> bool {
     })
 }
 
+/// A minified build (`libavoid.min.js`) is vendored third-party code whose huge lines can take
+/// the analysis minutes: one under `static/` that `src/` imports made a scan of a second take
+/// over five minutes. An import never makes the scan read one.
+fn is_minified_build(relative: &Path) -> bool {
+    relative
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.ends_with(".min"))
+}
+
 /// Whether `relative`, a path below `app_root`, may be read: a regular file, or a link to one,
 /// that resolves to a place inside the app and outside `node_modules` and dot-directories.
 fn readable_in_app(app_root: &Path, relative: &Path) -> bool {
-    if in_unscanned_directory(relative) {
+    if in_unscanned_directory(relative) || is_minified_build(relative) {
         return false;
     }
     let Ok(real) = fs::canonicalize(app_root.join(relative)) else {
@@ -69,7 +79,7 @@ fn readable_in_app(app_root: &Path, relative: &Path) -> bool {
 /// from `src/`, both in that form; the returned paths are in that form too. Imports are
 /// resolved with the rules of the file resolver, using `declared_packages` from `package.json`.
 /// A specifier that names a package, a file outside the app, a folder, a missing file, a file in
-/// `node_modules` or a dot-directory, a link to a file outside the app, or a file under `src/`
+/// `node_modules` or a dot-directory, a minified `*.min.js` build, a link to a file outside the app, or a file under `src/`
 /// (collected by the walk of `src/` or not read on purpose) adds nothing.
 pub(crate) fn collect_imported_files_outside_src(
     app_dir: &Path,
