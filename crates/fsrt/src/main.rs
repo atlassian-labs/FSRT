@@ -159,11 +159,10 @@ pub struct Args {
     /// relative path, a path from the app root or a path under `src/`, directly or through
     /// other such files: a front-end bundle or a leftover build folder that nothing imports is
     /// skipped. Files in `node_modules/` and dot-folders and minified `*.min.js` builds are
-    /// never read, and imports of
-    /// packages, dynamic imports with a variable, `tsconfig.json` path aliases and monorepo
-    /// workspace packages are not followed. At most 2,000 files outside `src/` are read; the rest are skipped
-    /// with a warning. Symlinks to files inside the app are read; links to folders or outside
-    /// the app are not
+    /// never read, and imports of packages, dynamic imports with a variable, `tsconfig.json`
+    /// path aliases and monorepo workspace packages are not followed. At most 2,000 files
+    /// outside `src/` are read; the rest are skipped with a warning. Symlinks to files inside
+    /// the app are read; links to folders or outside the app are not
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
 

@@ -79,8 +79,9 @@ fn readable_in_app(app_root: &Path, relative: &Path) -> bool {
 /// from `src/`, both in that form; the returned paths are in that form too. Imports are
 /// resolved with the rules of the file resolver, using `declared_packages` from `package.json`.
 /// A specifier that names a package, a file outside the app, a folder, a missing file, a file in
-/// `node_modules` or a dot-directory, a minified `*.min.js` build, a link to a file outside the app, or a file under `src/`
-/// (collected by the walk of `src/` or not read on purpose) adds nothing.
+/// `node_modules` or a dot-directory, a minified `*.min.js` build, a link to a file outside the
+/// app, or a file under `src/` (collected by the walk of `src/` or not read on purpose) adds
+/// nothing.
 pub(crate) fn collect_imported_files_outside_src(
     app_dir: &Path,
     src_files: &[PathBuf],
