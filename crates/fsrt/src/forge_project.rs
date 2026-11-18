@@ -1,4 +1,5 @@
-use crate::{ResolvedEntryPoint, collect_sourcefiles, collect_sourcefiles_outside_src};
+use crate::imports::collect_imported_files_outside_src;
+use crate::{ResolvedEntryPoint, collect_sourcefiles};
 use forge_analyzer::ctx::AppCtx;
 use forge_analyzer::definitions::{Environment, PackageData, run_resolver};
 use forge_loader::manifest::{BindingKind, Entrypoint, ForgeManifest, Resolved};
@@ -196,10 +197,14 @@ impl ForgeProjectTrait<'_> for ForgeProjectFromDir {
     }
 
     fn get_paths(&self) -> HashSet<PathBuf> {
-        // Entrypoints stay under `src/`, but `src/` files may import first-party code beside it.
-        collect_sourcefiles(&self.dir, &self.dir.join("src/"))
-            .chain(collect_sourcefiles_outside_src(&self.dir))
-            .collect::<HashSet<_>>()
+        // Entrypoints stay under `src/`. Code outside it is read only when something read imports it.
+        let src_files = collect_sourcefiles(&self.dir, &self.dir.join("src/")).collect::<Vec<_>>();
+        let imported = collect_imported_files_outside_src(
+            &self.dir,
+            &src_files,
+            &declared_packages(&self.dir).unwrap_or_default(),
+        );
+        src_files.into_iter().chain(imported).collect()
     }
 
     fn get_declared_packages(&self) -> Option<HashSet<String>> {

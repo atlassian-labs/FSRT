@@ -1,5 +1,6 @@
-//! End-to-end scans of apps whose first-party code sits beside `src/`, as the reverse
-//! sourcemapper writes it (`lib/helper.js`, `common/util/request-util.ts`).
+//! End-to-end scans of apps whose first-party code sits outside `src/`, as the reverse
+//! sourcemapper writes it (`lib/helper.js`, `common/util/request-util.ts`), and is read when a
+//! file that is read imports it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -149,15 +150,72 @@ fn toy_d_guard_inside_src_clears_the_request() {
     assert_eq!(app.findings(), 0);
 }
 
+/// Backend code that older assets folded into `src/` sits under `static/` (or a `webpack/` or
+/// `bundled/` leftover) at its real path; `src/` imports it, so it is read.
 #[test]
-fn hosted_and_third_party_folders_are_not_scanned() {
+fn imported_files_in_static_webpack_and_bundled_folders_are_read() {
     for folder in [
+        "static/shared",
         "static",
+        "webpack/proj/src",
+        "bundled",
+        "lib/static",
+    ] {
+        let app = App::new("hosted-imported");
+        app.write(
+            "src/index.js",
+            &entry(FETCH_ENTRY, &format!("../{folder}/helper")),
+        )
+        .write(&format!("{folder}/helper.js"), FETCH_HELPER);
+        assert_eq!(app.findings(), 1, "{folder}");
+    }
+}
+
+#[test]
+fn guard_in_a_static_folder_clears_the_request() {
+    let app = App::new("static-guard");
+    app.write(
+        "src/index.js",
+        &entry(GUARDED_ENTRY, "../static/shared/guard"),
+    )
+    .write("static/shared/guard.js", GUARD);
+    assert_eq!(app.findings(), 0);
+}
+
+#[test]
+fn files_imported_through_several_hops_are_read() {
+    let app = App::new("hops");
+    app.write("src/index.js", &entry(FETCH_ENTRY, "../lib/a"))
+        .write(
+            "lib/a.js",
+            "import { viaB } from \"../common/b\";\nexport const fetchIssue = (key) => viaB(key);\n",
+        )
+        .write(
+            "common/b.js",
+            "import { viaC } from \"../static/c\";\nimport \"./b\";\nexport const viaB = (key) => viaC(key);\n",
+        )
+        .write(
+            "static/c.js",
+            &FETCH_HELPER.replace("fetchIssue", "viaC"),
+        );
+    assert_eq!(app.findings(), 1);
+}
+
+#[test]
+fn a_nested_static_folder_in_src_is_still_read() {
+    let app = App::new("src-static");
+    app.write("src/index.js", &entry(FETCH_ENTRY, "./static/helper"))
+        .write("src/static/helper.js", FETCH_HELPER);
+    assert_eq!(app.findings(), 1);
+}
+
+#[test]
+fn files_in_third_party_and_hidden_folders_are_not_followed() {
+    for folder in [
         "node_modules",
         ".hidden",
-        "lib/static",
-        "webpack",
-        "bundled",
+        "lib/node_modules/pkg",
+        "lib/.cache",
     ] {
         let app = App::new("excluded");
         app.write(
@@ -167,6 +225,20 @@ fn hosted_and_third_party_folders_are_not_scanned() {
         .write(&format!("{folder}/helper.js"), FETCH_HELPER);
         assert_eq!(app.findings(), 0, "{folder}");
     }
+}
+
+#[test]
+fn files_nothing_imports_are_not_read() {
+    let app = App::new("unimported");
+    app.write("src/index.js", &entry(FETCH_ENTRY, "./helper"))
+        .write("src/helper.js", "export const fetchIssue = () => 1;\n")
+        // would be reported if it were read and reachable
+        .write("static/ui/App.jsx", FETCH_HELPER)
+        .write("webpack/proj/src/leftover.js", FETCH_HELPER)
+        .write("bundled/index.js", FETCH_HELPER)
+        // a file that does not parse would be skipped with a warning either way
+        .write("lib/unused.js", "const = ;");
+    assert_eq!(app.findings(), 0);
 }
 
 #[test]
@@ -186,6 +258,18 @@ fn symlinked_folder_beside_src_is_not_followed() {
     elsewhere.write("lib/helper.js", FETCH_HELPER);
     std::os::unix::fs::symlink(elsewhere.0.join("lib"), app.0.join("lib")).unwrap();
     app.write("src/index.js", &entry(FETCH_ENTRY, "../lib/helper"));
+    assert_eq!(app.findings(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_file_outside_the_app_is_not_followed() {
+    let app = App::new("symlink-file");
+    let elsewhere = App::new("symlink-file-target");
+    elsewhere.write("helper.js", FETCH_HELPER);
+    app.write("src/index.js", &entry(FETCH_ENTRY, "../lib/helper"));
+    fs::create_dir_all(app.0.join("lib")).unwrap();
+    std::os::unix::fs::symlink(elsewhere.0.join("helper.js"), app.0.join("lib/helper.js")).unwrap();
     assert_eq!(app.findings(), 0);
 }
 

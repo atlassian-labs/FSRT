@@ -2,6 +2,7 @@
 
 mod commands;
 mod forge_project;
+mod imports;
 mod interpreter;
 #[cfg(test)]
 mod test;
@@ -153,12 +154,15 @@ pub struct Args {
     scan_functions: bool,
 
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
-    /// directory, and that the handlers are located in `src/`. Source files in other top-level
-    /// folders are read too, so that imports from `src/` resolve. In those folders beside `src/`
-    /// a top-level `bundled/` folder is skipped, as are `static/`, `node_modules/`, `webpack/`
-    /// and dot-folders at any depth below them. `src/` itself is read as before, including any
-    /// nested `webpack/` folder. Symlinks to files inside the app are read; links to folders or
-    /// outside the app are not
+    /// directory, and that the handlers are located in `src/`. `src/` is read in full. A source
+    /// file anywhere else in the app is read only when a file that is read imports it, by a
+    /// relative path, a path from the app root or a path under `src/`, directly or through
+    /// other such files: a front-end bundle or a leftover build folder that nothing imports is
+    /// skipped. Files in `node_modules/` and dot-folders are never read, and imports of
+    /// packages, dynamic imports with a variable, `tsconfig.json` path aliases and monorepo
+    /// workspace packages are not followed. At most 2,000 files outside `src/` are read; the rest are skipped
+    /// with a warning. Symlinks to files inside the app are read; links to folders or outside
+    /// the app are not
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
 
@@ -439,19 +443,8 @@ fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
         .is_some_and(|ext| ext == "jsx" || ext == "js" || ext == "tsx" || ext == "ts")
 }
 
-/// Deepest directory level scanned below a source root, `src/` or a first-party folder beside it.
+/// Deepest directory level scanned below `src/`.
 const MAX_SOURCE_DEPTH: usize = 5;
-
-/// Directories that are not first-party backend code, skipped at any depth inside the folders
-/// beside `src/` (never inside `src/`, which is read as before): `static/` holds hosted
-/// (Custom UI / UI Kit) code, `node_modules/` third-party code and `webpack/` the
-/// `webpack/<project>/` bundler leftover that older reverse-sourcemapped trees keep beside
-/// `src/` and inside other folders, a second copy of bundled sources.
-const EXCLUDED_DIR_NAMES: [&str; 3] = ["static", "node_modules", "webpack"];
-
-/// Top-level directories beside `src/` that are also skipped. Older reverse-sourcemapped trees
-/// keep a `bundled/` folder of bundled sources next to `src/`. A nested `lib/bundled/` is still read.
-const EXCLUDED_TOP_LEVEL_DIR_NAMES: [&str; 1] = ["bundled"];
 
 /// Whether a walked entry is a source file the scan may read. A regular file with a JS/TS name
 /// is; so is a symlink whose fully resolved target is a regular file inside `app_root` (the
@@ -485,61 +478,8 @@ fn collect_sourcefiles(app_dir: &Path, src_dir: &Path) -> impl Iterator<Item = P
         })
 }
 
-/// First-party JS/TS next to `src/`, for example `common/util/request-util.ts` or
-/// `shared/config.js`, which `src/` files import with a relative path such as `../common/util`.
-///
-/// Only top-level directories of `app_dir` are considered, skipping `src` (scanned by
-/// [`collect_sourcefiles`]), `bundled` and the directories of [`EXCLUDED_DIR_NAMES`], and
-/// dot-directories. The same depth cap and the same rule for symlinked files as `src/` apply
-/// below each of them. Symlinked directories are never followed, and `node_modules`, `static`,
-/// `webpack` and dot-directories are pruned at every level below these folders. `src/` is not
-/// pruned: a `webpack/` folder nested inside it is still read.
-fn collect_sourcefiles_outside_src(app_dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(app_dir) else {
-        return vec![];
-    };
-    let roots = entries
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            // `DirEntry::file_type` does not follow symlinks: a linked directory is not a directory.
-            if !entry.file_type().ok()?.is_dir() {
-                return None;
-            }
-            let name = entry.file_name();
-            let name = name.to_str()?;
-            (name != "src"
-                && !EXCLUDED_TOP_LEVEL_DIR_NAMES.contains(&name)
-                && !is_pruned_dir_name(name))
-            .then(|| entry.path())
-        })
-        .collect::<Vec<_>>();
-
-    let app_root = fs::canonicalize(app_dir).ok();
-    let mut files = vec![];
-    for root in roots {
-        let walker = WalkDir::new(&root)
-            .min_depth(1)
-            .max_depth(MAX_SOURCE_DEPTH)
-            .into_iter()
-            .filter_entry(|entry| {
-                !entry.file_type().is_dir()
-                    || entry.depth() == 0
-                    || entry
-                        .file_name()
-                        .to_str()
-                        .is_none_or(|name| !is_pruned_dir_name(name))
-            });
-        for entry in walker.filter_map(|entry| entry.ok()) {
-            if is_source_file(&entry, app_root.as_deref()) {
-                files.push(entry.into_path());
-            }
-        }
-    }
-    files
-}
-
-/// Transpiled async in `src/` fails the scan. A file beside `src/` only gets left out: such a
-/// folder is often build output (`dist/`, `build/`) that a scan used to ignore completely.
+/// Transpiled async in `src/` fails the scan. A file outside `src/` only gets left out: it is
+/// often build output (`dist/`, `build/`) that a scan used to ignore completely.
 fn without_transpiled_async_outside_src(
     paths: HashSet<PathBuf>,
     src_dir: &Path,
@@ -558,11 +498,6 @@ fn without_transpiled_async_outside_src(
             !transpiled
         })
         .collect()
-}
-
-/// Directory names skipped at every level of the folders beside `src/`, not inside `src/`.
-fn is_pruned_dir_name(name: &str) -> bool {
-    name.starts_with('.') || EXCLUDED_DIR_NAMES.contains(&name)
 }
 
 fn check_perm(perm: &str) -> bool {

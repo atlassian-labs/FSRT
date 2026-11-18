@@ -136,55 +136,96 @@ impl ForgeResolver {
             })
     }
 
-    /// Whether a bare specifier names a package (npm, scoped, or Node builtin) that can never be
-    /// a file of the app, so the project-relative fallback must not look for it.
-    fn is_package_specifier(&self, specifier: &str) -> bool {
-        if specifier.starts_with('@') || specifier.starts_with("node:") {
-            return true;
-        }
-        let first_segment = specifier.split('/').next().unwrap_or(specifier);
-        NODE_BUILTINS.contains(&first_segment) || self.declared_packages.contains(first_segment)
-    }
-
     fn resolve_import_path(&self, module: usize, import: &Path) -> Result<usize, Error> {
         let current_file = self.modules.get(module).ok_or(Error::InvalidId(module))?;
+        let target = import_target(
+            current_file,
+            import.to_str().unwrap_or_default(),
+            &self.src,
+            &self.declared_packages,
+        );
         let unknown = |attempts: Vec<PathBuf>| Error::UnknownModule {
             base: module,
             path: import.to_owned(),
             attempts,
         };
-        let specifier = import.to_str().unwrap_or_default();
-        let is_relative = matches!(specifier, "." | "..")
-            || specifier.starts_with("./")
-            || specifier.starts_with("../");
-
-        if is_relative {
-            // `./x` and `../x` name a file relative to the importing file, and only there
-            let relative_path = current_file
-                .parent()
-                .map_or_else(|| current_file.clone(), |dir| dir.join(import));
-            return self
-                .search_normalized(&relative_path)
-                .ok_or_else(|| unknown(vec![relative_path]));
+        match target {
+            Some(target) => self
+                .search_normalized(&target)
+                .ok_or_else(|| unknown(vec![target])),
+            None => Err(unknown(vec![])),
         }
-        if import.is_absolute() {
-            // `/x` names a file relative to the app root
-            let app_root = self.src.parent().unwrap_or(Path::new(""));
-            let rooted = app_root.join(specifier.trim_start_matches('/'));
-            return self
-                .search_normalized(&rooted)
-                .ok_or_else(|| unknown(vec![rooted]));
-        }
-        // A bare specifier names a package, never a file next to the importer. Only a
-        // `baseUrl`-style import (`utils/db`) of something that is not a known package is looked
-        // up under the source root.
-        if self.is_package_specifier(specifier) {
-            return Err(unknown(vec![]));
-        }
-        let project_relative = self.src.join(import);
-        self.search_normalized(&project_relative)
-            .ok_or_else(|| unknown(vec![project_relative]))
     }
+}
+
+/// Whether a bare specifier names a package (npm, scoped, or Node builtin) that can never be a
+/// file of the app, so the project-relative fallback must not look for it.
+fn is_package_specifier(specifier: &str, declared_packages: &HashSet<String>) -> bool {
+    if specifier.starts_with('@') || specifier.starts_with("node:") {
+        return true;
+    }
+    let first_segment = specifier.split('/').next().unwrap_or(specifier);
+    NODE_BUILTINS.contains(&first_segment) || declared_packages.contains(first_segment)
+}
+
+/// The path `specifier`, imported by the file `importer`, names, before a file extension is
+/// matched, or `None` when it names a package. This is the one place that decides what an
+/// import points at; [`ForgeResolver`] and the scan's reachability pre-pass both use it.
+///
+/// - `./x` and `../x` name a file relative to the importing file, and only there;
+/// - `/x` names a file relative to the app root, the parent of `src`;
+/// - any other specifier names a package and never a file next to the importer. Only a
+///   `baseUrl`-style import (`utils/db`) of something that is not a known package is looked up
+///   under the source root `src`.
+pub fn import_target(
+    importer: &Path,
+    specifier: &str,
+    src: &Path,
+    declared_packages: &HashSet<String>,
+) -> Option<PathBuf> {
+    let is_relative = matches!(specifier, "." | "..")
+        || specifier.starts_with("./")
+        || specifier.starts_with("../");
+    let import = Path::new(specifier);
+    if is_relative {
+        let importer = normalize_path(importer);
+        return Some(importer.parent().map_or_else(
+            || normalize_path(import),
+            |dir| normalize_path(&dir.join(import)),
+        ));
+    }
+    if import.is_absolute() {
+        let src = normalize_path(src);
+        let app_root = src.parent().unwrap_or(Path::new(""));
+        return Some(normalize_path(
+            &app_root.join(specifier.trim_start_matches('/')),
+        ));
+    }
+    if is_package_specifier(specifier, declared_packages) {
+        return None;
+    }
+    Some(normalize_path(&normalize_path(src).join(import)))
+}
+
+/// The files a [`import_target`] can be found as, in the order the resolver prefers them: the
+/// file itself when the import spells a JS/TS extension, and the same stem with each JS/TS
+/// extension. Imports ending in another extension (`./a.service`) are only matched by a file of
+/// exactly that name, which can never be a JS/TS module.
+pub fn module_candidates(target: &Path) -> Vec<PathBuf> {
+    let by_stem = target.extension().is_none() || is_jslike(target);
+    if !by_stem {
+        return vec![];
+    }
+    let stem = target.with_extension("");
+    ["js", "jsx", "ts", "tsx"]
+        .into_iter()
+        .map(|ext| {
+            let mut name = stem.clone().into_os_string();
+            name.push(".");
+            name.push(ext);
+            PathBuf::from(name)
+        })
+        .collect()
 }
 
 /// Node.js core modules, which `import "fs"` names even when the app has a file called `fs.js`.
