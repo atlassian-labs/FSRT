@@ -1,3 +1,4 @@
+use crate::imports::collect_imported_files_outside_src;
 use crate::{ResolvedEntryPoint, collect_sourcefiles};
 use forge_analyzer::ctx::AppCtx;
 use forge_analyzer::definitions::{Environment, PackageData, run_resolver};
@@ -13,7 +14,7 @@ use swc_core::ecma::ast::EsVersion;
 use swc_core::ecma::parser::{Syntax, TsSyntax, parse_file_as_module};
 use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::visit::VisitMutWith;
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub(crate) fn find_manifest_path(app_dir: &Path) -> io::Result<PathBuf> {
     ["manifest.yaml", "manifest.yml"]
@@ -31,6 +32,25 @@ pub(crate) fn find_manifest_path(app_dir: &Path) -> io::Result<PathBuf> {
         })
 }
 
+/// Names under `dependencies`, `devDependencies`, `peerDependencies` and `optionalDependencies`
+/// of `<app_dir>/package.json`; `None` when there is no readable `package.json`.
+fn declared_packages(app_dir: &Path) -> Option<HashSet<String>> {
+    let package_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(app_dir.join("package.json")).ok()?).ok()?;
+    Some(
+        [
+            "dependencies",
+            "devDependencies",
+            "peerDependencies",
+            "optionalDependencies",
+        ]
+        .into_iter()
+        .filter_map(|section| package_json.get(section)?.as_object())
+        .flat_map(|section| section.keys().cloned())
+        .collect(),
+    )
+}
+
 pub(crate) trait ForgeProjectTrait<'a> {
     fn load_file(&self, path: impl AsRef<Path>, _: Arc<SourceMap>) -> io::Result<Arc<SourceFile>>;
 
@@ -42,6 +62,8 @@ pub(crate) trait ForgeProjectTrait<'a> {
         &self,
         src: P,
         iter: I,
+        // Files for which a read or parse failure only skips the file instead of the scan.
+        is_best_effort: impl Fn(&Path) -> bool,
         secret_packages: &[PackageData],
         perm_map: &mut PermMap,
         suspicious_remotes: &HashSet<String>,
@@ -49,35 +71,50 @@ pub(crate) trait ForgeProjectTrait<'a> {
         let sm = Arc::<SourceMap>::default();
         let target = EsVersion::latest();
         let globals = Globals::new();
-        let ctx = AppCtx::new(src);
+        let mut ctx = AppCtx::new(src);
+        if let Some(packages) = self.get_declared_packages() {
+            ctx.set_declared_packages(packages);
+        }
         let ctx = iter.into_iter().try_fold(ctx, |mut ctx, p| {
             let sourcemap = Arc::clone(&sm);
             GLOBALS.set(&globals, || -> crate::Result<_> {
                 debug!(file = %p.display(), "parsing");
-                let src = self.load_file(p.clone(), sourcemap)?;
-                debug!("loaded sourcemap");
-                let mut recovered_errors = vec![];
-                let mut module = parse_file_as_module(
-                    src.as_ref(),
-                    Syntax::Typescript(TsSyntax {
-                        tsx: p.extension().and_then(|extension| extension.to_str()) != Some("ts"),
-                        decorators: true,
-                        ..Default::default()
-                    }),
-                    target,
-                    None,
-                    &mut recovered_errors,
-                )
-                .map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("Could not parse {}: {error:?}", p.display()),
+                let parsed = (|| -> io::Result<_> {
+                    let src = self.load_file(p.clone(), sourcemap)?;
+                    debug!("loaded sourcemap");
+                    let mut recovered_errors = vec![];
+                    let mut module = parse_file_as_module(
+                        src.as_ref(),
+                        Syntax::Typescript(TsSyntax {
+                            tsx: p.extension().and_then(|extension| extension.to_str())
+                                != Some("ts"),
+                            decorators: true,
+                            ..Default::default()
+                        }),
+                        target,
+                        None,
+                        &mut recovered_errors,
                     )
-                })?;
-                debug!("finished parsing");
-                let mut hygeine = resolver(Mark::new(), Mark::new(), true);
-                module.visit_mut_with(&mut hygeine);
-                ctx.load_module(p, module);
+                    .map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Could not parse {}: {error:?}", p.display()),
+                        )
+                    })?;
+                    debug!("finished parsing");
+                    let mut hygeine = resolver(Mark::new(), Mark::new(), true);
+                    module.visit_mut_with(&mut hygeine);
+                    Ok(module)
+                })();
+                match parsed {
+                    Ok(module) => {
+                        ctx.load_module(p, module);
+                    }
+                    Err(error) if is_best_effort(&p) => {
+                        warn!("skipping {}: {error}", p.display());
+                    }
+                    Err(error) => return Err(error.into()),
+                }
                 Ok(ctx)
             })
         })?;
@@ -99,6 +136,11 @@ pub(crate) trait ForgeProjectTrait<'a> {
     }
 
     fn get_paths(&self) -> HashSet<PathBuf>;
+
+    /// Packages the app declares in its `package.json`, or `None` when it has none.
+    fn get_declared_packages(&self) -> Option<HashSet<String>> {
+        None
+    }
 
     #[allow(dead_code)]
     fn get_secret_packages(&self) -> Vec<PackageData>;
@@ -155,7 +197,18 @@ impl ForgeProjectTrait<'_> for ForgeProjectFromDir {
     }
 
     fn get_paths(&self) -> HashSet<PathBuf> {
-        collect_sourcefiles(self.dir.join("src/")).collect::<HashSet<_>>()
+        // Entrypoints stay under `src/`. Code outside it is read only when something read imports it.
+        let src_files = collect_sourcefiles(&self.dir, &self.dir.join("src/")).collect::<Vec<_>>();
+        let imported = collect_imported_files_outside_src(
+            &self.dir,
+            &src_files,
+            &declared_packages(&self.dir).unwrap_or_default(),
+        );
+        src_files.into_iter().chain(imported).collect()
+    }
+
+    fn get_declared_packages(&self) -> Option<HashSet<String>> {
+        declared_packages(&self.dir)
     }
 
     fn get_secret_packages(&self) -> Vec<PackageData> {

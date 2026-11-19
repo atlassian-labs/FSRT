@@ -15,6 +15,7 @@ use time::{Date, Month};
 
 mod captured_values;
 mod legacy_callbacks;
+mod outside_src;
 mod resolver_registration;
 mod secret_logging;
 mod secret_logging_storage;

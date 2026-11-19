@@ -2,6 +2,7 @@
 
 mod commands;
 mod forge_project;
+mod imports;
 mod interpreter;
 #[cfg(test)]
 mod test;
@@ -153,7 +154,15 @@ pub struct Args {
     scan_functions: bool,
 
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
-    /// directory, and that the source code is located in `src/`
+    /// directory, and that the handlers are located in `src/`. `src/` is read in full. A source
+    /// file anywhere else in the app is read only when a file that is read imports it, by a
+    /// relative path, a path from the app root or a path under `src/`, directly or through
+    /// other such files: a front-end bundle or a leftover build folder that nothing imports is
+    /// skipped. Files in `node_modules/` and dot-folders and minified `*.min.js` builds are
+    /// never read, and imports of packages, dynamic imports with a variable, `tsconfig.json`
+    /// path aliases and monorepo workspace packages are not followed. At most 2,000 files
+    /// outside `src/` are read; the rest are skipped with a warning. Symlinks to files inside
+    /// the app are read; links to folders or outside the app are not
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
 
@@ -434,15 +443,61 @@ fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
         .is_some_and(|ext| ext == "jsx" || ext == "js" || ext == "tsx" || ext == "ts")
 }
 
-fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf> {
-    WalkDir::new(root)
-        .min_depth(1)
-        .max_depth(5)
-        .into_iter()
-        .filter_map(|e| {
-            let path = e.ok()?.into_path();
-            is_js_file(&path).then_some(path)
+/// Deepest directory level scanned below `src/`.
+const MAX_SOURCE_DEPTH: usize = 5;
+
+/// Whether a walked entry is a source file the scan may read. A regular file with a JS/TS name
+/// is; so is a symlink whose fully resolved target is a regular file inside `app_root` (the
+/// module keeps the path of the link, which is the one the app imports). A directory named like
+/// a source file, a link to a directory, to a file outside the app, a broken link and a link
+/// loop are not. `app_root` is the canonical app directory; without it no link is followed.
+fn is_source_file(entry: &walkdir::DirEntry, app_root: Option<&Path>) -> bool {
+    if !is_js_file(entry.path()) {
+        return false;
+    }
+    let file_type = entry.file_type();
+    if file_type.is_file() {
+        return true;
+    }
+    file_type.is_symlink()
+        && app_root.is_some_and(|app_root| {
+            fs::canonicalize(entry.path())
+                .is_ok_and(|target| target.is_file() && target.starts_with(app_root))
         })
+}
+
+fn collect_sourcefiles(app_dir: &Path, src_dir: &Path) -> impl Iterator<Item = PathBuf> {
+    let app_root = fs::canonicalize(app_dir).ok();
+    WalkDir::new(src_dir)
+        .min_depth(1)
+        .max_depth(MAX_SOURCE_DEPTH)
+        .into_iter()
+        .filter_map(move |e| {
+            let entry = e.ok()?;
+            is_source_file(&entry, app_root.as_deref()).then(|| entry.into_path())
+        })
+}
+
+/// Transpiled async in `src/` fails the scan. A file outside `src/` only gets left out: it is
+/// often build output (`dist/`, `build/`) that a scan used to ignore completely.
+fn without_transpiled_async_outside_src(
+    paths: HashSet<PathBuf>,
+    src_dir: &Path,
+) -> HashSet<PathBuf> {
+    paths
+        .into_iter()
+        .filter(|path| {
+            let transpiled = !path.starts_with(src_dir)
+                && fs::read_to_string(path).is_ok_and(|source| contains_transpiled_async(&source));
+            if transpiled {
+                warn!(
+                    "skipping {} because it contains transpiled async",
+                    path.display()
+                );
+            }
+            !transpiled
+        })
+        .collect()
 }
 
 fn check_perm(perm: &str) -> bool {
@@ -481,7 +536,8 @@ pub(crate) fn scan_directory<'a>(
     project: impl ForgeProjectTrait<'a> + std::fmt::Debug,
     secret_packages: &[PackageData],
 ) -> Result<Report> {
-    let paths = project.get_paths();
+    let src_dir = dir.join("src");
+    let paths = without_transpiled_async_outside_src(project.get_paths(), &src_dir);
     let manifest = match project.get_manifest() {
         Ok(manifest) => manifest,
         Err(err) => {
@@ -547,8 +603,10 @@ pub(crate) fn scan_directory<'a>(
 
     let suspicious_remotes = check_remotes(&manifest.remotes);
     let mut proj = project.with_files_and_sourceroot(
-        Path::new("src"),
+        // the real source root: `baseUrl`-style imports (`utils/db`) are looked up below it
+        &src_dir,
         sorted_paths,
+        |path| !path.starts_with(&src_dir),
         secret_packages,
         &mut perm_map,
         &suspicious_remotes,

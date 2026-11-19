@@ -4055,7 +4055,6 @@ impl Visit for ImportCollector<'_> {
         {
             Ok(id) => {
                 let mod_id = ModId::from(id);
-                debug_assert_ne!(self.curr_mod, mod_id);
                 match self.resolver.default_export(mod_id) {
                     Some(def) => {
                         self.resolver.resolver.symbol_to_id.insert(
@@ -4090,7 +4089,6 @@ impl Visit for ImportCollector<'_> {
         {
             Ok(id) => {
                 let mod_id = ModId::from(id);
-                debug_assert_ne!(self.curr_mod, mod_id);
                 DefRes::ModuleNs(mod_id)
             }
             Err(_) => {

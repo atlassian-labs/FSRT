@@ -20,6 +20,7 @@ fn prototype_pollution_found(body: &str) -> bool {
         .with_files_and_sourceroot(
             Path::new("src"),
             vec![path.clone()],
+            |_| false,
             &[],
             &mut permission_map,
             &HashSet::new(),
