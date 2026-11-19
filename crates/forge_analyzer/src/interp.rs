@@ -299,6 +299,7 @@ pub trait Runner<'cx>: Sized {
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         def: DefId,
+        loc: Location,
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State>;
@@ -306,9 +307,22 @@ pub trait Runner<'cx>: Sized {
     fn visit_call(
         &mut self,
         interp: &Interp<'cx, Self>,
+        caller: DefId,
         callee: &'cx Operand,
         _args: &'cx [Operand],
-        block: BasicBlockId,
+        loc: Location,
+        curr_state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        self.super_visit_call(interp, caller, callee, _args, loc, curr_state)
+    }
+
+    fn super_visit_call(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        caller: DefId,
+        callee: &'cx Operand,
+        _args: &'cx [Operand],
+        loc: Location,
         curr_state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
         let Some((callee, body)) = interp.body().resolve_call(interp.env(), callee) else {
@@ -319,7 +333,7 @@ pub trait Runner<'cx>: Sized {
         if func_state < *curr_state || !interp.checker_visit(callee) {
             return ControlFlow::Continue(curr_state.clone());
         }
-        interp.push_frame(callee, block);
+        interp.push_frame(callee, caller, loc);
         let res = self.visit_body(interp, callee, body, curr_state);
         interp.pop_frame();
         // FIXME: Should probably join instead of relying on the caller to propogate state
@@ -348,15 +362,22 @@ pub trait Runner<'cx>: Sized {
         interp: &Interp<'cx, Self>,
         rvalue: &'cx Rvalue,
         def: DefId,
-        id: BasicBlockId,
+        loc: Location,
         curr_state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
         trace!("visiting rvalue {rvalue:?} with {curr_state:?}");
         match rvalue {
-            Rvalue::Intrinsic(intrinsic, operands) => {
-                self.visit_intrinsic(interp, intrinsic, def, curr_state, Some(operands.clone()))
+            Rvalue::Intrinsic(intrinsic, operands) => self.visit_intrinsic(
+                interp,
+                intrinsic,
+                def,
+                loc,
+                curr_state,
+                Some(operands.clone()),
+            ),
+            Rvalue::Call(callee, args) => {
+                self.visit_call(interp, def, callee, args, loc, curr_state)
             }
-            Rvalue::Call(callee, args) => self.visit_call(interp, callee, args, id, curr_state),
             Rvalue::Unary(_, _)
             | Rvalue::Bin(_, _, _)
             | Rvalue::Read(_)
@@ -412,7 +433,7 @@ pub trait Runner<'cx>: Sized {
         inst: &'cx Inst,
         state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
-        self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
+        self.visit_rvalue(interp, inst.rvalue(), def, loc, state)
     }
 }
 
@@ -422,9 +443,13 @@ pub trait Checker<'cx>: Sized + Runner<'cx> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Frame {
+    /// The function called, as `push_frame` has always recorded it.
     pub(crate) calling_function: DefId,
     pub(crate) block: BasicBlockId,
     pub(crate) inst_idx: usize,
+    /// The function that made the call, and the call instruction in it.
+    pub(crate) caller: DefId,
+    pub(crate) call_site: Location,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -1169,11 +1194,13 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    pub(crate) fn push_frame(&self, def: DefId, block: BasicBlockId) {
+    pub(crate) fn push_frame(&self, callee: DefId, caller: DefId, call_site: Location) {
         self.callstack.borrow_mut().push(Frame {
-            calling_function: def,
-            block,
+            calling_function: callee,
+            block: call_site.block,
             inst_idx: 0,
+            caller,
+            call_site,
         });
     }
 

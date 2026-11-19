@@ -13,6 +13,8 @@ use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceFile, SourceMap};
 use time::{Date, Month};
 
+mod call_chains;
+mod call_facts;
 mod captured_values;
 mod legacy_callbacks;
 mod outside_src;
@@ -184,12 +186,13 @@ impl<'a> ForgeProjectTrait<'a> for MockForgeProject<'a> {
     fn load_file(
         &self,
         p: impl AsRef<Path>,
-        _: Arc<SourceMap>,
+        source_map: Arc<SourceMap>,
     ) -> std::io::Result<Arc<SourceFile>> {
-        self.files_name_to_source
+        let source = self
+            .files_name_to_source
             .get(p.as_ref())
-            .cloned()
-            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+        Ok(source_map.new_source_file(source.name.clone(), source.src.as_ref().clone()))
     }
 
     fn get_paths(&self) -> HashSet<PathBuf> {
@@ -322,7 +325,7 @@ fn constant_branches_preserve_only_hardcoded_secret_findings() {
         let mut project = MockForgeProject::files_from_string("// src/index.js\n");
         project.add_file(
             "src/index.js",
-            &format!(
+            format!(
                 "import {{ fetch }} from '@forge/api';
                 import {{ kvs }} from '@forge/kvs';
                 export async function run() {{
