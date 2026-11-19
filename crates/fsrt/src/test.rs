@@ -13,6 +13,8 @@ use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceFile, SourceMap};
 use time::{Date, Month};
 
+mod authorization_metadata_routes;
+mod authorization_requests;
 mod captured_values;
 mod legacy_callbacks;
 mod outside_src;

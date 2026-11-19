@@ -746,6 +746,14 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         (*self.callstack.borrow()).clone()
     }
 
+    /// A root-specific suppression must not hide a helper from later roots.
+    pub(crate) fn retry_checker_functions(&self, defs: impl IntoIterator<Item = DefId>) {
+        let mut visited = self.checker_visited.borrow_mut();
+        for def in defs {
+            visited.remove(&def);
+        }
+    }
+
     #[inline]
     pub(crate) fn checker_visit(&self, def: DefId) -> bool {
         self.checker_visited.borrow_mut().insert(def)
