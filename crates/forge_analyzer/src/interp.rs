@@ -522,7 +522,7 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     _checker: PhantomData<C>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ValueManager {
     pub varid_to_value_with_proj: DefinitionAnalysisMapProjection,
     pub varid_to_value: DefinitionAnalysisMap,
@@ -1751,6 +1751,80 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 EntryKind::Function(fname) => EntryKind::Resolver(fname, name.clone()),
                 EntryKind::Resolver(res, _) => EntryKind::Resolver(res, name.clone()),
                 EntryKind::Empty => unreachable!(),
+            };
+            if let Err(error) = self.try_check_function(prop, checker) {
+                warn!("Resolver prop {name} failed: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    fn reset_analysis_state(&mut self) {
+        self.return_value = None;
+        self.return_value_alt.clear();
+        self.func_state.get_mut().clear();
+        self.curr_body.set(None);
+        self.states.get_mut().clear();
+        self.dataflow_visited.clear();
+        self.checker_visited.get_mut().clear();
+        self.callstack.get_mut().clear();
+        self.runner_visited.get_mut().clear();
+        self.instruction_findings.clear();
+        self.value_manager = ValueManager::default();
+    }
+
+    /// Run an entrypoint while giving each resolver callback independent
+    /// dataflow and visitation state. The checker itself is retained so it can
+    /// merge evidence for a concrete sink reached from multiple callbacks.
+    pub fn run_checker_isolated_resolvers(
+        &mut self,
+        def: DefId,
+        checker: &mut C,
+        entry_file: PathBuf,
+        function: String,
+    ) -> Result<(), Error> {
+        self.run_checker_with_contract(
+            def,
+            checker,
+            entry_file,
+            function,
+            InvocationContract::Unknown,
+        )
+    }
+
+    pub fn run_checker_with_contract(
+        &mut self,
+        def: DefId,
+        checker: &mut C,
+        entry_file: PathBuf,
+        function: String,
+        contract: InvocationContract,
+    ) -> Result<(), Error> {
+        self.reset_analysis_state();
+        self.entry = EntryPoint {
+            file: entry_file.clone(),
+            kind: EntryKind::Function(function.clone()),
+            contract,
+            input_category: self.entry.input_category,
+        };
+        let Err(error) = self.try_check_function(def, checker) else {
+            return Ok(());
+        };
+        let resolver = self.env.resolver_defs(def);
+        if resolver.is_empty() {
+            return Err(error);
+        }
+        for (name, prop) in resolver {
+            self.reset_analysis_state();
+            self.entry = EntryPoint {
+                file: entry_file.clone(),
+                kind: EntryKind::Resolver(function.clone(), name.clone()),
+                contract: if contract == InvocationContract::Unknown {
+                    contract
+                } else {
+                    InvocationContract::ResolverCallback
+                },
+                input_category: self.entry.input_category,
             };
             if let Err(error) = self.try_check_function(prop, checker) {
                 warn!("Resolver prop {name} failed: {error}");
