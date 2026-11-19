@@ -176,6 +176,8 @@ impl<'a> ForgeProject<'a> {
                 invokable: entrypoint.invokable,
                 webtrigger: entrypoint.web_trigger,
                 admin: entrypoint.admin,
+                shared_admin_resolver: entrypoint.shared_admin_resolver,
+                admin_module_types: entrypoint.admin_module_types,
             })
         }));
     }
