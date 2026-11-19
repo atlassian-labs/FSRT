@@ -15,9 +15,9 @@ use crate::request::RouteText;
 /// these routes names an issue, page, comment, attachment or user. Each is
 /// matched only for GET requests.
 ///
-/// Residual risk, accepted because the triage found no true positive that depends
-/// on it: the project, board, service desk and space *lists* name containers the
-/// caller may not be allowed to browse.
+/// Residual risk, accepted: the project, board, service desk and space *lists* name
+/// containers the caller may not be allowed to browse. See `docs/authorization.md`
+/// for the one triaged true positive this hides.
 const INSTANCE_METADATA: &[&str] = &[
     // Fields, issue types and issue metadata.
     "/rest/api/:v/field",
