@@ -51,7 +51,8 @@ use swc_core::{
 use tracing::{debug, field::debug, info, instrument, warn};
 use typed_index_collections::{TiSlice, TiVec};
 
-use crate::ir::VarId;
+use crate::ir::{Location, VarId};
+use crate::request::ConstFacts;
 use crate::{
     ctx::ModId,
     ir::{
@@ -59,6 +60,8 @@ use crate::{
         RETURN_VAR, Rvalue, STARTING_BLOCK, Template, Terminator, VarKind, Variable,
     },
 };
+
+mod authz_request;
 
 create_newtype! {
     pub struct FuncId(u32);
@@ -630,6 +633,8 @@ pub struct Environment {
     /// `(resolver, object)` for each `makeResolver(object)` call, whose members are
     /// copied once all modules have been lowered.
     resolver_configs: Vec<(DefId, DefId)>,
+    /// Request arguments that `const` bindings hold, such as a route template.
+    pub(crate) authz_consts: FxHashMap<DefId, ConstFacts>,
 }
 
 struct ImportCollector<'cx> {
@@ -1832,6 +1837,21 @@ impl FunctionAnalyzer<'_> {
         };
         let first_arg = args.first().map(|expr| &*expr.expr);
         let intrinsic = self.as_intrinsic(&props, first_arg);
+        if matches!(
+            intrinsic,
+            Some(Intrinsic::ApiCall(_) | Intrinsic::ApiCustomField)
+        ) && matches!(props.last(), Some(PropPath::Static(name))
+                if matches!(name.as_ref(), "requestJira" | "requestConfluence" | "requestBitbucket"))
+        {
+            let facts = self.request_facts(args);
+            self.body.authz_requests.insert(
+                Location::new(
+                    self.block,
+                    self.body.blockbuilders[self.block].insts.len() as u32,
+                ),
+                facts,
+            );
+        }
         let call = match intrinsic {
             Some(int) => Rvalue::Intrinsic(int, lowered_args),
             None => Rvalue::Call(callee, lowered_args),
@@ -2611,6 +2631,12 @@ impl FunctionAnalyzer<'_> {
                 let def = self.res.get_or_insert_sym(id, self.module);
                 if var.kind == swc_core::ecma::ast::VarDeclKind::Const {
                     self.body.const_bindings.insert(def);
+                    if let Some(init) = decl.init.as_deref() {
+                        let facts = self.const_facts(init);
+                        if facts != Default::default() {
+                            self.res.authz_consts.insert(def, facts);
+                        }
+                    }
                 }
                 let opnd = decl
                     .init

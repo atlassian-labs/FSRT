@@ -1,5 +1,6 @@
 use crate::checkers::AuthZVulnKind::{ApiCall, RemoteCall};
 use crate::interp::ProjectionVec;
+use crate::request::HttpMethod;
 use crate::utils::projvec_from_str;
 use crate::{
     definitions::{Const, DefId, Environment, IntrinsicName, Value},
@@ -8,8 +9,8 @@ use crate::{
         WithCallStack,
     },
     ir::{
-        Base, BasicBlock, BasicBlockId, BinOp, Inst, Intrinsic, Literal, Location, Operand,
-        Projection, Rvalue, VarId, VarKind, Variable,
+        Base, BasicBlock, BasicBlockId, BinOp, Body, Inst, Intrinsic, Literal, Location, Operand,
+        Projection, Rvalue, STARTING_BLOCK, VarId, VarKind, Variable,
     },
     reporter::{IntoVuln, Reporter, Severity, Vulnerability},
     utils::{add_elements_to_intrinsic_struct, convert_lit_to_raw, translate_request_type},
@@ -31,6 +32,7 @@ use std::{
 use time::{Date, Month, OffsetDateTime};
 use tracing::{debug, info, warn};
 
+mod authz_routes;
 mod secret_logging;
 pub use secret_logging::{
     DEFAULT_EXCLUDED_SECRET_SUFFIXES, DEFAULT_SECRET_SUFFIXES, SecretLoggingChecker,
@@ -246,6 +248,14 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
 pub struct AuthZChecker {
     vulns: Vec<AuthZVuln>,
     check_remotes: bool,
+    /// The instruction being visited.
+    at: Option<(DefId, Location)>,
+    /// Helpers on the path of an operation the policy did not report, in the root
+    /// being walked. They are retried for later roots, unless the path of a reported
+    /// operation also holds them.
+    suppressed_helpers: HashSet<DefId>,
+    /// Helpers on the path of a reported operation, in the root being walked.
+    exposed_helpers: HashSet<DefId>,
 }
 
 impl AuthZChecker {
@@ -253,6 +263,9 @@ impl AuthZChecker {
         Self {
             vulns: vec![],
             check_remotes,
+            at: None,
+            suppressed_helpers: HashSet::new(),
+            exposed_helpers: HashSet::new(),
         }
     }
 
@@ -260,6 +273,46 @@ impl AuthZChecker {
         // TODO: make this an associated function on the Checker trait.
         self.vulns.into_iter()
     }
+
+    /// Apply the policy to a privileged operation at the instruction being visited.
+    /// The walk ends at the first operation that is reported, as it did before the
+    /// policy existed; an operation the policy does not report leaves the walk
+    /// running, so a later operation of the same entry can still be reported.
+    fn found<'cx>(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        kind: AuthZVulnKind,
+        state: &AuthorizeState,
+    ) -> ControlFlow<(), AuthorizeState> {
+        let callstack = interp.callstack();
+        let helpers = callstack.iter().map(|frame| frame.calling_function);
+        if let Some((def, loc)) = self.at
+            && let Some(reason) = suppression(interp.env(), def, loc)
+        {
+            debug!(entry = ?interp.entry(), function = ?def, operation = ?loc, reason,
+                "Operation is not reported");
+            self.suppressed_helpers.extend(helpers);
+            return ControlFlow::Continue(*state);
+        }
+        self.exposed_helpers.extend(helpers);
+        self.vulns.push(AuthZVuln::new(
+            callstack,
+            interp.env(),
+            interp.entry(),
+            kind,
+        ));
+        ControlFlow::Break(())
+    }
+}
+
+/// Why an operation is not reported, from what the request itself says. A rule
+/// needs a proven GET: an unknown method or route keeps the finding.
+fn suppression(env: &Environment, def: DefId, loc: Location) -> Option<&'static str> {
+    let request = env.def_ref(def).as_body()?.authz_requests.get(&loc)?;
+    if request.method(env)? != HttpMethod::Get {
+        return None;
+    }
+    authz_routes::is_instance_metadata(request.route(env)?).then_some("instance-metadata-route")
 }
 
 impl Default for AuthZChecker {
@@ -376,6 +429,46 @@ impl<'cx> Runner<'cx> for AuthZChecker {
 
     const NAME: &'static str = "Authorization";
 
+    fn visit_body(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        body: &'cx Body,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        let is_root = interp.callstack().is_empty();
+        let old_body = interp.body();
+        interp.set_body(body);
+        let result = self.visit_block(
+            interp,
+            def,
+            STARTING_BLOCK,
+            body.block(STARTING_BLOCK),
+            state,
+        );
+        interp.set_body(old_body);
+        if is_root {
+            // A helper is visited once per scan, so one that only a suppressed operation
+            // reached is made visitable again for the roots that follow.
+            let suppressed = mem::take(&mut self.suppressed_helpers);
+            let exposed = mem::take(&mut self.exposed_helpers);
+            interp.retry_checker_functions(suppressed.difference(&exposed).copied());
+        }
+        result
+    }
+
+    fn visit_inst(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        loc: Location,
+        inst: &'cx Inst,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        self.at = Some((def, loc));
+        self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
+    }
+
     fn visit_intrinsic(
         &mut self,
         interp: &Interp<'cx, Self>,
@@ -395,16 +488,8 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                     if !self.check_remotes {
                         ControlFlow::Continue(*state)
                     } else if let Some(remote_name) = remote {
-                        let vuln = AuthZVuln::new(
-                            interp.callstack(),
-                            interp.env(),
-                            interp.entry(),
-                            RemoteCall(remote_name.clone()),
-                        );
-
                         info!("Found a remote vuln!");
-                        self.vulns.push(vuln);
-                        ControlFlow::Break(())
+                        self.found(interp, RemoteCall(remote_name.clone()), state)
                     } else {
                         warn!("Privileged remote missing ID");
                         ControlFlow::Continue(*state)
@@ -419,19 +504,13 @@ impl<'cx> Runner<'cx> for AuthZChecker {
                 | IntrinsicName::RequestGraph
                 | IntrinsicName::RequestCompass(_)
                 | IntrinsicName::Other => {
-                    let vuln =
-                        AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
                     info!("Found a vuln!");
-                    self.vulns.push(vuln);
-                    ControlFlow::Break(())
+                    self.found(interp, ApiCall, state)
                 }
             },
             Intrinsic::ApiCustomField if *state < AuthorizeState::CustomFieldOnly => {
-                let vuln =
-                    AuthZVuln::new(interp.callstack(), interp.env(), interp.entry(), ApiCall);
                 info!("Found a vuln!");
-                self.vulns.push(vuln);
-                ControlFlow::Break(())
+                self.found(interp, ApiCall, state)
             }
             Intrinsic::SecretFunction(_)
             | Intrinsic::ApiCall(_)
