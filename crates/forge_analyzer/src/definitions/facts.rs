@@ -20,6 +20,7 @@ use std::{
 pub(super) struct ImmutableFacts {
     assignments: OnceCell<FxHashMap<DefId, Vec<(FuncId, Location)>>>,
     constants: RefCell<FxHashMap<DefId, bool>>,
+    pub(super) import_mutations: OnceCell<super::imports::ImportMutations>,
 }
 
 impl Environment {
