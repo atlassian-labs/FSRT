@@ -453,6 +453,10 @@ impl Checker<'_> for AuthZChecker {
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 pub enum Authenticated {
     No,
+    /// A recognized authentication-verification call was observed before this
+    /// point (authentication-check-present policy). Weaker than `Yes`: it only
+    /// records that a verification call ran, not that it succeeded.
+    CheckPresent,
     Yes,
 }
 
@@ -494,6 +498,9 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         initial_state: Self::State,
         _operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
+        if is_authentication_check(intrinsic) {
+            return max(initial_state, Authenticated::CheckPresent);
+        }
         match *intrinsic {
             Intrinsic::Authorize(_) | Intrinsic::ConsoleLog(_) => initial_state,
             Intrinsic::Fetch
@@ -565,13 +572,54 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
     }
 }
 
+fn entry_func_name(entry: &EntryPoint) -> String {
+    match &entry.kind {
+        EntryKind::Function(func) => func.clone(),
+        EntryKind::Resolver(res, prop) => format!("{res}.{prop}"),
+        EntryKind::Empty => String::new(),
+    }
+}
+
+/// True for catalog entries marked `authentication_check` (e.g. `crypto.verify`).
+fn is_authentication_check(intrinsic: &Intrinsic) -> bool {
+    matches!(intrinsic, Intrinsic::SecretFunction(package) if package.authentication_check)
+}
+
 pub struct AuthenticateChecker {
     vulns: Vec<AuthNVuln>,
+    /// Where the walk of the current entry point is.
+    position: Option<(DefId, Location)>,
+    /// First verification call seen while walking the current entry point.
+    verification: Option<String>,
+    policy_suppressed: usize,
 }
 
 impl AuthenticateChecker {
     pub fn new() -> Self {
-        Self { vulns: vec![] }
+        Self {
+            vulns: vec![],
+            position: None,
+            verification: None,
+            policy_suppressed: 0,
+        }
+    }
+
+    /// Findings not reported because a verification call preceded the privileged
+    /// operation (authentication-check-present policy).
+    pub fn policy_suppressed(&self) -> usize {
+        self.policy_suppressed
+    }
+
+    fn describe_position(&self, env: &Environment) -> String {
+        match self.position {
+            Some((def, loc)) => format!(
+                "{} (block {:?}, statement {})",
+                env.def_name(def),
+                loc.block,
+                loc.stmt
+            ),
+            None => String::new(),
+        }
     }
 
     pub fn into_vulns(self) -> impl IntoIterator<Item = AuthNVuln> {
@@ -599,6 +647,12 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
         state: &Self::State,
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
+        if is_authentication_check(intrinsic) {
+            if self.verification.is_none() {
+                self.verification = Some(self.describe_position(interp.env()));
+            }
+            return ControlFlow::Continue(max(*state, Authenticated::CheckPresent));
+        }
         match *intrinsic {
             Intrinsic::Authorize(_) | Intrinsic::ConsoleLog(_) => ControlFlow::Continue(*state),
             Intrinsic::Fetch
@@ -615,11 +669,73 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
                 ControlFlow::Break(())
             }
             Intrinsic::SecretFunction(_) => ControlFlow::Continue(*state),
+            Intrinsic::ApiCall(_) | Intrinsic::ApiCustomField
+                if *state == Authenticated::CheckPresent =>
+            {
+                // Policy: a verification call was observed, not that it was
+                // checked or correct, so `authentication_verified` is false.
+                self.policy_suppressed += 1;
+                info!(
+                    reason = "authentication-check-present-policy",
+                    authentication_verified = false,
+                    entrypoint = %entry_func_name(interp.entry()),
+                    file = %interp.entry().file.display(),
+                    verification_call = self.verification.as_deref().unwrap_or("unknown"),
+                    privileged_operation = %self.describe_position(interp.env()),
+                    "suppressed Authentication finding"
+                );
+                ControlFlow::Continue(*state)
+            }
             Intrinsic::ApiCall(_) | Intrinsic::UserFieldAccess | Intrinsic::ApiCustomField => {
                 ControlFlow::Continue(*state)
             }
             Intrinsic::SafeCall(_) => ControlFlow::Continue(*state),
         }
+    }
+
+    fn visit_call(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        callee: &'cx Operand,
+        _args: &'cx [Operand],
+        block: BasicBlockId,
+        curr_state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        let Some((callee, body)) = interp.body().resolve_call(interp.env(), callee) else {
+            return ControlFlow::Continue(*curr_state);
+        };
+        let func_state = interp.func_state(callee).unwrap_or(Authenticated::No);
+        // A callee that cannot improve on the current state is normally skipped.
+        // Under the policy it is still walked so privileged operations it
+        // contains are logged as suppressed; it cannot add findings.
+        if func_state < *curr_state && *curr_state != Authenticated::CheckPresent {
+            return ControlFlow::Continue(*curr_state);
+        }
+        if !interp.checker_visit(callee) {
+            // An earlier entry point already walked this body. Its summary
+            // still carries the verification mark (a shared auth helper).
+            return ControlFlow::Continue(if func_state == Authenticated::CheckPresent {
+                func_state
+            } else {
+                *curr_state
+            });
+        }
+        interp.push_frame(callee, block);
+        let res = self.visit_body(interp, callee, body, curr_state);
+        interp.pop_frame();
+        res
+    }
+
+    fn visit_inst(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        loc: Location,
+        inst: &'cx Inst,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        self.position = Some((def, loc));
+        self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
     }
 }
 
@@ -944,9 +1060,12 @@ impl<'cx> Runner<'cx> for SecretChecker {
     ) -> ControlFlow<(), Self::State> {
         match intrinsic {
             Intrinsic::SecretFunction(package_data) => {
-                if let Some(operand) = operands
-                    .unwrap_or_default()
-                    .get((package_data.secret_position - 1) as usize)
+                // Verification-only entries have no secret argument.
+                if let Some(operand) = package_data
+                    .secret_position
+                    .and_then(|position| position.checked_sub(1))
+                    .and_then(|index| operands.unwrap_or_default().into_iter().nth(index as usize))
+                    .as_ref()
                 {
                     {
                         if interp.check_for_const(operand, def) {

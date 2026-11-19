@@ -124,6 +124,36 @@ Callee summaries do not propagate writes to outer bindings back to callers.
 Findings identify the sink function, unique IR body, and instruction location,
 not a source line or a runtime secret value.
 
+### Authentication-check-present policy
+
+The Authentication scanner treats a call to a recognized authentication-verification
+function before a privileged operation (such as `api.asApp().requestJira(...)`) as
+sufficient, and does not report that operation. The functions are listed in
+`authentication-checks.yaml` (`authentication_check: true`, no `secret_position`):
+Node `crypto.verify` (imported from `crypto` or `node:crypto`) and
+`jsonwebtoken.verify`. bcrypt, bcryptjs and argon2 are not included, since they
+compare passwords with stored hashes rather than authenticate a request.
+
+This is a deliberate assumption: **a verification call was observed, not that
+authentication was verified.** FSRT does not check the result, so `crypto.verify(...)`
+with the result ignored, or a failure that is caught before the operation, still
+suppresses the finding. It also does not check signature correctness, key trust,
+claims, or that rejection fails closed.
+
+Calls are matched by import provenance (default, namespace, named and aliased
+imports of `crypto`/`node:crypto`/`jsonwebtoken`), never by function name alone, so
+an unrelated `verify` does not qualify. The call must run before the operation on
+the entry point's own path, directly or through helpers; a call after the operation,
+in an unused helper, or in another entry point does not count. Not recognized:
+`require()` of these modules, `crypto.createVerify(...).verify`, `crypto.subtle`
+and dynamic imports.
+
+Each suppression is logged with `--verbose` (stderr; stdout JSON is unchanged) with
+`reason="authentication-check-present-policy"`, `authentication_verified=false`, the
+entry point, and the verification call and privileged operation locations (function,
+block and statement), plus a per-scan total. The normal stdout report has no
+field for a suppressed count, so none is added there.
+
 ## Installation
 
 You will need to install [Rust] to compile `FSRT`. You can install `Rust` through [Rustup] or through your distro's package manager. You will also

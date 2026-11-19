@@ -1,0 +1,28 @@
+# Authentication-verification functions (authentication-check-present policy).
+#
+# A call to one of these before a privileged operation suppresses the
+# Authentication finding. The policy only observes that the call happened: it
+# does not check the result, the key, the claims or that rejection is handled.
+# Entries are PackageData records like secretdata.yaml, matched by import
+# provenance. They have no secret_position because no argument is a secret
+# (a public key passed to verify is not a hardcoded secret).
+#
+# Entries here are appended after secretdata.yaml. When a function also appears
+# there (jsonwebtoken.verify), the secretdata.yaml entry keeps its secret
+# handling and this entry only adds the authentication-check mark.
+#
+# bcrypt, bcryptjs and argon2 are deliberately absent: they compare passwords
+# with stored hashes rather than authenticating a request.
+
+- package_name: crypto
+  identifier: verify
+  method:
+  authentication_check: true
+- package_name: node:crypto
+  identifier: verify
+  method:
+  authentication_check: true
+- package_name: jsonwebtoken
+  identifier: verify
+  method:
+  authentication_check: true
