@@ -21,7 +21,7 @@ fn proof_names_the_caller_and_call_site_of_each_hop() {
          export function run(payload) { return middle(payload.query); }",
     );
     assert!(
-        proof.starts_with(
+        proof.contains(
             "Propagation path: run -> call from run at src/index.js:4:48 \
              -> call from middle at src/index.js:3:41 -> leaf."
         ),

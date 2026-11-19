@@ -946,6 +946,8 @@ pub struct Entrypoint<'a, S = Unresolved> {
     pub invokable: bool,
     pub web_trigger: bool,
     pub admin: bool,
+    pub product_events: Vec<&'a str>,
+    pub scheduled: bool,
 }
 
 impl<T> AsRef<T> for FunctionTy<T> {
@@ -966,8 +968,8 @@ impl<'a> ForgeModules<'a> {
             custom_field,
             consumers,
             functions,
-            event_triggers: _,
-            scheduled_triggers: _,
+            event_triggers,
+            scheduled_triggers,
             api_routes,
             compass_admin_page,
             component_page,
@@ -1137,6 +1139,7 @@ impl<'a> ForgeModules<'a> {
                     .iter()
                     .any(|admin_function| admin_function.function == Some(func.key));
 
+            let function_key = func.key;
             Ok::<_, Error>(Entrypoint {
                 handler: func.handler,
                 module_bindings,
@@ -1144,6 +1147,14 @@ impl<'a> ForgeModules<'a> {
                 invokable,
                 web_trigger,
                 admin,
+                product_events: event_triggers
+                    .iter()
+                    .filter(|trigger| trigger.function == Some(function_key))
+                    .flat_map(|trigger| trigger.events.iter().copied())
+                    .collect(),
+                scheduled: scheduled_triggers
+                    .iter()
+                    .any(|trigger| trigger.function == Some(function_key)),
             })
         })
     }
@@ -1453,7 +1464,9 @@ mod tests {
                 module_bindings: vec![],
                 invokable: false,
                 web_trigger: false,
-                admin: true
+                admin: true,
+                product_events: vec![],
+                scheduled: false,
             })
         );
 
@@ -1475,7 +1488,9 @@ mod tests {
                 }],
                 invokable: true,
                 web_trigger: false,
-                admin: false
+                admin: false,
+                product_events: vec![],
+                scheduled: false,
             })
         );
     }
@@ -1818,5 +1833,30 @@ permissions:
         ));
         assert!(!is_hardcoded_variable("{{prefix}}_{{suffix}}"));
         assert!(!is_hardcoded_variable("     {{client_secret}}     "));
+    }
+}
+
+#[cfg(test)]
+mod invocation_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn retains_module_uses_with_function_declarations() {
+        let manifest: ForgeManifest<'_> = serde_json::from_str(
+            r#"{
+            "modules": {
+                "function": [{"key":"main","handler":"index.run"}],
+                "trigger": [{"key":"events","function":"main","events":["avi:jira:created:issue"]}],
+                "scheduledTrigger": [{"key":"clock","function":"main","interval":"hour"}],
+                "webtrigger": [{"key":"web","function":"main"}]
+            },
+            "app": {"id":"test"}
+        }"#,
+        )
+        .unwrap();
+        let entry = manifest.modules.into_analyzable_functions().next().unwrap();
+        assert_eq!(entry.product_events, ["avi:jira:created:issue"]);
+        assert!(entry.web_trigger);
+        assert!(entry.scheduled);
     }
 }
