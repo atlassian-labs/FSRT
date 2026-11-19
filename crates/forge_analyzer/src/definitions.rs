@@ -2682,6 +2682,21 @@ impl FunctionAnalyzer<'_> {
     }
 }
 
+// Unsupported binding operations must not acquire an optimistic schema view.
+fn supported_input_pattern(pat: &Pat) -> bool {
+    match pat {
+        Pat::Ident(_) => true,
+        Pat::Object(object) => object.props.iter().all(|prop| match prop {
+            ObjectPatProp::KeyValue(prop) => {
+                !matches!(prop.key, PropName::Computed(_)) && supported_input_pattern(&prop.value)
+            }
+            ObjectPatProp::Assign(prop) => prop.value.is_none(),
+            ObjectPatProp::Rest(_) => false,
+        }),
+        _ => false,
+    }
+}
+
 struct ArgDefiner<'cx> {
     res: &'cx mut Environment,
     module: ModId,
@@ -2779,6 +2794,9 @@ impl Visit for ArgDefiner<'_> {
             };
             self.body.argument_defs.push(defid);
             self.body.argument_spans.insert(defid, pat.span());
+            if !supported_input_pattern(pat) {
+                self.body.unsupported_arguments.push(defid);
+            }
             let var_id = self.body.add_arg(defid, id);
             // FIXME: use clone_from once we specialize
             self.current_arg = Variable::new(var_id);

@@ -460,10 +460,29 @@ pub(crate) enum EntryKind {
     Empty,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InputCategory {
+    #[default]
+    Payload,
+    WebRequest,
+    ProductEvent,
+}
+
+/// A verified platform invocation, independent of the function's spelling.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InvocationContract {
+    ForgeFunction,
+    ResolverCallback,
+    #[default]
+    Unknown,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) struct EntryPoint {
     pub(crate) file: PathBuf,
     pub(crate) kind: EntryKind,
+    pub(crate) contract: InvocationContract,
+    pub(crate) input_category: InputCategory,
 }
 
 #[derive(Debug)]
@@ -1686,6 +1705,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.entry = EntryPoint {
             file,
             kind: EntryKind::Function(function),
+            ..EntryPoint::default()
         };
     }
 
@@ -1713,6 +1733,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         self.entry = EntryPoint {
             file: entry_file,
             kind: EntryKind::Function(function),
+            ..EntryPoint::default()
         };
         let Err(error) = self.try_check_function(def, checker) else {
             return Ok(());
