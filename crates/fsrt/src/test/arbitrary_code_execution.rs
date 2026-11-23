@@ -361,9 +361,12 @@ fn pure_helper_string_construction_is_not_user_input() {
 
 #[test]
 fn app_module_helper_string_construction_is_not_user_input() {
-    for import in [
-        "import { buildSource } from './build';",
-        "const { buildSource } = require('./build');",
+    // A named import resolves to the app function, whose only return is a
+    // constant. A destructured `require` of a relative path does not resolve,
+    // so its result keeps the floor.
+    for (import, expected) in [
+        ("import { buildSource } from './build';", 0),
+        ("const { buildSource } = require('./build');", 1),
     ] {
         assert_execution_findings(
             &format!(
@@ -374,7 +377,24 @@ fn app_module_helper_string_construction_is_not_user_input() {
             export function buildSource() {{ return 'return 42;'; }}
         "#
             ),
-            0,
+            expected,
+        );
+    }
+}
+
+#[test]
+fn a_package_namespace_is_not_executable_text_but_app_exports_are() {
+    for (module, expected) in [("'node:path'", 0), ("'./code'", 1), ("name", 1)] {
+        assert_execution_findings(
+            &format!(
+                r#"// src/index.js
+            const name = './code';
+            export function run() {{ eval(require({module})); }}
+            // src/code.js
+            export default 'return 42;';
+        "#
+            ),
+            expected,
         );
     }
 }
@@ -640,7 +660,9 @@ fn constant_rule_names_split_from_a_literal_are_not_user_input() {
 }
 
 #[test]
-fn an_app_constructed_receiver_does_not_taint_its_method_result() {
+fn an_app_constructed_receiver_still_reports_its_method_result() {
+    // The analysis does not resolve a method of an object a factory returned,
+    // so the result keeps the floor even where the factory takes no input.
     assert_execution_findings(
         r#"// src/index.js
         function makeContext() {
@@ -653,7 +675,7 @@ fn an_app_constructed_receiver_does_not_taint_its_method_result() {
                 'gl.uniform' + info.size + 'fv(location, value);');
         }
     "#,
-        0,
+        1,
     );
 }
 
@@ -667,6 +689,182 @@ fn a_sibling_field_does_not_taint_a_constant_field() {
                 const options = {{ source: 'answer = 42;' }};
                 options.{field} = input.source;
                 eval(options.source);
+            }}
+        "#
+            ),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn values_stored_through_a_method_call_still_report() {
+    for project in [
+        // The tainted twin of `static_table_loop_is_not_user_input`.
+        r#"// src/index.js
+        const TABLE = [{ type: 'void 0;' }];
+        export function run(input) {
+            let lines = ['void 0;'];
+            for (let i = 0; i < TABLE.length; ++i) {
+                lines.push(input.rows[i].type);
+            }
+            eval(lines.join('\n'));
+        }"#,
+        // A constant fragment joined to input before it is pushed.
+        r#"// src/index.js
+        const TABLE = [{ type: 'void 0;' }];
+        export function run(input) {
+            let lines = ['void 0;'];
+            for (let i = 0; i < TABLE.length; ++i) {
+                lines.push(TABLE[i].type + input.suffix);
+            }
+            eval(lines.join('\n'));
+        }"#,
+        // A fetched body.
+        r#"// src/index.js
+        export async function run() {
+            const lines = ['void 0;'];
+            const response = await fetch('/code');
+            lines.push(await response.text());
+            eval(lines.join('\n'));
+        }"#,
+        r#"// src/index.js
+        export function run(input) {
+            const parts = new Set();
+            parts.add(input.source);
+            eval([...parts].join(';'));
+        }"#,
+        r#"// src/index.js
+        export function run(input) {
+            const rules = new Map();
+            rules.set('body', input.source);
+            eval(rules.get('body'));
+        }"#,
+    ] {
+        assert_execution_findings(project, 1);
+    }
+}
+
+#[test]
+fn results_of_calls_the_analysis_cannot_resolve_still_report() {
+    for project in [
+        // The tainted twin of the `require` half of
+        // `app_module_helper_string_construction_is_not_user_input`.
+        r#"// src/index.js
+        const { load } = require('./load');
+        export async function run() { eval(await load()); }
+        // src/load.js
+        export async function load() {
+            const response = await fetch('/code');
+            return response.text();
+        }"#,
+        // A method of a default-exported object.
+        r#"// src/index.js
+        import rules from './rules';
+        export async function run() { eval(await rules.load()); }
+        // src/rules.js
+        export default {
+            async load() {
+                const response = await fetch('/code');
+                return response.text();
+            },
+        };"#,
+        // A method of an exported instance.
+        r#"// src/index.js
+        import { rules } from './rules';
+        export async function run() { eval(await rules.load()); }
+        // src/rules.js
+        class Rules {
+            async load() {
+                const response = await fetch('/code');
+                return response.text();
+            }
+        }
+        export const rules = new Rules();"#,
+        // A sibling method called through `this`.
+        r#"// src/index.js
+        const rules = {
+            async load() {
+                const response = await fetch('/code');
+                return response.text();
+            },
+            async apply() { eval(await this.load()); },
+        };
+        export async function run() { await rules.apply(); }"#,
+        // A function held in a local.
+        r#"// src/index.js
+        export function run(input) {
+            const read = function () { return input.source; };
+            const alias = read;
+            eval(alias());
+        }"#,
+        // A promise resolved with input.
+        r#"// src/index.js
+        export async function run(input) {
+            const source = await new Promise((resolve) => { resolve(input.source); });
+            eval(source);
+        }"#,
+        // The tainted twin of
+        // `an_app_constructed_receiver_still_reports_its_method_result`.
+        r#"// src/index.js
+        function makeContext(size) {
+            return { getActiveUniform: function (i) { return { size: size }; } };
+        }
+        export function run(input) {
+            const gl = makeContext(input.size);
+            const info = gl.getActiveUniform(0);
+            return new Function('gl', 'location', 'value',
+                'gl.uniform' + info.size + 'fv(location, value);');
+        }"#,
+    ] {
+        assert_execution_findings(project, 1);
+    }
+}
+
+#[test]
+fn constant_only_construction_stays_unreported() {
+    for project in [
+        // Input bounds the loop; every pushed fragment is a constant.
+        r#"// src/index.js
+        const CONST = [{ type: 'void 0;' }, { type: '1 + 1;' }];
+        export function run(input) {
+            let lines = ['static', 'strings'];
+            for (let i = 0; i < input.count; ++i) {
+                lines.push(CONST[i].type);
+            }
+            eval(lines.join('\n'));
+        }"#,
+        r#"// src/index.js
+        const CONST = [{ type: 'void 0;' }, { type: '1 + 1;' }];
+        export function run() {
+            const lines = [];
+            CONST.forEach(entry => { lines.push(entry.type); });
+            for (const entry of CONST) { lines.push(entry.type); }
+            eval(lines.join('\n'));
+        }"#,
+        // Built-in string and array methods on constants.
+        r#"// src/index.js
+        export function run() {
+            eval('  a b  '.trim().toUpperCase().padEnd(6).repeat(2).split(' ')
+                .reverse().concat(['c']).slice(0).filter(Boolean).join(';'));
+        }"#,
+        r#"// src/index.js
+        const SETTINGS = { mode: 'strict' };
+        export function run() { eval('(' + JSON.stringify(SETTINGS) + ')'); }"#,
+    ] {
+        assert_execution_findings(project, 0);
+    }
+}
+
+#[test]
+fn a_function_replacement_returns_what_it_returned() {
+    for (replacement, expected) in [("'42'", 0), ("() => input.source", 1)] {
+        assert_execution_findings(
+            &format!(
+                r#"// src/index.js
+            export function run(input) {{
+                const template = 'return VALUE;';
+                eval(template.replace('VALUE', {replacement}));
             }}
         "#
             ),

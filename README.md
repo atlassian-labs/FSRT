@@ -42,11 +42,16 @@ execution sink: `eval`, the `Function`, `AsyncFunction`, `GeneratorFunction` and
 module. Arguments of manifest functions, results of IO such as `fetch`,
 `requestJira` and Forge storage reads, and results of calls into imported
 packages are sources; text assembled only from constants is not reported. The
-`lodash` and `path` members that derive their result from their arguments, such
-as `join` and `basename`, carry only the taint of those arguments, so
-`path.join('/bin', 'ls')` is not reported; a member that accepts a function,
-such as `map`, keeps the package floor. It is disabled by default; select it
-explicitly, alone or with other scanners:
+result of a call the scanner cannot account for is reported, so a value is only
+traced back to the receiver and the arguments for members whose result they
+supply: the `lodash` and `path` members such as `join` and `basename`, so
+`path.join('/bin', 'ls')` is not reported; the built-in string and array
+members such as `trim`, `split` and `join`; and the pure globals such as
+`String` and `JSON.stringify`. A member that returns what a callback returned,
+such as `map` or `replace` with a function, keeps the floor, and `push`,
+`unshift`, `splice`, `add` and `set` give a receiver held in a variable what
+their arguments hold. It is disabled by default; select it explicitly, alone
+or with other scanners:
 
 ```bash
 fsrt --scanners arbitrary-code-execution ./my-forge-app

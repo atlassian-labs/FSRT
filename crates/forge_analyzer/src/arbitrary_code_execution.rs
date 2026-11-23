@@ -2,8 +2,12 @@
 //! bindings, so a call and a `new` expression are classified the same way.
 //! `ExecutionTaint` supplies sources and the reporting predicate to the shared
 //! fixed-point engine: Forge entrypoint arguments, IO results and package call
-//! results are sources, and text assembled only from constants is not. The
-//! lodash and `path` members named by `pure_helper` follow their arguments.
+//! results are sources, and text assembled only from constants is not. A call
+//! the analysis cannot account for is floored at `Taint::Unknown`, which
+//! reports; a result is only followed back to the receiver and the arguments
+//! for the members named by `pure_helper`, `pure_builtin`, `pure_global` and
+//! `pure_global_member`. `stores_arguments` names the members that put their
+//! arguments in a receiver held in a variable.
 
 use std::{
     collections::HashSet,
@@ -201,6 +205,77 @@ fn pure_helper(name: &str) -> bool {
     )
 }
 
+/// Built-in string and array members whose result is the receiver's own text or
+/// elements, possibly with the arguments. A member that returns what a callback
+/// returned, such as `map` or `reduce`, keeps the floor, as does a member whose
+/// name an app commonly defines for a lookup, such as `get`, `find` or `keys`.
+fn pure_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        // String members, whose arguments are text or a pattern.
+        "charAt"
+            | "charCodeAt"
+            | "codePointAt"
+            | "endsWith"
+            | "localeCompare"
+            | "match"
+            | "matchAll"
+            | "normalize"
+            | "padEnd"
+            | "padStart"
+            | "repeat"
+            | "split"
+            | "startsWith"
+            | "substr"
+            | "substring"
+            | "toLocaleLowerCase"
+            | "toLocaleUpperCase"
+            | "toLowerCase"
+            | "toUpperCase"
+            | "trim"
+            | "trimEnd"
+            | "trimStart"
+            // Array members that select, reorder or join what the receiver
+            // already holds.
+            | "concat"
+            | "filter"
+            | "flat"
+            | "join"
+            | "reverse"
+            | "slice"
+            | "sort"
+            | "toReversed"
+            | "toSorted"
+    )
+}
+
+/// Globals whose result is computed from their arguments.
+fn pure_global(name: &str) -> bool {
+    matches!(
+        name,
+        "String"
+            | "Number"
+            | "parseInt"
+            | "parseFloat"
+            | "encodeURI"
+            | "encodeURIComponent"
+            | "decodeURI"
+            | "decodeURIComponent"
+    )
+}
+
+/// Members of a built-in namespace whose result is computed from the arguments.
+/// A member that accepts a callback, such as `Array.from`, keeps the floor.
+fn pure_global_member(global: &str, name: &str) -> bool {
+    match global {
+        "JSON" => matches!(name, "parse" | "stringify"),
+        "Object" => matches!(name, "entries" | "fromEntries" | "keys" | "values"),
+        "String" => matches!(name, "fromCharCode" | "fromCodePoint" | "raw"),
+        "Number" => matches!(name, "parseFloat" | "parseInt"),
+        _ => false,
+    }
+}
+
 /// How many leading arguments of `name` are executed as code or as a command.
 fn executable_arguments(name: &str) -> usize {
     // Every parameter name is compiled alongside the body.
@@ -232,6 +307,8 @@ enum Binding {
     Library {
         pure: bool,
     },
+    /// A `pure_global_member`, such as `JSON.stringify`.
+    Pure,
 }
 
 /// Follow IR reads, including module captures and CommonJS destructuring. Only
@@ -317,6 +394,7 @@ fn binding(
             return None;
         };
         result = match result? {
+            Binding::Global(global) if pure_global_member(&global, name) => Some(Binding::Pure),
             Binding::Global(global) if global == "global" || global == "globalThis" => {
                 code_constructor(name).map(Binding::Sink)
             }
@@ -452,22 +530,55 @@ impl TaintPolicy for ExecutionTaint {
     }
 
     fn method_value(&self, call: &UnresolvedCall<'_, Taint>) -> Option<FlowValue<Taint>> {
-        match binding(call.env, call.body, call.callee, &mut HashSet::new())? {
-            // A pure helper's result comes from its arguments.
-            Binding::Library { pure: true } if pure_helper(call.method) => None,
-            // A package call may return data it read, such as a file or a
-            // response, whatever its arguments.
-            Binding::Library { .. } => Some(
-                call.args.iter().fold(
-                    call.receiver
-                        .combine(&FlowValue::from_taint(Taint::Unknown)),
-                    |value, arg| value.combine(arg),
-                ),
-            ),
-            // An alias of a global, such as `const load = fetch`.
-            Binding::Global(name) => self.global_call_value(&name, &[]),
-            _ => None,
-        }
+        // `None` combines the receiver and the arguments, so it is returned
+        // only for a call whose result is known to be computed from them.
+        let computed_from_inputs =
+            match binding(call.env, call.body, call.callee, &mut HashSet::new()) {
+                // A pure helper's result comes from its arguments. Another member
+                // of a package returns data the package read, such as a file or a
+                // response.
+                Some(Binding::Library { pure }) => pure && pure_helper(call.method),
+                // An alias of a global, such as `const load = fetch`.
+                Some(Binding::Global(name)) => match self.global_call_value(&name, &[]) {
+                    Some(value) => return Some(value),
+                    // `require` of a package is its module namespace, so a member
+                    // of it is classified on its own. `require` of a relative path
+                    // is the app's own exports, which may be any value.
+                    None if name == "require" => match call.arguments() {
+                        [Operand::Lit(Literal::Str(module))]
+                            if required_module(module).is_some() =>
+                        {
+                            return Some(FlowValue::default());
+                        }
+                        _ => false,
+                    },
+                    None => pure_global(&name),
+                },
+                Some(Binding::Pure) => true,
+                Some(_) => false,
+                // A call the analysis cannot account for is reportable unless its
+                // name is a built-in whose result the receiver and the arguments
+                // supply.
+                None => match call.method {
+                    // A string replacement computes the result; a function
+                    // replacement returns what that call returned.
+                    "replace" | "replaceAll" => call.arguments().get(1).is_none_or(|replacement| {
+                        !may_be_function(call.env, call.body, replacement, &mut HashSet::new())
+                    }),
+                    method => pure_builtin(method),
+                },
+            };
+        (!computed_from_inputs).then(|| {
+            call.args.iter().fold(
+                call.receiver
+                    .combine(&FlowValue::from_taint(Taint::Unknown)),
+                |value, arg| value.combine(arg),
+            )
+        })
+    }
+
+    fn stores_arguments(&self, method: &str) -> bool {
+        matches!(method, "add" | "push" | "set" | "splice" | "unshift")
     }
 }
 

@@ -10,6 +10,8 @@
 //! summaries are shared only by equivalent bounded entry contexts. A capped
 //! overflow context joins additional inputs conservatively. Source provenance
 //! and policy facts are independent, and a pending return is not a clean value.
+//! An unresolved call to a policy's `stores_arguments` member also joins its
+//! arguments into a receiver held in a variable.
 //! lodash's `omit`, `pick` and `get` with literal paths select properties instead.
 
 use std::{
@@ -141,6 +143,11 @@ pub trait TaintPolicy: Sized {
     ) -> Option<FlowValue<Self::Facts>> {
         None
     }
+    /// Whether an unresolved `method` stores its arguments in its receiver,
+    /// such as `list.push(value)`, so the receiver gains what they hold.
+    fn stores_arguments(&self, _method: &str) -> bool {
+        false
+    }
 }
 
 /// An unmodelled call, as `TaintPolicy::method_value` sees it.
@@ -180,6 +187,12 @@ impl<F> UnresolvedCall<'_, F> {
     /// The calling function and the call's location in it.
     pub fn site(&self) -> (DefId, Location) {
         (self.def, self.location)
+    }
+
+    /// The call's argument operands, for a policy that inspects an argument's
+    /// binding.
+    pub fn arguments(&self) -> &[Operand] {
+        self.operands
     }
 
     pub fn function(&self) -> &str {
@@ -891,6 +904,57 @@ impl<P: TaintPolicy> TaintDataflow<P> {
         frame.set(id, object);
     }
 
+    /// Write `value` to `id` and to every binding that aliases it.
+    fn write(
+        &self,
+        site: Site<'_>,
+        frame: &mut FlowState<P::Facts>,
+        id: VarId,
+        projections: &[Projection],
+        value: TrackedValue<P::Facts>,
+    ) {
+        self.assign(frame, id, projections, value);
+        if let Some(def) = variable_def(&site.body.vars[id]) {
+            // Index aliases once per body instead of scanning all variables at
+            // every assignment.
+            let value = frame.value(id);
+            for &alias in &site.layout.aliases[&def] {
+                frame.set(alias, value.clone());
+            }
+        }
+    }
+
+    /// Join an unresolved call's arguments into its receiver, for a
+    /// `stores_arguments` method such as `list.push(value)`.
+    fn store_in_receiver(
+        &self,
+        site: Site<'_>,
+        frame: &mut FlowState<P::Facts>,
+        callee: &Operand,
+        args: &[Operand],
+    ) {
+        let Some(method) = method_name(callee) else {
+            return;
+        };
+        if !self.policy.stores_arguments(method) {
+            return;
+        }
+        let Operand::Var(callee) = callee else {
+            return;
+        };
+        let Some(id) = callee.as_var_id() else {
+            return;
+        };
+        let mut receiver = callee.clone();
+        receiver.projections.pop();
+        let stored = args.iter().fold(FlowValue::BOTTOM, |value, arg| {
+            value.join(&self.read(frame, arg))
+        });
+        let mut value = self.value(frame, &Operand::Var(receiver.clone()));
+        value.root = value.root.join(&stored);
+        self.write(site, frame, id, &receiver.projections, value);
+    }
+
     fn join_tracked(
         &self,
         into: &mut TrackedValue<P::Facts>,
@@ -1431,20 +1495,16 @@ impl<'a, P: TaintPolicy> Solver<'a, P> {
                 };
                 value.clone()
             } else {
-                dataflow.transfer(site, &frame, location, inst.rvalue())
+                let value = dataflow.transfer(site, &frame, location, inst.rvalue());
+                if let Rvalue::Call(callee, args) = inst.rvalue() {
+                    dataflow.store_in_receiver(site, &mut frame, callee, args);
+                }
+                value
             };
             if let Inst::Assign(var, _) = inst
                 && let Base::Var(id) = var.base
             {
-                dataflow.assign(&mut frame, id, &var.projections, value);
-                if let Some(var_def) = variable_def(&body.vars[id]) {
-                    // Index aliases once per body instead of scanning all
-                    // variables at every assignment.
-                    let value = frame.value(id);
-                    for &alias in &site.layout.aliases[&var_def] {
-                        frame.set(alias, value.clone());
-                    }
-                }
+                dataflow.write(site, &mut frame, id, &var.projections, value);
             }
         }
 
