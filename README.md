@@ -34,6 +34,30 @@ Commands:
 
 Run `fsrt --help`, `fsrt remote --help`, or `fsrt remote <COMMAND> --help` for current options.
 
+### Arbitrary code execution
+
+The `arbitrary-code-execution` scanner reports external input reaching an
+execution sink: `eval`, the `Function`, `AsyncFunction`, `GeneratorFunction` and
+`AsyncGeneratorFunction` constructors, the `vm` module, and the `child_process`
+module. Arguments of manifest functions, results of IO such as `fetch`,
+`requestJira` and Forge storage reads, and results of calls into imported
+packages are sources; text assembled only from constants is not reported. The
+result of a call the scanner cannot account for is reported, so a value is only
+traced back to the receiver and the arguments for members whose result they
+supply: the `lodash` and `path` members such as `join` and `basename`, so
+`path.join('/bin', 'ls')` is not reported; the built-in string and array
+members such as `trim`, `split` and `join`; and the pure globals such as
+`String` and `JSON.stringify`. A member that returns what a callback returned,
+such as `map` or `replace` with a function, keeps the floor, and `push`,
+`unshift`, `splice`, `add` and `set` give a receiver held in a variable what
+their arguments hold. It is disabled by default; select it explicitly, alone
+or with other scanners:
+
+```bash
+fsrt --scanners arbitrary-code-execution ./my-forge-app
+fsrt --scanners secret,arbitrary-code-execution ./my-forge-app
+```
+
 ### Secret logging
 
 The `secret-logging` scanner reports values returned by `getSecret` on the `kvs`
