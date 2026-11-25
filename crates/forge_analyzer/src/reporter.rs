@@ -28,6 +28,12 @@ impl Vulnerability {
         &self.check_name
     }
 
+    fn prepend_proof(&mut self, context: &str) {
+        if !context.is_empty() {
+            self.proof = format!("{context}\n{}", self.proof);
+        }
+    }
+
     pub fn description(&self) -> &str {
         &self.description
     }
@@ -91,10 +97,21 @@ impl Reporter {
     }
 
     pub fn add_vulnerabilities(&mut self, vuln_reports: impl IntoIterator<Item = impl IntoVuln>) {
+        self.add_vulnerabilities_with_proof(vuln_reports, "");
+    }
+
+    /// Prepend entrypoint evidence without changing checker-generated identities.
+    pub fn add_vulnerabilities_with_proof(
+        &mut self,
+        vuln_reports: impl IntoIterator<Item = impl IntoVuln>,
+        context: &str,
+    ) {
         let vuln_reports = vuln_reports.into_iter();
         self.vulns.reserve(vuln_reports.size_hint().0);
         for vuln in vuln_reports {
-            self.vulns.push(vuln.into_vuln(self));
+            let mut vuln = vuln.into_vuln(self);
+            vuln.prepend_proof(context);
+            self.vulns.push(vuln);
         }
     }
 

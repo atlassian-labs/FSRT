@@ -1,7 +1,7 @@
 #![allow(dead_code, unused)]
 use std::{
     borrow::Borrow,
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     hash::Hash,
     path::{Path, PathBuf},
 };
@@ -28,28 +28,49 @@ struct CommonKey<'a> {
     resolver: Option<Resolver<'a>>,
 }
 
-trait HasFunctions<'a> {
-    fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I);
+/// A function key and the manifest property through which it was registered.
+struct FunctionProperty<'a> {
+    function: &'a str,
+    property: String,
 }
 
-impl<'a> HasFunctions<'a> for CommonKey<'a> {
-    fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
-        funcs.extend(self.function);
+trait HasFunctions<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>);
 
-        if let Some(Resolver {
-            function,
-            method: _,
-            endpoint: _,
-        }) = self.resolver
-        {
-            funcs.extend(function);
+    fn append_nested_functions(&self, property: &str, funcs: &mut Vec<FunctionProperty<'a>>) {
+        let start = funcs.len();
+        self.append_functions(funcs);
+        for function in &mut funcs[start..] {
+            function.property = format!("{property}.{}", function.property);
         }
     }
 }
 
+impl<'a> HasFunctions<'a> for CommonKey<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        JustFunc {
+            function: self.function,
+        }
+        .append_functions(funcs);
+        self.resolver.append_nested_functions("resolver", funcs);
+    }
+}
+
 impl<'a> HasFunctions<'a> for JustFunc<'a> {
-    fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
-        funcs.extend(self.function);
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        funcs.extend(self.function.map(|function| FunctionProperty {
+            function,
+            property: "function".to_owned(),
+        }));
+    }
+}
+
+impl<'a> HasFunctions<'a> for Resolver<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        JustFunc {
+            function: self.function,
+        }
+        .append_functions(funcs);
     }
 }
 
@@ -57,10 +78,9 @@ impl<'a, I, E: HasFunctions<'a>> HasFunctions<'a> for I
 where
     for<'c> &'c I: IntoIterator<Item = &'c E>,
 {
-    fn append_functions<B: Extend<&'a str>>(&self, funcs: &mut B) {
-        // iterating over &I
-        for e in self {
-            e.append_functions(funcs);
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        for value in self {
+            value.append_functions(funcs);
         }
     }
 }
@@ -76,6 +96,14 @@ pub struct Resolver<'a> {
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Copy)]
 pub struct JustFunc<'a> {
     pub function: Option<&'a str>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ApiRoute<'a> {
+    #[serde(default, borrow)]
+    key: &'a str,
+    #[serde(flatten, borrow)]
+    function: JustFunc<'a>,
 }
 
 // Common Modules
@@ -180,10 +208,10 @@ struct ContentAction<'a> {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
-struct ContentByLineItem<'a> {
+struct ContentBylineItem<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
-    #[serde(borrow, rename = "dynamicProperties")]
+    #[serde(default, borrow, rename = "dynamicProperties")]
     dynamic_properties: JustFunc<'a>,
 }
 
@@ -196,7 +224,7 @@ enum MacroConfig<'a> {
 }
 
 impl<'a> HasFunctions<'a> for MacroConfig<'a> {
-    fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
         if let Self::Object(config) = self {
             config.append_functions(funcs);
         }
@@ -260,7 +288,7 @@ struct IssueClass<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct UiModificatons<'a> {
+pub struct UiModifications<'a> {
     #[serde(flatten, borrow)]
     common_keys: CommonKey<'a>,
 }
@@ -315,6 +343,83 @@ pub struct Action<'a> {
     pub endpoint: Option<&'a str>,
 }
 
+impl<'a> HasFunctions<'a> for ContentBylineItem<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+        self.dynamic_properties
+            .append_nested_functions("dynamicProperties", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for MacroMod<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+        self.config.append_nested_functions("config", funcs);
+        self.export.append_nested_functions("export", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for CustomField<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+        // Preserve the existing scan scope: value is included; edit is not.
+        self.value.append_nested_functions("value", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for DashboardGadget<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+        self.edit.append_nested_functions("edit", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for IssueClass<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+        self.dynamic_properties
+            .append_nested_functions("dynamicProperties", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for UiModifications<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for AssetsImportType<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        self.common_keys.append_functions(funcs);
+        self.on_delete_import
+            .append_nested_functions("onDeleteImport", funcs);
+        self.stop_import
+            .append_nested_functions("stopImport", funcs);
+        self.start_import
+            .append_nested_functions("startImport", funcs);
+        self.import_status
+            .append_nested_functions("importStatus", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for WorkflowValidator<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        // Only the resolver is user-invokable; the function runs workflow validation.
+        self.common_keys
+            .resolver
+            .append_nested_functions("resolver", funcs);
+    }
+}
+
+impl<'a> HasFunctions<'a> for Action<'a> {
+    fn append_functions(&self, funcs: &mut Vec<FunctionProperty<'a>>) {
+        JustFunc {
+            function: self.function,
+        }
+        .append_functions(funcs);
+    }
+}
+
 // Add more structs here for deserializing forge modules
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ForgeModules<'a> {
@@ -332,7 +437,7 @@ pub struct ForgeModules<'a> {
     #[serde(rename = "scheduledTrigger", default, borrow)]
     scheduled_triggers: Vec<ScheduledTrigger<'a>>,
     #[serde(rename = "apiRoute", default, borrow)]
-    api_routes: Vec<JustFunc<'a>>,
+    api_routes: Vec<ApiRoute<'a>>,
 
     // Compass Modules
     #[serde(rename = "compass:adminPage", default, borrow)]
@@ -347,8 +452,8 @@ pub struct ForgeModules<'a> {
     // Confluence Modules
     #[serde(rename = "confluence:contentAction", default, borrow)]
     content_action: Vec<CommonKey<'a>>,
-    #[serde(rename = "confluence:contentByLineItem", default, borrow)]
-    content_by_line_item: Vec<ContentByLineItem<'a>>,
+    #[serde(rename = "confluence:contentBylineItem", default, borrow)]
+    content_byline_item: Vec<ContentBylineItem<'a>>,
     #[serde(rename = "confluence:contextMenu", default, borrow)]
     context_menu: Vec<CommonKey<'a>>,
     #[serde(rename = "confluence:globalPage", default, borrow)]
@@ -391,8 +496,8 @@ pub struct ForgeModules<'a> {
     project_page: Vec<CommonKey<'a>>,
     #[serde(rename = "jira:projectSettingsPage", default, borrow)]
     project_settings_page: Vec<CommonKey<'a>>,
-    #[serde(rename = "jira:uiModificatons", default, borrow)]
-    pub ui_modifications: Vec<UiModificatons<'a>>,
+    #[serde(rename = "jira:uiModifications", default, borrow)]
+    pub ui_modifications: Vec<UiModifications<'a>>,
     #[serde(rename = "jira:workflowValidator", default, borrow)]
     pub workflow_validator: Vec<WorkflowValidator<'a>>,
     #[serde(rename = "jira:workflowPostFunction", default, borrow)]
@@ -771,10 +876,73 @@ pub enum FunctionTy<T> {
     WebTrigger(T),
 }
 
+/// Why a manifest registration makes a function an analyzable entrypoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BindingKind {
+    Invokable,
+    WebTrigger,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModuleBinding<'a> {
+    pub module_type: &'static str,
+    pub key: &'a str,
+    pub property: String,
+    pub kind: BindingKind,
+}
+
+#[derive(Default)]
+struct FunctionBindings<'a>(BTreeMap<&'a str, BTreeSet<ModuleBinding<'a>>>);
+
+impl<'a> FunctionBindings<'a> {
+    fn add(&mut self, module_type: &'static str, key: &'a str, value: &impl HasFunctions<'a>) {
+        self.record(module_type, key, BindingKind::Invokable, value);
+    }
+
+    fn record(
+        &mut self,
+        module_type: &'static str,
+        key: &'a str,
+        kind: BindingKind,
+        value: &impl HasFunctions<'a>,
+    ) {
+        let mut functions = Vec::new();
+        value.append_functions(&mut functions);
+        for function in functions {
+            self.0
+                .entry(function.function)
+                .or_default()
+                .insert(ModuleBinding {
+                    module_type,
+                    key,
+                    property: function.property,
+                    kind,
+                });
+        }
+    }
+
+    fn common(&mut self, module_type: &'static str, modules: &[CommonKey<'a>]) {
+        for module in modules {
+            self.add(module_type, module.key, module);
+        }
+    }
+
+    fn bindings(&self, function: &str) -> Vec<ModuleBinding<'a>> {
+        self.0
+            .get(function)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect()
+    }
+}
+
 // Struct used for tracking what scan a function requires.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entrypoint<'a, S = Unresolved> {
     pub function: FunctionRef<'a, S>,
+    pub handler: &'a str,
+    pub module_bindings: Vec<ModuleBinding<'a>>,
     pub invokable: bool,
     pub web_trigger: bool,
     pub admin: bool,
@@ -794,7 +962,7 @@ impl<'a> ForgeModules<'a> {
     pub fn into_analyzable_functions(self) -> impl Iterator<Item = Entrypoint<'a>> {
         // destructuring ForgeModules to remember to add new modules to this
         let Self {
-            mut webtriggers,
+            webtriggers,
             custom_field,
             consumers,
             functions,
@@ -806,7 +974,7 @@ impl<'a> ForgeModules<'a> {
             compass_global_page,
             team_page,
             content_action,
-            content_by_line_item,
+            content_byline_item,
             context_menu,
             confluence_global_page,
             homepage_feed,
@@ -846,169 +1014,120 @@ impl<'a> ForgeModules<'a> {
             action,
         } = self;
 
-        // number of webtriggers are usually low, so it's better to just sort them and reuse
-        webtriggers.sort_unstable_by_key(|trigger| trigger.function);
-        // Get all the Triggers and represent them as a new struct thing where "webtrigger" attribute is true
-        // for all trigger things
-
-        let mut invokable_functions = BTreeSet::new();
-
-        api_routes.append_functions(&mut invokable_functions);
-
-        // Compass Module Functions
-        compass_admin_page.append_functions(&mut invokable_functions);
-
-        component_page.append_functions(&mut invokable_functions);
-
-        compass_global_page.append_functions(&mut invokable_functions);
-        team_page.append_functions(&mut invokable_functions);
-
-        // Confluence Module Functions
-        // get user invokable modules that have additional exposure endpoints.
-        // ie macros has config and export fields on top of resolver fields that are functions
-        content_action
-            .iter()
-            .for_each(|content_action| content_action.append_functions(&mut invokable_functions));
-
-        content_by_line_item.iter().for_each(|by_line_item| {
-            by_line_item
-                .common_keys
-                .append_functions(&mut invokable_functions);
-            invokable_functions.extend(by_line_item.dynamic_properties.function)
-        });
-
-        context_menu.append_functions(&mut invokable_functions);
-
-        confluence_global_page.append_functions(&mut invokable_functions);
-
-        homepage_feed.append_functions(&mut invokable_functions);
-
-        space_page.append_functions(&mut invokable_functions);
-
-        space_settings.append_functions(&mut invokable_functions);
-
-        for m in macros {
-            m.common_keys.append_functions(&mut invokable_functions);
-            m.config.append_functions(&mut invokable_functions);
-            m.export.append_functions(&mut invokable_functions);
+        let mut bindings = FunctionBindings::default();
+        for trigger in webtriggers {
+            bindings.record(
+                "webtrigger",
+                trigger.key,
+                BindingKind::WebTrigger,
+                &JustFunc {
+                    function: Some(trigger.function),
+                },
+            );
         }
-
-        // Jira Module Functions
-        custom_field.into_iter().for_each(|customfield| {
-            customfield.value.append_functions(&mut invokable_functions);
-
-            customfield.value.append_functions(&mut invokable_functions);
-            customfield
-                .common_keys
-                .append_functions(&mut invokable_functions);
-        });
-
-        dashboard_background_script.append_functions(&mut invokable_functions);
-
-        for gadget in dashboard_gadget {
-            gadget
-                .common_keys
-                .append_functions(&mut invokable_functions);
-            gadget.edit.append_functions(&mut invokable_functions);
+        for route in api_routes {
+            bindings.add("apiRoute", route.key, &route.function);
         }
-
-        jira_global_page.append_functions(&mut invokable_functions);
-
-        issue_action.append_functions(&mut invokable_functions);
-
-        for issue in issue_context {
-            issue.common_keys.append_functions(&mut invokable_functions);
-            issue
-                .dynamic_properties
-                .append_functions(&mut invokable_functions);
+        bindings.common("compass:adminPage", &compass_admin_page);
+        bindings.common("compass:componentPage", &component_page);
+        bindings.common("compass:globalPage", &compass_global_page);
+        bindings.common("compass:teamPage", &team_page);
+        bindings.common("confluence:contentAction", &content_action);
+        bindings.common("confluence:contextMenu", &context_menu);
+        bindings.common("confluence:globalPage", &confluence_global_page);
+        bindings.common("confluence:homepageFeed", &homepage_feed);
+        bindings.common("confluence:spacePage", &space_page);
+        bindings.common("confluence:spaceSettings", &space_settings);
+        bindings.common(
+            "jira:dashboardBackgroundScript",
+            &dashboard_background_script,
+        );
+        bindings.common("jira:globalPage", &jira_global_page);
+        bindings.common("jira:issueAction", &issue_action);
+        bindings.common("jira:issuePanel", &issue_panel);
+        bindings.common(
+            "jira:issueViewBackgroundScript",
+            &issue_view_background_script,
+        );
+        bindings.common("jira:jqlFunction", &jql_function);
+        bindings.common("jira:projectPage", &project_page);
+        bindings.common("jira:projectSettingsPage", &project_settings_page);
+        bindings.common("jiraServiceManagement:organizationPanel", &org_panel);
+        bindings.common("jiraServiceManagement:portalFooter", &portal_footer);
+        bindings.common("jiraServiceManagement:portalHeader", &portal_header);
+        bindings.common(
+            "jiraServiceManagement:portalProfilePanel",
+            &portal_profile_panel,
+        );
+        bindings.common(
+            "jiraServiceManagement:portalRequestCreatePropertyPanel",
+            &portal_req,
+        );
+        bindings.common(
+            "jiraServiceManagement:portalRequestDetail",
+            &portal_request_detail,
+        );
+        bindings.common(
+            "jiraServiceManagement:portalRequestDetailPanel",
+            &portal_request_detail_panel,
+        );
+        bindings.common(
+            "jiraServiceManagement:portalRequestViewAction",
+            &portal_request_view_action,
+        );
+        bindings.common("jiraServiceManagement:portalSubheader", &portal_subheader);
+        bindings.common(
+            "jiraServiceManagement:portalUserMenuAction",
+            &portal_header_menu_action,
+        );
+        bindings.common("jiraServiceManagement:queuePage", &queue_page);
+        for module in content_byline_item {
+            bindings.add(
+                "confluence:contentBylineItem",
+                module.common_keys.key,
+                &module,
+            );
         }
-
-        for issue in issue_glance {
-            issue.common_keys.append_functions(&mut invokable_functions);
-            issue
-                .dynamic_properties
-                .append_functions(&mut invokable_functions);
+        for module in macros {
+            bindings.add("macro", module.common_keys.key, &module);
         }
-
-        issue_panel.append_functions(&mut invokable_functions);
-
-        issue_view_background_script.append_functions(&mut invokable_functions);
-
-        jql_function.append_functions(&mut invokable_functions);
-
-        project_page.append_functions(&mut invokable_functions);
-
-        project_settings_page.append_functions(&mut invokable_functions);
-
-        for ui in ui_modifications {
-            ui.common_keys.append_functions(&mut invokable_functions);
+        for module in custom_field {
+            bindings.add("jira:customField", module.common_keys.key, &module);
         }
-
-        for valid in workflow_validator {
-            // Only the resolver is user-invokable; the function runs workflow validation.
-            if let Some(resolver) = valid.common_keys.resolver {
-                invokable_functions.extend(resolver.function);
-            }
+        for module in dashboard_gadget {
+            bindings.add("jira:dashboardGadget", module.common_keys.key, &module);
         }
-
-        // Rovo Module Functions
-        // No invokable functions for Rovo Agents but Action can have numerous user invokable functions
-        action.iter().for_each(|action| {
-            invokable_functions.extend(action.function);
-            // "Endpoint" variant of Action not being considered as an invokable function
-        });
-
-        // JSM Module Functions
-        for assets in assets_import_type {
-            assets
-                .common_keys
-                .append_functions(&mut invokable_functions);
-
-            assets
-                .on_delete_import
-                .append_functions(&mut invokable_functions);
-
-            assets
-                .stop_import
-                .append_functions(&mut invokable_functions);
-
-            assets
-                .start_import
-                .append_functions(&mut invokable_functions);
-
-            assets
-                .import_status
-                .append_functions(&mut invokable_functions);
+        for module in issue_context {
+            bindings.add("jira:issueContext", module.common_keys.key, &module);
         }
-        org_panel
-            .iter()
-            .for_each(|panel| panel.append_functions(&mut invokable_functions));
-
-        org_panel.append_functions(&mut invokable_functions);
-
-        portal_footer.append_functions(&mut invokable_functions);
-        portal_header.append_functions(&mut invokable_functions);
-        portal_profile_panel.append_functions(&mut invokable_functions);
-
-        portal_req.append_functions(&mut invokable_functions);
-
-        portal_request_detail.append_functions(&mut invokable_functions);
-
-        portal_request_detail_panel.append_functions(&mut invokable_functions);
-
-        portal_request_view_action.append_functions(&mut invokable_functions);
-
-        portal_subheader.append_functions(&mut invokable_functions);
-
-        portal_header_menu_action.append_functions(&mut invokable_functions);
-
-        queue_page.append_functions(&mut invokable_functions);
+        for module in issue_glance {
+            bindings.add("jira:issueGlance", module.common_keys.key, &module);
+        }
+        for module in ui_modifications {
+            bindings.add("jira:uiModifications", module.common_keys.key, &module);
+        }
+        for module in assets_import_type {
+            bindings.add(
+                "jiraServiceManagement:assetsImportType",
+                module.common_keys.key,
+                &module,
+            );
+        }
+        for module in workflow_validator {
+            bindings.add("jira:workflowValidator", module.common_keys.key, &module);
+        }
+        for action in action {
+            bindings.add("action", action.key, &action);
+        }
 
         functions.into_iter().flat_map(move |func| {
-            let web_trigger = webtriggers
-                .binary_search_by_key(&func.key, |trigger| trigger.function)
-                .is_ok();
-            let invokable = invokable_functions.contains(func.key);
+            let module_bindings = bindings.bindings(func.key);
+            let web_trigger = module_bindings
+                .iter()
+                .any(|binding| binding.kind == BindingKind::WebTrigger);
+            let invokable = module_bindings
+                .iter()
+                .any(|binding| binding.kind == BindingKind::Invokable);
             // this checks whether the function being scanned is being used in an admin module. Rn it only checks for jira_admin page module.
             // optionally: compass:adminPage could also be considered.
             let admin = jira_admin_page
@@ -1019,6 +1138,8 @@ impl<'a> ForgeModules<'a> {
                     .any(|admin_function| admin_function.function == Some(func.key));
 
             Ok::<_, Error>(Entrypoint {
+                handler: func.handler,
+                module_bindings,
                 function: FunctionRef::try_from(func)?,
                 invokable,
                 web_trigger,
@@ -1061,6 +1182,10 @@ impl<'a> FunctionRef<'a> {
 }
 
 impl<'a, Resolved> FunctionRef<'a, Resolved> {
+    pub fn key(&self) -> &'a str {
+        self.key
+    }
+
     #[inline]
     pub fn into_func_path(self) -> (&'a str, PathBuf) {
         (self.func, self.path)
@@ -1324,6 +1449,8 @@ mod tests {
                     providers: None,
                 })
                 .unwrap(),
+                handler: "index.run",
+                module_bindings: vec![],
                 invokable: false,
                 web_trigger: false,
                 admin: true
@@ -1339,10 +1466,62 @@ mod tests {
                     providers: None,
                 })
                 .unwrap(),
+                handler: "src.run",
+                module_bindings: vec![ModuleBinding {
+                    module_type: "macro",
+                    key: "my-macro",
+                    property: "function".to_owned(),
+                    kind: BindingKind::Invokable,
+                }],
                 invokable: true,
                 web_trigger: false,
                 admin: false
             })
+        );
+    }
+
+    #[test]
+    fn asset_import_bindings_preserve_each_callback_property() {
+        let yaml = r#"
+app: { id: test-app }
+modules:
+  jiraServiceManagement:assetsImportType:
+    - key: sample-import
+      function: main
+      resolver: { function: main }
+      onDeleteImport: { function: main }
+      stopImport: { function: main }
+      startImport: { function: main }
+      importStatus: { function: main }
+  function:
+    - { key: main, handler: index.run }
+"#;
+        let manifest: ForgeManifest<'_> = serde_yaml::from_str(yaml).unwrap();
+        let entrypoint = manifest.modules.into_analyzable_functions().next().unwrap();
+        assert!(entrypoint.invokable);
+        assert!(!entrypoint.web_trigger);
+        let properties: Vec<_> = entrypoint
+            .module_bindings
+            .iter()
+            .map(|binding| {
+                assert_eq!(
+                    binding.module_type,
+                    "jiraServiceManagement:assetsImportType"
+                );
+                assert_eq!(binding.key, "sample-import");
+                binding.property.as_str()
+            })
+            .collect();
+        assert_eq!(
+            properties,
+            vec![
+                "function",
+                "importStatus.function",
+                "onDeleteImport.function",
+                "resolver.function",
+                "startImport.function",
+                "stopImport.function",
+            ]
         );
     }
 

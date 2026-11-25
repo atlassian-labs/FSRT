@@ -1,4 +1,5 @@
 /target
+.cargo
 
 # Local Forge tooling configuration and browser-session credentials.
 /fsrt-remote.toml

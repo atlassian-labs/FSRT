@@ -2,6 +2,7 @@
 
 mod commands;
 mod forge_project;
+mod imports;
 mod interpreter;
 #[cfg(test)]
 mod test;
@@ -12,7 +13,6 @@ use glob::glob;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     env, fmt, fs,
-    os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
 };
 
@@ -33,8 +33,9 @@ use tracing_tree::HierarchicalLayer;
 
 use forge_analyzer::{
     checkers::{
-        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, ForgeRuntimeVersionPolicyChecker,
-        PermissionChecker, PermissionVuln, SecretChecker, SecretType,
+        AuthHeaderChecker, AuthZChecker, AuthenticateChecker, DEFAULT_EXCLUDED_SECRET_SUFFIXES,
+        DEFAULT_SECRET_SUFFIXES, ForgeRuntimeVersionPolicyChecker, PermissionChecker,
+        PermissionVuln, SecretChecker, SecretLoggingChecker, SecretSuffixes, SecretType,
     },
     ctx::ModId,
     definitions::{Const, DefId, PackageData, Value},
@@ -58,7 +59,48 @@ enum Scanner {
     AuthHeader,
     Permission,
     Secret,
+    SecretLogging,
     RuntimeVersion,
+}
+
+impl Scanner {
+    /// Opt-in scanners only run when selected with `--scanners`.
+    fn enabled_by_default(self) -> bool {
+        !matches!(self, Self::SecretLogging)
+    }
+}
+
+/// Options for one scanner are a flattened group: each flag is prefixed with the
+/// scanner's name, and `--help` lists the group under its own heading.
+#[derive(clap::Args, Debug)]
+#[command(next_help_heading = "Secret logging (--scanners secret-logging)")]
+struct SecretLoggingArgs {
+    /// Comma separated property-name suffixes that mark a secret, compared
+    /// case-insensitively after removing `_` and `-`. A property read from a
+    /// secret is reported only when its last property name matches one.
+    #[arg(
+        long = "secret-logging-suffixes",
+        value_name = "SUFFIXES",
+        value_delimiter = ',',
+        default_values = DEFAULT_SECRET_SUFFIXES
+    )]
+    suffixes: Vec<String>,
+
+    /// Comma separated suffixes that never mark a secret. The longest
+    /// matching suffix decides.
+    #[arg(
+        long = "secret-logging-excluded-suffixes",
+        value_name = "SUFFIXES",
+        value_delimiter = ',',
+        default_values = DEFAULT_EXCLUDED_SECRET_SUFFIXES
+    )]
+    excluded_suffixes: Vec<String>,
+}
+
+impl SecretLoggingArgs {
+    fn suffixes(&self) -> SecretSuffixes {
+        SecretSuffixes::new(&self.suffixes, &self.excluded_suffixes)
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -102,7 +144,8 @@ pub struct Args {
     #[arg(long)]
     cached_permissions_path: Option<PathBuf>,
 
-    /// Comma separated list of scanners to enable. Defaults to all of them.
+    /// Comma separated list of scanners to enable. Defaults to all of them except
+    /// secret-logging, which only runs when selected.
     #[arg(long, value_delimiter = ',')]
     scanners: Vec<Scanner>,
 
@@ -111,7 +154,15 @@ pub struct Args {
     scan_functions: bool,
 
     /// The directory to scan. Assumes there is a `manifest.ya?ml` file in the top level
-    /// directory, and that the source code is located in `src/`
+    /// directory, and that the handlers are located in `src/`. `src/` is read in full. A source
+    /// file anywhere else in the app is read only when a file that is read imports it, by a
+    /// relative path, a path from the app root or a path under `src/`, directly or through
+    /// other such files: a front-end bundle or a leftover build folder that nothing imports is
+    /// skipped. Files in `node_modules/` and dot-folders and minified `*.min.js` builds are
+    /// never read, and imports of packages, dynamic imports with a variable, `tsconfig.json`
+    /// path aliases and monorepo workspace packages are not followed. At most 2,000 files
+    /// outside `src/` are read; the rest are skipped with a warning. Symlinks to files inside
+    /// the app are read; links to folders or outside the app are not
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
 
@@ -121,17 +172,27 @@ pub struct Args {
 
     #[arg(long)]
     enable_aec_mode: bool,
+
+    #[command(flatten)]
+    secret_logging: SecretLoggingArgs,
 }
 
 impl Args {
     fn scanner_enabled(&self, scanner: Scanner) -> bool {
-        self.scanners.is_empty() || self.scanners.contains(&scanner)
+        if self.scanners.is_empty() {
+            scanner.enabled_by_default()
+        } else {
+            self.scanners.contains(&scanner)
+        }
     }
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ResolvedEntryPoint<'a> {
+    function_key: &'a str,
+    handler: &'a str,
+    module_bindings: Vec<manifest::ModuleBinding<'a>>,
     func_name: &'a str,
     path: PathBuf,
     module: ModId,
@@ -377,21 +438,66 @@ fn check_graphql_and_perms<'a>(
 }
 
 fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
-    matches!(
-        path.as_ref().extension().map(|s| s.as_bytes()),
-        Some(b"jsx" | b"js" | b"tsx" | b"ts")
-    )
+    path.as_ref()
+        .extension()
+        .is_some_and(|ext| ext == "jsx" || ext == "js" || ext == "tsx" || ext == "ts")
 }
 
-fn collect_sourcefiles<P: AsRef<Path>>(root: P) -> impl Iterator<Item = PathBuf> {
-    WalkDir::new(root)
-        .min_depth(1)
-        .max_depth(5)
-        .into_iter()
-        .filter_map(|e| {
-            let path = e.ok()?.into_path();
-            is_js_file(&path).then_some(path)
+/// Deepest directory level scanned below `src/`.
+const MAX_SOURCE_DEPTH: usize = 5;
+
+/// Whether a walked entry is a source file the scan may read. A regular file with a JS/TS name
+/// is; so is a symlink whose fully resolved target is a regular file inside `app_root` (the
+/// module keeps the path of the link, which is the one the app imports). A directory named like
+/// a source file, a link to a directory, to a file outside the app, a broken link and a link
+/// loop are not. `app_root` is the canonical app directory; without it no link is followed.
+fn is_source_file(entry: &walkdir::DirEntry, app_root: Option<&Path>) -> bool {
+    if !is_js_file(entry.path()) {
+        return false;
+    }
+    let file_type = entry.file_type();
+    if file_type.is_file() {
+        return true;
+    }
+    file_type.is_symlink()
+        && app_root.is_some_and(|app_root| {
+            fs::canonicalize(entry.path())
+                .is_ok_and(|target| target.is_file() && target.starts_with(app_root))
         })
+}
+
+fn collect_sourcefiles(app_dir: &Path, src_dir: &Path) -> impl Iterator<Item = PathBuf> {
+    let app_root = fs::canonicalize(app_dir).ok();
+    WalkDir::new(src_dir)
+        .min_depth(1)
+        .max_depth(MAX_SOURCE_DEPTH)
+        .into_iter()
+        .filter_map(move |e| {
+            let entry = e.ok()?;
+            is_source_file(&entry, app_root.as_deref()).then(|| entry.into_path())
+        })
+}
+
+/// Transpiled async in `src/` fails the scan. A file outside `src/` only gets left out: it is
+/// often build output (`dist/`, `build/`) that a scan used to ignore completely.
+fn without_transpiled_async_outside_src(
+    paths: HashSet<PathBuf>,
+    src_dir: &Path,
+) -> HashSet<PathBuf> {
+    paths
+        .into_iter()
+        .filter(|path| {
+            let transpiled = !path.starts_with(src_dir)
+                && fs::read_to_string(path).is_ok_and(|source| contains_transpiled_async(&source));
+            if transpiled {
+                warn!(
+                    "skipping {} because it contains transpiled async",
+                    path.display()
+                );
+            }
+            !transpiled
+        })
+        .collect()
 }
 
 fn check_perm(perm: &str) -> bool {
@@ -430,7 +536,8 @@ pub(crate) fn scan_directory<'a>(
     project: impl ForgeProjectTrait<'a> + std::fmt::Debug,
     secret_packages: &[PackageData],
 ) -> Result<Report> {
-    let paths = project.get_paths();
+    let src_dir = dir.join("src");
+    let paths = without_transpiled_async_outside_src(project.get_paths(), &src_dir);
     let manifest = match project.get_manifest() {
         Ok(manifest) => manifest,
         Err(err) => {
@@ -468,7 +575,27 @@ pub(crate) fn scan_directory<'a>(
         .iter()
         .map(|s| s.as_str())
         .collect::<HashSet<_>>();
-    let mut perm_map = PermMap::new(&permset);
+    // FIXME: Find Custom UI path instead
+    // Dumping exits before any scanner runs.
+    let run_permission_scanner = opts.dump_ir.is_none()
+        && opts.dump_dt.is_none()
+        && opts.scanner_enabled(Scanner::Permission)
+        && manifest.resources.is_empty();
+    // Only the permission scanner needs the Swagger specs, which may require a download.
+    let permission_cache = run_permission_scanner.then(|| {
+        CacheConfig::new(
+            !opts.no_cache
+                && !std::env::var("FSRT_CACHE").is_ok_and(|value| {
+                    let value = value.trim();
+                    value == "0" || value.eq_ignore_ascii_case("false")
+                }),
+            opts.cached_permissions_path.clone(),
+        )
+    });
+    let mut perm_map = permission_cache
+        .as_ref()
+        .map(|config| PermMap::new(&permset, config))
+        .unwrap_or_default();
     let contains_remote_auth_token = has_remote_auth(&manifest.remotes);
 
     let mut sorted_paths: Vec<PathBuf> = paths.iter().cloned().collect();
@@ -476,8 +603,10 @@ pub(crate) fn scan_directory<'a>(
 
     let suspicious_remotes = check_remotes(&manifest.remotes);
     let mut proj = project.with_files_and_sourceroot(
-        Path::new("src"),
+        // the real source root: `baseUrl`-style imports (`utils/db`) are looked up below it
+        &src_dir,
         sorted_paths,
+        |path| !path.starts_with(&src_dir),
         secret_packages,
         &mut perm_map,
         &suspicious_remotes,
@@ -493,14 +622,12 @@ pub(crate) fn scan_directory<'a>(
         warn!("Unable to scan due to transpiled async");
         Err(Error::TranspiledAsyncError)?;
     }
-    // FIXME: Find Custom UI path instead
-    let run_permission_scanner =
-        opts.scanner_enabled(Scanner::Permission) && manifest.resources.is_empty();
     let run_permission_checker = run_permission_scanner && !contains_remote_auth_token;
     let run_authentication_scanner = opts.scanner_enabled(Scanner::Authentication);
     let run_authorization_scanner = opts.scanner_enabled(Scanner::Authorization);
     let run_auth_header_scanner = opts.scanner_enabled(Scanner::AuthHeader);
     let run_secret_scanner = opts.scanner_enabled(Scanner::Secret);
+    let run_secret_logging_scanner = opts.scanner_enabled(Scanner::SecretLogging);
     let scan_functions =
         opts.scan_functions || std::env::var_os("SCAN_FUNCTIONS").is_some_and(|s| !s.is_empty());
 
@@ -510,6 +637,8 @@ pub(crate) fn scan_directory<'a>(
         .flat_map(|entrypoint| {
             Ok::<_, forge_loader::Error>(Entrypoint {
                 function: entrypoint.function.try_resolve(&paths, &dir)?,
+                handler: entrypoint.handler,
+                module_bindings: entrypoint.module_bindings,
                 invokable: entrypoint.invokable,
                 web_trigger: entrypoint.web_trigger,
                 admin: entrypoint.admin,
@@ -528,23 +657,35 @@ pub(crate) fn scan_directory<'a>(
         std::process::exit(0);
     }
 
-    let permission_cache = run_permission_checker.then(|| {
-        CacheConfig::new(
-            !opts.no_cache
-                && !std::env::var("FSRT_CACHE").is_ok_and(|value| {
-                    let value = value.trim();
-                    value == "0" || value.eq_ignore_ascii_case("false")
-                }),
-            opts.cached_permissions_path.clone(),
-        )
-    });
-    let interpreters =
-        InterpreterFactory::new(&proj.env, permissions_declared, permission_cache.as_ref());
+    // Hardcoded credentials remain findings even in trivially unreachable code.
+    let mut secret_checker = SecretChecker::new();
+    if run_secret_scanner {
+        let interpreters = InterpreterFactory::new(&proj.env, permissions_declared.clone(), None);
+        let mut interp = interpreters.create::<SecretChecker>(true);
+        for func in &proj.funcs {
+            if let Err(err) = interp.run_checker(
+                func.def_id,
+                &mut secret_checker,
+                func.path.clone(),
+                func.func_name.to_owned(),
+            ) {
+                warn!("error while running secret checker: {err}");
+            }
+        }
+    }
+    proj.env.simplify_constant_branches();
+
+    let interpreters = InterpreterFactory::new(
+        &proj.env,
+        permissions_declared,
+        permission_cache.as_ref().filter(|_| run_permission_checker),
+    );
     let mut authz_interp =
         run_authorization_scanner.then(|| interpreters.create::<AuthZChecker>(true));
     let mut authn_interp =
         run_authentication_scanner.then(|| interpreters.create::<AuthenticateChecker>(true));
-    let mut secret_interp = run_secret_scanner.then(|| interpreters.create::<SecretChecker>(true));
+    let mut secret_logging_interp =
+        run_secret_logging_scanner.then(|| interpreters.create::<SecretLoggingChecker>(false));
     // Auth-header checks handle uncalled bodies separately in the full-function pass.
     let mut auth_header_interp =
         run_auth_header_scanner.then(|| interpreters.create::<AuthHeaderChecker>(false));
@@ -557,7 +698,7 @@ pub(crate) fn scan_directory<'a>(
         reporter.add_vulnerabilities([vuln]);
     }
 
-    let mut secret_checker = SecretChecker::new();
+    let mut secret_logging_checker = SecretLoggingChecker::new(opts.secret_logging.suffixes());
     let mut auth_header_checker = AuthHeaderChecker::new();
 
     if run_secret_scanner
@@ -574,6 +715,16 @@ pub(crate) fn scan_directory<'a>(
     }
 
     for func in &proj.funcs {
+        if let Some(interp) = &mut secret_logging_interp
+            && let Err(err) = interp.run_checker(
+                func.def_id,
+                &mut secret_logging_checker,
+                func.path.clone(),
+                func.func_name.to_owned(),
+            )
+        {
+            warn!("error while running secret logging checker: {err}");
+        }
         if let Some(interp) = &mut perm_interp {
             let mut checker = PermissionChecker::new();
             if let Err(err) = interp.run_checker(
@@ -584,17 +735,6 @@ pub(crate) fn scan_directory<'a>(
             ) {
                 warn!("error while running permission checker: {err}");
             }
-        }
-
-        if let Some(interp) = &mut secret_interp
-            && let Err(err) = interp.run_checker(
-                func.def_id,
-                &mut secret_checker,
-                func.path.clone(),
-                func.func_name.to_owned(),
-            )
-        {
-            warn!("error while running secret checker: {err}");
         }
 
         if let Some(interp) = &mut auth_header_interp
@@ -623,7 +763,10 @@ pub(crate) fn scan_directory<'a>(
                         func.func_name, func.path,
                     );
                 }
-                reporter.add_vulnerabilities(checker.into_vulns());
+                reporter.add_vulnerabilities_with_proof(
+                    checker.into_vulns(),
+                    &func.manifest_proof(manifest::BindingKind::Invokable),
+                );
             }
         } else if func.webtrigger
             && let Some(interp) = &mut authn_interp
@@ -644,7 +787,10 @@ pub(crate) fn scan_directory<'a>(
                     func.func_name, func.path,
                 );
             }
-            reporter.add_vulnerabilities(checker.into_vulns());
+            reporter.add_vulnerabilities_with_proof(
+                checker.into_vulns(),
+                &func.manifest_proof(manifest::BindingKind::WebTrigger),
+            );
         }
     }
 
@@ -671,6 +817,7 @@ pub(crate) fn scan_directory<'a>(
     }
 
     reporter.add_vulnerabilities(secret_checker.into_vulns());
+    reporter.add_vulnerabilities(secret_logging_checker.into_vulns());
     reporter.add_vulnerabilities(auth_header_checker.into_vulns());
 
     if !run_permission_scanner {
@@ -809,7 +956,6 @@ fn select_env_filter(configured: Option<EnvFilter>, diagnostics_requested: bool)
 fn main() -> Result<()> {
     let args = argfile::expand_args(argfile::parse_fromfile, argfile::PREFIX)?;
     let mut args = Args::parse_from(args);
-
     let diagnostics_requested = args.verbose
         || args
             .command

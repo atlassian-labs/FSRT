@@ -55,8 +55,8 @@ use crate::ir::VarId;
 use crate::{
     ctx::ModId,
     ir::{
-        Base, BasicBlockId, Body, Inst, Intrinsic, Literal, Operand, Projection, RETURN_VAR,
-        Rvalue, STARTING_BLOCK, Template, Terminator, VarKind, Variable,
+        Base, BasicBlockId, Body, ConsoleMethod, Inst, Intrinsic, Literal, Operand, Projection,
+        RETURN_VAR, Rvalue, STARTING_BLOCK, Template, Terminator, VarKind, Variable,
     },
 };
 
@@ -121,6 +121,7 @@ pub struct ResolverTable {
     symbol_to_id: FxHashMap<Symbol, DefId>,
     global_defid_to_value: FxHashMap<DefId, Value>,
     parent: FxHashMap<DefId, DefId>,
+    declared_bindings: HashSet<DefId>,
     owning_module: TiVec<DefId, ModId>,
 }
 
@@ -220,6 +221,7 @@ pub fn run_resolver(
         };
         module.visit_with(&mut lowerer);
     }
+    environment.register_resolver_configs();
     for (curr_mod, module) in modules.iter_enumerated() {
         let global_id = environment.get_or_reserve_global_scope(curr_mod);
         let mut global_collector = GlobalCollector {
@@ -332,6 +334,35 @@ pub struct Class {
     def: DefId,
     pub pub_members: Vec<(Atom, DefId)>,
     constructor: Option<DefId>,
+    /// Set only for an object literal that is guaranteed to coerce to `"[object Object]"`
+    /// when concatenated: no spread, accessor, method, computed key, or
+    /// `toString`/`valueOf`/`__proto__` key. Defaults to `false` for anything unclassified.
+    pub coerces_to_default_tag: bool,
+}
+
+/// Whether coercing this literal to a primitive yields `"[object Object]"`.
+///
+/// Conservative: any property the lowering cannot account for (spread, computed keys,
+/// accessors, methods) or that could change coercion rejects the literal.
+fn coerces_to_default_tag_lit(lit: &ObjectLit) -> bool {
+    lit.props.iter().all(|prop| {
+        let PropOrSpread::Prop(prop) = prop else {
+            return false;
+        };
+        let name = match &**prop {
+            Prop::Shorthand(ident) => &ident.sym,
+            Prop::KeyValue(KeyValueProp {
+                key: PropName::Ident(ident),
+                ..
+            }) => &ident.sym,
+            Prop::KeyValue(KeyValueProp {
+                key: PropName::Str(s),
+                ..
+            }) => &s.value,
+            _ => return false,
+        };
+        !matches!(&**name, "toString" | "valueOf" | "__proto__")
+    })
 }
 
 enum PropKind {
@@ -360,6 +391,7 @@ impl Class {
             def,
             pub_members: vec![],
             constructor: None,
+            coerces_to_default_tag: false,
         }
     }
 
@@ -595,6 +627,9 @@ pub struct Environment {
     default_exports: FxHashMap<ModId, DefId>,
     pub resolver: ResolverTable,
     pub all_strings: Vec<String>,
+    /// `(resolver, object)` for each `makeResolver(object)` call, whose members are
+    /// copied once all modules have been lowered.
+    resolver_configs: Vec<(DefId, DefId)>,
 }
 
 struct ImportCollector<'cx> {
@@ -1195,6 +1230,17 @@ impl FunctionAnalyzer<'_> {
             *prop == *"get" || *prop == *"getSecret" || *prop == *"query"
         }
 
+        // `kvs` is both the named and default export of `@forge/kvs`. Legacy apps
+        // read secrets through the `storage` export of `@forge/api`.
+        fn is_secret_store(res: &Environment, def: DefId) -> bool {
+            match res.is_imported_from(def, "@forge/kvs") {
+                Some(ImportKind::Default) => true,
+                Some(ImportKind::Named(name)) => *name == *"kvs",
+                _ => matches!(res.is_imported_from(def, "@forge/api"),
+                    Some(ImportKind::Named(name)) if *name == *"storage"),
+            }
+        }
+
         fn resolve_jira_api_type(url: &str) -> Option<IntrinsicName> {
             // Pattern matching to classify, eg: api.[asApp | asUser]().requestJira(route`/rest/api/3/myself`);
             match url {
@@ -1299,7 +1345,31 @@ impl FunctionAnalyzer<'_> {
         }
 
         match *callee {
+            [PropPath::Def(def), PropPath::Static(ref method)]
+                if self.res.def_name(def) == "console"
+                    && matches!(self.res.def_ref(def), DefKind::Undefined)
+                    && !self.res.resolver.declared_bindings.contains(&def) =>
+            {
+                ConsoleMethod::from_name(method).map(Intrinsic::ConsoleLog)
+            }
+            [
+                PropPath::Unknown((ref name, ..)),
+                PropPath::Static(ref method),
+            ] if *name == *"console" => ConsoleMethod::from_name(method).map(Intrinsic::ConsoleLog),
+            [PropPath::Def(def), PropPath::Static(ref method)]
+                if *method == *"getSecret" && is_secret_store(self.res, def) =>
+            {
+                Some(Intrinsic::SecretRead)
+            }
             [PropPath::Unknown((ref name, ..))] if *name == *"fetch" || *name == *"forgeFetch" => {
+                Some(Intrinsic::Fetch)
+            }
+            [PropPath::Def(def)]
+                if self.res.is_undeclared_global(def)
+                    && matches!(self.res.def_name(def), "fetch" | "forgeFetch") =>
+            {
+                // Repeated references to a global fetch may resolve to the
+                // placeholder created by an earlier reference in this module.
                 Some(Intrinsic::Fetch)
             }
             [
@@ -1667,6 +1737,46 @@ impl FunctionAnalyzer<'_> {
     }
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
+        // Model fulfillment as a call with the resolved value. Inlining the
+        // callback's statements discarded its parameter and confused callback
+        // returns with returns from the enclosing function.
+        if let CalleeRef::Expr(Expr::Member(MemberExpr {
+            obj,
+            prop: MemberProp::Ident(method),
+            ..
+        })) = callee
+            && method.sym == "then"
+            && let [
+                ExprOrSpread {
+                    expr: callback,
+                    spread: None,
+                },
+            ] = args
+        {
+            let value = self.lower_expr(obj, None);
+            let callback_operand = match &**callback {
+                Expr::Arrow(arrow) => self.lower_callback(&arrow.params, &arrow.body),
+                Expr::Fn(function) if function.function.body.is_some() => {
+                    let params = function
+                        .function
+                        .params
+                        .iter()
+                        .map(|param| param.pat.clone())
+                        .collect::<Vec<_>>();
+                    let body = BlockStmtOrExpr::BlockStmt(function.function.body.clone().unwrap());
+                    self.lower_callback(&params, &body)
+                }
+                _ => self.get_operand_for_call(callback),
+            };
+            let props = normalize_callee_expr(callback.as_ref().into(), self.res, self.module);
+            let args = smallvec::smallvec![value];
+            let call = if let Some(intrinsic) = self.as_intrinsic(&props, None) {
+                Rvalue::Intrinsic(intrinsic, args)
+            } else {
+                Rvalue::Call(callback_operand, args)
+            };
+            return Operand::with_var(self.body.push_tmp(self.block, call, None));
+        }
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first()
             && (self.res.is_imported_from(id, "@forge/ui").is_some_and(|imp| matches!(imp, ImportKind::Named(s) if *s == *"useState" || *s == *"useEffect")) || calls_method(callee, "then")
@@ -1728,6 +1838,49 @@ impl FunctionAnalyzer<'_> {
         };
         let res = self.body.push_tmp(self.block, call, None);
         Operand::with_var(res)
+    }
+
+    fn lower_callback(&mut self, params: &[Pat], body: &BlockStmtOrExpr) -> Operand {
+        let owner = self
+            .res
+            .add_anonymous("__FULFILLMENT", AnonType::Closure, self.module);
+        let mut args = ArgDefiner {
+            res: self.res,
+            module: self.module,
+            func: owner,
+            body: Body::with_owner(owner),
+            current_arg: Variable::default(),
+        };
+        args.visit_pats(params);
+        let mut locals = LocalDefiner {
+            res: args.res,
+            module: self.module,
+            func: owner,
+            body: args.body,
+        };
+        body.visit_with(&mut locals);
+        let mut analyzer = FunctionAnalyzer::new(
+            locals.res,
+            self.module,
+            owner,
+            self.secret_packages,
+            locals.body,
+            self.suspicious_remotes,
+        );
+        match body {
+            BlockStmtOrExpr::BlockStmt(body) => analyzer.lower_stmts(&body.stmts),
+            BlockStmtOrExpr::Expr(expr) => {
+                let value = analyzer.lower_expr(expr, None);
+                analyzer.push_curr_inst(Inst::Assign(RETURN_VAR, Rvalue::Read(value)));
+            }
+        }
+        for bb in analyzer.body.iter_block_keys().collect::<Vec<_>>() {
+            if !analyzer.body.block(bb).set_term_called {
+                analyzer.body.set_terminator(bb, Terminator::Ret);
+            }
+        }
+        *analyzer.res.def_mut(owner).expect_body() = analyzer.body;
+        Operand::with_var(self.body.get_or_insert_global(owner))
     }
 
     fn bind_pats(&mut self, n: &Pat, val: Rvalue) {
@@ -1892,16 +2045,22 @@ impl FunctionAnalyzer<'_> {
         match n {
             Expr::This(_) => Operand::Var(Variable::THIS),
             Expr::Array(ArrayLit { elems, .. }) => {
-                let array_lit: Vec<_> = elems
-                    .iter()
-                    .map(|e| {
-                        e.as_ref()
-                            .map_or(Operand::UNDEF, |ExprOrSpread { spread, expr }| {
-                                self.lower_expr(expr, None)
-                            })
-                    })
-                    .collect();
-                Operand::UNDEF
+                // Keep array contents in the IR, just like object properties.
+                // Discarding the aggregate loses dataflow into logging/calls.
+                let def = self
+                    .res
+                    .add_anonymous("__ARRAY", AnonType::Obj, self.module);
+                let id = self.body.add_var(VarKind::LocalDef(def));
+                for (index, elem) in elems.iter().enumerate() {
+                    if let Some(elem) = elem {
+                        let value = self.lower_expr(&elem.expr, None);
+                        let mut var = Variable::new(id);
+                        var.projections
+                            .push(Projection::Known(index.to_string().into()));
+                        self.push_curr_inst(Inst::Assign(var, Rvalue::Read(value)));
+                    }
+                }
+                Operand::with_var(id)
             }
             Expr::Object(ObjectLit { span, props }) => {
                 let def_id = self
@@ -1909,6 +2068,11 @@ impl FunctionAnalyzer<'_> {
                     .add_anonymous("__UNKNOWN", AnonType::Obj, self.module);
                 let class_var_id = self.body.add_var(VarKind::LocalDef(def_id));
                 if let DefKind::GlobalObj(class_id) = self.res.defs.defs[def_id] {
+                    self.res.defs.classes[class_id].coerces_to_default_tag =
+                        coerces_to_default_tag_lit(&ObjectLit {
+                            span: *span,
+                            props: props.clone(),
+                        });
                     props.iter().for_each(|prop_or_spread| {
                         let mut var = Variable::new(class_var_id);
                         match prop_or_spread {
@@ -2134,10 +2298,9 @@ impl FunctionAnalyzer<'_> {
             }
             Expr::Ident(id) => {
                 let id = id.to_id();
-                let Some(def) = self.res.sym_to_id(id.clone(), self.module) else {
-                    warn!("3 unknown symbol: {}", id.0);
-                    return Literal::Undef.into();
-                };
+                // Preserve unresolved globals as named references so policies
+                // can classify builtins such as Boolean during call analysis.
+                let def = self.res.get_or_insert_sym(id, self.module);
                 let var = self.body.get_or_insert_global(def);
                 Operand::with_var(var)
             }
@@ -2446,6 +2609,9 @@ impl FunctionAnalyzer<'_> {
             if let Pat::Ident(id) = &decl.name {
                 let id = id.to_id();
                 let def = self.res.get_or_insert_sym(id, self.module);
+                if var.kind == swc_core::ecma::ast::VarDeclKind::Const {
+                    self.body.const_bindings.insert(def);
+                }
                 let opnd = decl
                     .init
                     .as_deref()
@@ -2547,12 +2713,12 @@ impl Visit for ArgDefiner<'_> {
                     .res
                     .get_or_overwrite_sym(id.clone(), self.module, DefRes::Arg);
                 self.res.add_parent(defid, self.func);
-                self.res.add_parent(defid, self.func);
-                continue;
+                (defid, id)
             } else {
                 //FIXME: clean up unnecessary allocations
                 let id = format!("{pos}argument");
                 let defid = self.res.add_anonymous(id, AnonType::Unknown, self.module);
+                self.res.add_parent(defid, self.func);
                 let id = Atom::from(self.res.def_name(defid)).to_id();
                 (defid, id)
             };
@@ -2662,7 +2828,32 @@ impl Visit for PermCheck<'_> {
     }
 }
 
+struct DeclarationOwner<'cx> {
+    res: &'cx mut Environment,
+    module: ModId,
+    owner: DefId,
+}
+
+impl Visit for DeclarationOwner<'_> {
+    noop_visit_type!();
+
+    fn visit_binding_ident(&mut self, n: &BindingIdent) {
+        let def = self.res.get_or_insert_sym(n.id.to_id(), self.module);
+        // An earlier traversal may have encountered a nested reference first.
+        self.res.add_parent(def, self.owner);
+    }
+
+    // Default values and computed keys do not declare pattern bindings.
+    fn visit_expr(&mut self, _: &Expr) {}
+}
+
 impl Visit for LocalDefiner<'_> {
+    fn visit_binding_ident(&mut self, n: &BindingIdent) {
+        let def = self.res.get_or_insert_sym(n.id.to_id(), self.module);
+        self.res.resolver.declared_bindings.insert(def);
+        n.visit_children_with(self);
+    }
+
     fn visit_ident(&mut self, n: &Ident) {
         let id = n.to_id();
         let defid = self.res.get_or_insert_sym(id.clone(), self.module);
@@ -2671,6 +2862,14 @@ impl Visit for LocalDefiner<'_> {
     }
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
+        // A SimpleAssignTarget also contains a BindingIdent. Set ownership only
+        // for declaration patterns, never for a write to an outer binding.
+        let mut declarations = DeclarationOwner {
+            res: self.res,
+            module: self.module,
+            owner: self.func,
+        };
+        n.name.visit_with(&mut declarations);
         n.name.visit_with(self);
         if let Some(Expr::New(new_expr)) = n.init.as_deref()
             && let Pat::Ident(ident) = &n.name
@@ -2975,6 +3174,35 @@ impl Visit for FunctionCollector<'_> {
     }
 
     fn visit_var_declarator(&mut self, n: &VarDeclarator) {
+        if let Some(Expr::Call(call)) = n.init.as_deref()
+            && is_make_resolver(call, self.res, self.module)
+        {
+            if let Some(binding) = n.name.as_ident()
+                && let Some(handler) = self.res.sym_to_id(binding.to_id(), self.module)
+                && let Some(properties) = make_resolver_properties(call)
+            {
+                let resolver = self.res.resolve_alias(handler);
+                for (name, callback) in properties {
+                    if let Some(def) = self.res.lookup_prop(resolver, &name) {
+                        let old_parent = self.parent.replace(def);
+                        match callback {
+                            StaticCallback::Expression(Expr::Arrow(arrow)) => {
+                                self.visit_arrow_expr(arrow)
+                            }
+                            StaticCallback::Expression(Expr::Fn(function)) => {
+                                self.handle_function(&function.function, Some(def))
+                            }
+                            StaticCallback::Method(function) => {
+                                self.handle_function(function, Some(def))
+                            }
+                            _ => {}
+                        }
+                        self.parent = old_parent;
+                    }
+                }
+            }
+            return;
+        }
         n.visit_children_with(self);
         let Some(BindingIdent { id, .. }) = n.name.as_ident() else {
             return;
@@ -3087,21 +3315,43 @@ impl Visit for FunctionCollector<'_> {
                 }
             }
             Some(Expr::Object(object_lit)) => {
-                object_lit.props.iter().for_each(|prop| {
-                    if let PropOrSpread::Prop(prop) = prop
-                        && let Prop::Method(MethodProp { key, function }) = &**prop
-                        && let Some(key_ident) = key.as_ident()
-                    {
-                        let former_parent = self.parent;
-                        self.parent = self.res.get_prop_from_ident(
-                            self.module,
-                            id.to_id(),
-                            &key_ident.clone().into(),
-                        );
-                        self.handle_function(function, None);
-                        self.parent = former_parent;
+                let Some(object) = self.res.sym_to_id(id, self.module) else {
+                    return;
+                };
+                for property in &object_lit.props {
+                    let PropOrSpread::Prop(property) = property else {
+                        continue;
+                    };
+                    let (name, callback) = match &**property {
+                        Prop::Method(property) => (
+                            property.key.as_symbol(),
+                            StaticCallback::Method(&property.function),
+                        ),
+                        Prop::KeyValue(property) => (
+                            property.key.as_symbol(),
+                            StaticCallback::Expression(&property.value),
+                        ),
+                        _ => continue,
+                    };
+                    let Some(def) = name.and_then(|name| self.res.lookup_prop(object, &name))
+                    else {
+                        continue;
+                    };
+                    let old_parent = self.parent.replace(def);
+                    match callback {
+                        StaticCallback::Method(function) => {
+                            self.handle_function(function, Some(def))
+                        }
+                        StaticCallback::Expression(Expr::Fn(function)) => {
+                            self.handle_function(&function.function, Some(def))
+                        }
+                        StaticCallback::Expression(Expr::Arrow(arrow)) => {
+                            self.visit_arrow_expr(arrow)
+                        }
+                        _ => {}
                     }
-                });
+                    self.parent = old_parent;
+                }
             }
             _ => {}
         }
@@ -3285,6 +3535,63 @@ fn as_resolver(
     None
 }
 
+fn static_callback_member(member: &MemberExpr, env: &Environment, module: ModId) -> Option<DefId> {
+    let object = member.obj.as_ident()?;
+    let MemberProp::Ident(property) = &member.prop else {
+        return None;
+    };
+    let object = env.sym_to_id(object.to_id(), module)?;
+    env.lookup_prop(object, &property.sym)
+}
+
+fn is_make_resolver(call: &CallExpr, env: &Environment, module: ModId) -> bool {
+    let Some(Expr::Ident(callee)) = call.callee.as_expr().map(|expr| &**expr) else {
+        return false;
+    };
+    let Some(def) = env.sym_to_id(callee.to_id(), module) else {
+        return false;
+    };
+    matches!(env.def_ref(env.resolve_alias(def)), DefKind::Foreign(item)
+        if item.module_name == "@forge/resolver" && matches!(&item.kind, ImportKind::Named(name) if name == "makeResolver"))
+}
+
+enum StaticCallback<'a> {
+    Expression(&'a Expr),
+    Method(&'a Function),
+    Binding(&'a Ident),
+}
+fn make_resolver_properties(call: &CallExpr) -> Option<Vec<(Atom, StaticCallback<'_>)>> {
+    let [ExprOrSpread { spread: None, expr }] = call.args.as_slice() else {
+        return None;
+    };
+    let Expr::Object(object) = &**expr else {
+        return None;
+    };
+    object
+        .props
+        .iter()
+        .map(|property| {
+            let PropOrSpread::Prop(property) = property else {
+                return None;
+            };
+            match &**property {
+                Prop::KeyValue(property) => Some((
+                    property.key.as_symbol()?,
+                    StaticCallback::Expression(&property.value),
+                )),
+                Prop::Method(property) => Some((
+                    property.key.as_symbol()?,
+                    StaticCallback::Method(&property.function),
+                )),
+                Prop::Shorthand(binding) => {
+                    Some((binding.sym.clone(), StaticCallback::Binding(binding)))
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 fn as_resolver_def<'a>(
     call: &'a CallExpr,
     res: &Environment,
@@ -3304,6 +3611,9 @@ fn as_resolver_def<'a>(
     else {
         return None;
     };
+    if call.args.iter().any(|arg| arg.spread.is_some()) {
+        return None;
+    }
     match &**name {
         Expr::Lit(Lit::Str(Str { value, .. })) => Some((objid, value, args)),
         _ => None,
@@ -3384,21 +3694,39 @@ impl Visit for Lowerer<'_> {
         }
     }
 
-    fn visit_call_expr(&mut self, n: &CallExpr) {
-        if let Some(expr) = n.callee.as_expr()
-            && let Some((objid, ResolverDef::FnDef)) = as_resolver(expr, self.res, self.curr_mod)
-            && let [
-                ExprOrSpread { expr: name, .. },
-                ExprOrSpread { expr: args, .. },
-            ] = &*n.args
-            && let Expr::Lit(Lit::Str(Str { value, .. })) = &**name
+    fn visit_call_expr(&mut self, call: &CallExpr) {
+        if let Some((objid, name, callback)) = as_resolver_def(call, self.res, self.curr_mod) {
+            let member = match callback {
+                Expr::Fn(_) | Expr::Arrow(_) => {
+                    self.res
+                        .add_anonymous(name.clone(), AnonType::Closure, self.curr_mod)
+                }
+                Expr::Ident(id) => self.res.get_or_insert_sym(id.to_id(), self.curr_mod),
+                Expr::Member(member) => {
+                    let Some(callback) = static_callback_member(member, self.res, self.curr_mod)
+                    else {
+                        warn!("unresolved resolver callback {name}");
+                        return;
+                    };
+                    callback
+                }
+                _ => {
+                    warn!("unsupported resolver callback for {name}");
+                    return;
+                }
+            };
+            self.res
+                .def_mut(objid)
+                .expect_class()
+                .pub_members
+                .push((name.clone(), member));
+        } else if call
+            .callee
+            .as_expr()
+            .and_then(|expr| as_resolver(expr, self.res, self.curr_mod))
+            .is_some_and(|(_, kind)| kind == ResolverDef::FnDef)
         {
-            let fname = value.clone();
-            let new_def = self
-                .res
-                .add_anonymous(fname.clone(), AnonType::Closure, self.curr_mod);
-            let class = self.res.def_mut(objid).expect_class();
-            class.pub_members.push((fname, new_def));
+            warn!("unsupported resolver registration: expected a literal key and static callback");
         }
     }
 
@@ -3410,6 +3738,77 @@ impl Visit for Lowerer<'_> {
         } = n
         {
             let id = id.to_id();
+            if let Expr::Call(call) = &**expr
+                && is_make_resolver(call, self.res, self.curr_mod)
+            {
+                if let [ExprOrSpread { spread: None, expr }] = call.args.as_slice()
+                    && let Expr::Ident(object) = &**expr
+                {
+                    // The object is only known to be a resolver here, and may be declared
+                    // later or in another module. Register a resolver for it now and fill
+                    // its members once every module is lowered; the object itself stays a
+                    // plain object for everything else that reads it.
+                    let object = self.get_or_insert_sym(object.to_id());
+                    let resolver = self.res.add_anonymous(
+                        "resolver definitions",
+                        AnonType::Unknown,
+                        self.curr_mod,
+                    );
+                    self.res.overwrite_def(resolver, DefKind::Resolver(()));
+                    self.res.get_or_overwrite_sym(
+                        id,
+                        self.curr_mod,
+                        DefKind::ResolverHandler(resolver),
+                    );
+                    self.res.resolver_configs.push((resolver, object));
+                    return;
+                }
+                let resolver = self.res.add_anonymous(
+                    "resolver definitions",
+                    AnonType::Unknown,
+                    self.curr_mod,
+                );
+                self.res.overwrite_def(resolver, DefKind::Resolver(()));
+                self.res.get_or_overwrite_sym(
+                    id,
+                    self.curr_mod,
+                    DefKind::ResolverHandler(resolver),
+                );
+                let Some(properties) = make_resolver_properties(call) else {
+                    warn!("unsupported makeResolver object (dynamic key, spread, or wrapper)");
+                    return;
+                };
+                for (name, callback) in properties {
+                    let callback = match callback {
+                        StaticCallback::Expression(Expr::Ident(id))
+                        | StaticCallback::Binding(id) => self.get_or_insert_sym(id.to_id()),
+                        StaticCallback::Expression(Expr::Member(member)) => {
+                            let Some(callback) =
+                                static_callback_member(member, self.res, self.curr_mod)
+                            else {
+                                warn!("unresolved resolver callback {name}");
+                                continue;
+                            };
+                            callback
+                        }
+                        StaticCallback::Expression(Expr::Fn(_) | Expr::Arrow(_))
+                        | StaticCallback::Method(_) => {
+                            self.res
+                                .add_anonymous(name.clone(), AnonType::Closure, self.curr_mod)
+                        }
+                        _ => {
+                            warn!("unsupported makeResolver callback {name}");
+                            continue;
+                        }
+                    };
+                    self.res
+                        .def_mut(resolver)
+                        .expect_class()
+                        .pub_members
+                        .push((name, callback));
+                }
+                return;
+            }
             match &**expr {
                 Expr::Lit(lit) => {}
                 Expr::Arrow(expr) => {
@@ -3424,57 +3823,40 @@ impl Visit for Lowerer<'_> {
                     expr.visit_children_with(self);
                     self.curr_def = old_def;
                 }
-                Expr::Call(CallExpr {
-                    callee: Callee::Expr(expr),
-                    args,
-                    ..
-                }) => {
-                    if let Some((objid, kind)) = as_resolver(expr, self.res, self.curr_mod) {
+                Expr::Call(call) => {
+                    if let Some((objid, kind)) = call
+                        .callee
+                        .as_expr()
+                        .and_then(|expr| as_resolver(expr, self.res, self.curr_mod))
+                    {
                         match kind {
-                            ResolverDef::FnDef => {
-                                if let [
-                                    ExprOrSpread { expr: name, .. },
-                                    ExprOrSpread { expr: args, .. },
-                                ] = &**args
-                                    && let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr
-                                {
-                                    let fname = value.clone();
-                                    let member_def = match &**args {
-                                        Expr::Fn(_) | Expr::Arrow(_) => self.res.add_anonymous(
-                                            fname.clone(),
-                                            AnonType::Closure,
-                                            self.curr_mod,
-                                        ),
-                                        Expr::Ident(id) => self.get_or_insert_sym(id.to_id()),
-                                        _ => {
-                                            warn!("unknown function def: {:?}", args);
-                                            self.res.add_anonymous(
-                                                fname.clone(),
-                                                AnonType::Unknown,
-                                                self.curr_mod,
-                                            )
-                                        }
-                                    };
-                                    let class = self.res.def_mut(objid).expect_class();
-                                    class.pub_members.push((fname, member_def));
-                                }
-                            }
-                            ResolverDef::Handler => {
+                            ResolverDef::FnDef => self.visit_call_expr(call),
+                            ResolverDef::Handler if call.args.is_empty() => {
                                 self.res.get_or_overwrite_sym(
                                     id,
                                     self.curr_mod,
                                     DefKind::ResolverHandler(objid),
                                 );
                             }
+                            ResolverDef::Handler => warn!("unsupported getDefinitions invocation"),
                         }
                     }
-                    expr.visit_children_with(self);
+                    // Registration reads the call's own arguments; the callee can still
+                    // contain registrations, as in `(() => { resolver.define(...) })()`.
+                    if let Callee::Expr(callee) = &call.callee {
+                        callee.visit_children_with(self);
+                    }
                 }
-                Expr::Object(ObjectLit { props, .. }) => {
+                Expr::Object(lit @ ObjectLit { props, .. }) => {
                     let def_id =
                         self.res
                             .get_or_overwrite_sym(id, self.curr_mod, DefKind::GlobalObj(()));
                     let old_def = self.curr_def.replace(def_id);
+                    let coerces = coerces_to_default_tag_lit(lit);
+                    self.res
+                        .def_mut(def_id)
+                        .expect_class()
+                        .coerces_to_default_tag = coerces;
                     // TODO:add parent
                     for prop in props {
                         match prop {
@@ -3493,9 +3875,25 @@ impl Visit for Lowerer<'_> {
                                 }
                                 Prop::KeyValue(KeyValueProp { key, value }) => {
                                     if let sym @ Some(_) = key.as_symbol() {
-                                        let defid = value.as_ident().map(|id| {
-                                            self.res.get_or_insert_sym(id.to_id(), self.curr_mod)
-                                        });
+                                        let defid = match &**value {
+                                            Expr::Ident(id) => Some(
+                                                self.res
+                                                    .get_or_insert_sym(id.to_id(), self.curr_mod),
+                                            ),
+                                            Expr::Fn(_) | Expr::Arrow(_) => {
+                                                Some(self.res.add_anonymous(
+                                                    key.expect_symbol(),
+                                                    AnonType::Closure,
+                                                    self.curr_mod,
+                                                ))
+                                            }
+                                            Expr::Member(member) => static_callback_member(
+                                                member,
+                                                self.res,
+                                                self.curr_mod,
+                                            ),
+                                            _ => None,
+                                        };
                                         let cls = self.res.def_mut(def_id).expect_class();
                                         cls.pub_members.extend(sym.zip(defid));
                                     }
@@ -3657,7 +4055,6 @@ impl Visit for ImportCollector<'_> {
         {
             Ok(id) => {
                 let mod_id = ModId::from(id);
-                debug_assert_ne!(self.curr_mod, mod_id);
                 match self.resolver.default_export(mod_id) {
                     Some(def) => {
                         self.resolver.resolver.symbol_to_id.insert(
@@ -3692,7 +4089,6 @@ impl Visit for ImportCollector<'_> {
         {
             Ok(id) => {
                 let mod_id = ModId::from(id);
-                debug_assert_ne!(self.curr_mod, mod_id);
                 DefRes::ModuleNs(mod_id)
             }
             Err(_) => {
@@ -3975,6 +4371,11 @@ impl Environment {
         self.resolver.parent.insert(child, parent);
     }
 
+    /// The lexical body that declares a binding, independent of its writes.
+    pub(crate) fn binding_owner(&self, binding: DefId) -> Option<DefId> {
+        self.resolver.parent.get(&binding).copied()
+    }
+
     fn overwrite_def(&mut self, def: DefId, res: DefRes) {
         let key = self.new_key_from_res(def, res);
         self.defs.defs[def] = key;
@@ -3989,6 +4390,13 @@ impl Environment {
     #[inline]
     pub fn bodies_mut(&mut self) -> impl Iterator<Item = &mut Body> + '_ {
         self.defs.funcs.iter_mut()
+    }
+
+    /// Simplify obvious boolean branches after scanning for hardcoded secrets.
+    pub fn simplify_constant_branches(&mut self) {
+        for body in self.bodies_mut() {
+            body.simplify_constant_branches();
+        }
     }
 
     #[inline]
@@ -4177,6 +4585,11 @@ impl Environment {
     }
 
     #[inline]
+    pub fn is_undeclared_global(&self, def: DefId) -> bool {
+        matches!(self.def_ref(def), DefKind::Undefined)
+            && !self.resolver.declared_bindings.contains(&def)
+    }
+
     pub fn def_name(&self, def: DefId) -> &str {
         &self.resolver.names[def]
     }
@@ -4309,6 +4722,14 @@ impl Environment {
         }
     }
 
+    /// The module and import form of a binding imported from an unresolved package.
+    pub fn foreign_import(&self, def: DefId) -> Option<(&str, &ImportKind)> {
+        match self.def_ref(def) {
+            DefKind::Foreign(f) => Some((&f.module_name, &f.kind)),
+            _ => None,
+        }
+    }
+
     pub fn is_expr_imported_from(&self, n: &Expr, module: ModId) -> Option<&ImportKind> {
         if let Expr::Call(CallExpr {
             callee: Callee::Expr(expr),
@@ -4336,6 +4757,21 @@ impl Environment {
             DefKind::ExportAlias(def)
             | DefKind::ResolverDef(def)
             | DefKind::ResolverHandler(def) => self.resolve_alias(def),
+        }
+    }
+
+    /// Gives each resolver created for `makeResolver(object)` the members of the object
+    /// literal the identifier resolves to. An identifier that does not resolve to an
+    /// object literal registers nothing.
+    fn register_resolver_configs(&mut self) {
+        for (resolver, object) in std::mem::take(&mut self.resolver_configs) {
+            let object = self.resolve_alias(object);
+            let DefKind::GlobalObj(config) = self.def_ref(object) else {
+                warn!("unsupported makeResolver object (not a static object literal)");
+                continue;
+            };
+            let members = config.pub_members.clone();
+            self.def_mut(resolver).expect_class().pub_members = members;
         }
     }
 

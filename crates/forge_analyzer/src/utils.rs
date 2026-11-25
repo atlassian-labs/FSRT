@@ -96,18 +96,24 @@ pub fn add_elements_to_intrinsic_struct(value: &Value, args: &mut Vec<String>) {
 }
 
 pub fn return_combinations_phi(exprs: Vec<Value>) -> Value {
-    let exprs: Vec<Vec<String>> = exprs
-        .iter()
-        .map(|expr| match expr {
-            Value::Phi(value_vec) => value_vec
-                .iter()
-                .map(|Const::Literal(string)| string.clone())
-                .unique()
-                .collect(),
-            Value::Const(Const::Literal(string)) => vec![string.clone()],
-            _ => vec![],
-        })
-        .collect();
+    let mut operands: Vec<Vec<String>> = Vec::with_capacity(exprs.len());
+    for expr in &exprs {
+        match expr {
+            Value::Phi(value_vec) => operands.push(
+                value_vec
+                    .iter()
+                    .map(|Const::Literal(string)| string.clone())
+                    .unique()
+                    .collect(),
+            ),
+            Value::Const(Const::Literal(string)) => operands.push(vec![string.clone()]),
+            // A non-literal operand makes the whole combination non-constant. Contributing an
+            // empty list would collapse the product into an empty `Phi`, which callers treat as
+            // a hardcoded value.
+            _ => return Value::Unknown,
+        }
+    }
+    let exprs = operands;
 
     let mut combinations = vec![String::new()];
 

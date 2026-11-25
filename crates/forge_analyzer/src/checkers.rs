@@ -25,183 +25,20 @@ use regex::{Regex, RegexSet};
 use serde::Deserialize;
 use smallvec::SmallVec;
 use std::{
-    cmp::max,
-    collections::HashMap,
-    collections::HashSet,
-    iter::{self, zip},
-    mem,
-    ops::ControlFlow,
-    path::PathBuf,
-    sync::LazyLock,
+    cmp::max, collections::HashMap, collections::HashSet, iter, mem, ops::ControlFlow,
+    path::PathBuf, sync::LazyLock,
 };
 use time::{Date, Month, OffsetDateTime};
 use tracing::{debug, info, warn};
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Default)]
-pub enum Taint {
-    No,
-    Yes,
-    #[default]
-    Unknown,
-}
+mod secret_logging;
+pub use secret_logging::{
+    DEFAULT_EXCLUDED_SECRET_SUFFIXES, DEFAULT_SECRET_SUFFIXES, SecretLoggingChecker,
+    SecretLoggingVuln, SecretSuffixes,
+};
 
-impl JoinSemiLattice for Taint {
-    const BOTTOM: Self = Self::No;
-
-    #[inline]
-    fn join_changed(&mut self, other: &Self) -> bool {
-        let old = mem::replace(self, max(*other, *self));
-        old == *self
-    }
-
-    #[inline]
-    fn join(&self, other: &Self) -> Self {
-        max(*other, *self)
-    }
-}
-
-impl<D: JoinSemiLattice> JoinSemiLattice for Vec<D> {
-    const BOTTOM: Self = vec![];
-    fn join_changed(&mut self, other: &Self) -> bool {
-        let mut changed = false;
-        for (l, r) in zip(self, other) {
-            changed |= l.join_changed(r);
-        }
-        changed
-    }
-    fn join(&self, other: &Self) -> Self {
-        self.iter()
-            .zip(other.iter())
-            .map(|(a, b)| a.join(b))
-            .collect()
-    }
-}
-
-pub struct TaintDataflow {
-    started: bool,
-}
-
-impl<'cx> Dataflow<'cx> for TaintDataflow {
-    type State = Vec<Taint>;
-
-    fn with_interp<C: Runner<'cx, State = Self::State>>(_interp: &Interp<'cx, C>) -> Self {
-        Self { started: false }
-    }
-
-    fn transfer_call<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &Interp<'cx, C>,
-        def: DefId,
-        loc: Location,
-        block: &'cx BasicBlock,
-        callee: &'cx Operand,
-        initial_state: Self::State,
-        oprands: SmallVec<[crate::ir::Operand; 4]>,
-    ) -> Self::State {
-        self.super_transfer_call(
-            interp,
-            def,
-            loc,
-            block,
-            callee,
-            initial_state,
-            oprands.clone(),
-        )
-    }
-
-    fn transfer_intrinsic<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        _interp: &mut Interp<'cx, C>,
-        _def: DefId,
-        _loc: Location,
-        _block: &'cx BasicBlock,
-        _intrinsic: &'cx Intrinsic,
-        initial_state: Self::State,
-        _operands: SmallVec<[crate::ir::Operand; 4]>,
-    ) -> Self::State {
-        initial_state
-    }
-
-    fn transfer_inst<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        loc: Location,
-        block: &'cx BasicBlock,
-        inst: &'cx Inst,
-        mut initial_state: Self::State,
-    ) -> Self::State {
-        match inst {
-            Inst::Assign(l, v) => {
-                interp.add_value_to_definition(def, l.clone(), v.clone());
-                let Some(var) = l.as_var_id() else {
-                    return initial_state;
-                };
-
-                if let Some(var) = v.as_var() {
-                    let Some(var_id) = var.as_var_id() else {
-                        return initial_state;
-                    };
-                    let taint = initial_state[var_id.0 as usize];
-                    if !self.started && taint == Taint::Yes {
-                        let Some(Projection::Known(s)) = var.projections.first() else {
-                            return initial_state;
-                        };
-                        if *s == "payload" {
-                            initial_state[var_id.0 as usize] = Taint::Yes;
-                            self.started = true;
-                        }
-                        return initial_state;
-                    } else {
-                        let new_state = initial_state[var_id.0 as usize].join(&taint);
-                        initial_state[var_id.0 as usize] = new_state;
-                        return initial_state;
-                    }
-                } else if initial_state[var.0 as usize] == Taint::Yes {
-                    initial_state[var.0 as usize] = Taint::Unknown;
-                }
-                initial_state
-            }
-            Inst::Expr(rvalue) => {
-                self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
-            }
-        }
-    }
-
-    fn transfer_block<C: Runner<'cx, State = Self::State>>(
-        &mut self,
-        interp: &mut Interp<'cx, C>,
-        def: DefId,
-        bb: BasicBlockId,
-        block: &'cx BasicBlock,
-        mut initial_state: Self::State,
-    ) -> Self::State {
-        if initial_state.len() < interp.body().vars.len() {
-            initial_state.resize(interp.body().vars.len(), Taint::Unknown);
-        }
-        if matches!(interp.entry.kind, EntryKind::Resolver(..)) {
-            debug!("analyzing resolver");
-            let kind = interp.body().vars.get(VarId::from(1));
-            if matches!(kind, Some(VarKind::Arg(_))) {
-                debug!("found taint start");
-                initial_state[1] = Taint::Yes;
-            } else {
-                debug!(first_var = ?kind, "no arguments read");
-            }
-        }
-        for (idx, inst) in block.iter().enumerate() {
-            initial_state = self.transfer_inst(
-                interp,
-                def,
-                Location::new(bb, idx as u32),
-                block,
-                inst,
-                initial_state,
-            );
-        }
-        initial_state
-    }
-}
+use crate::taint::{FlowValue, TaintPolicy, TaintReader};
+pub use crate::taint::{Taint, TaintDataflow};
 
 pub struct AuthorizeDataflow {
     needs_call: Vec<DefId>,
@@ -220,7 +57,7 @@ impl JoinSemiLattice for AuthorizeState {
     #[inline]
     fn join_changed(&mut self, other: &Self) -> bool {
         let old = mem::replace(self, max(*other, *self));
-        old == *self
+        old != *self
     }
 
     #[inline]
@@ -263,7 +100,9 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
             | Intrinsic::ApiCall(_)
             | Intrinsic::SafeCall(_)
             | Intrinsic::EnvRead
-            | Intrinsic::StorageRead => initial_state,
+            | Intrinsic::StorageRead
+            | Intrinsic::SecretRead
+            | Intrinsic::ConsoleLog(_) => initial_state,
         }
     }
 
@@ -339,10 +178,31 @@ impl JoinSemiLattice for PrototypePollutionState {
     }
 }
 
+/// Resolver arguments are sources; a write through two tainted computed keys,
+/// such as `target[key][prop] = value`, is the sink.
+#[derive(Default)]
+pub struct PrototypePollutionTaint;
+
+impl TaintPolicy for PrototypePollutionTaint {
+    type Facts = Taint;
+    const TAINT_RESOLVER_INPUT: bool = true;
+
+    fn intrinsic_value(&self, _intrinsic: &Intrinsic) -> FlowValue<Taint> {
+        FlowValue::default()
+    }
+
+    fn is_violation(&self, inst: &Inst, values: &TaintReader<'_, Self>) -> bool {
+        matches!(inst, Inst::Assign(l, _)
+            if matches!(&*l.projections,
+                [Projection::Computed(Base::Var(first)), Projection::Computed(Base::Var(second)), ..]
+                if values.var(*first).facts == Taint::Yes && values.var(*second).facts == Taint::Yes))
+    }
+}
+
 impl<'cx> Runner<'cx> for PrototypePollutionChecker {
     type State = Vec<Taint>;
 
-    type Dataflow = TaintDataflow;
+    type Dataflow = TaintDataflow<PrototypePollutionTaint>;
 
     const NAME: &'static str = "PrototypePollution";
 
@@ -356,29 +216,30 @@ impl<'cx> Runner<'cx> for PrototypePollutionChecker {
     ) -> ControlFlow<(), Self::State> {
         ControlFlow::Continue(state.clone())
     }
-    fn visit_block(
+    fn visit_call(
         &mut self,
-        _interp: &Interp<'cx, Self>,
-        _def: DefId,
-        _id: BasicBlockId,
-        block: &'cx BasicBlock,
-        curr_state: &Self::State,
+        interp: &Interp<'cx, Self>,
+        callee: &'cx Operand,
+        _args: &'cx [Operand],
+        block: BasicBlockId,
+        state: &Self::State,
     ) -> ControlFlow<(), Self::State> {
-        for inst in &block.insts {
-            if let Inst::Assign(l, _r) = inst
-                && let [
-                    Projection::Computed(Base::Var(fst)),
-                    Projection::Computed(Base::Var(snd)),
-                    ..,
-                ] = *l.projections
-                && curr_state.get(fst.0 as usize).copied() == Some(Taint::Yes)
-                && curr_state.get(snd.0 as usize).copied() == Some(Taint::Yes)
-            {
-                info!("Prototype pollution vuln detected");
-                return ControlFlow::Break(());
-            }
+        crate::taint::visit_taint_call(self, interp, callee, block, state)
+    }
+
+    fn visit_inst(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        loc: Location,
+        inst: &'cx Inst,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        if interp.instruction_has_finding(def, loc) {
+            info!("Prototype pollution vuln detected");
+            return ControlFlow::Break(());
         }
-        ControlFlow::Continue(curr_state.clone())
+        self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
     }
 }
 
@@ -578,7 +439,9 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             | Intrinsic::EnvRead
             | Intrinsic::UserFieldAccess
             | Intrinsic::ApiCustomField
-            | Intrinsic::StorageRead => ControlFlow::Continue(*state),
+            | Intrinsic::StorageRead
+            | Intrinsic::SecretRead
+            | Intrinsic::ConsoleLog(_) => ControlFlow::Continue(*state),
         }
     }
 }
@@ -599,7 +462,7 @@ impl JoinSemiLattice for Authenticated {
     #[inline]
     fn join_changed(&mut self, other: &Self) -> bool {
         let old = mem::replace(self, max(*other, *self));
-        old == *self
+        old != *self
     }
 
     #[inline]
@@ -632,8 +495,11 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
         _operands: SmallVec<[crate::ir::Operand; 4]>,
     ) -> Self::State {
         match *intrinsic {
-            Intrinsic::Authorize(_) => initial_state,
-            Intrinsic::Fetch | Intrinsic::EnvRead | Intrinsic::StorageRead => {
+            Intrinsic::Authorize(_) | Intrinsic::ConsoleLog(_) => initial_state,
+            Intrinsic::Fetch
+            | Intrinsic::EnvRead
+            | Intrinsic::StorageRead
+            | Intrinsic::SecretRead => {
                 debug!("authenticated");
                 Authenticated::Yes
             }
@@ -734,8 +600,11 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
         _operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
         match *intrinsic {
-            Intrinsic::Authorize(_) => ControlFlow::Continue(*state),
-            Intrinsic::Fetch | Intrinsic::EnvRead | Intrinsic::StorageRead => {
+            Intrinsic::Authorize(_) | Intrinsic::ConsoleLog(_) => ControlFlow::Continue(*state),
+            Intrinsic::Fetch
+            | Intrinsic::EnvRead
+            | Intrinsic::StorageRead
+            | Intrinsic::SecretRead => {
                 debug!("authenticated");
                 ControlFlow::Continue(Authenticated::Yes)
             }
@@ -851,7 +720,7 @@ impl JoinSemiLattice for SecretState {
     #[inline]
     fn join_changed(&mut self, other: &Self) -> bool {
         let old = mem::replace(self, max(*other, *self));
-        old == *self
+        old != *self
     }
 
     #[inline]
@@ -1280,13 +1149,13 @@ impl IntoVuln for AuthHeaderVuln {
                 severity: Severity::Critical,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
-                marketplace_security_requirement: "Requirement 10.0",
+                marketplace_security_requirement: "Requirement 11.0",
                 date: reporter.current_date(),
             },
             AuthHeaderVulnKind::ContainerToken => Vulnerability {
                 check_name: "ATLASSIAN_CONTAINER_TOKEN".to_string(),
                 description: format!(
-                    "Our API Token Scanner has identified in {} {} call(s) that your app is currently using Atlassian vuln_type:{{container_token}} for authentication to admin endpoints. Under the [updated guidance](https://www.atlassian.com/blog/developer/building-secure-and-scalable-integrations-our-guidance-for-third-party-apps) on app authentication ([FAQ](https://developer.atlassian.com/platform/marketplace/security-requirements-faq/#are-apps-prohibited-from-collecting-atlassian-user-account-api-tokens-even-after-taking-the-user-s-consent-) page) apps collecting customer tokens are now required to migrate to [Forge authentication](https://developer.atlassian.com/platform/forge/security/#simple-and-secure-authentication) to ensure alignment with cloud app [security requirements](https://developer.atlassian.com/platform/marketplace/security-requirements/#security-requirements-for-cloud-apps). Refer to this [announcement](https://community.developer.atlassian.com/t/reminder-migrate-from-using-api-tokens-to-officially-supported-authentication-for-atlassian-apps-integrations/97221) for more details.",
+                    "Our API Token Scanner has identified in {} {} call(s) that your app is currently using Atlassian vuln_type:{{container_token}} for authentication to admin endpoints. Under the [updated guidance](https://www.atlassian.com/blog/developer/building-secure-and-scalable-integrations-our-guidance-for-third-party-apps) on app authentication, apps collecting admin api tokens are now required to migrate to [Forge authentication](https://developer.atlassian.com/platform/forge/security/#simple-and-secure-authentication) to ensure alignment with cloud app security requirements. Refer to this [announcement](https://community.developer.atlassian.com/t/reminder-migrate-from-using-api-tokens-to-officially-supported-authentication-for-atlassian-apps-integrations/97221) for more details.",
                     count, self.api_call
                 ),
                 recommendation: "Use supported authentication mechanisms (such as OAuth 2.0 or Forge authentication). If you anticipate any blockers or require support, contact the Atlassian Ecosystem Support.",
@@ -1297,7 +1166,7 @@ impl IntoVuln for AuthHeaderVuln {
                 severity: Severity::Critical,
                 app_key: reporter.app_key().to_owned(),
                 app_name: reporter.app_name().to_owned(),
-                marketplace_security_requirement: "Requirement 10.0",
+                marketplace_security_requirement: "Requirement 11.0",
                 date: reporter.current_date(),
             },
         }
@@ -1639,6 +1508,7 @@ fn extract_auth_scheme_from_body(body: &crate::ir::Body, target: VarId) -> Optio
 /// holds the concat result, possibly through intermediate copies.
 fn classify_rvalue_auth_scheme(rvalue: &Rvalue, body: &crate::ir::Body) -> Option<AuthScheme> {
     match rvalue {
+        Rvalue::Read(operand @ Operand::Lit(_)) => operand_auth_scheme(operand),
         // "Basic " + token  or  token + "Basic ..."
         Rvalue::Bin(BinOp::Add, op1, op2) => {
             operand_auth_scheme(op1).or_else(|| operand_auth_scheme(op2))
@@ -1674,6 +1544,7 @@ fn follow_var_to_auth_scheme(
                 && var.projections.is_empty()
             {
                 match rval {
+                    Rvalue::Read(operand @ Operand::Lit(_)) => return operand_auth_scheme(operand),
                     Rvalue::Bin(BinOp::Add, op1, op2) => {
                         return operand_auth_scheme(op1).or_else(|| operand_auth_scheme(op2));
                     }
@@ -1703,6 +1574,92 @@ fn operand_auth_scheme(op: &Operand) -> Option<AuthScheme> {
         Operand::Lit(Literal::Str(s)) => classify_auth_literal(s),
         _ => None,
     }
+}
+
+/// Resolve a header value through object properties, aliases, and returned
+/// objects when the value lattice cannot resolve it at the fetch call.
+fn returned_header_auth_scheme(
+    body: &crate::ir::Body,
+    env: &Environment,
+    options: VarId,
+) -> Option<AuthScheme> {
+    let mut path = projvec_from_str("headers");
+    path.extend(projvec_from_str("Authorization"));
+    auth_scheme_at_path(body, env, options, &path, 16)
+}
+
+fn projection_prefix_matches(path: &[Projection], assigned: &[Projection]) -> bool {
+    assigned.len() <= path.len()
+        && assigned
+            .iter()
+            .zip(path)
+            .all(|(assigned, wanted)| match (assigned, wanted) {
+                (Projection::Known(a), Projection::Known(b)) => a.eq_ignore_ascii_case(b),
+                _ => assigned == wanted,
+            })
+}
+
+fn auth_scheme_at_path(
+    body: &crate::ir::Body,
+    env: &Environment,
+    target: VarId,
+    path: &[Projection],
+    depth: u8,
+) -> Option<AuthScheme> {
+    if depth == 0 {
+        return None;
+    }
+    for (_, block) in body.iter_blocks_enumerated() {
+        for inst in &block.insts {
+            let Inst::Assign(assigned, value) = inst else {
+                continue;
+            };
+            if assigned.base != Base::Var(target)
+                || !projection_prefix_matches(path, &assigned.projections)
+            {
+                continue;
+            }
+            let remaining = &path[assigned.projections.len()..];
+            if remaining.is_empty()
+                && let Some(scheme) = classify_rvalue_auth_scheme(value, body)
+            {
+                return Some(scheme);
+            }
+            match value {
+                Rvalue::Read(Operand::Var(source)) => {
+                    let Base::Var(source_var) = source.base else {
+                        continue;
+                    };
+                    let next_path = source
+                        .projections
+                        .iter()
+                        .cloned()
+                        .chain(remaining.iter().cloned())
+                        .collect::<Vec<_>>();
+                    if let Some(scheme) =
+                        auth_scheme_at_path(body, env, source_var, &next_path, depth - 1)
+                    {
+                        return Some(scheme);
+                    }
+                }
+                Rvalue::Call(callee, _) => {
+                    let Some((_, helper)) = body.resolve_call(env, callee) else {
+                        continue;
+                    };
+                    for (ret, kind) in helper.iter_vars_enumerated() {
+                        if matches!(kind, VarKind::Ret)
+                            && let Some(scheme) =
+                                auth_scheme_at_path(helper, env, ret, remaining, depth - 1)
+                        {
+                            return Some(scheme);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 /// Tries to extract the URL string from a VarId by walking the IR when the
@@ -1756,20 +1713,16 @@ fn extract_url_prefix_from_var(body: &crate::ir::Body, target: VarId, depth: u8)
     None
 }
 
-impl<'cx> Runner<'cx> for AuthHeaderChecker {
-    type State = SecretState;
-    type Dataflow = AuthHeaderDataflow;
-
-    const NAME: &'static str = "AuthHeader";
-
-    fn visit_intrinsic(
+impl AuthHeaderChecker {
+    fn visit_intrinsic_at<'cx>(
         &mut self,
         interp: &Interp<'cx, Self>,
         intrinsic: &'cx Intrinsic,
         def: DefId,
-        state: &Self::State,
+        state: &SecretState,
         operands: Option<SmallVec<[Operand; 4]>>,
-    ) -> ControlFlow<(), Self::State> {
+        location: Option<Location>,
+    ) -> ControlFlow<(), SecretState> {
         // Determine if this is a fetch-like or platform API intrinsic.
         // Platform API shims (requestJira, requestConfluence, etc.) are always
         // Atlassian calls, so the api.atlassian.com URL check is skipped.
@@ -1799,7 +1752,13 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                 })) => match interp.get_value(def, *varid, None) {
                     Some(Value::Const(Const::Literal(s))) => Some(s.clone()),
                     Some(Value::Phi(phi)) => phi.iter().map(|Const::Literal(s)| s.clone()).next(),
-                    _ => extract_url_prefix_from_body(interp.body(), *varid),
+                    _ => {
+                        let (origin, var) = interp.value_origin(def, *varid);
+                        extract_url_prefix_from_body(
+                            interp.env().def_ref(origin).expect_body(),
+                            var,
+                        )
+                    }
                 },
                 Some(Operand::Lit(lit)) => convert_lit_to_raw(lit),
                 _ => None,
@@ -1817,65 +1776,137 @@ impl<'cx> Runner<'cx> for AuthHeaderChecker {
                         varid
                     };
                 let headers_proj = projvec_from_str("headers");
-                if let Some(Value::Object(varid)) =
+                let auth_scheme = if let Some(Value::Object(varid)) =
                     interp.get_value(def, *varid_argument, Some(headers_proj))
                 {
                     let auth_proj = projvec_from_str("Authorization");
                     let aut_proj_lower = projvec_from_str("authorization");
-                    let auth_val = interp
-                        .get_value(def, *varid, Some(auth_proj.clone()))
-                        .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower.clone())));
+                    let (auth_val, auth_projection) =
+                        match interp.get_value(def, *varid, Some(auth_proj.clone())) {
+                            Some(value) => (Some(value), auth_proj),
+                            None => (
+                                interp.get_value(def, *varid, Some(aut_proj_lower.clone())),
+                                aut_proj_lower,
+                            ),
+                        };
 
-                    // Try to determine the auth scheme from the resolved value.
-                    // If the value is fully known, classify directly. If unknown
-                    // (e.g. "Basic " + variable), walk the IR to inspect the
-                    // operands of the concatenation/template that produced it.
-                    let auth_scheme: Option<AuthScheme> = match auth_val {
-                        Some(Value::Const(Const::Literal(s))) => classify_auth_literal(s),
-                        Some(Value::Phi(phi)) => phi
-                            .iter()
-                            .find_map(|Const::Literal(s)| classify_auth_literal(s)),
-                        Some(Value::Unknown) | None => {
-                            // Value collapsed to Unknown — inspect the IR directly.
-                            // The auth header VarId is `*varid` from the headers object.
-                            extract_auth_scheme_from_body(interp.body(), *varid)
+                    // A property overwrite supersedes its initializer, including
+                    // a known constant retained by the legacy value lattice.
+                    // Inspect only assignments that can reach this fetch.
+                    if let Some(origins) =
+                        interp.projection_origins(def, *varid, auth_projection, location)
+                    {
+                        origins.iter().find_map(|&(origin, loc)| {
+                            match interp.projection_value(origin, loc) {
+                                Some(Value::Const(Const::Literal(s))) => classify_auth_literal(s),
+                                Some(Value::Phi(phi)) => phi
+                                    .iter()
+                                    .find_map(|Const::Literal(s)| classify_auth_literal(s)),
+                                Some(Value::Unknown) | None => {
+                                    let body = interp.env().def_ref(origin).expect_body();
+                                    let value =
+                                        body.block(loc.block).insts[loc.stmt as usize].rvalue();
+                                    classify_rvalue_auth_scheme(value, body)
+                                }
+                                _ => None,
+                            }
+                        })
+                    } else {
+                        match auth_val {
+                            Some(Value::Const(Const::Literal(s))) => classify_auth_literal(s),
+                            Some(Value::Phi(phi)) => phi
+                                .iter()
+                                .find_map(|Const::Literal(s)| classify_auth_literal(s)),
+                            Some(Value::Unknown) | None => {
+                                let (origin, var) = interp.value_origin(def, *varid);
+                                extract_auth_scheme_from_body(
+                                    interp.env().def_ref(origin).expect_body(),
+                                    var,
+                                )
+                            }
+                            _ => None,
                         }
-                        _ => None,
-                    };
+                    }
+                } else {
+                    returned_header_auth_scheme(
+                        interp.env().def_ref(def).expect_body(),
+                        interp.env(),
+                        *varid_argument,
+                    )
+                };
 
-                    if let Some(scheme @ (AuthScheme::Basic | AuthScheme::Bearer)) = auth_scheme {
-                        // Platform API shims always target Atlassian APIs. For fetch /
-                        // api.fetch / node-fetch, require a recognized Atlassian URL.
-                        let should_flag = is_platform_api
-                            || (is_fetch
-                                && url_str.as_deref().is_some_and(|url| {
-                                    is_admin_path(url) || is_atlassian_url(url)
-                                }));
+                if let Some(scheme @ (AuthScheme::Basic | AuthScheme::Bearer)) = auth_scheme {
+                    // Platform API shims always target Atlassian APIs. For fetch /
+                    // api.fetch / node-fetch, require a recognized Atlassian URL.
+                    let should_flag = is_platform_api
+                        || (is_fetch
+                            && url_str
+                                .as_deref()
+                                .is_some_and(|url| is_admin_path(url) || is_atlassian_url(url)));
 
-                        if should_flag {
-                            // Container tokens are Bearer tokens used with admin endpoints.
-                            // Basic and non-admin Bearer tokens are reported as API tokens.
-                            let kind = if scheme == AuthScheme::Bearer
-                                && url_str.as_deref().is_some_and(is_admin_path)
-                            {
-                                AuthHeaderVulnKind::ContainerToken
-                            } else {
-                                AuthHeaderVulnKind::ApiToken
-                            };
-                            self.vulns.push(AuthHeaderVuln::new(
-                                kind,
-                                api_call_name(intrinsic),
-                                url_str.clone(),
-                                interp.callstack(),
-                                interp.env(),
-                                interp.entry(),
-                            ));
-                        }
+                    if should_flag {
+                        // Container tokens are Bearer tokens used with admin endpoints.
+                        // Basic and non-admin Bearer tokens are reported as API tokens.
+                        let kind = if scheme == AuthScheme::Bearer
+                            && url_str.as_deref().is_some_and(is_admin_path)
+                        {
+                            AuthHeaderVulnKind::ContainerToken
+                        } else {
+                            AuthHeaderVulnKind::ApiToken
+                        };
+                        self.vulns.push(AuthHeaderVuln::new(
+                            kind,
+                            api_call_name(intrinsic),
+                            url_str.clone(),
+                            interp.callstack(),
+                            interp.env(),
+                            interp.entry(),
+                        ));
                     }
                 }
             }
         }
         ControlFlow::Continue(*state)
+    }
+}
+
+impl<'cx> Runner<'cx> for AuthHeaderChecker {
+    type State = SecretState;
+    type Dataflow = AuthHeaderDataflow;
+
+    const NAME: &'static str = "AuthHeader";
+
+    fn visit_intrinsic(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        intrinsic: &'cx Intrinsic,
+        def: DefId,
+        state: &Self::State,
+        operands: Option<SmallVec<[Operand; 4]>>,
+    ) -> ControlFlow<(), Self::State> {
+        self.visit_intrinsic_at(interp, intrinsic, def, state, operands, None)
+    }
+
+    fn visit_inst(
+        &mut self,
+        interp: &Interp<'cx, Self>,
+        def: DefId,
+        loc: Location,
+        inst: &'cx Inst,
+        state: &Self::State,
+    ) -> ControlFlow<(), Self::State> {
+        if let Rvalue::Intrinsic(intrinsic, operands) = inst.rvalue() {
+            self.visit_intrinsic_at(
+                interp,
+                intrinsic,
+                def,
+                state,
+                Some(operands.clone()),
+                Some(loc),
+            )
+        } else {
+            self.visit_rvalue(interp, inst.rvalue(), def, loc.block, state)
+        }
     }
 }
 
@@ -2316,14 +2347,14 @@ pub struct ForgeRuntimeVersionPolicyVuln {
 impl IntoVuln for ForgeRuntimeVersionPolicyVuln {
     fn into_vuln(self, reporter: &Reporter) -> Vulnerability {
         Vulnerability {
-            check_name: "Forge Runtime Version Policy Checker".to_owned(),
-            description: "The Forge app uses an end-of-life Node.js runtime.".to_owned(),
-            recommendation: "Update app.runtime.name in manifest.yml to a supported Node.js runtime.",
+            check_name: format!("Custom-Check-forge-runtime-{}", self.runtime),
+            description: "The Forge app uses an end-of-life Node.js that is a likely exposure path for [CVE-2026-111497](https://nvd.nist.gov/vuln/detail/cve-2026-111497): an app-controlled Forge Remote can return a malicious `Content-Encoding: br` response to an outbound fetch. Note this is Critical given the CVE.".to_owned(),
+            recommendation: "Update app.runtime.name in manifest.yml to a supported Node.js runtime. See https://developer.atlassian.com/platform/forge/function-reference/nodejs-runtime/.",
             proof: format!(
                 "Unsupported Forge runtime found in manifest.yml: app.runtime.name = {}",
                 self.runtime
             ),
-            severity: Severity::Low,
+            severity: Severity::Critical,
             app_key: reporter.app_key().to_owned(),
             app_name: reporter.app_name().to_owned(),
             marketplace_security_requirement: "Requirement 10.0",

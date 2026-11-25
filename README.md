@@ -13,7 +13,7 @@ Usage: fsrt [OPTIONS] [DIRS]...
        fsrt [OPTIONS] <COMMAND>
 
 Arguments:
-  [DIRS]...  The directory to scan. Assumes there is a `manifest.yaml` file in the top level directory, and that the source code is located in `src/`
+  [DIRS]...  The directory to scan. Assumes there is a `manifest.yaml` file in the top level directory, and that the handlers are located in `src/`. `src/` is read in full. A source file anywhere else in the app is read only when a file that is read imports it, by a relative path, a path from the app root or a path under `src/`, directly or through other such files: a front-end bundle or a leftover build folder that nothing imports is skipped. Files in `node_modules/` and dot-folders and minified `*.min.js` builds are never read, and imports of packages, dynamic imports with a variable, `tsconfig.json` path aliases and monorepo workspace packages are not followed. At most 2,000 files outside `src/` are read; the rest are skipped with a warning. Symlinks to files inside the app are read; links to folders or outside the app are not
 
 Commands:
   remote  Interact with deployed Forge apps
@@ -33,6 +33,96 @@ Commands:
 ```
 
 Run `fsrt --help`, `fsrt remote --help`, or `fsrt remote <COMMAND> --help` for current options.
+
+### Secret logging
+
+The `secret-logging` scanner reports values returned by `getSecret` on the `kvs`
+export (named or default) of `@forge/kvs`, or on the legacy `storage` export of
+`@forge/api`, when they reach `console.log`, `console.info`, `console.warn`,
+`console.error` or `console.debug`. It is disabled by default; select it
+explicitly, alone or with other scanners:
+
+```sh
+fsrt --scanners secret-logging ./my-forge-app
+fsrt --scanners secret,secret-logging ./my-forge-app
+```
+
+```js
+import { kvs } from '@forge/kvs';
+
+export async function run() {
+  const token = await kvs.getSecret('token');
+  console.log(`Token: ${token}`); // reported
+}
+```
+
+It follows import aliases, assignments, expressions, arrays and objects,
+branches, loops, helper arguments and returns, and single-handler `.then()`
+fulfillment callbacks. It checks manifest entrypoints, resolver handlers, their
+reachable helpers, and module initializers. Ordinary `kvs.get` calls and other
+console methods (such as `console.table`) are outside this rule. Captured
+bindings use their values at the helper call, and operators returning only
+metadata (such as `typeof`, `void`, boolean negation, and comparisons) clear
+secret taint.
+
+A property written through a known path keeps its own taint, so reading
+`password` from `{ host: secret.host, password: 'literal' }` is clean, while
+reading `host` from `{ host: secret }` is reported. Any other property read from
+a secret stays tracked, but is reported only when the last property name ends
+with a secret suffix: `secret[account].password` and
+`const { apiToken } = secret.config` are reported, while logging
+`secret[account]`, `secret.host` or `secret.length` is not. Names compare
+case-insensitively after removing `_` and `-`, and the longest matching suffix
+decides, so the excluded `pagetoken` wins over `token` in `nextPageToken`.
+`--secret-logging-suffixes` and `--secret-logging-excluded-suffixes` replace the
+defaults listed by `fsrt --help`:
+
+```sh
+fsrt --scanners secret-logging \
+  --secret-logging-suffixes password,secret,apikey ./my-forge-app
+```
+
+Logging a whole secret, an object or array containing one, or a method result
+such as `secret.trim()` is reported. Splitting on or replacing the secret itself,
+such as `text.split(secret).join('[REDACTED]')` or `url.replace(secret, '***')`,
+redacts it. For now, so does partial masking: a `slice`, `substring` or `substr`
+of at most 12 characters, bounded by literals or the string's own `length` (such
+as `key.slice(-4)`, `key.substring(0, 12)` or `key.substring(key.length - 4)`),
+is treated as clean and logged as a warning (visible with `FORGE_LOG=warn` or
+`--verbose`). Longer or unbounded substrings such as `key.slice(7)`, other
+truncation, and encoding are still reported.
+
+lodash's `omit`, `pick` and `get` select properties when their paths are string
+or array literals. They are recognized when imported from `lodash` or `lodash-es`
+(by name, default or namespace import) or from a per-method package such as
+`lodash/omit` or `lodash.omit`. `omit({ url, token: secret }, ['token'])` and
+`get(config, 'url')` are clean, while `pick(config, ['token'])` is reported. A
+secret read whole has no tracked properties, so `omit(secret, ['password'])` is
+still reported. `lodash/fp`, `require('lodash')` and other libraries' `omit`
+propagate like any other unresolved call.
+
+The shared engine in `crates/forge_analyzer/src/taint.rs` propagates taint for a
+scanner's `TaintPolicy`: its sources, property reads (`property_taint`, and
+`tracks_fields` for written properties), sanitizing methods (`method_taint`) and
+sink predicate (`is_violation`). A runner selects `TaintDataflow<MyPolicy>`,
+passes its configured policy from `Runner::dataflow`, and can reuse
+`visit_taint_call` for interprocedural traversal. Both this scanner and the
+existing prototype-pollution checker use that engine; the defaults propagate
+taint conservatively. The predicate sees values before each instruction; only
+matching sink locations are retained for the diagnostic walk after analysis
+converges. Variable vectors are retained at block boundaries, rather than copied
+and stored at every instruction.
+
+This is a conservative analysis: helper summaries combine call sites within an
+entrypoint, and calls to unresolved functions (including HTTP clients other than
+Forge `fetch` and the product request APIs) propagate argument/receiver taint, so
+a response to an authenticated request can be reported. Dynamic dispatch,
+mutation through object aliases, and callback APIs other than the modeled
+fulfillment form can still miss flows; sanitization through unresolved functions
+can produce warnings.
+Callee summaries do not propagate writes to outer bindings back to callers.
+Findings identify the sink function, unique IR body, and instruction location,
+not a source line or a runtime secret value.
 
 ## Installation
 

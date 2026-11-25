@@ -13,6 +13,15 @@ use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceFile, SourceMap};
 use time::{Date, Month};
 
+mod captured_values;
+mod legacy_callbacks;
+mod outside_src;
+mod resolver_registration;
+mod secret_logging;
+mod secret_logging_storage;
+mod taint_regressions;
+mod value_regressions;
+
 trait ReportExt {
     fn has_no_vulns(&self) -> bool;
 
@@ -273,7 +282,7 @@ fn scanners_parse_as_typed_list() {
     let args = Args::try_parse_from([
         "fsrt",
         "--scanners",
-        "secret,auth-header",
+        "secret,auth-header,secret-logging",
         "--scanners",
         "authentication",
     ])
@@ -284,6 +293,7 @@ fn scanners_parse_as_typed_list() {
         vec![
             Scanner::Secret,
             Scanner::AuthHeader,
+            Scanner::SecretLogging,
             Scanner::Authentication,
         ]
     );
@@ -300,9 +310,173 @@ fn scanners_help_lists_possible_values() {
         "auth-header",
         "permission",
         "secret",
+        "secret-logging",
     ] {
         assert!(help.contains(scanner), "help omitted scanner {scanner}");
     }
+}
+
+#[test]
+fn constant_branches_preserve_only_hardcoded_secret_findings() {
+    for condition in ["false", "disabled"] {
+        let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+        project.add_file(
+            "src/index.js",
+            &format!(
+                "import {{ fetch }} from '@forge/api';
+                import {{ kvs }} from '@forge/kvs';
+                export async function run() {{
+                    const API_KEY = 'hard coded';
+                    const secret = await kvs.getSecret('key');
+                    const disabled = false;
+                    if ({condition}) {{
+                        console.log(secret);
+                        fetch('https://example.com', {{headers: {{authorization: API_KEY}}}});
+                        fetch('https://api.atlassian.com/rest/api/3/issue', {{
+                            headers: {{Authorization: 'Basic ' + process.env.API_TOKEN}}
+                        }});
+                    }}
+                }}"
+            ),
+        );
+        for (scanners, expected) in [
+            ("secret", 1),
+            ("secret,secret-logging,auth-header", 1),
+            ("secret-logging,auth-header", 0),
+        ] {
+            let report = scan_directory_test_with_args(
+                project.clone(),
+                Args::parse_from(["fsrt", "--scanners", scanners]),
+            );
+            assert!(!report.has_errors());
+            assert!(report.contains_secret_vuln(expected), "{report:#?}");
+            assert_eq!(report.into_vulns().len(), expected, "{report:#?}");
+        }
+    }
+}
+
+fn secret_finding_count(source: &str) -> usize {
+    let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+    project.add_file("src/index.js", source);
+    let report =
+        scan_directory_test_with_args(project, Args::parse_from(["fsrt", "--scanners", "secret"]));
+    assert!(!report.has_errors(), "{source}\n{report:#?}");
+    report.into_vulns().len()
+}
+
+// A plain object coerces to the known string "[object Object]" in both `+` and template
+// literals, so concatenating one with literals is still a hardcoded value (PR #136 review).
+#[test]
+fn secret_fetch_authorization_from_plain_object_template_is_hardcoded() {
+    let source = "import { fetch } from '@forge/api';
+        export function run() {
+            const obj = { token: { value: 'abc' } };
+            const headers = { Authorization: `Bearer ${obj.token}` };
+            fetch('https://example.com', { headers });
+        }";
+    assert_eq!(secret_finding_count(source), 1);
+}
+
+#[test]
+fn secret_function_argument_from_plain_object_concat_is_hardcoded() {
+    let source = "import { AES } from 'crypto-js';
+        export function run() {
+            const obj = { prop: { nested: 'y' } };
+            AES.encrypt('plaintext', 'x' + obj.prop);
+        }";
+    assert_eq!(secret_finding_count(source), 1);
+}
+
+#[test]
+fn secret_function_argument_from_whole_plain_object_is_hardcoded() {
+    let concat = "import { AES } from 'crypto-js';
+        export function run() {
+            const obj = { nested: 'y' };
+            AES.encrypt('plaintext', 'x' + obj);
+        }";
+    assert_eq!(secret_finding_count(concat), 1);
+
+    let template = "import { AES } from 'crypto-js';
+        export function run() {
+            const obj = { nested: 'y' };
+            AES.encrypt('plaintext', `x${obj}`);
+        }";
+    assert_eq!(secret_finding_count(template), 1);
+}
+
+#[test]
+fn secret_function_argument_from_runtime_unknown_piece_is_not_hardcoded() {
+    let concat = "import { AES } from 'crypto-js';
+        export function run(request) {
+            AES.encrypt('plaintext', 'x' + request.body());
+        }";
+    assert_eq!(secret_finding_count(concat), 0);
+
+    let template = "import { AES } from 'crypto-js';
+        export function run(request) {
+            AES.encrypt('plaintext', `x${request.body()}`);
+        }";
+    assert_eq!(secret_finding_count(template), 0);
+}
+
+#[test]
+fn secret_function_argument_from_non_plain_object_is_not_hardcoded() {
+    let objects = [
+        "const obj = { prop: { nested: 'y' }, toString() { return 'k'; } };",
+        "const obj = { prop: { nested: 'y' }, toString: () => 'k' };",
+        "const obj = { prop: { nested: 'y' }, valueOf: () => 'k' };",
+        "const obj = { prop: { nested: 'y' }, get x() { return 1; } };",
+        "const other = { toString: () => 'k' }; const obj = { prop: { nested: 'y' }, ...other };",
+        "const obj = { prop: { nested: 'y' }, [Symbol.toPrimitive]: () => 'k' };",
+        "const obj = { nested: 'y' }; obj.toString = () => 'k';",
+        "const obj = ['a', 'b'];",
+    ];
+    for decl in objects {
+        for expr in ["'x' + obj", "'x' + obj.prop", "`x${obj}`", "`x${obj.prop}`"] {
+            let source = format!(
+                "import {{ AES }} from 'crypto-js';
+                export function run() {{
+                    {decl}
+                    AES.encrypt('plaintext', {expr});
+                }}"
+            );
+            // `obj.prop` is itself a plain object in the declarations that define it, so
+            // it is a genuine finding; only the whole non-plain object must stay unknown.
+            if decl.contains("prop") && expr.contains("prop") {
+                continue;
+            }
+            assert_eq!(secret_finding_count(&source), 0, "{source}");
+        }
+    }
+}
+
+#[test]
+fn secret_hardcoded_literals_and_phi_still_fire() {
+    let literal = "import { fetch } from '@forge/api';
+        export function run() {
+            fetch('https://example.com', { headers: { Authorization: 'Bearer abc123' } });
+        }";
+    assert_eq!(secret_finding_count(literal), 1);
+
+    let phi = "import { fetch } from '@forge/api';
+        export function run(request) {
+            let token = 'abc';
+            if (request.flag) {
+                token = 'def';
+            }
+            fetch('https://example.com', { headers: { Authorization: `Bearer ${token}` } });
+        }";
+    assert_eq!(secret_finding_count(phi), 1);
+
+    let function = "import { AES } from 'crypto-js';
+        export function run(request) {
+            let suffix = 'a';
+            if (request.flag) {
+                suffix = 'b';
+            }
+            AES.encrypt('plaintext', 'x' + suffix);
+        }";
+    assert_eq!(secret_finding_count(function), 1);
 }
 
 #[test]
@@ -472,8 +646,8 @@ fn forge_runtime_version_policy_flags_nodejs20() {
 
     let scan_result = scan_directory_test(test_forge_project);
     assert!(scan_result.vuln_description_contains(
-        "Forge Runtime Version Policy Checker",
-        "end-of-life Node.js runtime"
+        "Custom-Check-forge-runtime-nodejs20.x",
+        "end-of-life Node.js"
     ));
 }
 
@@ -498,8 +672,8 @@ fn forge_runtime_version_policy_allows_nodejs22() {
 
     let scan_result = scan_directory_test(test_forge_project);
     assert!(!scan_result.vuln_description_contains(
-        "Forge Runtime Version Policy Checker",
-        "end-of-life Node.js runtime"
+        "Custom-Check-forge-runtime-nodejs22.x",
+        "end-of-life Node.js"
     ));
 }
 
@@ -513,6 +687,31 @@ fn forge_runtime_version_policy_flags_runtime_after_support_ends() {
         ForgeRuntimeVersionPolicyChecker::check_at(Some("nodejs20.x"), date(2026, Month::May, 1));
 
     assert!(result.is_some());
+}
+
+#[test]
+fn forge_runtime_version_policy_reports_version_specific_critical_findings() {
+    for runtime in ["nodejs18.x", "nodejs20.x"] {
+        let finding =
+            ForgeRuntimeVersionPolicyChecker::check_at(Some(runtime), date(2026, Month::May, 1))
+                .expect("runtime must be past its support end date");
+        let mut reporter = forge_analyzer::reporter::Reporter::new();
+        reporter.add_app(String::new(), String::new());
+        reporter.add_vulnerabilities([finding]);
+        let report = serde_json::to_value(reporter.into_vulns()).unwrap();
+
+        assert_eq!(
+            report[0]["check_name"],
+            format!("Custom-Check-forge-runtime-{runtime}")
+        );
+        assert_eq!(report[0]["severity"], "Critical");
+        assert_eq!(
+            report[0]["proof"],
+            format!(
+                "Unsupported Forge runtime found in manifest.yml: app.runtime.name = {runtime}"
+            )
+        );
+    }
 }
 
 #[test]
@@ -543,6 +742,57 @@ fn forge_runtime_version_policy_ignores_unrecognized_runtime_names() {
         ForgeRuntimeVersionPolicyChecker::check_at(Some("sandbox"), date(2026, Month::May, 1),)
             .is_none()
     );
+}
+
+fn secret_findings(source: &str) -> Report {
+    let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+    project.add_file("src/index.js", source);
+    let report =
+        scan_directory_test_with_args(project, Args::parse_from(["fsrt", "--scanners", "secret"]));
+    assert!(!report.has_errors());
+    report
+}
+
+// Regression for EAS-4914: assigning a literal to one property of an object
+// must not make the object's other properties (or the object) resolve to it.
+#[test]
+fn property_literal_does_not_leak_to_sibling_property_in_auth_header() {
+    let report = secret_findings(
+        "import { fetch } from '@forge/api';
+        async function getLinks(token) {
+            return fetch('https://api.atlassian.com/jsm/assets/v1/imports/info', {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+        }
+        export async function run(req) {
+            const data = req.payload.importer;
+            if (data.deviceName === undefined) {
+                data.deviceName = 'deviceName1';
+            }
+            data.configStatus = 'IDLE';
+            await getLinks(data.token);
+            await fetch('https://api.atlassian.com/jsm/assets/v1/imports/info', {
+                headers: { Authorization: `Bearer ${data.token}` },
+            });
+        }",
+    );
+    assert!(report.contains_secret_vuln(0));
+    assert_eq!(report.into_vulns().len(), 0);
+}
+
+#[test]
+fn hardcoded_property_value_is_still_reported() {
+    let report = secret_findings(
+        "import { fetch } from '@forge/api';
+        export async function run(req) {
+            const data = { token: 'hardcoded-token' };
+            data.deviceName = 'deviceName1';
+            await fetch('https://example.com', {
+                headers: { Authorization: `Bearer ${data.token}` },
+            });
+        }",
+    );
+    assert!(report.contains_secret_vuln(1));
 }
 
 #[test]
@@ -1084,6 +1334,159 @@ fn api_token_fetch_detected_across_import_styles() {
         assert!(result.contains_secret_vuln(0));
         assert!(result.contains_vulns(*expected as i32));
     }
+}
+
+#[test]
+fn api_token_in_returned_headers_with_configured_rovo_site() {
+    let source = "// src/index.js
+        import { fetch, storage } from '@forge/api';
+        async function getAuth() {
+            const siteUrl = process.env.SITE_URL;
+            const email = process.env.USER_EMAIL;
+            const token = await storage.getSecret('atlassian-api-token');
+            if (!siteUrl || !email || !token) return null;
+            return {
+                url: siteUrl.replace(/\\/$/, ''),
+                headers: {
+                    Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`,
+                    Accept: 'application/json',
+                },
+            };
+        }
+        export async function run() {
+            const auth = await getAuth();
+            if (!auth) return;
+            return fetch(`${auth.url}/gateway/api/assist/rovo/v1/agents?limit=100`, {
+                headers: auth.headers,
+            });
+        }";
+    let result = scan_directory_test(MockForgeProject::files_from_string(source));
+    assert!(result.contains_api_token_vuln(1), "{result:#?}");
+    assert!(result.contains_container_token_vuln(0), "{result:#?}");
+}
+
+#[test]
+fn api_token_in_returned_headers_with_literal_atlassian_url() {
+    let source = "// src/index.js
+        import { fetch } from '@forge/api';
+        function getAuth() {
+            return { headers: { Authorization: 'Basic secret' } };
+        }
+        export function run() {
+            const auth = getAuth();
+            return fetch('example.atlassian.net/rest/api/3/issue', { headers: auth.headers });
+        }";
+    let result = scan_directory_test(MockForgeProject::files_from_string(source));
+    assert!(result.contains_api_token_vuln(1), "{result:#?}");
+}
+
+#[test]
+fn returned_header_property_can_have_a_different_name() {
+    for property in ["requestHeaders", "credentials"] {
+        let source = format!(
+            "// src/index.js
+            import {{ fetch }} from '@forge/api';
+            function getAuth() {{
+                return {{ {property}: {{ Authorization: 'Basic secret' }} }};
+            }}
+            export function run() {{
+                const auth = getAuth();
+                return fetch('example.atlassian.net/rest/api/3/issue', {{
+                    headers: auth.{property},
+                }});
+            }}"
+        );
+        let result = scan_directory_test(MockForgeProject::files_from_string(&source));
+        assert!(result.contains_api_token_vuln(1), "{property}: {result:#?}");
+    }
+
+    let mismatched = "// src/index.js
+        import { fetch } from '@forge/api';
+        function getAuth() {
+            return {
+                requestHeaders: { Authorization: 'Basic secret' },
+                publicHeaders: { Authorization: 'public' },
+            };
+        }
+        export function run() {
+            const auth = getAuth();
+            return fetch('example.atlassian.net/rest/api/3/issue', {
+                headers: auth.publicHeaders,
+            });
+        }";
+    let result = scan_directory_test(MockForgeProject::files_from_string(mismatched));
+    assert!(result.contains_api_token_vuln(0), "{result:#?}");
+}
+
+#[test]
+fn returned_headers_follow_nested_properties_and_direct_returns() {
+    for expression in ["auth.credentials.requestHeaders", "getHeaders()"] {
+        let source = format!(
+            "// src/index.js
+            import {{ fetch }} from '@forge/api';
+            function getHeaders() {{
+                const secret = {{ Authorization: 'Basic secret' }};
+                return secret;
+            }}
+            function getAuth() {{
+                return {{ credentials: {{ requestHeaders: getHeaders() }} }};
+            }}
+            export function run() {{
+                const auth = getAuth();
+                return fetch('example.atlassian.net/rest/api/3/issue', {{
+                    headers: {expression},
+                }});
+            }}"
+        );
+        let result = scan_directory_test(MockForgeProject::files_from_string(&source));
+        assert!(
+            result.contains_api_token_vuln(1),
+            "{expression}: {result:#?}"
+        );
+    }
+}
+
+#[test]
+fn returned_headers_do_not_pick_up_unrelated_basic_header() {
+    let source = "// src/index.js
+        import { fetch } from '@forge/api';
+        function getAuth() {
+            const unused = { Authorization: 'Basic secret' };
+            return { headers: { Authorization: 'public' } };
+        }
+        export function run() {
+            const auth = getAuth();
+            return fetch('example.atlassian.net/rest/api/3/issue', { headers: auth.headers });
+        }";
+    let result = scan_directory_test(MockForgeProject::files_from_string(source));
+    assert!(result.contains_api_token_vuln(0), "{result:#?}");
+}
+
+#[test]
+fn repeated_global_fetch_is_recognized_without_matching_a_local_function() {
+    let source = "// src/index.js
+        function warmup() {
+            return fetch('api.atlassian.com/rest/api/3/issue', {
+                headers: { Authorization: 'public' },
+            });
+        }
+        export function run() {
+            return fetch('api.atlassian.com/rest/api/3/issue', {
+                headers: { Authorization: 'Basic ' + process.env.API_TOKEN },
+            });
+        }";
+    let result = scan_directory_test(MockForgeProject::files_from_string(source));
+    assert!(result.contains_api_token_vuln(1), "{result:#?}");
+
+    let shadowed = "// src/index.js
+        function fetch() { return null; }
+        export function run() {
+            return fetch('api.atlassian.com/rest/api/3/issue', {
+                headers: { Authorization: 'Basic ' + process.env.API_TOKEN },
+            });
+        }";
+    let result = scan_directory_test(MockForgeProject::files_from_string(shadowed));
+    assert!(result.contains_api_token_vuln(0), "{result:#?}");
 }
 
 // Known gap: module-scope headers with Basic auth are not tracked into function-scoped fetch calls.
@@ -2747,5 +3150,155 @@ mod is_admin_path_tests {
                 "expected NON-admin-path classification for: {url}"
             );
         }
+    }
+}
+
+fn scan_manifest_evidence(manifest: &str, scanner: &str) -> Report {
+    let mut project = MockForgeProject::files_from_string("// src/index.js\n");
+    project.add_file(
+        "src/index.js",
+        r#"
+        import api, { route } from '@forge/api';
+        export const run = async () => api.asApp().requestJira(
+            route`/rest/api/3/issue/EXAMPLE-1`, { method: 'POST' });
+    "#,
+    );
+    project.manifest_file_content = Some(manifest.to_owned());
+    let report =
+        scan_directory_test_with_args(project, Args::parse_from(["fsrt", "--scanners", scanner]));
+    assert!(!report.has_errors(), "{report:#?}");
+    report
+}
+
+#[test]
+fn manifest_evidence_formats_bindings_without_changing_findings() {
+    for (scanner, modules, expected) in [
+        (
+            "authorization",
+            r#"
+  confluence:contentBylineItem:
+    - key: sample-byline
+      resolver: { function: main }
+  function:
+    - { key: main, handler: index.run }
+"#,
+            vec![
+                "Modules: [confluence:contentBylineItem: sample-byline (resolver.function)]\nFunction: main\nHandler: index.run",
+            ],
+        ),
+        (
+            "authorization",
+            r#"
+  jira:uiModifications:
+    - key: sample-modification
+      resolver: { function: main }
+  function:
+    - { key: main, handler: index.run }
+"#,
+            vec![
+                "Modules: [jira:uiModifications: sample-modification (resolver.function)]\nFunction: main\nHandler: index.run",
+            ],
+        ),
+        (
+            "authentication",
+            r#"
+  example:module:
+    - { key: auxiliary, resolver: { function: main } }
+  scheduledTrigger:
+    - { key: hourly-job, function: main, interval: hour }
+  webtrigger:
+    - { key: public-job, function: main, response: { type: dynamic } }
+    - { key: secondary-job, function: main }
+  function:
+    - { key: main, handler: index.run }
+"#,
+            vec![
+                "Modules: [webtrigger: public-job (function), webtrigger: secondary-job (function)]\nFunction: main\nHandler: index.run",
+            ],
+        ),
+        (
+            "authorization",
+            r#"
+  webtrigger:
+    - { key: unrelated-public-job, function: main }
+  jira:workflowValidator:
+    - { key: validation-only, function: main }
+  jira:globalPage:
+    - { key: first-page, resolver: { function: main } }
+    - { key: second-page, resolver: { function: alias } }
+  function:
+    - { key: main, handler: index.run }
+    - { key: alias, handler: index.run }
+"#,
+            vec![
+                "Modules: [jira:globalPage: first-page (resolver.function)]\nFunction: main\nHandler: index.run",
+                "Modules: [jira:globalPage: second-page (resolver.function)]\nFunction: alias\nHandler: index.run",
+            ],
+        ),
+        (
+            "authorization",
+            r#"
+  jira:customField:
+    - key: sample-field
+      resolver: { function: main }
+      value: { function: main }
+  macro:
+    - key: sample-macro
+      function: main
+      config: { function: main }
+  function:
+    - { key: main, handler: index.run }
+"#,
+            vec![
+                "Modules: [jira:customField: sample-field (resolver.function), jira:customField: sample-field (value.function), macro: sample-macro (config.function), macro: sample-macro (function)]\nFunction: main\nHandler: index.run",
+            ],
+        ),
+    ] {
+        let manifest =
+            format!("modules:\n{modules}\napp: {{ id: test-app }}\npermissions: {{ scopes: [] }}");
+        let report = scan_manifest_evidence(&manifest, scanner);
+        let findings = serde_json::to_value(report.into_vulns()).unwrap();
+        let findings = findings.as_array().unwrap();
+        assert_eq!(findings.len(), expected.len());
+        for (finding, expected) in findings.iter().zip(expected) {
+            let proof = finding["proof"].as_str().unwrap();
+            let operation = if scanner == "authentication" {
+                "Unauthenticated"
+            } else {
+                "Unauthorized"
+            };
+            assert_eq!(
+                proof,
+                format!("{expected}\n{operation} API call via asApp() found via run")
+            );
+            let check = if scanner == "authentication" {
+                "Authentication"
+            } else {
+                "Authorization"
+            };
+            // Captured before manifest evidence was carried through the loader.
+            assert_eq!(
+                finding["check_name"],
+                format!("Custom-Check-{check}-286024937650911987")
+            );
+        }
+    }
+}
+
+#[test]
+fn manifest_evidence_does_not_report_scheduled_only_handler() {
+    let manifest = r#"
+modules:
+  example:module:
+    - { key: auxiliary, resolver: { function: main } }
+  scheduledTrigger:
+    - { key: hourly-job, function: main, interval: hour }
+  function:
+    - { key: main, handler: index.run }
+app: { id: test-app }
+permissions: { scopes: [] }
+"#;
+    for scanner in ["authentication", "authorization"] {
+        assert!(scan_manifest_evidence(manifest, scanner).has_no_vulns());
     }
 }

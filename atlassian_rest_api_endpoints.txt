@@ -1618,4 +1618,5 @@
 ^/?workspaces/[^/]+/settings/gpg/public-key$
 ^/?gateway/api/public/teams/v1/org/[^/]+/teams/[^/]+$
 ^/?gateway/api/public/teams/v1/org/[^/]+/teams/[^/]+/members$
+^/?gateway/api/assist/rovo/v1/agents(?:/[^/]+)?$
 ^/?_edge/tenant_info$
